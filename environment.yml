@@ -1,0 +1,24 @@
+name: l-system
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pytorch
+  - torchvision
+  - torchaudio
+  - numpy
+  - pillow
+  - matplotlib
+  - opencv
+  - pyyaml
+  - tqdm
+  - pytest
+  - pip
+  - pip:
+      - transformers
+      - peft
+      - accelerate
+      - scikit-image
+      - tensorboard
