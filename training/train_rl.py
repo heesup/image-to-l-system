@@ -5,9 +5,10 @@ import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from dataset.generator import LSystemDatasetGenerator
-from dataset.dataloader import LSystemDataset
+from dataset.dataloader import LSystemDataset, custom_collate_fn
 from models.vlm_wrapper import LSystemVLM, get_device
 from training.rewards import compute_render_reward
+
 
 def train_rl(
     data_dir: str = "data/synthetic",
@@ -27,7 +28,8 @@ def train_rl(
         gen.generate_dataset(num_samples=num_samples, output_dir=data_dir)
 
     dataset = LSystemDataset(data_dir=data_dir)
-    dataloader = DataLoader(dataset, batch_size=2, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=2, shuffle=True, collate_fn=custom_collate_fn)
+
 
     vlm_wrapper = LSystemVLM(model_name="standalone", device=device)
     model = vlm_wrapper.model

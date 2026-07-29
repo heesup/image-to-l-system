@@ -5,8 +5,9 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from dataset.generator import LSystemDatasetGenerator
-from dataset.dataloader import LSystemDataset
+from dataset.dataloader import LSystemDataset, custom_collate_fn
 from models.vlm_wrapper import LSystemVLM, get_device
+
 
 def train_sft(
     data_dir: str = "data/synthetic",
@@ -32,7 +33,8 @@ def train_sft(
 
     # 2. Setup DataLoader & Model
     dataset = LSystemDataset(data_dir=data_dir)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate_fn)
+
 
     vlm_wrapper = LSystemVLM(model_name="standalone", device=device)
     model = vlm_wrapper.model

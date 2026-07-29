@@ -63,6 +63,24 @@ class LSystemDataset(Dataset):
                 "image_path": image_path
             }
 
+def custom_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Custom collate function handling variable dictionary keys and strings."""
+    if "image" not in batch[0]:
+        return batch[0]
+    
+    images = torch.stack([item["image"] for item in batch])
+    prompts = [item["prompt"] for item in batch]
+    target_texts = [item["target_text"] for item in batch]
+    lsystem_dicts = [item["lsystem_dict"] for item in batch]
+    image_paths = [item["image_path"] for item in batch]
+    return {
+        "image": images,
+        "prompt": prompts,
+        "target_text": target_texts,
+        "lsystem_dict": lsystem_dicts,
+        "image_path": image_paths
+    }
+
 def create_dataloaders(data_dir: str, batch_size: int = 8, shuffle: bool = True, processor: Optional[Any] = None) -> DataLoader:
     dataset = LSystemDataset(data_dir, processor=processor)
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=custom_collate_fn)

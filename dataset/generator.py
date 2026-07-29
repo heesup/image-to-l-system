@@ -94,4 +94,16 @@ class LSystemDatasetGenerator:
         with open(index_path, "w") as f:
             json.dump(metadata, f, indent=2)
 
+        print(f"Successfully generated {num_samples} L-System plant samples in '{output_dir}'.")
         return metadata
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Generate synthetic L-system plant dataset")
+    parser.add_argument("--num_samples", type=int, default=50, help="Number of plant samples to generate")
+    parser.add_argument("--output_dir", type=str, default="data/synthetic", help="Output directory path")
+    args = parser.parse_args()
+
+    gen = LSystemDatasetGenerator(seed=42)
+    gen.generate_dataset(num_samples=args.num_samples, output_dir=args.output_dir)
+
