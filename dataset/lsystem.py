@@ -78,3 +78,44 @@ class LSystem:
 
     def __repr__(self) -> str:
         return f"LSystem(axiom='{self.axiom}', rules={self.rules}, angle={self.angle}, iter={self.iterations})"
+
+class LSystemTokenizer:
+    """Character-level Tokenizer for L-System JSON strings."""
+
+    SPECIAL_TOKENS = ["<pad>", "<bos>", "<eos>", "<unk>"]
+    
+    def __init__(self):
+        self.vocab = list(self.SPECIAL_TOKENS)
+        # Add JSON and L-system characters
+        chars = list('{}" :,[]+-FfXYAB0123456789.axiomrulesangleiterationsstep_sizeline_width')
+        for c in chars:
+            if c not in self.vocab:
+                self.vocab.append(c)
+
+        self.char_to_id = {c: i for i, c in enumerate(self.vocab)}
+        self.id_to_char = {i: c for i, c in enumerate(self.vocab)}
+        self.pad_id = self.char_to_id["<pad>"]
+        self.bos_id = self.char_to_id["<bos>"]
+        self.eos_id = self.char_to_id["<eos>"]
+        self.unk_id = self.char_to_id["<unk>"]
+        self.vocab_size = len(self.vocab)
+
+    def encode(self, text: str, max_length: Optional[int] = None) -> list[int]:
+        ids = [self.bos_id] + [self.char_to_id.get(c, self.unk_id) for c in text] + [self.eos_id]
+        if max_length:
+            if len(ids) < max_length:
+                ids = ids + [self.pad_id] * (max_length - len(ids))
+            else:
+                ids = ids[:max_length-1] + [self.eos_id]
+        return ids
+
+    def decode(self, ids: list[int]) -> str:
+        chars = []
+        for i in ids:
+            if i == self.eos_id or i == self.pad_id:
+                break
+            if i in (self.bos_id, self.unk_id):
+                continue
+            chars.append(self.id_to_char.get(i, ""))
+        return "".join(chars)
+

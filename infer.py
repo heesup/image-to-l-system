@@ -3,7 +3,6 @@ import json
 import argparse
 from typing import Optional
 from PIL import Image
-
 import torch
 from torchvision import transforms
 import matplotlib.pyplot as plt
@@ -35,7 +34,7 @@ def predict_image(
         model.load_state_dict(torch.load(checkpoint_path, map_location=device))
         print(f"Loaded trained model weights from '{checkpoint_path}'")
     else:
-        print(f"[Warning] Checkpoint '{checkpoint_path}' not found. Using untrained weights.")
+        print(f"[Warning] Checkpoint '{checkpoint_path}' not found. Using default weights.")
 
     model.eval()
 
@@ -46,30 +45,9 @@ def predict_image(
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
     img_tensor = transform(input_img).unsqueeze(0).to(device)
-    dummy_input_ids = torch.randint(1, 30, (1, 16), device=device)
 
-    with torch.no_grad():
-        out = model(img_tensor, dummy_input_ids)
-        pred_params = out["pred_params"][0].cpu().numpy()
-
-    # Map output predictions to L-System params
-    angle = float(round(abs(pred_params[0]), 1))
-    if angle < 10.0 or angle > 60.0:
-        angle = 25.0
-
-    iterations = int(max(2, min(5, round(abs(pred_params[1])))))
-    step_size = float(round(max(0.5, abs(pred_params[2])), 2))
-    line_width = float(round(max(1.0, abs(pred_params[3])), 1))
-
-    # Construct estimated L-System
-    estimated_lsystem = LSystem(
-        axiom="X",
-        rules={"X": "F[+X][-X]FX", "F": "FF"},
-        angle=angle,
-        iterations=iterations,
-        step_size=step_size,
-        line_width=line_width
-    )
+    # Predict L-System specification object
+    estimated_lsystem = model.predict_lsystem(img_tensor)
 
     renderer = TurtleRenderer(image_size=input_img.size)
     rendered_img = renderer.render(estimated_lsystem)

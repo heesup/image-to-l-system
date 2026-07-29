@@ -49,9 +49,10 @@ def test_ood_plants(output_dir: str = "data/ood_test", plots_dir: str = "plots/o
         print(f"\n--- Testing OOD Sample {i+1}/{len(OOD_GRAMMARS)}: '{img_path}' ---")
         predict_image(
             image_path=img_path,
-            checkpoint_path="checkpoints/rl_model.pt",
+            checkpoint_path="checkpoints/sft_model.pt",
             output_plot=plot_path
         )
+
 
     print(f"\n=== OOD Testing Complete! Comparison plots saved to '{plots_dir}/' ===")
 

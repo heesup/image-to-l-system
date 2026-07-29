@@ -31,6 +31,33 @@ COLOR_PALETTES = [
     "black"
 ]
 
+def generate_random_rule(max_len: int = 12) -> str:
+    """Dynamically generate a random syntactically balanced L-System production rule string."""
+    tokens = ["F", "F", "F", "+", "-", "X"]
+    seq = ["F"]
+    open_brackets = 0
+
+    for _ in range(random.randint(4, max_len)):
+        t = random.choice(tokens + (["["] if open_brackets < 2 else []) + (["]"] if open_brackets > 0 else []))
+        if t == '[':
+            open_brackets += 1
+            seq.append("[")
+            seq.append(random.choice(["+X", "-X", "+F", "-F"]))
+        elif t == ']':
+            open_brackets -= 1
+            seq.append("]")
+        else:
+            seq.append(t)
+
+    # Close any unclosed brackets
+    seq.append("]" * open_brackets)
+    rule_str = "".join(seq)
+
+    # Ensure brackets are balanced
+    if not LSystem.validate_brackets(rule_str):
+        return "F[+X][-X]FX"
+    return rule_str
+
 class LSystemDatasetGenerator:
     """Generates synthetic dataset of L-System plant images and target annotations."""
 
@@ -40,21 +67,30 @@ class LSystemDatasetGenerator:
         random.seed(seed)
 
     def sample_lsystem(self) -> LSystem:
-        """Sample a deterministic L-System specification with random parameters."""
-        preset = random.choice(PRESET_GRAMMARS)
-        angle = round(random.uniform(15.0, 36.0), 1)
+        """Sample an L-System specification from presets (50%) or random grammar synthesis (50%)."""
+        if random.random() < 0.5:
+            preset = random.choice(PRESET_GRAMMARS)
+            axiom = preset["axiom"]
+            rules = preset["rules"]
+        else:
+            axiom = "X"
+            rule_x = generate_random_rule()
+            rules = {"X": rule_x, "F": "FF"}
+
+        angle = round(random.uniform(12.0, 60.0), 1)
         iterations = random.randint(2, 4)
-        step_size = round(random.uniform(0.8, 1.5), 2)
+        step_size = round(random.uniform(0.6, 1.8), 2)
         line_width = random.choice([1.0, 2.0, 3.0])
 
         return LSystem(
-            axiom=preset["axiom"],
-            rules=preset["rules"],
+            axiom=axiom,
+            rules=rules,
             angle=angle,
             iterations=iterations,
             step_size=step_size,
             line_width=line_width
         )
+
 
     def generate_dataset(self, num_samples: int, output_dir: str) -> List[Dict[str, Any]]:
         """Generate num_samples plant images and annotations into output_dir."""
