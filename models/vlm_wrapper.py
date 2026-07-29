@@ -1,9 +1,10 @@
+import json
+import re
 import torch
 import torch.nn as nn
 from torchvision.models import resnet18, ResNet18_Weights
-from typing import Dict, Any, Optional
-from dataset.generator import PRESET_GRAMMARS
-from dataset.lsystem import LSystem
+from typing import Dict, Any, Optional, List
+from dataset.lsystem import LSystem, LSystemTokenizer
 
 def get_device() -> torch.device:
     """Return Apple Silicon MPS device if available, otherwise CUDA or CPU."""
@@ -14,78 +15,160 @@ def get_device() -> torch.device:
     else:
         return torch.device("cpu")
 
-class LSystemPredictor(nn.Module):
-    """End-to-End Vision Model predicting L-System Topology Class and Geometric Parameters."""
+def generate_causal_mask(sz: int, device: torch.device) -> torch.Tensor:
+    """Generate lower-triangular causal mask for autoregressive Transformer decoder."""
+    mask = torch.triu(torch.full((sz, sz), float('-inf'), device=device), diagonal=1)
+    return mask
 
-    def __init__(self, num_templates: int = len(PRESET_GRAMMARS)):
+class PureLSystemVLM(nn.Module):
+    """100% Pure Autoregressive Vision-Language Model (VLM).
+    Predicts axiom, rules, angle, iterations, step_size, line_width end-to-end as text tokens.
+    No classification heads, no regression heads.
+    """
+
+    def __init__(
+        self,
+        embed_dim: int = 256,
+        num_heads: int = 8,
+        num_layers: int = 4,
+        max_seq_len: int = 256
+    ):
         super().__init__()
-        # Vision Backbone: Pre-trained ResNet-18
-        self.backbone = resnet18(weights=ResNet18_Weights.DEFAULT)
-        in_features = self.backbone.fc.in_features
-        self.backbone.fc = nn.Identity()
+        self.tokenizer = LSystemTokenizer()
+        vocab_size = self.tokenizer.vocab_size
 
-        # Feature Projection
-        self.feature_layer = nn.Sequential(
-            nn.Linear(in_features, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Dropout(0.2)
+        # Vision Encoder (ResNet-18 feature extractor)
+        backbone = resnet18(weights=ResNet18_Weights.DEFAULT)
+        self.encoder = nn.Sequential(*list(backbone.children())[:-2])  # Output: (B, 512, 8, 8)
+        self.proj = nn.Conv2d(512, embed_dim, kernel_size=1)
+        
+        # Positional Embeddings
+        self.pos_embed = nn.Parameter(torch.zeros(1, 64 + max_seq_len, embed_dim))
+        
+        # Token Embedding for Decoder
+        self.token_embed = nn.Embedding(vocab_size, embed_dim)
+        
+        # Transformer Decoder
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=embed_dim,
+            nhead=num_heads,
+            dim_feedforward=embed_dim * 4,
+            batch_first=True
         )
+        self.transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
+        
+        # Pure Language Modeling Head
+        self.lm_head = nn.Linear(embed_dim, vocab_size)
 
-        # Head 1: Topology / Grammar Rule Classifier
-        self.grammar_head = nn.Linear(256, num_templates)
+    def encode_image(self, images: torch.Tensor) -> torch.Tensor:
+        """Encode image tensor into sequence of visual tokens (B, 64, embed_dim)."""
+        feats = self.encoder(images)             # (B, 512, 8, 8)
+        feats = self.proj(feats)                 # (B, embed_dim, 8, 8)
+        feats = feats.flatten(2).transpose(1, 2) # (B, 64, embed_dim)
+        return feats
 
-        # Head 2: Continuous Parameter Regressor [angle, iterations, step_size, line_width]
-        self.param_head = nn.Sequential(
-            nn.Linear(256, 128),
-            nn.ReLU(),
-            nn.Linear(128, 4)
-        )
+    def forward(
+        self,
+        images: torch.Tensor,
+        input_ids: torch.Tensor,
+        tgt_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Forward pass computing Language Modeling logits over target text tokens."""
+        img_feats = self.encode_image(images)
+        tgt_embed = self.token_embed(input_ids)
+        
+        batch_sz, tgt_len = input_ids.size()
 
-    def forward(self, images: torch.Tensor) -> Dict[str, torch.Tensor]:
-        feats = self.backbone(images)
-        proj = self.feature_layer(feats)
+        if tgt_mask is None and tgt_len > 1:
+            tgt_mask = generate_causal_mask(tgt_len, images.device)
 
-        grammar_logits = self.grammar_head(proj)
-        params = self.param_head(proj)
+        pos_img = self.pos_embed[:, :64, :]
+        pos_tgt = self.pos_embed[:, 64:64+tgt_len, :]
 
-        return {
-            "grammar_logits": grammar_logits,
-            "pred_params": params
-        }
+        memory = img_feats + pos_img
+        tgt = tgt_embed + pos_tgt
+
+        output = self.transformer_decoder(tgt, memory, tgt_mask=tgt_mask)
+        logits = self.lm_head(output)
+        return logits
 
     @torch.no_grad()
-    def predict_lsystem(self, image: torch.Tensor) -> LSystem:
-        """Predict LSystem specification object from a single preprocessed image tensor."""
+    def generate(self, images: torch.Tensor, max_len: int = 160, repetition_penalty: float = 1.5) -> List[str]:
+        """Autoregressively generate JSON text tokens with repetition penalty."""
         self.eval()
-        out = self.forward(image)
+        batch_sz = images.size(0)
+        device = images.device
 
-        grammar_idx = torch.argmax(out["grammar_logits"], dim=-1).item()
-        preset = PRESET_GRAMMARS[grammar_idx % len(PRESET_GRAMMARS)]
+        input_ids = torch.full((batch_sz, 1), self.tokenizer.bos_id, dtype=torch.long, device=device)
+        finished = [False] * batch_sz
+        decoded_strings = [""] * batch_sz
 
-        norm_params = torch.sigmoid(out["pred_params"][0]).cpu().numpy()
-        angle = float(round(max(10.0, min(95.0, norm_params[0] * 95.0)), 1))
-        iterations = int(max(2, min(5, round(norm_params[1] * 5.0))))
-        step_size = float(round(max(0.6, min(2.5, norm_params[2] * 2.0)), 2))
-        line_width = float(round(max(1.0, min(4.0, norm_params[3] * 3.0)), 1))
+        for step in range(max_len):
+            logits = self.forward(images, input_ids)
+            next_logits = logits[:, -1, :].clone()  # (B, vocab_size)
+
+            # Apply Repetition Penalty to avoid looping tokens (e.g. "FFFFFFFF")
+            for i in range(batch_sz):
+                for token_id in set(input_ids[i].tolist()):
+                    if token_id in (self.tokenizer.bos_id, self.tokenizer.pad_id):
+                        continue
+                    if next_logits[i, token_id] > 0:
+                        next_logits[i, token_id] /= repetition_penalty
+                    else:
+                        next_logits[i, token_id] *= repetition_penalty
+
+            # Greedy sampling
+            next_tokens = torch.argmax(next_logits, dim=-1, keepdim=True)  # (B, 1)
+
+            input_ids = torch.cat([input_ids, next_tokens], dim=1)
+
+            for i in range(batch_sz):
+                if not finished[i]:
+                    token_id = next_tokens[i].item()
+                    if token_id in (self.tokenizer.eos_id, self.tokenizer.pad_id):
+                        finished[i] = True
+                    else:
+                        char = self.tokenizer.id_to_char.get(token_id, "")
+                        decoded_strings[i] += char
+
+            if all(finished):
+                break
+
+        return decoded_strings
 
 
-        return LSystem(
-            axiom=preset["axiom"],
-            rules=preset["rules"],
-            angle=angle,
-            iterations=iterations,
-            step_size=step_size,
-            line_width=line_width
-        )
+    def predict_lsystem(self, image: torch.Tensor) -> LSystem:
+        """Predict LSystem specification object by parsing generated JSON text tokens."""
+        json_texts = self.generate(image, max_len=160)
+        pred_json = json_texts[0]
 
+        # Try parsing JSON directly
+        try:
+            data = json.loads(pred_json)
+            return LSystem.from_dict(data)
+        except Exception:
+            # Robust Regex Parsing fallback for numbers and string fields
+            angle_match = re.search(r'"angle":\s*([0-9.]+)', pred_json)
+            iter_match = re.search(r'"iterations":\s*([0-9]+)', pred_json)
+
+            angle = float(angle_match.group(1)) if angle_match else 25.0
+            iterations = int(iter_match.group(1)) if iter_match else 3
+
+            return LSystem(
+                axiom="X",
+                rules={"X": "F[+X][-X]FX", "F": "FF"},
+                angle=max(10.0, min(90.0, angle)),
+                iterations=max(2, min(5, iterations)),
+                step_size=1.0,
+                line_width=2.0
+            )
 
 class LSystemVLM:
-    """Wrapper class for LSystemPredictor on Apple Silicon MPS."""
+    """Wrapper class for PureLSystemVLM on Apple Silicon MPS."""
 
     def __init__(self, model_name: str = "standalone", device: Optional[torch.device] = None):
         self.device = device or get_device()
-        self.model = LSystemPredictor().to(self.device)
+        self.model = PureLSystemVLM().to(self.device)
 
     def to(self, device: torch.device):
         self.device = device

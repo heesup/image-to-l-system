@@ -5,7 +5,7 @@ from typing import Tuple, Optional
 from .lsystem import LSystem
 
 class TurtleRenderer:
-    """Fast 2D Turtle Graphics renderer for L-System plant structures."""
+    """Fast 2D Turtle Graphics renderer with Da Vinci Branching Tapering Law."""
 
     def __init__(self, image_size: Tuple[int, int] = (256, 256), margin: int = 20, bg_color: str = "white", fg_color: str = "forestgreen"):
         self.width, self.height = image_size
@@ -17,13 +17,11 @@ class TurtleRenderer:
         """First pass to compute bounding box (min_x, min_y, max_x, max_y) of drawn segments."""
         x, y = 0.0, 0.0
         heading = 90.0  # Pointing upwards
-        angle_rad = math.radians(angle)
-        
         stack = []
         min_x, min_y, max_x, max_y = 0.0, 0.0, 0.0, 0.0
 
         for char in expanded_str:
-            if char in ('F', 'G'):
+            if char in ('F', 'G', 'A', 'B'):
                 rad = math.radians(heading)
                 nx = x + step_size * math.cos(rad)
                 ny = y + step_size * math.sin(rad)
@@ -53,7 +51,7 @@ class TurtleRenderer:
         return min_x, min_y, max_x, max_y
 
     def render(self, lsystem: LSystem, return_tensor: bool = False) -> Image.Image:
-        """Render L-System into a PIL Image auto-centered on canvas."""
+        """Render L-System into PIL Image with Da Vinci branch width tapering."""
         expanded = lsystem.expand()
         min_x, min_y, max_x, max_y = self.compute_bounds(expanded, lsystem.angle, lsystem.step_size)
 
@@ -67,7 +65,6 @@ class TurtleRenderer:
         scale_y = canvas_h / bbox_h if bbox_h > 1e-5 else 1.0
         scale = min(scale_x, scale_y)
 
-        # Center on canvas
         offset_x = self.margin + (canvas_w - bbox_w * scale) / 2.0 - min_x * scale
         offset_y = self.margin + (canvas_h - bbox_h * scale) / 2.0 - min_y * scale
 
@@ -75,24 +72,24 @@ class TurtleRenderer:
         draw = ImageDraw.Draw(image)
 
         x, y = 0.0, 0.0
-        heading = 90.0  # Upwards
+        heading = 90.0  # Upward
         stack = []
 
-        line_width = max(1, int(lsystem.line_width))
+        base_width = max(1.0, float(lsystem.line_width))
+        curr_width = base_width
 
         for char in expanded:
-            if char in ('F', 'G'):
+            if char in ('F', 'G', 'A', 'B'):
                 rad = math.radians(heading)
                 nx = x + lsystem.step_size * math.cos(rad)
                 ny = y + lsystem.step_size * math.sin(rad)
 
-                # Transform to canvas coords (flip Y axis so up is up)
                 px1 = x * scale + offset_x
                 py1 = self.height - (y * scale + offset_y)
                 px2 = nx * scale + offset_x
                 py2 = self.height - (ny * scale + offset_y)
 
-                draw.line([(px1, py1), (px2, py2)], fill=self.fg_color, width=line_width)
+                draw.line([(px1, py1), (px2, py2)], fill=self.fg_color, width=max(1, int(curr_width)))
                 x, y = nx, ny
             elif char == 'f':
                 rad = math.radians(heading)
@@ -103,9 +100,11 @@ class TurtleRenderer:
             elif char == '-':
                 heading += lsystem.angle
             elif char == '[':
-                stack.append((x, y, heading))
+                stack.append((x, y, heading, curr_width))
+                # Da Vinci tapering law: branch width decays by ~0.75 per depth level
+                curr_width = max(1.0, curr_width * 0.75)
             elif char == ']':
                 if stack:
-                    x, y, heading = stack.pop()
+                    x, y, heading, curr_width = stack.pop()
 
         return image
