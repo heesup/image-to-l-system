@@ -20,7 +20,16 @@ PRESET_GRAMMARS = [
     {"axiom": "FX", "rules": {"X": "X+YF+", "Y": "-FX-Y"}},
     # 7. Simple Branch
     {"axiom": "F", "rules": {"F": "F[+F]F[-F]F"}},
+    # 8. Pentaplex Star (72 deg angle)
+    {"axiom": "F++F++F++F++F", "rules": {"F": "F++F++F+++++F-F++F"}},
+    # 9. Hilbert Curve (90 deg angle)
+    {"axiom": "A", "rules": {"A": "-BF+AFA+FB-", "B": "+AF-BFB-FA+"}},
+    # 10. Sierpinski Triangle (60 deg angle)
+    {"axiom": "F-G-G", "rules": {"F": "F-G+F+G-F", "G": "GG"}},
+    # 11. Koch Curve (90 deg angle)
+    {"axiom": "F", "rules": {"F": "F+F-F-F+F"}}
 ]
+
 
 COLOR_PALETTES = [
     "forestgreen",

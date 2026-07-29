@@ -64,10 +64,11 @@ class LSystemPredictor(nn.Module):
         preset = PRESET_GRAMMARS[grammar_idx % len(PRESET_GRAMMARS)]
 
         norm_params = torch.sigmoid(out["pred_params"][0]).cpu().numpy()
-        angle = float(round(max(12.0, min(65.0, norm_params[0] * 65.0)), 1))
+        angle = float(round(max(10.0, min(95.0, norm_params[0] * 95.0)), 1))
         iterations = int(max(2, min(5, round(norm_params[1] * 5.0))))
         step_size = float(round(max(0.6, min(2.5, norm_params[2] * 2.0)), 2))
         line_width = float(round(max(1.0, min(4.0, norm_params[3] * 3.0)), 1))
+
 
         return LSystem(
             axiom=preset["axiom"],

@@ -85,11 +85,12 @@ def train_sft(
                 target_cls_list.append(idx)
 
                 target_params_list.append([
-                    float(d.get("angle", 25.0)) / 65.0,
+                    float(d.get("angle", 25.0)) / 95.0,
                     float(d.get("iterations", 3)) / 5.0,
                     float(d.get("step_size", 1.0)) / 2.0,
                     float(d.get("line_width", 2.0)) / 3.0
                 ])
+
 
             target_cls = torch.tensor(target_cls_list, dtype=torch.long, device=device)
             target_params = torch.tensor(target_params_list, dtype=torch.float32, device=device)
