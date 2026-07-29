@@ -1,7 +1,7 @@
 import os
 import json
 import random
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from .lsystem import LSystem
 from .renderer import TurtleRenderer
 
@@ -101,12 +101,13 @@ class LSystemDatasetGenerator:
         )
 
 
-    def generate_dataset(self, num_samples: int, output_dir: str) -> List[Dict[str, Any]]:
-        """Generate num_samples plant images and annotations into output_dir."""
-        images_dir = os.path.join(output_dir, "images")
-        annotations_dir = os.path.join(output_dir, "annotations")
-        os.makedirs(images_dir, exist_ok=True)
-        os.makedirs(annotations_dir, exist_ok=True)
+    def generate_dataset(self, num_samples: int, output_dir: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Generate num_samples plant images and annotations into output_dir (or in-memory if output_dir is None)."""
+        if output_dir:
+            images_dir = os.path.join(output_dir, "images")
+            annotations_dir = os.path.join(output_dir, "annotations")
+            os.makedirs(images_dir, exist_ok=True)
+            os.makedirs(annotations_dir, exist_ok=True)
 
         metadata = []
 
@@ -118,28 +119,30 @@ class LSystemDatasetGenerator:
             lsystem = self.sample_lsystem()
             img = renderer.render(lsystem)
 
-            img_path = os.path.join(images_dir, f"{sample_id}.png")
-            json_path = os.path.join(annotations_dir, f"{sample_id}.json")
-
-            img.save(img_path)
-            
             annotation_data = {
                 "id": sample_id,
-                "image_path": img_path,
-                "lsystem": lsystem.to_dict(),
+                "image": img,
+                "lsystem": lsystem,
+                "lsystem_dict": lsystem.to_dict(),
                 "json_str": lsystem.to_json()
             }
 
-            with open(json_path, "w") as f:
-                json.dump(annotation_data, f, indent=2)
+            if output_dir:
+                img_path = os.path.join(images_dir, f"{sample_id}.png")
+                json_path = os.path.join(annotations_dir, f"{sample_id}.json")
+                img.save(img_path)
+                annotation_data["image_path"] = img_path
+                with open(json_path, "w") as f:
+                    json.dump(annotation_data["lsystem_dict"], f, indent=2)
 
             metadata.append(annotation_data)
 
-        index_path = os.path.join(output_dir, "index.json")
-        with open(index_path, "w") as f:
-            json.dump(metadata, f, indent=2)
+        if output_dir:
+            index_path = os.path.join(output_dir, "index.json")
+            with open(index_path, "w") as f:
+                json.dump([m["lsystem_dict"] for m in metadata], f, indent=2)
+            print(f"Successfully generated {num_samples} L-System plant samples in '{output_dir}'.")
 
-        print(f"Successfully generated {num_samples} L-System plant samples in '{output_dir}'.")
         return metadata
 
 if __name__ == "__main__":
