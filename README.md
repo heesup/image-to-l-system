@@ -56,22 +56,35 @@ Fine-tune the model using visual render IoU reward feedback:
 python -m training.train_rl --data_dir data/synthetic --epochs 3 --device auto
 ```
 
-### 4. Evaluation
-Evaluate model metrics on the dataset:
+### 4. Single-Image Inference
+Run estimation on any arbitrary plant image file:
 ```bash
-python -m eval.evaluate --checkpoint checkpoints/sft_model.pt
+python infer.py --image path/to/plant.png --checkpoint checkpoints/rl_model.pt --output_plot plots/my_prediction.png
 ```
 
-### 5. Visualization
+### 5. Out-of-Distribution (OOD) Testing
+Test model performance on unseen plant grammars and out-of-distribution parameter ranges:
+```bash
+python -m eval.test_ood
+```
+
+### 6. Quantitative Evaluation
+Evaluate model metrics on the synthetic test set:
+```bash
+python -m eval.evaluate --checkpoint checkpoints/rl_model.pt
+```
+
+### 7. Visualization
 Generate side-by-side comparison plots:
 ```bash
 python -m eval.visualize --num_samples 5 --output_dir plots
 ```
 
-### 6. Run Unit Tests
+### 8. Run Unit Tests
 ```bash
-pytest tests/
+python -m unittest discover -s tests
 ```
+
 
 ---
 
