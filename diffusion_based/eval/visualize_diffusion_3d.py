@@ -11,26 +11,24 @@ from diffusion_based.models.graph_diffuser_3d import PlantGraphDiffuser3D
 from diffusion_based.training.train_diffusion import DDPMScheduler, get_device
 
 @torch.no_grad()
-def sample_reverse_diffusion_3d(model: PlantGraphDiffuser3D, image: torch.Tensor, steps: int = 50) -> Dict[str, Any]:
+def sample_reverse_diffusion_3d(model: torch.nn.Module, image: torch.Tensor, camera_pose: torch.Tensor = None, steps: int = 50) -> Dict[str, Any]:
     device = image.device
-    model.eval()
-    scheduler = DDPMScheduler(timesteps=1000)
+    max_nodes = model.max_nodes
 
-    B = 1
-    N = model.max_nodes
-    x_t = torch.randn((B, N, 7), device=device)
-    e_t = torch.zeros((B, N, 1), device=device)
+    step_indices = torch.linspace(999, 0, steps).long().to(device)
+    step_first = int(step_indices[0].item())
+    step_mid = int(step_indices[steps // 2].item())
+    step_last = int(step_indices[-1].item())
 
-    step_indices = np.linspace(999, 0, steps, dtype=int)
+    x_t = torch.randn(1, max_nodes, 7, device=device)
+    e_t = torch.ones(1, max_nodes, 1, device=device)
+    pose_batch = camera_pose.unsqueeze(0).to(device) if camera_pose is not None else torch.zeros(1, 2, device=device)
+
     snapshots = {}
-
-    step_first = int(step_indices[0])
-    step_mid = int(step_indices[steps // 2])
-    step_last = int(step_indices[-1])
 
     for idx, t in enumerate(step_indices):
         t_batch = torch.tensor([t], device=device).long()
-        outputs = model(x_t, e_t, t_batch, image.unsqueeze(0))
+        outputs = model(x_t, e_t, t_batch, image.unsqueeze(0), camera_poses=pose_batch)
 
         pred_x0 = outputs["pred_x0"]
         pred_parents = torch.argmax(outputs["pred_parent_logits"][0], dim=-1).cpu().numpy()
@@ -249,7 +247,7 @@ def main():
         model.load_state_dict(torch.load(checkpoint_path, map_location=device))
         print(f"Loaded 3D model weights from '{checkpoint_path}'")
 
-    results = sample_reverse_diffusion_3d(model, image_tensor, steps=50)
+    results = sample_reverse_diffusion_3d(model, image_tensor, camera_pose=sample["camera_pose"].to(device), steps=50)
     visualize_reconstruction_3d(image_tensor, results, gt_sample=sample, save_path="diffusion_based/plots/diffusion_sample_3d.png")
 
 if __name__ == "__main__":

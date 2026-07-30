@@ -19,6 +19,7 @@ def train_diffusion_3d(num_samples: int = 100, epochs: int = 500, lr: float = 3e
     gt_adj = torch.stack([s["adj_matrix"] for s in four_samples]).to(device)
     gt_parents = torch.stack([s["parent_indices"] for s in four_samples]).to(device)
     gt_existence = torch.stack([s["existence_mask"] for s in four_samples]).unsqueeze(-1).to(device)
+    gt_poses = torch.stack([s["camera_pose"] for s in four_samples]).to(device)
 
     scheduler = DDPMScheduler(timesteps=1000)
     model = PlantGraphDiffuser3D(max_nodes=64).to(device)
@@ -33,7 +34,7 @@ def train_diffusion_3d(num_samples: int = 100, epochs: int = 500, lr: float = 3e
         timesteps = torch.randint(0, 1000, (B,), device=device).long()
         noisy_nodes, noise = scheduler.add_noise(gt_nodes, timesteps)
 
-        outputs = model(noisy_nodes, gt_existence, timesteps, images)
+        outputs = model(noisy_nodes, gt_existence, timesteps, images, camera_poses=gt_poses)
 
         pred_x0 = outputs["pred_x0"]
         

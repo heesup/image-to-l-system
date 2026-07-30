@@ -162,7 +162,8 @@ class Plant3DDataset(Dataset):
                 "adj_matrix": torch.tensor(adj_matrix, dtype=torch.float32),
                 "parent_indices": torch.tensor(parents, dtype=torch.long),
                 "existence_mask": torch.tensor(existence, dtype=torch.float32),
-                "num_nodes": torch.tensor(num_active, dtype=torch.long)
+                "num_nodes": torch.tensor(num_active, dtype=torch.long),
+                "camera_pose": torch.tensor([0.0, 0.0], dtype=torch.float32) # Front view (azimuth=0, elevation=0)
             })
 
     def __len__(self) -> int:
@@ -178,5 +179,6 @@ class Plant3DDataset(Dataset):
             "adj_matrix": sample["adj_matrix"],
             "parent_indices": sample["parent_indices"],
             "existence_mask": sample["existence_mask"],
-            "num_nodes": sample["num_nodes"]
+            "num_nodes": sample["num_nodes"],
+            "camera_pose": sample["camera_pose"]
         }

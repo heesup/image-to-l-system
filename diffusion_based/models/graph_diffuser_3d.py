@@ -28,6 +28,13 @@ class PlantGraphDiffuser3D(nn.Module):
             nn.Linear(embed_dim, embed_dim)
         )
 
+        # Optional Camera Pose Angle Encoder (Azimuth, Elevation)
+        self.pose_encoder = nn.Sequential(
+            nn.Linear(2, embed_dim),
+            nn.GELU(),
+            nn.Linear(embed_dim, embed_dim)
+        )
+
         # 7D Node Projection & Learned Position Embeddings
         self.node_proj = nn.Linear(node_dim + 1, embed_dim)
         self.node_pos_emb = nn.Embedding(max_nodes, embed_dim)
@@ -57,13 +64,14 @@ class PlantGraphDiffuser3D(nn.Module):
             nn.Linear(embed_dim, 1)
         )
 
-    def forward(self, noisy_nodes: torch.Tensor, noisy_existence: torch.Tensor, timesteps: torch.Tensor, images: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def forward(self, noisy_nodes: torch.Tensor, noisy_existence: torch.Tensor, timesteps: torch.Tensor, images: torch.Tensor, camera_poses: torch.Tensor = None) -> Dict[str, torch.Tensor]:
         """
         Args:
             noisy_nodes: (B, N, 7) 7D 3D Organ Primitives (x, y, z, theta, phi, length, is_leaf)
             noisy_existence: (B, N, 1)
             timesteps: (B,)
             images: (B, 3, H, W) 2D Projection Input Image
+            camera_poses: (B, 2) Optional Camera Projection Angles (azimuth_deg, elevation_deg)
         """
         B, N, _ = noisy_nodes.shape
         device = noisy_nodes.device
@@ -71,6 +79,11 @@ class PlantGraphDiffuser3D(nn.Module):
         # 1. Extract 2D Spatial Vision Key/Value Features (B, 1024, embed_dim)
         img_feats = self.vision_encoder(images)
         img_feats = img_feats.flatten(2).permute(0, 2, 1)
+
+        # Inject Camera Pose Angle Condition if provided
+        if camera_poses is not None:
+            pose_emb = self.pose_encoder(camera_poses).unsqueeze(1)
+            img_feats = img_feats + pose_emb
 
         # 2. Compute Timestep Embeddings
         t_emb = self.time_emb(timesteps).unsqueeze(1)
