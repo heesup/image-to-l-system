@@ -37,8 +37,10 @@ def train_diffusion_3d(num_samples: int = 100, epochs: int = 500, lr: float = 3e
 
         pred_x0 = outputs["pred_x0"]
         
-        # 3D Position Loss (x, y, z)
+        # 3D Position Loss (x, y, z), Leaf Type Classification Loss (is_leaf), and Leaf Scale Area Loss (scale_area)
         loss_coord3d = F.mse_loss(pred_x0[:, :, :3], gt_nodes[:, :, :3])
+        loss_is_leaf = F.mse_loss(pred_x0[:, :, 6], gt_nodes[:, :, 6])
+        loss_scale = F.mse_loss(pred_x0[:, :, 5], gt_nodes[:, :, 5])
         loss_x0 = F.mse_loss(pred_x0, gt_nodes)
         
         pos_w = torch.tensor([5.0], device=device)
@@ -61,7 +63,7 @@ def train_diffusion_3d(num_samples: int = 100, epochs: int = 500, lr: float = 3e
         dist_sq_3d = diff_x**2 + diff_y**2 + diff_z**2
         loss_snap3d = (dist_sq_3d * gt_adj).sum() / (gt_adj.sum() + 1e-5)
 
-        loss = 10.0 * loss_coord3d + loss_x0 + 0.5 * loss_existence + 0.5 * loss_parent + 0.5 * loss_snap3d
+        loss = 10.0 * loss_coord3d + 10.0 * loss_is_leaf + 10.0 * loss_scale + loss_x0 + 0.5 * loss_existence + 0.5 * loss_parent + 0.5 * loss_snap3d
 
         optimizer.zero_grad()
         loss.backward()

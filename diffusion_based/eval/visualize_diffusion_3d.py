@@ -62,7 +62,7 @@ def draw_3d_plant_graph(ax3d, nodes, parents, active_mask, is_gt=False):
             continue
         u = parents[v]
         x2, y2, z2 = nodes[v, 0], nodes[v, 1], nodes[v, 2]
-        is_leaf = (nodes[v, 6] > 0.5)
+        is_leaf = (nodes[v, 6] >= 0.25)
 
         if not is_leaf and u != v and u < num_nodes and active_mask[u]:
             x1, y1, z1 = nodes[u, 0], nodes[u, 1], nodes[u, 2]
@@ -70,40 +70,39 @@ def draw_3d_plant_graph(ax3d, nodes, parents, active_mask, is_gt=False):
             ax3d.plot([x1, x2], [z1, z2], [1.0 - y1, 1.0 - y2], color=color_3d, linewidth=4, alpha=0.9)
 
     # 2. Draw Stem Junction Nodes
-    stems = active_mask & (nodes[:, 6] <= 0.5)
+    stems = active_mask & (nodes[:, 6] < 0.25)
     if np.any(stems):
         ax3d.scatter(nodes[stems, 0], nodes[stems, 2], 1.0 - nodes[stems, 1], c='yellow', s=35, edgecolors='black', zorder=5)
 
-    # 3. Draw 3D Elongated Heart Leaf Polygons (Attached EXACTLY at Node Joint)
+    # 3. Draw 3D Elongated Heart Leaf Polygons (Attached EXACTLY at Terminal End Node Joint)
     for v in range(num_nodes):
-        if active_mask[v] and nodes[v, 6] > 0.5: # 3D Leaf
+        if active_mask[v] and nodes[v, 6] >= 0.25: # 3D Leaf
             u = parents[v]
-            # Attached EXACTLY at parent node joint coordinate
+            # Attached EXACTLY at terminal parent node joint coordinate
             x_b, y_b, z_b = nodes[u, 0], nodes[u, 1], nodes[u, 2]
-            scale_area = nodes[v, 5]
+            scale_area = max(0.12, float(nodes[v, 5]))
 
-            # Direction angle
-            cos_val = (nodes[v, 3] - 0.5) * 2.0
-            sin_val = (nodes[v, 4] - 0.5) * 2.0
-            leaf_angle_deg = math.degrees(math.atan2(sin_val, cos_val))
-            rad = math.radians(leaf_angle_deg)
+            # Direction vector pointing skywards
+            cos_a = (nodes[v, 3] - 0.5) * 2.0
+            sin_a = (nodes[v, 4] - 0.5) * 2.0
+            norm = math.sqrt(cos_a**2 + sin_a**2) + 1e-5
+            cos_a, sin_a = cos_a / norm, sin_a / norm
 
             leaf_len = scale_area * 0.40
             leaf_w = leaf_len * 0.55
 
-            cos_a, sin_a = math.cos(rad), math.sin(rad)
             local_pts = [
-                (0, 0),
-                (-leaf_w * 0.45, -leaf_len * 0.25),
-                (-leaf_w * 0.50, -leaf_len * 0.55),
-                (0, -leaf_len),
-                (leaf_w * 0.50, -leaf_len * 0.55),
-                (leaf_w * 0.45, -leaf_len * 0.25),
+                (0.0, 0.0),                          # Base Notch at Node Joint (v=0)
+                (-leaf_w * 0.45, leaf_len * 0.25),   # Left Lobe
+                (-leaf_w * 0.50, leaf_len * 0.55),   # Left Mid
+                (0.0, leaf_len),                     # Sharp Pointed Tip pointing SKYWARDS
+                (leaf_w * 0.50, leaf_len * 0.55),    # Right Mid
+                (leaf_w * 0.45, leaf_len * 0.25),    # Right Lobe
             ]
 
-            v_x = [x_b + lx * cos_a for lx, ly in local_pts]
-            v_y = [1.0 - (y_b + ly) for lx, ly in local_pts]
-            v_z = [z_b + lx * sin_a for lx, ly in local_pts]
+            v_x = [x_b + v_along * cos_a - u_perp * sin_a for u_perp, v_along in local_pts]
+            v_y = [1.0 - (y_b + v_along * sin_a + u_perp * cos_a) for u_perp, v_along in local_pts]
+            v_z = [z_b + v_along * cos_a for u_perp, v_along in local_pts]
 
             leaf_poly = [list(zip(v_x, v_z, v_y))]
             color_leaf = 'seagreen' if is_gt else 'forestgreen'
@@ -151,7 +150,7 @@ def visualize_reconstruction_3d(image_tensor: torch.Tensor, results: Dict[str, A
         exist = data["existence_mask"]
         active_mask = (exist >= 0.5) if step_k == step_last else (exist >= 0.2)
         if not np.any(active_mask):
-            active_mask[:13] = True
+            active_mask[:10] = True
 
         draw_3d_plant_graph(ax3d, nodes, parents, active_mask, is_gt=False)
 
@@ -183,7 +182,7 @@ def visualize_reconstruction_3d(image_tensor: torch.Tensor, results: Dict[str, A
 
         active_mask = (exist >= 0.5) if step_k == step_last else (exist >= 0.2)
         if not np.any(active_mask):
-            active_mask[:13] = True
+            active_mask[:10] = True
         num_nodes = len(nodes)
 
         # Draw 2D projected stem edges
@@ -192,43 +191,42 @@ def visualize_reconstruction_3d(image_tensor: torch.Tensor, results: Dict[str, A
                 continue
             u = parents[v]
             px2, py2 = nodes[v, 0] * img_w, nodes[v, 1] * img_h
-            is_leaf = (nodes[v, 6] > 0.5)
+            is_leaf = (nodes[v, 6] >= 0.25)
 
             if not is_leaf and u != v and u < num_nodes and active_mask[u]:
                 px1, py1 = nodes[u, 0] * img_w, nodes[u, 1] * img_h
                 color_2d = 'crimson' if step_k == step_first else ('orange' if step_k == step_mid else 'black')
                 ax2d.plot([px1, px2], [py1, py2], color=color_2d, linewidth=4, alpha=0.9)
 
-        # Draw 2D projected Elongated Heart Leaf Polygons (Attached EXACTLY at Node Joint)
+        # Draw 2D projected Elongated Heart Leaf Polygons (Attached EXACTLY at Terminal End Node Joint)
         for v in range(num_nodes):
-            if active_mask[v] and nodes[v, 6] > 0.5: # 2D Leaf
+            if active_mask[v] and nodes[v, 6] >= 0.25: # 2D Leaf
                 u = parents[v]
                 px_base = nodes[u, 0] * img_w
                 py_base = nodes[u, 1] * img_h
-                scale_area = nodes[v, 5]
+                scale_area = max(0.12, float(nodes[v, 5]))
 
-                cos_val = (nodes[v, 3] - 0.5) * 2.0
-                sin_val = (nodes[v, 4] - 0.5) * 2.0
-                leaf_angle_deg = math.degrees(math.atan2(sin_val, cos_val))
+                cos_a = (nodes[v, 3] - 0.5) * 2.0
+                sin_a = (nodes[v, 4] - 0.5) * 2.0
+                norm = math.sqrt(cos_a**2 + sin_a**2) + 1e-5
+                cos_a, sin_a = cos_a / norm, sin_a / norm
 
                 leaf_len = scale_area * 180
                 leaf_w = leaf_len * 0.55
-                rad = math.radians(leaf_angle_deg)
-                cos_a, sin_a = math.cos(rad), math.sin(rad)
 
                 local_pts = [
-                    (0, 0),
-                    (-leaf_w * 0.45, -leaf_len * 0.25),
-                    (-leaf_w * 0.50, -leaf_len * 0.55),
-                    (0, -leaf_len),
-                    (leaf_w * 0.50, -leaf_len * 0.55),
-                    (leaf_w * 0.45, -leaf_len * 0.25)
+                    (0.0, 0.0),                          # Base Notch at Node Joint (v=0)
+                    (-leaf_w * 0.45, leaf_len * 0.25),   # Left Lobe
+                    (-leaf_w * 0.50, leaf_len * 0.55),   # Left Mid
+                    (0.0, leaf_len),                     # Sharp Pointed Tip pointing SKYWARDS
+                    (leaf_w * 0.50, leaf_len * 0.55),    # Right Mid
+                    (leaf_w * 0.45, leaf_len * 0.25),    # Right Lobe
                 ]
-                poly_2d = [(px_base + lx * cos_a - ly * sin_a, py_base + lx * sin_a + ly * cos_a) for lx, ly in local_pts]
+                poly_2d = [(px_base + v_along * cos_a - u_perp * sin_a, py_base + v_along * sin_a + u_perp * cos_a) for u_perp, v_along in local_pts]
                 poly_patch = plt.Polygon(poly_2d, facecolor='forestgreen', edgecolor='darkgreen', alpha=0.9, zorder=6)
                 ax2d.add_patch(poly_patch)
 
-        stems = active_mask & (nodes[:, 6] <= 0.5)
+        stems = active_mask & (nodes[:, 6] < 0.25)
         if np.any(stems):
             ax2d.scatter(nodes[stems, 0] * img_w, nodes[stems, 1] * img_h, c='yellow', s=35, edgecolors='black', zorder=5)
 

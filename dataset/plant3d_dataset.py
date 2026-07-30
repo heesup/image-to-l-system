@@ -56,18 +56,18 @@ class Plant3DDataset(Dataset):
             parents[3] = 1
             adj_matrix[1, 3] = 1.0; adj_matrix[3, 1] = 1.0
 
-            # --- Attach Triple Leaf Cluster (3 Leaves per Terminal Tip Node) ---
-            # Terminal Tip Node 2 (Branch 1): 3 Leaves (nodes 4, 5, 6)
-            # Terminal Tip Node 3 (Branch 2): 3 Leaves (nodes 7, 8, 9)
-            # Terminal Tip Node 1 (Top Trunk): 3 Leaves (nodes 10, 11, 12)
+            # --- Attach Triple Leaf Cluster (3 Leaves ONLY per Terminal End Tip Node: Node 2 & Node 3) ---
+            # Internal Fork Junction Node 1 HAS NO LEAVES!
+            # Terminal Tip Node 2 (Left Branch Tip): 3 Leaves (nodes 4, 5, 6) pointing UP & LEFT
+            # Terminal Tip Node 3 (Right Branch Tip): 3 Leaves (nodes 7, 8, 9) pointing UP & RIGHT
             
             leaf_idx = 4
-            tip_nodes = [2, 3, 1]
-            tip_base_angles = [-135.0, -45.0, -90.0] # General pointing direction
+            tip_nodes = [2, 3] # Node 2 and Node 3 are the ONLY terminal end tip nodes!
+            tip_base_angles = [-120.0, -60.0] # Skyward pointing direction (-Y)
 
             for tip, base_deg in zip(tip_nodes, tip_base_angles):
-                # 3 Leaves attached in a radial fan: -45 deg, 0 deg, +45 deg relative to tip
-                for fan_offset in [-45.0, 0.0, 45.0]:
+                # 3 Leaves attached in a skyward radial fan (-30 deg, 0 deg, +30 deg)
+                for fan_offset in [-30.0, 0.0, 30.0]:
                     angle_deg = base_deg + fan_offset
                     rad = math.radians(angle_deg)
                     nodes[leaf_idx] = [
@@ -96,39 +96,40 @@ class Plant3DDataset(Dataset):
                     px1, py1 = int(nodes[u, 0] * self.image_size), int(nodes[u, 1] * self.image_size)
                     draw.line([px1, py1, px2, py2], fill=(40, 40, 40), width=6)
 
-            # Draw 3D Green Elongated Heart Leaves projected to 2D (Attached EXACTLY at Node Joint)
+            # Draw 3D Green Elongated Heart Leaves projected to 2D (Attached EXACTLY at Terminal End Node Joint)
             for v in range(num_active):
                 if nodes[v, 6] > 0.5: # Leaf
                     u = parents[v]
-                    # Attached EXACTLY at parent node joint coordinate
-                    px_base = int(nodes[u, 0] * self.image_size)
-                    py_base = int(nodes[u, 1] * self.image_size)
+                    # Attached EXACTLY at terminal parent node joint coordinate
+                    px_base = nodes[u, 0] * self.image_size
+                    py_base = nodes[u, 1] * self.image_size
                     scale_area = nodes[v, 5]
 
-                    # Convert direction angles back to degrees
-                    cos_val = (nodes[v, 3] - 0.5) * 2.0
-                    sin_val = (nodes[v, 4] - 0.5) * 2.0
-                    leaf_angle_deg = math.degrees(math.atan2(sin_val, cos_val))
+                    # Direction vector (cos_a, sin_a) pointing skywards
+                    cos_a = (nodes[v, 3] - 0.5) * 2.0
+                    sin_a = (nodes[v, 4] - 0.5) * 2.0
+                    norm = math.sqrt(cos_a**2 + sin_a**2) + 1e-5
+                    cos_a, sin_a = cos_a / norm, sin_a / norm
 
-                    leaf_len = int(scale_area * 180)
-                    leaf_w = int(leaf_len * 0.55)
-                    rad = math.radians(leaf_angle_deg)
-                    cos_a, sin_a = math.cos(rad), math.sin(rad)
+                    leaf_len = scale_area * 180
+                    leaf_w = leaf_len * 0.55
 
-                    # Cordate Leaf Polygon: Base Notch starts EXACTLY at (0, 0) (the node joint)
+                    # Cordate Leaf Local Points: (u_perp, v_along)
+                    # v_along goes along leaf length [0, leaf_len]
+                    # u_perp goes along perpendicular width [-leaf_w, +leaf_w]
                     local_pts = [
-                        (0, 0),                              # Base Notch at Node Joint
-                        (-leaf_w * 0.45, -leaf_len * 0.25),  # Left Lobe
-                        (-leaf_w * 0.50, -leaf_len * 0.55),  # Left Mid
-                        (0, -leaf_len),                      # Sharp Pointed Tip
-                        (leaf_w * 0.50, -leaf_len * 0.55),   # Right Mid
-                        (leaf_w * 0.45, -leaf_len * 0.25),   # Right Lobe
+                        (0.0, 0.0),                          # Base Notch at Node Joint (v=0)
+                        (-leaf_w * 0.45, leaf_len * 0.25),   # Left Lobe
+                        (-leaf_w * 0.50, leaf_len * 0.55),   # Left Mid
+                        (0.0, leaf_len),                     # Sharp Pointed Tip pointing SKYWARDS
+                        (leaf_w * 0.50, leaf_len * 0.55),    # Right Mid
+                        (leaf_w * 0.45, leaf_len * 0.25),    # Right Lobe
                     ]
 
                     world_pts = []
-                    for lx, ly in local_pts:
-                        wx = px_base + lx * cos_a - ly * sin_a
-                        wy = py_base + lx * sin_a + ly * cos_a
+                    for u_perp, v_along in local_pts:
+                        wx = px_base + v_along * cos_a - u_perp * sin_a
+                        wy = py_base + v_along * sin_a + u_perp * cos_a
                         world_pts.append((int(wx), int(wy)))
 
                     draw.polygon(world_pts, fill=(46, 139, 87), outline=(0, 100, 0))
