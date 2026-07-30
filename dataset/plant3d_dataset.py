@@ -32,55 +32,77 @@ class Plant3DDataset(Dataset):
             parents = np.zeros(self.max_nodes, dtype=np.int64)
             existence = np.zeros(self.max_nodes, dtype=np.float32)
 
-            # Generate 3D Botanical Plant Structure
-            # Node 0: Trunk Base (x=0.5, y=0.95, z=0.5)
-            nodes[0] = [0.5, 0.95, 0.5, 0.5, 0.5, 0.25, 0.0] # Stem
-            existence[0] = 1.0
-            parents[0] = 0
+    def _generate_synthetic_3d_plants(self):
+        np.random.seed(42)
+        
+        for idx in range(self.num_samples):
+            nodes = np.zeros((self.max_nodes, 7), dtype=np.float32) # (x, y, z, theta, phi, length, is_leaf)
+            adj_matrix = np.zeros((self.max_nodes, self.max_nodes), dtype=np.float32)
+            parents = np.zeros(self.max_nodes, dtype=np.int64)
+            existence = np.zeros(self.max_nodes, dtype=np.float32)
 
-            # Trunk top
-            nodes[1] = [0.5, 0.70, 0.5, 0.5, 0.5, 0.25, 0.0] # Stem
-            existence[1] = 1.0
-            parents[1] = 0
+            # Generate Complex Multi-Level 3D Botanical Plant Architecture
+            # Level 0: Trunk Base (Node 0) -> Trunk Junction (Node 1)
+            nodes[0] = [0.50, 0.92, 0.50, 0.5, 0.5, 0.20, 0.0]
+            existence[0] = 1.0; parents[0] = 0
+
+            nodes[1] = [0.50, 0.75, 0.50, 0.5, 0.5, 0.17, 0.0]
+            existence[1] = 1.0; parents[1] = 0
             adj_matrix[0, 1] = 1.0; adj_matrix[1, 0] = 1.0
 
-            # Branch 1 (3D Left Branch going forward +z)
-            nodes[2] = [0.35, 0.50, 0.65, 0.3, 0.6, 0.20, 0.0] # Stem
-            existence[2] = 1.0
-            parents[2] = 1
+            # Level 1: Main Branches from Trunk Junction Node 1 -> Nodes 2, 3, 4
+            # Random variations per sample for realistic variety
+            b_var = (np.random.rand(3) - 0.5) * 0.04
+            
+            nodes[2] = [0.35 + b_var[0], 0.58, 0.65 + b_var[0], 0.3, 0.6, 0.16, 0.0] # Left-Front Branch
+            existence[2] = 1.0; parents[2] = 1
             adj_matrix[1, 2] = 1.0; adj_matrix[2, 1] = 1.0
 
-            # Branch 2 (3D Right Branch going backward -z)
-            nodes[3] = [0.65, 0.50, 0.35, 0.7, 0.4, 0.20, 0.0] # Stem
-            existence[3] = 1.0
-            parents[3] = 1
+            nodes[3] = [0.65 + b_var[1], 0.58, 0.35 + b_var[1], 0.7, 0.4, 0.16, 0.0] # Right-Back Branch
+            existence[3] = 1.0; parents[3] = 1
             adj_matrix[1, 3] = 1.0; adj_matrix[3, 1] = 1.0
 
-            # --- Attach Triple Leaf Cluster (3 Leaves ONLY per Terminal End Tip Node: Node 2 & Node 3) ---
-            # Internal Fork Junction Node 1 HAS NO LEAVES!
-            # Terminal Tip Node 2 (Left Branch Tip): 3 Leaves (nodes 4, 5, 6) pointing UP & LEFT
-            # Terminal Tip Node 3 (Right Branch Tip): 3 Leaves (nodes 7, 8, 9) pointing UP & RIGHT
-            
-            leaf_idx = 4
-            tip_nodes = [2, 3] # Node 2 and Node 3 are the ONLY terminal end tip nodes!
-            tip_base_angles = [-120.0, -60.0] # Skyward pointing direction (-Y)
+            nodes[4] = [0.50 + b_var[2], 0.54, 0.50, 0.5, 0.5, 0.18, 0.0] # Center-Up Branch
+            existence[4] = 1.0; parents[4] = 1
+            adj_matrix[1, 4] = 1.0; adj_matrix[4, 1] = 1.0
+
+            # Level 2: Secondary Sub-Branches / Twigs from Level 1 Nodes -> Nodes 5..10
+            # Twigs from Node 2 (Left-Front)
+            nodes[5] = [0.24, 0.42, 0.72, 0.2, 0.7, 0.14, 0.0]; existence[5] = 1.0; parents[5] = 2; adj_matrix[2, 5] = 1.0; adj_matrix[5, 2] = 1.0
+            nodes[6] = [0.38, 0.44, 0.56, 0.4, 0.5, 0.14, 0.0]; existence[6] = 1.0; parents[6] = 2; adj_matrix[2, 6] = 1.0; adj_matrix[6, 2] = 1.0
+
+            # Twigs from Node 3 (Right-Back)
+            nodes[7] = [0.62, 0.44, 0.44, 0.6, 0.5, 0.14, 0.0]; existence[7] = 1.0; parents[7] = 3; adj_matrix[3, 7] = 1.0; adj_matrix[7, 3] = 1.0
+            nodes[8] = [0.76, 0.42, 0.28, 0.8, 0.3, 0.14, 0.0]; existence[8] = 1.0; parents[8] = 3; adj_matrix[3, 8] = 1.0; adj_matrix[8, 3] = 1.0
+
+            # Twigs from Node 4 (Center-Up)
+            nodes[9] = [0.42, 0.36, 0.50, 0.4, 0.5, 0.15, 0.0]; existence[9] = 1.0; parents[9] = 4; adj_matrix[4, 9] = 1.0; adj_matrix[9, 4] = 1.0
+            nodes[10] = [0.58, 0.36, 0.50, 0.6, 0.5, 0.15, 0.0]; existence[10] = 1.0; parents[10] = 4; adj_matrix[4, 10] = 1.0; adj_matrix[10, 4] = 1.0
+
+            # Stem Nodes total = 11 nodes (Nodes 0..10)
+            # Terminal End Tip Nodes = Nodes 5, 6, 7, 8, 9, 10 (Out-degree 0 stem tip nodes!)
+            # Internal Branch Junctions (Nodes 1, 2, 3, 4) HAVE NO LEAVES!
+
+            leaf_idx = 11
+            tip_nodes = [5, 6, 7, 8, 9, 10]
+            tip_base_angles = [-135.0, -105.0, -75.0, -45.0, -120.0, -60.0]
 
             for tip, base_deg in zip(tip_nodes, tip_base_angles):
-                # 3 Leaves attached in a skyward radial fan (-30 deg, 0 deg, +30 deg)
-                for fan_offset in [-30.0, 0.0, 30.0]:
+                # 3 Leaves attached per terminal end tip node in skyward fan (-25 deg, 0 deg, +25 deg)
+                for fan_offset in [-25.0, 0.0, 25.0]:
                     angle_deg = base_deg + fan_offset
                     rad = math.radians(angle_deg)
                     nodes[leaf_idx] = [
                         nodes[tip, 0], nodes[tip, 1], nodes[tip, 2],
                         math.cos(rad) * 0.5 + 0.5, math.sin(rad) * 0.5 + 0.5,
-                        0.12, 1.0 # Leaf type = 1.0
+                        0.10, 1.0 # Leaf type = 1.0
                     ]
                     existence[leaf_idx] = 1.0
                     parents[leaf_idx] = tip
                     adj_matrix[tip, leaf_idx] = 1.0; adj_matrix[leaf_idx, tip] = 1.0
                     leaf_idx += 1
 
-            num_active = leaf_idx
+            num_active = leaf_idx # 11 stems + 18 leaves = 29 nodes total!
 
             # Render 2D Perspective Projection Image of 3D Plant
             img = Image.new("RGB", (self.image_size, self.image_size), (245, 248, 252))

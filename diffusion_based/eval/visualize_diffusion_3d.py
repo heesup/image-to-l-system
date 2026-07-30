@@ -150,7 +150,7 @@ def visualize_reconstruction_3d(image_tensor: torch.Tensor, results: Dict[str, A
         exist = data["existence_mask"]
         active_mask = (exist >= 0.5) if step_k == step_last else (exist >= 0.2)
         if not np.any(active_mask):
-            active_mask[:10] = True
+            active_mask[:29] = True
 
         draw_3d_plant_graph(ax3d, nodes, parents, active_mask, is_gt=False)
 
@@ -182,7 +182,7 @@ def visualize_reconstruction_3d(image_tensor: torch.Tensor, results: Dict[str, A
 
         active_mask = (exist >= 0.5) if step_k == step_last else (exist >= 0.2)
         if not np.any(active_mask):
-            active_mask[:10] = True
+            active_mask[:29] = True
         num_nodes = len(nodes)
 
         # Draw 2D projected stem edges
