@@ -23,10 +23,12 @@ class SinusoidalPosEmb(nn.Module):
 class MultiScaleSpatialEncoder(nn.Module):
     """Multi-Scale Spatial Feature Encoder (U-Net / DenseNet Style).
     Extracts fine-grained edge details (128x128) + mid-level junction features (64x64) + high-level semantics (32x32).
+    Output is pooled to 16x16=256 tokens to keep cross-attention O(N*M) manageable for large N.
     """
 
-    def __init__(self, out_dim: int = 256):
+    def __init__(self, out_dim: int = 256, output_tokens: int = 16):
         super().__init__()
+        self.output_tokens = output_tokens
         weights = ResNet18_Weights.DEFAULT
         resnet = resnet18(weights=weights)
 
@@ -35,9 +37,9 @@ class MultiScaleSpatialEncoder(nn.Module):
         self.layer2 = resnet.layer2  # 32x32, 128-ch
         self.layer3 = resnet.layer3  # 16x16, 256-ch
 
-        self.proj1 = nn.Sequential(nn.AdaptiveAvgPool2d((32, 32)), nn.Conv2d(64, out_dim // 4, 1))
-        self.proj2 = nn.Sequential(nn.AdaptiveAvgPool2d((32, 32)), nn.Conv2d(128, out_dim // 2, 1))
-        self.proj3 = nn.Sequential(nn.AdaptiveAvgPool2d((32, 32)), nn.Conv2d(256, out_dim // 4, 1))
+        self.proj1 = nn.Sequential(nn.AdaptiveAvgPool2d((output_tokens, output_tokens)), nn.Conv2d(64, out_dim // 4, 1))
+        self.proj2 = nn.Sequential(nn.AdaptiveAvgPool2d((output_tokens, output_tokens)), nn.Conv2d(128, out_dim // 2, 1))
+        self.proj3 = nn.Sequential(nn.AdaptiveAvgPool2d((output_tokens, output_tokens)), nn.Conv2d(256, out_dim // 4, 1))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         feat0 = self.stem(x)
@@ -49,7 +51,7 @@ class MultiScaleSpatialEncoder(nn.Module):
         p2 = self.proj2(feat2)
         p3 = self.proj3(feat3)
 
-        # Concatenate multi-scale spatial features -> (B, out_dim, 32, 32)
+        # Concatenate multi-scale spatial features -> (B, out_dim, output_tokens, output_tokens)
         multi_scale = torch.cat([p1, p2, p3], dim=1)
         return multi_scale
 

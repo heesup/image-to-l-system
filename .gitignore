@@ -1,10 +1,30 @@
+# Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-.pytest_cache/
-checkpoints/
-data/
-plots/
+*.py[cod]
+*.so
 *.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# Training outputs
+train_*.log
+*.pt
+diffusion_based/checkpoints/
+diffusion_based/plots/
+
+# Data outputs (Helios generated data is large)
+Digital-Crops/
+Digital-Crops/projects/syntheticdata_generation/build/output/
+Digital-Crops/projects/syntheticdata_generation/build/*.log
+Digital-Crops/projects/syntheticdata_generation/build/*.txt
+
+# OS
 .DS_Store
+
+# Local data / outputs (keep only source code)
+data/
+lm_based/plots/
