@@ -1,0 +1,4 @@
+[submodule "Digital-Crops"]
+	path = Digital-Crops
+	url = git@github.com:GEMINI-Breeding/Digital-Crops.git
+	branch = main
