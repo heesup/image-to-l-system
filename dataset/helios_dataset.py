@@ -60,28 +60,33 @@ class HeliosPlantDataset(Dataset):
 
     def _scan_samples(self) -> List[Dict[str, str]]:
         """Collect matched (jpeg, xml, params) triplets."""
-        jpeg_paths = sorted(glob.glob(os.path.join(self.data_root, "*_vis.jpeg")))
+        xml_paths = sorted(glob.glob(os.path.join(self.data_root, "*_plant_*.xml")))
+        if not xml_paths:
+            xml_paths = sorted(glob.glob(os.path.join(self.data_root, "*.xml")))
+
         samples = []
-        for jpeg_path in jpeg_paths:
-            basename = os.path.basename(jpeg_path)
-            prefix = basename.replace("_vis.jpeg", "")
-            # Find XML(s) for this prefix
-            xml_pattern = os.path.join(self.data_root, f"{prefix}_plant_*.xml")
-            xml_paths = sorted(glob.glob(xml_pattern))
+        for xml_path in xml_paths:
+            basename = os.path.basename(xml_path)
+            # Extract prefix (e.g., cowpea_dap005_seed00_0000_plant_0000.xml -> cowpea_dap005_seed00_0000)
+            prefix = basename.split("_plant_")[0] if "_plant_" in basename else basename.rsplit(".", 1)[0]
+            jpeg_path = os.path.join(self.data_root, f"{prefix}_vis.jpeg")
+            if not os.path.exists(jpeg_path):
+                # Check for alternative jpeg extension or prepare for auto-render
+                alt_jpeg = os.path.join(self.data_root, f"{prefix}.jpeg")
+                if os.path.exists(alt_jpeg):
+                    jpeg_path = alt_jpeg
+
             params_path = os.path.join(self.data_root, f"{prefix}_params.json")
             if not os.path.exists(params_path):
                 params_path = None
-            for xml_path in xml_paths:
-                samples.append({
-                    "jpeg": jpeg_path,
-                    "xml": xml_path,
-                    "params": params_path,
-                    "prefix": prefix,
-                })
-        return samples
 
-    def __len__(self) -> int:
-        return len(self.samples)
+            samples.append({
+                "jpeg": jpeg_path,
+                "xml": xml_path,
+                "params": params_path,
+                "prefix": prefix,
+            })
+        return samples
 
     def _load_params(self, params_path: Optional[str]) -> Dict[str, Any]:
         defaults = {
@@ -104,9 +109,7 @@ class HeliosPlantDataset(Dataset):
 
     @staticmethod
     def _camera_pose_to_tensor(camera_height: float, distance: float, azimuth_deg: float) -> torch.Tensor:
-        # Normalize azimuth to [0, 1]
         azimuth_norm = (azimuth_deg % 360.0) / 360.0
-        # Approximate elevation angle from camera height and distance
         if distance > 1e-6:
             elevation_deg = np.degrees(np.arctan2(camera_height, distance))
         else:
@@ -114,8 +117,61 @@ class HeliosPlantDataset(Dataset):
         elevation_norm = np.clip(elevation_deg / 90.0, 0.0, 1.0)
         return torch.tensor([azimuth_norm, elevation_norm], dtype=torch.float32)
 
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def _render_python_projection(self, xml_path: str, py_proj_path: str):
+        """Render a 2D projection PNG of the 3D plant graph using Python for visual comparison."""
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from dataset.helios_xml_parser import parse_helios_xml
+
+        xml_data = parse_helios_xml(xml_path, max_nodes=self.max_nodes, normalize=False)
+        nodes = xml_data["nodes"]
+        existence = xml_data["existence_mask"]
+        organ_types = xml_data["organ_types"]
+        parents = xml_data["parent_indices"]
+        num_nodes = xml_data["num_nodes"]
+
+        colors = {0: "#8B4513", 1: "#ADFF2F", 2: "#228B22", 3: "#FFD700"}
+        fig, ax = plt.subplots(figsize=(4, 4), dpi=self.image_size // 4)
+        ax.set_facecolor("black")
+
+        for i in range(num_nodes):
+            if existence[i] < 0.5:
+                continue
+            parent = parents[i]
+            p_xyz = nodes[parent, 0:3]
+            c_xyz = nodes[i, 0:3]
+            organ = int(organ_types[i])
+            c = colors.get(organ, "#228B22")
+            ax.plot([p_xyz[0], c_xyz[0]], [p_xyz[2], c_xyz[2]], color=c, linewidth=1.2)
+
+        ax.axis("off")
+        plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
+        fig.savefig(py_proj_path, facecolor="black", edgecolor="none", pad_inches=0)
+        plt.close(fig)
+
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         sample = self.samples[idx]
+
+        # 1. Render & save Python 2D projection render (_py_proj.png) for side-by-side comparison
+        py_proj_path = os.path.join(self.data_root, f"{sample['prefix']}_py_proj.png")
+        if not os.path.exists(py_proj_path):
+            try:
+                self._render_python_projection(sample["xml"], py_proj_path)
+            except Exception:
+                pass
+
+        # 2. Auto-render fallback _vis.jpeg if native Helios image is not present
+        if not os.path.exists(sample["jpeg"]):
+            try:
+                self._render_python_projection(sample["xml"], sample["jpeg"])
+            except Exception:
+                blank = Image.new("RGB", (self.image_size, self.image_size), "black")
+                blank.save(sample["jpeg"])
+
         raw_image = Image.open(sample["jpeg"]).convert("RGB")
         image_tensor = self.transform(raw_image)
 

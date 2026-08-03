@@ -1,363 +1,356 @@
-import os
-import math
-import argparse
-from typing import Dict, Any, Optional
+"""Training script for 3D Plant Graph Diffusion with Differentiable Rendering (15D).
 
+Trains PlantGraphDiffuser3D with:
+- Helios dataset (image + XML pairs)
+- 15D organ-typed node representation
+- Multi-view camera conditioning
+- Differentiable renderer for render-in-the-loop
+"""
+
+import os
+import sys
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, ConcatDataset, WeightedRandomSampler, default_collate
+from torch.utils.data import DataLoader
+from typing import Optional, Dict, Tuple
 
+# Add project root to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-# Keys required by the training loop. Other keys (e.g., raw_image, xml_path) are dropped.
-_TRAIN_KEYS = {
-    "image", "nodes", "adj_matrix", "parent_indices", "existence_mask",
-    "organ_types", "num_nodes", "camera_pose", "dap",
-}
-
-
-def collate_training_batch(batch):
-    """Collate only training-relevant keys and drop everything else."""
-    filtered = []
-    for item in batch:
-        filtered.append({k: item[k] for k in _TRAIN_KEYS if k in item})
-    return default_collate(filtered)
-
-from dataset.plant3d_dataset import Plant3DDataset
-from dataset.helios_dataset import HeliosPlantDataset
 from diffusion_based.models.graph_diffuser_3d import PlantGraphDiffuser3D
-from diffusion_based.training.train_diffusion import DDPMScheduler, get_device
+from diffusion_based.models.differentiable_renderer_3d import DifferentiablePlantRenderer3D
+from diffusion_based.dataset.helios_dataset import HeliosPlantDataset
 
 
-def denormalize_angle(norm_val: torch.Tensor) -> torch.Tensor:
-    """Map [0, 1] back to degrees in [-180, 180]."""
-    return (norm_val - 0.5) * 360.0
+def get_device() -> torch.device:
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        return torch.device("mps")
+    else:
+        return torch.device("cpu")
 
 
-def compute_snap_loss_3d(pred_x0: torch.Tensor, parent_indices: torch.Tensor,
-                          adj_matrix: torch.Tensor, existence: torch.Tensor) -> torch.Tensor:
-    """3D joint snap loss: parent tip should be close to child base.
+class DDPMScheduler:
+    """Linear DDPM Noise Scheduler."""
 
-    Approximate tip = base + length * direction_vector(pitch, yaw, roll).
-    Uses the X-Y-Z (roll-pitch-yaw) convention.
-    """
-    B, N, _ = pred_x0.shape
-    device = pred_x0.device
+    def __init__(self, timesteps: int = 1000, beta_start: float = 1e-4, beta_end: float = 0.02):
+        self.timesteps = timesteps
+        self.betas = torch.linspace(beta_start, beta_end, timesteps)
+        self.alphas = 1.0 - self.betas
+        self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
 
+    def add_noise(self, x0: torch.Tensor, timesteps: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        device = x0.device
+        noise = torch.randn_like(x0)
+
+        alphas_cumprod = self.alphas_cumprod.to(device)
+        sqrt_alpha = torch.sqrt(alphas_cumprod[timesteps])[:, None, None]
+        sqrt_one_minus = torch.sqrt(1.0 - alphas_cumprod[timesteps])[:, None, None]
+
+        xt = sqrt_alpha * x0 + sqrt_one_minus * noise
+        return xt, noise
+
+    def sample_timesteps(self, batch_size: int, device: torch.device) -> torch.Tensor:
+        return torch.randint(0, self.timesteps, (batch_size,), device=device).long()
+
+
+def compute_losses(
+    outputs: Dict[str, torch.Tensor],
+    gt_nodes: torch.Tensor,
+    gt_existence: torch.Tensor,
+    gt_parents: torch.Tensor,
+    gt_adj: torch.Tensor,
+    noisy_nodes: torch.Tensor,
+) -> Tuple[torch.Tensor, Dict[str, float]]:
+    """Compute multi-objective training losses for 15D organ-typed graph diffusion."""
+
+    pred_x0 = outputs["pred_x0"]
+    pred_existence_logits = outputs["pred_existence_logits"]
+    pred_parent_logits = outputs["pred_parent_logits"]
+    pred_parent_candidates = outputs["pred_parent_candidates"]
+    pred_organ_type_logits = outputs.get("pred_organ_type_logits", None)
+    pred_node_noise = outputs["pred_node_noise"]
+
+    # 1. Node coordinate MSE (3D position accuracy)
+    loss_coord = F.mse_loss(pred_x0[:, :, :3], gt_nodes[:, :, :3])
+
+    # 2. Full 15D node attribute MSE
+    loss_x0 = F.mse_loss(pred_x0, gt_nodes)
+
+    # 3. Existence confidence BCE
+    existence_target = (gt_existence > 0).float()
+    pos_weight = torch.tensor([5.0], device=gt_nodes.device)
+    loss_existence = F.binary_cross_entropy_with_logits(
+        pred_existence_logits, existence_target, pos_weight=pos_weight
+    )
+
+    # 4. Parent cross-entropy over sparse k-NN candidates
+    B, N = gt_parents.shape
+    k = pred_parent_candidates.shape[-1]
+
+    # Build mask: which candidates match the true parent
+    parent_candidates = pred_parent_candidates  # (B, N, k)
+    gt_parents_exp = gt_parents.unsqueeze(-1).expand(-1, -1, k)
+    candidate_match = (parent_candidates == gt_parents_exp)  # (B, N, k)
+
+    # For cross-entropy over k candidates, target is the index within candidates
+    target_idx = torch.argmax(candidate_match.float(), dim=-1)  # (B, N)
+    valid = candidate_match.any(dim=-1)  # (B, N)
+
+    if valid.sum() > 0:
+        loss_parent_all = F.cross_entropy(
+            pred_parent_logits.view(-1, k),
+            target_idx.view(-1),
+            reduction='none'
+        )
+        loss_parent = (loss_parent_all * valid.view(-1).float()).sum() / (valid.sum().float() + 1e-8)
+    else:
+        loss_parent = torch.tensor(0.0, device=gt_nodes.device)
+
+    # 5. Joint Snap Loss (tip-to-base connection in 3D)
     base = pred_x0[:, :, :3]
-    length = pred_x0[:, :, 3:4]
+    pitch_rad = pred_x0[:, :, 5] * math.pi / 180.0
+    yaw_rad = pred_x0[:, :, 6] * math.pi / 180.0
+    length = pred_x0[:, :, 3]
+    dir_x = torch.cos(pitch_rad) * torch.cos(yaw_rad)
+    dir_y = torch.cos(pitch_rad) * torch.sin(yaw_rad)
+    dir_z = torch.sin(pitch_rad)
+    tip = base + length.unsqueeze(-1) * torch.stack([dir_x, dir_y, dir_z], dim=-1)
 
-    pitch = denormalize_angle(pred_x0[:, :, 5])
-    yaw = denormalize_angle(pred_x0[:, :, 6])
-    roll = denormalize_angle(pred_x0[:, :, 7])
+    diff = tip.unsqueeze(2) - base.unsqueeze(1)
+    dist_sq = (diff ** 2).sum(dim=-1)
+    loss_snap = (dist_sq * gt_adj).sum() / (gt_adj.sum() + 1e-5)
 
-    # Direction vector from Euler XYZ (degrees)
-    cr, sr = torch.cos(torch.deg2rad(roll)), torch.sin(torch.deg2rad(roll))
-    cp, sp = torch.cos(torch.deg2rad(pitch)), torch.sin(torch.deg2rad(pitch))
-    cy, sy = torch.cos(torch.deg2rad(yaw)), torch.sin(torch.deg2rad(yaw))
+    # 6. Organ type classification (optional)
+    loss_organ_type = torch.tensor(0.0, device=gt_nodes.device)
+    if pred_organ_type_logits is not None:
+        organ_target = torch.argmax(gt_nodes[:, :, 8:12], dim=-1)
+        loss_organ_type = F.cross_entropy(
+            pred_organ_type_logits.view(-1, 4),
+            organ_target.view(-1),
+            reduction='mean'
+        )
 
-    # Unit vector after roll(X), pitch(Y), yaw(Z)
-    dir_x = cy * cp
-    dir_y = sy * cp
-    dir_z = -sp
+    # 7. Noise prediction loss (for DDPM training)
+    gt_noise = noisy_nodes - gt_nodes
+    loss_noise = F.mse_loss(pred_node_noise, gt_noise)
 
-    # Apply roll around the local x-axis: this rotates (y,z) plane
-    dir_y_rot = cr * dir_y - sr * dir_z
-    dir_z_rot = sr * dir_y + cr * dir_z
+    # Combined weighted loss
+    loss = (
+        10.0 * loss_coord +
+        loss_x0 +
+        0.5 * loss_existence +
+        0.5 * loss_parent +
+        0.2 * loss_snap +
+        0.2 * loss_organ_type +
+        loss_noise
+    )
 
-    direction = torch.stack([dir_x, dir_y_rot, dir_z_rot], dim=-1)  # (B, N, 3)
-    direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
+    metrics = {
+        "coord": loss_coord.item(),
+        "x0": loss_x0.item(),
+        "existence": loss_existence.item(),
+        "parent": loss_parent.item(),
+        "snap": loss_snap.item(),
+        "organ": loss_organ_type.item(),
+        "noise": loss_noise.item(),
+    }
 
-    tip = base + length * direction
-
-    # parent tip -> child base distance for active edges
-    parent_tip = torch.gather(tip, 1, parent_indices.unsqueeze(-1).expand(-1, -1, 3))
-    diff = base - parent_tip
-    dist_sq = (diff ** 2).sum(dim=-1)  # (B, N)
-
-    # Only penalize active edges and existing nodes
-    active_edges = adj_matrix.sum(dim=-1)  # (B, N)
-    mask = (active_edges > 0.5).float() * (existence.squeeze(-1) > 0.5).float()
-    loss = (dist_sq * mask).sum() / (mask.sum() + 1e-5)
-    return loss
-
-
-def build_curriculum_sampler(synthetic_dataset, helios_dataset, synthetic_ratio: float,
-                              batch_size: int) -> Optional[DataLoader]:
-    """Build a DataLoader with weighted sampling mixing two datasets."""
-    if helios_dataset is None or len(helios_dataset) == 0:
-        return DataLoader(synthetic_dataset, batch_size=batch_size, shuffle=True,
-                          num_workers=0, drop_last=True, collate_fn=collate_training_batch)
-
-    combined = ConcatDataset([synthetic_dataset, helios_dataset])
-    n_syn = len(synthetic_dataset)
-    n_hel = len(helios_dataset)
-
-    # sampling weight per sample
-    weights = [synthetic_ratio / n_syn] * n_syn + [(1.0 - synthetic_ratio) / n_hel] * n_hel
-    sampler = WeightedRandomSampler(weights, num_samples=max(n_syn, n_hel) * 2, replacement=True)
-    return DataLoader(combined, batch_size=batch_size, sampler=sampler,
-                      num_workers=0, drop_last=True, collate_fn=collate_training_batch)
+    return loss, metrics
 
 
-def train_diffusion_3d(
-    num_samples: int = 100,
-    epochs: int = 500,
-    lr: float = 3e-4,
+def train_3d_diffusion(
+    data_dir: str = "Digital-Crops/projects/syntheticdata_generation/build/output",
+    num_epochs: int = 500,
     batch_size: int = 4,
-    max_nodes: int = 2048,
-    helios_data_root: Optional[str] = None,
-    save_path: str = "diffusion_based/checkpoints/diffusion_model_3d.pt",
-    best_save_path: str = "diffusion_based/checkpoints/best_3d_model.pt",
-    freeze_pretrained: Optional[str] = None,
-    pretrain_existence_epochs: int = 0,
+    lr: float = 3e-4,
+    save_path: str = "diffusion_based/checkpoints/diffusion_3d_15d.pt",
+    render_loss_weight: float = 0.0,  # Set > 0 to enable render-in-the-loop
 ):
     device = get_device()
-    print(f"--- Training 3D Botanical Plant Diffusion Model (2D Image -> 3D Plant Graph) on device: {device} ---")
+    print(f"Training 15D 3D Plant Diffusion on device: {device}")
 
-    # Datasets
-    synthetic_dataset = Plant3DDataset(num_samples=num_samples, max_nodes=max_nodes, fixed_seed=True)
-    helios_dataset = None
-    if helios_data_root and os.path.exists(helios_data_root):
-        helios_dataset = HeliosPlantDataset(data_root=helios_data_root, max_nodes=max_nodes)
-        print(f"Loaded Helios dataset: {len(helios_dataset)} samples")
-    else:
-        print("No Helios dataset provided; training on synthetic data only")
+    max_nodes = 256
+    node_dim = 15
 
-    # Train / validation split: keep synthetic always in train; split Helios 80/20 if available
-    val_dataset = None
-    if helios_dataset is not None and len(helios_dataset) >= 5:
-        n_val = max(1, int(0.2 * len(helios_dataset)))
-        n_train = len(helios_dataset) - n_val
-        helios_train, helios_val = torch.utils.data.random_split(
-            helios_dataset, [n_train, n_val],
-            generator=torch.Generator().manual_seed(42)
-        )
-        helios_dataset = helios_train
-        val_dataset = helios_val
-        print(f"Helios split: train={len(helios_dataset)}, val={len(val_dataset)}")
+    # Dataset
+    dataset = HeliosPlantDataset(
+        data_dir=data_dir,
+        image_size=256,
+        max_nodes=max_nodes,
+        node_dim=node_dim,
+    )
+
+    if len(dataset) == 0:
+        print(f"ERROR: No samples found in {data_dir}")
+        print("Please run dataset generation first.")
+        return
+
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+    print(f"Dataset size: {len(dataset)} samples")
+
+    # Model (15D)
+    model = PlantGraphDiffuser3D(
+        max_nodes=max_nodes,
+        node_dim=node_dim,
+        embed_dim=256,
+        num_layers=4,
+        k_nearest=16,
+    ).to(device)
+
+    # Differentiable renderer
+    renderer = None
+    if render_loss_weight > 0:
+        renderer = DifferentiablePlantRenderer3D(image_size=256).to(device)
+        print(f"Render-in-the-loop enabled (weight={render_loss_weight})")
 
     scheduler = DDPMScheduler(timesteps=1000)
-    model = PlantGraphDiffuser3D(max_nodes=max_nodes, node_dim=15).to(device)
-
-    if freeze_pretrained is not None and os.path.exists(freeze_pretrained):
-        state = torch.load(freeze_pretrained, map_location=device, weights_only=False)
-        if isinstance(state, dict) and "model" in state:
-            state = state["model"]
-        model.load_state_dict(state, strict=False)
-        print(f"Loaded pretrained weights from '{freeze_pretrained}'")
-        # Freeze everything except the existence and budget heads.
-        for p in model.parameters():
-            p.requires_grad = False
-        for p in model.existence_pred_head.parameters():
-            p.requires_grad = True
-        for p in model.node_budget_head.parameters():
-            p.requires_grad = True
-        print("Frozen backbone; training existence + budget heads only.")
-
-    optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
-    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=num_epochs, eta_min=1e-6
+    )
 
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
-    best_val_loss = float("inf")
-
-    # Optional existence-only pre-training phase
-    pretrain_end = pretrain_existence_epochs
-
-    for epoch in range(1, epochs + 1):
-        # Curriculum mixing ratio: Helios-heavy from the start, gradually phase out synthetic.
-        if epoch <= 50:
-            syn_ratio = 0.25
-        elif epoch <= 150:
-            syn_ratio = 0.10
-        else:
-            syn_ratio = 0.0
-
-        loader = build_curriculum_sampler(synthetic_dataset, helios_dataset, syn_ratio, batch_size)
-
+    # Training loop
+    global_step = 0
+    for epoch in range(1, num_epochs + 1):
         model.train()
         epoch_losses = []
-        for batch in loader:
+
+        for batch in dataloader:
             images = batch["image"].to(device)
             gt_nodes = batch["nodes"].to(device)
-            gt_adj = batch["adj_matrix"].to(device)
-            gt_parents = batch["parent_indices"].to(device)
-            gt_existence = batch["existence_mask"].unsqueeze(-1).to(device)
-            gt_poses = batch["camera_pose"].to(device)
-            gt_dap = batch["dap"].to(device)
-            gt_organ_types = batch.get("organ_types", gt_nodes[:, :, 8:12].argmax(dim=-1)).to(device)
+            gt_existence = batch["existence"].to(device)
+            gt_adj = batch["adj"].to(device)
+            gt_parents = batch["parents"].to(device)
+            cam_az_norm = batch["cam_az"].to(device)
+            sun_elev = batch["sun_elev"].to(device)
+            sun_az = batch["sun_az"].to(device)
+            dap = batch["dap"].to(device)
 
-            B, N, _ = gt_nodes.shape
-            timesteps = torch.randint(0, 1000, (B,), device=device).long()
+            B = gt_nodes.shape[0]
+
+            # Sample timesteps and add noise
+            timesteps = scheduler.sample_timesteps(B, device)
             noisy_nodes, noise = scheduler.add_noise(gt_nodes, timesteps)
 
-            outputs = model(noisy_nodes, gt_existence, timesteps, images,
-                            camera_poses=gt_poses, dap=gt_dap)
+            # Camera pose: [azimuth_norm, elevation_norm]
+            camera_pose = torch.stack([
+                cam_az_norm,
+                torch.full((B,), 0.0, device=device),  # elevation = 0 after normalization
+            ], dim=1)
 
-            pred_x0 = outputs["pred_x0"]
-            pred_organ_logits = outputs["pred_organ_type_logits"]
-            pred_exist_logits = outputs["pred_existence_logits"]
-            pred_parent_logits = outputs["pred_parent_logits"]
-
-            # 3D coordinate and geometry attribute losses
-            loss_coord = F.mse_loss(pred_x0[:, :, 0:3], gt_nodes[:, :, 0:3])
-            loss_length = F.mse_loss(pred_x0[:, :, 3], gt_nodes[:, :, 3])
-            loss_radius = F.mse_loss(pred_x0[:, :, 4], gt_nodes[:, :, 4])
-            loss_orient = F.mse_loss(pred_x0[:, :, 5:8], gt_nodes[:, :, 5:8])
-            loss_x0 = F.mse_loss(pred_x0, gt_nodes)
-
-            # Organ type loss (CE + one-hot MSE as auxiliary)
-            loss_organ = F.cross_entropy(
-                pred_organ_logits.view(-1, 4), gt_organ_types.view(-1)
-            )
-            loss_type_mse = F.mse_loss(pred_x0[:, :, 8:12], gt_nodes[:, :, 8:12])
-
-            # Existence loss with dynamic positive weight and focal-style penalty
-            # Active nodes are rare (29..1217 out of 2048), so heavily up-weight positives.
-            exist_pos = (gt_existence.squeeze(-1) > 0.5).float().sum()
-            exist_neg = (gt_existence.squeeze(-1) <= 0.5).float().sum() + 1e-6
-            dynamic_pos_weight = (exist_neg / exist_pos).clamp(min=1.0, max=50.0)
-            loss_existence = F.binary_cross_entropy_with_logits(
-                pred_exist_logits, gt_existence.squeeze(-1), pos_weight=dynamic_pos_weight
+            # Forward pass
+            noisy_existence = gt_existence.unsqueeze(-1)
+            outputs = model(
+                noisy_nodes, noisy_existence, timesteps, images,
+                camera_poses=camera_pose,
+                dap=dap.unsqueeze(-1)
             )
 
-            # DAP-based adaptive node-budget loss
-            true_budget = (gt_existence.squeeze(-1) > 0.5).float().sum(dim=1) / float(N)
-            pred_budget = outputs["pred_node_budget"]
-            loss_budget = F.mse_loss(pred_budget, true_budget)
-
-            # Sparse parent loss: gt_parent must be in top-k candidates.
-            parent_candidates = outputs["pred_parent_candidates"]  # (B, N, k)
-            k_val = parent_candidates.shape[-1]
-            # (B, N, 1) vs (B, N, k) -> boolean mask where candidate == gt_parent
-            match_mask = (parent_candidates == gt_parents.unsqueeze(-1))  # (B, N, k)
-            # For each node, if gt parent is in candidates, target is its position in k list;
-            # otherwise, mark as ignore (-100).
-            parent_target = torch.full((B, N), -100, dtype=torch.long, device=device)
-            has_match = match_mask.any(dim=-1)
-            if has_match.any():
-                matched_positions = torch.argmax(match_mask.int(), dim=-1)
-                parent_target[has_match] = matched_positions[has_match]
-            loss_parent = F.cross_entropy(
-                pred_parent_logits.view(-1, k_val), parent_target.view(-1),
-                ignore_index=-100
+            # Compute losses
+            loss, metrics = compute_losses(
+                outputs, gt_nodes, gt_existence, gt_parents, gt_adj,
+                noisy_nodes
             )
 
-            # 3D snap loss
-            loss_snap3d = compute_snap_loss_3d(pred_x0, gt_parents, gt_adj, gt_existence)
+            # Optional render loss
+            if renderer is not None and render_loss_weight > 0:
+                pred_nodes = outputs["pred_x0"]
+                pred_existence = torch.sigmoid(outputs["pred_existence_logits"])
 
-            if epoch <= pretrain_end:
-                # Pre-train only existence and node-budget before full multi-task training.
-                loss = 5.0 * loss_existence + 2.0 * loss_budget
-            else:
-                loss = (10.0 * loss_coord
-                        + 2.0 * loss_length
-                        + 2.0 * loss_radius
-                        + 2.0 * loss_orient
-                        + 1.0 * loss_x0
-                        + 5.0 * loss_organ
-                        + 1.0 * loss_type_mse
-                        + 2.0 * loss_existence
-                        + 1.0 * loss_budget
-                        + 0.5 * loss_parent
-                        + 0.5 * loss_snap3d)
+                # Camera azimuth in degrees for renderer
+                cam_az_deg = (cam_az_norm + 1.0) * 180.0
 
+                rendered = renderer(
+                    pred_nodes,
+                    parent_indices=gt_parents,
+                    cam_azimuth_deg=cam_az_deg[0].item(),  # same for batch
+                    focus_plant=True,
+                    camera_params={
+                        'camera_height': 1.0,
+                        'ground_width': 1.5,
+                        'sun_elevation_deg': sun_elev[0].item() * 90.0,
+                        'sun_azimuth_deg': sun_az[0].item() * 360.0,
+                    },
+                    background="ground",
+                )
+
+                # Denormalize target image back to [0, 1]
+                mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
+                std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
+                target_rgb = images * std + mean
+                target_rgb = torch.clamp(target_rgb, 0.0, 1.0)
+
+                loss_render = F.mse_loss(rendered, target_rgb)
+                loss = loss + render_loss_weight * loss_render
+                metrics["render"] = loss_render.item()
+
+            # Backprop
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
 
             epoch_losses.append(loss.item())
+            global_step += 1
 
         lr_scheduler.step()
 
-        # Validation
-        val_loss = None
-        if val_dataset is not None:
-            model.eval()
-            val_total = 0.0
-            val_count = 0
-            with torch.no_grad():
-                for batch in DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
-                                      collate_fn=collate_training_batch):
-                    images = batch["image"].to(device)
-                    gt_nodes = batch["nodes"].to(device)
-                    gt_adj = batch["adj_matrix"].to(device)
-                    gt_parents = batch["parent_indices"].to(device)
-                    gt_existence = batch["existence_mask"].unsqueeze(-1).to(device)
-                    gt_poses = batch["camera_pose"].to(device)
-                    gt_dap = batch["dap"].to(device)
-                    gt_organ_types = batch.get("organ_types", gt_nodes[:, :, 8:12].argmax(dim=-1)).to(device)
+        # Logging
+        avg_loss = sum(epoch_losses) / len(epoch_losses)
+        if epoch % 10 == 0 or epoch == 1:
+            log_msg = (f"Epoch [{epoch:03d}/{num_epochs}] - Loss: {avg_loss:.4f} "
+                       f"Coord={metrics['coord']:.4f} X0={metrics['x0']:.4f} "
+                       f"Exist={metrics['existence']:.4f} Parent={metrics['parent']:.4f} "
+                       f"Snap={metrics['snap']:.4f} Organ={metrics['organ']:.4f} "
+                       f"Noise={metrics['noise']:.4f}")
+            if "render" in metrics:
+                log_msg += f" Render={metrics['render']:.4f}"
+            print(log_msg)
 
-                    B, N, _ = gt_nodes.shape
-                    timesteps = torch.randint(0, 1000, (B,), device=device).long()
-                    noisy_nodes, _ = scheduler.add_noise(gt_nodes, timesteps)
-                    outputs = model(noisy_nodes, gt_existence, timesteps, images,
-                                    camera_poses=gt_poses, dap=gt_dap)
-                    pred_x0 = outputs["pred_x0"]
+        # Save checkpoint
+        if epoch % 50 == 0:
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': avg_loss,
+            }, save_path.replace('.pt', f'_epoch{epoch}.pt'))
 
-                    loss_coord = F.mse_loss(pred_x0[:, :, 0:3], gt_nodes[:, :, 0:3])
-                    loss_organ = F.cross_entropy(
-                        outputs["pred_organ_type_logits"].view(-1, 4), gt_organ_types.view(-1)
-                    )
-                    loss_x0 = F.mse_loss(pred_x0, gt_nodes)
-                    loss_existence_val = F.binary_cross_entropy_with_logits(
-                        outputs["pred_existence_logits"], gt_existence.squeeze(-1)
-                    )
-                    vloss = 10.0 * loss_coord + 5.0 * loss_organ + 1.0 * loss_x0 + 2.0 * loss_existence_val
-                    val_total += vloss.item() * B
-                    val_count += B
-            val_loss = val_total / val_count
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                torch.save({
-                    "model": model.state_dict(),
-                    "epoch": epoch,
-                    "val_loss": val_loss,
-                }, best_save_path)
-                print(f"  Saved best model (val_loss={val_loss:.4f})")
-
-        if epoch % 50 == 0 or epoch == 1:
-            avg_loss = sum(epoch_losses) / max(len(epoch_losses), 1)
-            msg = (f"Epoch [{epoch:03d}/{epochs}] - Train Loss: {avg_loss:.4f} "
-                   f"(Coord MSE: {loss_coord.item():.5f}, Organ CE: {loss_organ.item():.4f})")
-            if val_loss is not None:
-                msg += f" | Val Loss: {val_loss:.4f}"
-            print(msg)
-
-    torch.save(model.state_dict(), save_path)
-    print(f"Saved final 3D diffusion model weights to '{save_path}'")
+    # Final save
+    torch.save({
+        'epoch': num_epochs,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'loss': avg_loss,
+    }, save_path)
+    print(f"Saved final model to '{save_path}'")
 
 
 if __name__ == "__main__":
+    import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--num_samples", type=int, default=100)
-    parser.add_argument("--epochs", type=int, default=500)
-    parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--max_nodes", type=int, default=2048)
-    parser.add_argument("--helios_data_root", type=str,
+    parser.add_argument("--data-dir", type=str,
                         default="Digital-Crops/projects/syntheticdata_generation/build/output")
-    parser.add_argument("--save_path", type=str,
-                        default="diffusion_based/checkpoints/diffusion_model_3d.pt")
-    parser.add_argument("--best_save_path", type=str,
-                        default="diffusion_based/checkpoints/best_3d_model.pt")
-    parser.add_argument("--freeze_pretrained", type=str, default=None,
-                        help="Load a pretrained checkpoint and freeze backbone, only train existence+budget heads")
-    parser.add_argument("--pretrain_existence_epochs", type=int, default=0,
-                        help="Number of initial epochs to train only existence+budget before full multi-task loss")
+    parser.add_argument("--epochs", type=int, default=500)
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--save-path", type=str,
+                        default="diffusion_based/checkpoints/diffusion_3d_15d.pt")
+    parser.add_argument("--render-loss", type=float, default=0.0,
+                        help="Enable render-in-the-loop loss weight")
     args = parser.parse_args()
 
-    train_diffusion_3d(
-        num_samples=args.num_samples,
-        epochs=args.epochs,
-        lr=args.lr,
+    train_3d_diffusion(
+        data_dir=args.data_dir,
+        num_epochs=args.epochs,
         batch_size=args.batch_size,
-        max_nodes=args.max_nodes,
-        helios_data_root=args.helios_data_root,
+        lr=args.lr,
         save_path=args.save_path,
-        best_save_path=args.best_save_path,
-        freeze_pretrained=args.freeze_pretrained,
-        pretrain_existence_epochs=args.pretrain_existence_epochs,
+        render_loss_weight=args.render_loss,
     )
