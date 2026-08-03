@@ -1,34 +1,65 @@
-# Diffusion-Based Plant Architecture Reconstruction
+# Diffusion-Based 3D Plant Architecture Reconstruction
 
-This module implements a **Set-Based Graph & Adjacency Diffusion Model** to reconstruct 2D/3D plant branch topology from input plant images.
-
----
-
-## Technical Concept
-
-1. **Scattered Material & Denoising**:
-   - Plant nodes are initialized from isotropic Gaussian noise: $X_T \sim \mathcal{N}(0, I)$, with edge adjacency probabilities $A_T \sim \text{Bernoulli}(0.5)$.
-   - During the reverse diffusion process $t \to t-1$, a Graph Cross-Attention UNet conditions on image features from the target plant $I_{\text{target}}$ to steer scattered points into structured plant branch geometry.
-2. **Dynamic Node Count**:
-   - Each node contains a continuous existence/confidence score $e_i \in [0, 1]$.
-   - Denoising naturally prunes unused nodes ($e_i \to 0$) and keeps active plant junctions/tips ($e_i \to 1$).
-3. **Graph Assembly**:
-   - Node compatibility and directional alignment determine edge connection probabilities $A_{ij}$.
-   - Minimum Spanning Tree / Directed Acyclic Graph (DAG) extraction constructs the final tree graph.
+This module implements a **15D organ-typed graph diffusion model** that reconstructs a 3D botanical structure from a single RGB plant image.
 
 ---
 
-## Directory Overview
+## Node Representation (15D)
 
+| Dim | Meaning |
+|-----|---------|
+| 0-2 | `x, y, z` base position |
+| 3   | `length` / scale |
+| 4   | `radius` / thickness |
+| 5-7 | `pitch, yaw, roll` (degrees) |
+| 8-11| one-hot organ type: `[internode, petiole, leaf, floral_bud]` |
+| 12  | `shoot_id` |
+| 13  | `phytomer_idx` |
+| 14  | `existence` confidence |
+
+---
+
+## Key Components
+
+- **`models/graph_diffuser_3d.py`**: Vision-conditioned transformer decoder with O(N·k) k-NN self-attention, sparse parent prediction, organ-type head, and DAP-budget head.
+- **`models/differentiable_renderer_3d.py`**: Differentiable renderer matching Helios `PlantArchitecture` camera/projection. Supports focus-plant mode, depth-aware alpha compositing, and chunked memory-safe rendering.
+- **`training/train_diffusion_3d.py`**: DDPM training loop with multi-objective losses (coordinate, attribute, existence, parent, snap, organ type, noise) and optional render-in-the-loop loss.
+- **`dataset/helios_dataset.py` / `helios_xml_parser.py`**: Load Helios `*_vis.jpeg` + `*_plant_*.xml` + `*_params.json` pairs and parse them into 15D tensors.
+
+---
+
+## Quick Start
+
+### Train
+
+```bash
+python diffusion_based/training/train_diffusion_3d.py \
+    --data-dir Digital-Crops/projects/syntheticdata_generation/build/output \
+    --epochs 200 \
+    --batch-size 2 \
+    --render-loss 1.0
 ```
-diffusion_based/
-├── README.md                     # Documentation & technical design
-├── dataset/
-│   └── graph_dataset.py          # PyTorch dataset for paired plant images & graph structures
-├── models/
-│   └── graph_diffuser.py         # Graph Cross-Attention Transformer Denoising Model
-├── training/
-│   └── train_diffusion.py        # DDPM/DDIM diffusion training script
-└── eval/
-    └── visualize_diffusion.py    # Denoising trajectory visualizer
+
+### Render a parsed plant graph
+
+See `differentiable_renderer_3d.py::DifferentiablePlantRenderer3D.forward`:
+
+```python
+renderer = DifferentiablePlantRenderer3D(image_size=720).cuda()
+img = renderer(nodes_15d, parent_indices, cam_azimuth_deg=0.0,
+               focus_plant=True, camera_params={'camera_height': 1.0, ...},
+               background='ground')
 ```
+
+---
+
+## macOS / Local Dev Notes
+
+- Data generation requires the `Digital-Crops` Helios build (Linux/GPU). On a Mac, copy a pre-generated `build/output/` dataset.
+- The model/renderer run on CPU or MPS; use smaller `--batch-size` / `--image-size` if memory is limited.
+
+---
+
+## Status
+
+Implemented and functional. Visual fidelity of the differentiable renderer is still being improved (stem tubes, leaf shape, ground texture). Training with render loss converges but benefits from larger datasets.

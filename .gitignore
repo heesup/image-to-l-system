@@ -27,3 +27,9 @@ Digital-Crops/projects/syntheticdata_generation/build/*.txt
 # Local data / outputs (keep only source code)
 data/
 lm_based/plots/
+
+# Generated renders / logs
+render_*.png
+side_by_side_*.png
+train_*.pid
+generate_dataset.log
