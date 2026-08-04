@@ -109,12 +109,12 @@ def generate_one(args: Tuple) -> Tuple[int, int, int, float, float, float, bool,
 
     Args:
         args: (main_binary, dap, seed, cam_az, cam_height, sun_elev, sun_az,
-               base_params_file, output_dir, renderer)
+               base_params_file, output_dir, renderer, export_3d)
     Returns:
         (dap, seed, cam_az, cam_height, sun_elev, sun_az, success, message)
     """
     (main_binary, dap, seed, cam_az, cam_height, sun_elev, sun_az,
-     base_params_file, output_dir, renderer) = args
+     base_params_file, output_dir, renderer, export_3d) = args
 
     name = (f"cowpea_dap{dap:03d}_seed{seed:02d}"
             f"_caz{cam_az:03d}_h{cam_height:.1f}"
@@ -157,6 +157,8 @@ def generate_one(args: Tuple) -> Tuple[int, int, int, float, float, float, bool,
         "--output", output_dir,
         "-f", tmp_params_path,
     ]
+    if export_3d == "ply":
+        cmd.extend(["--export-3d", "ply"])
 
     try:
         with tempfile.NamedTemporaryFile(mode='w', suffix='.log', delete=False) as tf:
@@ -237,7 +239,8 @@ def build_job_list(dap_start: int, dap_end: int, dap_step: int,
                    cam_azimuths: List[int], cam_heights: List[float],
                    sun_elevs: List[float], sun_azimuths: List[float],
                    main_binary: str, output_dir: str,
-                   base_params_file: str, renderer: str = "vis") -> List[Tuple]:
+                   base_params_file: str, renderer: str = "vis",
+                   export_3d: str = "none") -> List[Tuple]:
     jobs = []
     sun_idx = 0
     for dap in range(dap_start, dap_end + 1, dap_step):
@@ -249,7 +252,7 @@ def build_job_list(dap_start: int, dap_end: int, dap_step: int,
                 ch = cam_heights[seed % len(cam_heights)]
                 jobs.append((
                     main_binary, dap, seed, caz, ch, sun_elev, sun_az,
-                    base_params_file, output_dir, renderer
+                    base_params_file, output_dir, renderer, export_3d
                 ))
     return jobs
 
@@ -284,9 +287,14 @@ def main():
                         default="Digital-Crops/projects/syntheticdata_generation/params.json",
                         help="Base params.json file path")
     parser.add_argument("--workers", type=int, default=4,
-                        help="Number of parallel processes; default = 4")
+                        help="Number of parallel processes; default = 4. On macOS with vis renderer, use 1 to avoid display races.")
     parser.add_argument("--resume", action="store_true",
                         help="Skip existing outputs")
+    parser.add_argument("--export-3d", type=str, default="none",
+                        choices=["ply", "none"],
+                        help="Export plant-only 3D PLY via Helios (none/ply)")
+    parser.add_argument("--render-diff-comparison", action="store_true",
+                        help="Render Python differentiable 2D comparison PNGs (slow; default off)")
     args = parser.parse_args()
 
     main_binary = os.path.abspath(args.main_binary)
@@ -302,13 +310,8 @@ def main():
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # Configure display for offscreen OpenGL Visualizer rendering on headless servers
-    if args.renderer in ("vis", "all"):
-        os.environ["HELIOS_FORCE_OFFSCREEN"] = "1"
-        if os.environ.get("DISPLAY") is None:
-            os.environ["DISPLAY"] = ":10"
-        display_val = os.environ.get("DISPLAY", "None")
-        print(f"Configured offscreen Helios 3D rendering (DISPLAY={display_val}, HELIOS_FORCE_OFFSCREEN=1).")
+    if args.renderer in ("vis", "all") and sys.platform == "darwin":
+        print("[INFO] Running Helios visualizer on macOS. Make sure XQuartz is running if offscreen fails.")
 
     if args.quick:
         dap_start, dap_end, dap_step = 5, 5, 5
@@ -346,7 +349,8 @@ def main():
     jobs = build_job_list(
         dap_start, dap_end, dap_step, seeds,
         cam_azimuths, cam_heights, sun_elevs, sun_azimuths,
-        main_binary, output_dir, base_params_file, args.renderer
+        main_binary, output_dir, base_params_file, args.renderer,
+        export_3d=args.export_3d
     )
 
     if args.resume:
@@ -361,7 +365,7 @@ def main():
         }
         filtered = []
         for job in jobs:
-            mb, dap, seed, caz, ch, selev, saz, pfile, out_dir, rend = job
+            mb, dap, seed, caz, ch, selev, saz, pfile, out_dir, rend, export_3d = job
             name = (f"cowpea_dap{dap:03d}_seed{seed:02d}"
                     f"_caz{caz:03d}_h{ch:.1f}_se{int(selev):03d}_saz{int(saz):03d}")
             if name not in existing_names:
@@ -374,12 +378,17 @@ def main():
     print(f"DAP range: {dap_start}..{dap_end} step {dap_step}, seeds per DAP: {seeds}")
     print(f"Camera azimuths: {cam_azimuths}")
     print(f"Camera heights:    {cam_heights}")
-    print(f"Parallel workers:  {args.workers if args.workers else 'auto (CPU count)'}")
+    print(f"3D export:         {args.export_3d}")
+    effective_workers = args.workers
+    if sys.platform == "darwin" and args.renderer == "vis" and effective_workers != 1:
+        print("[WARN] macOS + vis renderer + multiprocessing can race on the offscreen display. Forcing workers=1.")
+        effective_workers = 1
+    print(f"Parallel workers:  {effective_workers if effective_workers else 'auto (CPU count)'}")
 
     successes = 0
     failures = []
 
-    with multiprocessing.Pool(processes=args.workers) as pool:
+    with multiprocessing.Pool(processes=effective_workers if effective_workers else None) as pool:
         for dap, seed, cam_az, cam_h, sun_elev, sun_az, success, msg in tqdm(
             pool.imap_unordered(generate_one, jobs),
             total=total,

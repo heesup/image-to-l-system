@@ -25,7 +25,6 @@ class HeliosPlantDataset(Dataset):
     Each __getitem__ returns:
         {
             "image": (3, H, W) normalized tensor,
-            "raw_image": PIL.Image,
             "nodes": (max_nodes, 15),
             "adj_matrix": (max_nodes, max_nodes),
             "parent_indices": (max_nodes,),
@@ -172,8 +171,8 @@ class HeliosPlantDataset(Dataset):
                 blank = Image.new("RGB", (self.image_size, self.image_size), "black")
                 blank.save(sample["jpeg"])
 
-        raw_image = Image.open(sample["jpeg"]).convert("RGB")
-        image_tensor = self.transform(raw_image)
+        image = Image.open(sample["jpeg"]).convert("RGB")
+        image_tensor = self.transform(image)
 
         params = self._load_params(sample["params"])
 
@@ -195,7 +194,6 @@ class HeliosPlantDataset(Dataset):
 
         return {
             "image": image_tensor,
-            "raw_image": raw_image,
             "nodes": torch.tensor(xml_data["nodes"], dtype=torch.float32),
             "adj_matrix": torch.tensor(xml_data["adj_matrix"], dtype=torch.float32),
             "parent_indices": torch.tensor(xml_data["parent_indices"], dtype=torch.long),

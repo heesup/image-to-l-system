@@ -22,8 +22,11 @@ This module implements a **15D organ-typed graph diffusion model** that reconstr
 ## Key Components
 
 - **`models/graph_diffuser_3d.py`**: Vision-conditioned transformer decoder with O(N·k) k-NN self-attention, sparse parent prediction, organ-type head, and DAP-budget head.
-- **`models/differentiable_renderer_3d.py`**: Differentiable renderer matching Helios `PlantArchitecture` camera/projection. Supports focus-plant mode, depth-aware alpha compositing, and chunked memory-safe rendering.
-- **`training/train_diffusion_3d.py`**: DDPM training loop with multi-objective losses (coordinate, attribute, existence, parent, snap, organ type, noise) and optional render-in-the-loop loss.
+- **`models/differentiable_renderer_3d.py`**: Differentiable 2D renderer matching Helios `PlantArchitecture` camera/projection.
+- **`models/plant_geometry_3d.py`**: Explicit 3D geometry generator from 15D organ graphs / Helios XML. Outputs PLY point clouds and supports a fully-differentiable PyTorch point-cloud sampler.
+- **`models/pointcloud_loss_3d.py`**: Differentiable Chamfer 3D loss and PLY loader for target point clouds.
+- **`training/train_diffusion_3d.py`**: DDPM training loop with multi-objective graph losses and optional 3D point-cloud Chamfer loss against a target PLY.
+- **`eval/compare_xml_helios_3d.py`**: Compare Helios-generated PLY with XML-derived point cloud using Chamfer distance.
 - **`dataset/helios_dataset.py` / `helios_xml_parser.py`**: Load Helios `*_vis.jpeg` + `*_plant_*.xml` + `*_params.json` pairs and parse them into 15D tensors.
 
 ---
@@ -33,11 +36,14 @@ This module implements a **15D organ-typed graph diffusion model** that reconstr
 ### Train
 
 ```bash
+# 3D point-cloud supervised training
 python diffusion_based/training/train_diffusion_3d.py \
     --data-dir Digital-Crops/projects/syntheticdata_generation/build/output \
     --epochs 200 \
     --batch-size 2 \
-    --render-loss 1.0
+    --pc-loss 1.0 \
+    --target-ply data/gaussian_splat/2025-06-17-bed1tier2plant1.ply \
+    --pc-samples 1024
 ```
 
 ### Render a parsed plant graph
@@ -62,4 +68,4 @@ img = renderer(nodes_15d, parent_indices, cam_azimuth_deg=0.0,
 
 ## Status
 
-Implemented and functional. Visual fidelity of the differentiable renderer is still being improved (stem tubes, leaf shape, ground texture). Training with render loss converges but benefits from larger datasets.
+Implemented and functional. The 3D point-cloud supervision path is new; validate the XML-derived geometry against Helios-generated PLYs with `eval/compare_xml_helios_3d.py` before relying on the Chamfer training loss.
