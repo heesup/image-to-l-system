@@ -225,6 +225,92 @@ def _leaflet_local_mesh(leaf_scale: float, aspect: float = 0.7) -> Tuple[np.ndar
     return verts, faces
 
 
+def _leaflet_from_node(node: OrganNode3D) -> HeliosLeaflet:
+    """Build a HeliosLeaflet mesh from a 15D leaf node.
+
+    The node stores position, direction, pitch/yaw/roll, and length/width.
+    We orient the local prototype so the midrib aligns with the node's direction
+    and apply yaw/roll similarly to PlantArchitecture.cpp.
+    """
+    verts, faces = _leaflet_local_mesh(node.length, aspect=0.7)
+    midrib_dir = _np_normalize(node.direction)
+    if np.linalg.norm(midrib_dir) < 1e-12:
+        midrib_dir = np.array([0.0, 0.0, 1.0])
+
+    # Choose width axis: perpendicular to midrib, mostly horizontal.
+    if abs(midrib_dir[2]) < 0.9:
+        world_up = np.array([0.0, 0.0, 1.0])
+    else:
+        world_up = np.array([0.0, 1.0, 0.0])
+    width_axis = _np_normalize(np.cross(world_up, midrib_dir))
+    if np.linalg.norm(width_axis) < 1e-12:
+        width_axis = np.array([1.0, 0.0, 0.0])
+    normal_axis = _np_normalize(np.cross(midrib_dir, width_axis))
+
+    R = np.stack([midrib_dir, width_axis, normal_axis], axis=1)
+
+    yaw = math.radians(node.yaw)
+    pitch = math.radians(node.pitch)
+    roll = math.radians(node.roll)
+
+    # Apply intrinsic yaw about local normal, pitch about local width axis, roll about midrib
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    Ry = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    Rp = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
+    cr, sr = math.cos(roll), math.sin(roll)
+    Rr = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
+
+    R_total = R @ Rr @ Rp @ Ry
+    verts = (R_total @ verts.T).T + node.position
+    return HeliosLeaflet(vertices=verts.astype(np.float32), faces=faces, organ=OrganNode3D.LEAF)
+
+
+def build_helios_geometry_from_nodes(nodes: List[OrganNode3D]) -> HeliosPlantGeometry:
+    geom = HeliosPlantGeometry()
+
+    for node in nodes:
+        if node.existence <= 0.0:
+            continue
+
+        if node.organ_type == OrganNode3D.INTERNODE:
+            if np.linalg.norm(node.direction) < 1e-12:
+                continue
+            axis = _np_normalize(node.direction)
+            tip = node.tip_position if np.linalg.norm(node.tip_position) > 1e-12 else node.position + axis * node.length
+            geom.tubes.append(HeliosTube(
+                vertices=np.array([node.position, tip], dtype=np.float32),
+                radii=np.array([node.radius, node.radius], dtype=np.float32),
+                organ=OrganNode3D.INTERNODE,
+            ))
+
+        elif node.organ_type == OrganNode3D.PETIOLE:
+            if np.linalg.norm(node.direction) < 1e-12:
+                continue
+            axis = _np_normalize(node.direction)
+            tip = node.tip_position if np.linalg.norm(node.tip_position) > 1e-12 else node.position + axis * node.length
+            geom.tubes.append(HeliosTube(
+                vertices=np.array([node.position, tip], dtype=np.float32),
+                radii=np.array([node.radius, node.radius * 0.5], dtype=np.float32),
+                organ=OrganNode3D.PETIOLE,
+            ))
+
+        elif node.organ_type == OrganNode3D.LEAF:
+            geom.leaflets.append(_leaflet_from_node(node))
+
+        elif node.organ_type == OrganNode3D.FLORAL_BUD:
+            if node.length > 1e-6:
+                axis = _np_normalize(node.direction)
+                tip = node.tip_position if np.linalg.norm(node.tip_position) > 1e-12 else node.position + axis * node.length
+                geom.tubes.append(HeliosTube(
+                    vertices=np.array([node.position, tip], dtype=np.float32),
+                    radii=np.array([node.radius, node.radius * 0.5], dtype=np.float32),
+                    organ=OrganNode3D.FLORAL_BUD,
+                ))
+
+    return geom
+
+
 def build_helios_geometry_from_xml(xml_path: str) -> HeliosPlantGeometry:
     """Reconstruct explicit 3D geometry from a Helios XML file.
 
@@ -805,15 +891,22 @@ def nodes_to_geometry(
             if organ[i] in (OrganNode3D.INTERNODE, OrganNode3D.PETIOLE):
                 all_tubes[b].append(HeliosTube(vertices=verts, radii=rad, organ=int(organ[i])))
             elif organ[i] == OrganNode3D.LEAF:
-                # Build a simple quad mesh
+                # Build a single leaflet mesh oriented by the 15D node direction.
+                # The 15D graph already contains one node per Helios leaflet, so we
+                # do not expand a single node into multiple leaflets here.
                 scale = max(lengths[i], 1e-6)
-                local_verts, faces = _leaflet_local_mesh(scale, aspect=0.7)
-                # orient along direction with a perpendicular width axis
                 x = directions[i] / (np.linalg.norm(directions[i]) + 1e-8)
+
+                # Perpendicular width axis in the horizontal-ish plane.
+                # Use cross(tmp, x) (not cross(x, tmp)) so that the leaf width axis
+                # matches the Helios XML parser convention, where local +y ends up
+                # perpendicular to world z and the leaf midrib.
                 tmp = np.array([0.0, 0.0, 1.0]) if abs(x[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
-                y = np.cross(x, tmp)
+                y = np.cross(tmp, x)
                 y = y / (np.linalg.norm(y) + 1e-8)
                 z = np.cross(x, y)
+
+                local_verts, faces = _leaflet_local_mesh(scale, aspect=0.7)
                 world_verts = (local_verts[:, 0:1] * x
                                + local_verts[:, 1:2] * y
                                + local_verts[:, 2:3] * z)

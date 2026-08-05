@@ -68,24 +68,52 @@ class PlantPointCloudChamferLoss(nn.Module):
         pred: torch.Tensor,
         target: torch.Tensor,
         weights: Optional[torch.Tensor] = None,
+        chunk: int = 1024,
     ) -> torch.Tensor:
-        """Compute symmetric Chamfer distance.
+        """Compute symmetric Chamfer distance in tiny chunks to save memory.
 
         Args:
             pred: (B, M, 3)
             target: (B, K, 3)
             weights: optional (B, M, 1) per-point weights for pred side.
+            chunk: max points per cdist dimension (default 1024).
         Returns:
             loss: scalar
         """
-        # (B, M, K)
-        dist_matrix = torch.cdist(pred, target, p=2)
+        B, M, _ = pred.shape
+        K = target.shape[1]
 
-        pred_to_target = dist_matrix.min(dim=-1)[0]  # (B, M)
-        target_to_pred = dist_matrix.min(dim=1)[0]   # (B, K)
+        # pred -> target: chunk target.
+        pred_to_target = torch.full((B, M), float("inf"), device=pred.device, dtype=pred.dtype)
+        for k_start in range(0, K, chunk):
+            k_end = min(k_start + chunk, K)
+            tgt_chunk = target[:, k_start:k_end, :]
+            for m_start in range(0, M, chunk):
+                m_end = min(m_start + chunk, M)
+                pred_chunk = pred[:, m_start:m_end, :]
+                d_chunk = torch.cdist(pred_chunk, tgt_chunk, p=2)  # (B, m_chunk, k_chunk)
+                pred_to_target[:, m_start:m_end] = torch.minimum(
+                    pred_to_target[:, m_start:m_end],
+                    d_chunk.min(dim=-1)[0],
+                )
+
+        # target -> pred: chunk pred.
+        target_to_pred = torch.full((B, K), float("inf"), device=target.device, dtype=target.dtype)
+        for m_start in range(0, M, chunk):
+            m_end = min(m_start + chunk, M)
+            pred_chunk = pred[:, m_start:m_end, :]
+            for k_start in range(0, K, chunk):
+                k_end = min(k_start + chunk, K)
+                tgt_chunk = target[:, k_start:k_end, :]
+                d_chunk = torch.cdist(pred_chunk, tgt_chunk, p=2)  # (B, m_chunk, k_chunk)
+                target_to_pred[:, k_start:k_end] = torch.minimum(
+                    target_to_pred[:, k_start:k_end],
+                    d_chunk.min(dim=1)[0],
+                )
 
         if weights is not None:
-            pred_to_target = (pred_to_target * weights.squeeze(-1)).sum(dim=-1) / weights.sum(dim=1).squeeze(-1).clamp(min=1e-6)
+            weights = weights.squeeze(-1)  # (B, M)
+            pred_to_target = (pred_to_target * weights).sum(dim=-1) / weights.sum(dim=1).clamp(min=1e-6)
 
         return (pred_to_target.mean(dim=-1) + target_to_pred.mean(dim=-1)).mean()
 

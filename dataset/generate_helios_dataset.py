@@ -32,6 +32,11 @@ env_bin = os.path.dirname(sys.executable)
 if env_bin not in os.environ.get("PATH", ""):
     os.environ["PATH"] = env_bin + os.path.pathsep + os.environ.get("PATH", "")
 
+# Force the offscreen / virtual display used by the Helios visualizer.
+# The DISPLAY environment variable must be set before any worker processes spawn.
+if not os.environ.get("DISPLAY"):
+    os.environ["DISPLAY"] = ":1.0"
+
 
 def solar_declination(day_of_year: int) -> float:
     """Solar declination angle in degrees (approximate)."""
@@ -125,13 +130,15 @@ def generate_one(args: Tuple) -> Tuple[int, int, int, float, float, float, bool,
     with open(base_params_file, 'r') as f:
         params = json.load(f)
 
-    # Camera azimuth + height
+    # Camera azimuth + height + focus-plant (new Digital-Crops binary uses
+    # params.json["camera"]["positioning"]["focusing_plants"] instead of CLI flag)
     if "camera" not in params:
         params["camera"] = {}
     if "positioning" not in params["camera"]:
         params["camera"]["positioning"] = {}
     params["camera"]["positioning"]["azimuth_angle"] = float(cam_az)
     params["camera"]["positioning"]["camera_height"] = float(cam_height)
+    params["camera"]["positioning"]["focusing_plants"] = True
 
     # Sun position + shadow
     if "environment" not in params:
@@ -142,17 +149,38 @@ def generate_one(args: Tuple) -> Tuple[int, int, int, float, float, float, bool,
     params["environment"]["sun"]["azimuth_degrees"] = float(sun_az)
     params["environment"]["sun"]["shadow"] = True
 
+    # Force the actual requested DAP into the parameters so the generated plant
+    # age matches the filename/label. Remove any DAP distribution sampling.
+    if "metadata" not in params:
+        params["metadata"] = {}
+    params["metadata"]["dap"] = int(dap)
+    params["metadata"].pop("DAP", None)
+
+    # Resolve relative OBJ ground path to an absolute path so the binary can find
+    # assets regardless of the current working directory used for generation.
+    # Use the *actual* binary build directory (follow symlinks) because that is the
+    # reference frame the Digital-Crops executable uses for "../../../obj".
+    if params.get("environment", {}).get("soil", {}).get("use_obj_ground", False):
+        real_build_dir = os.path.dirname(os.path.realpath(main_binary))
+        obj_path = params["environment"]["soil"].get("obj_file_path", "")
+        if obj_path and not os.path.isabs(obj_path):
+            params["environment"]["soil"]["obj_file_path"] = os.path.realpath(
+                os.path.join(real_build_dir, obj_path)
+            )
+
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as tf:
         tmp_params_path = tf.name
         json.dump(params, tf, indent=2)
 
+    # Latest Digital-Crops binary: use --vis for OpenGL (fast) and --xml for XML.
+    # Keep cwd at the binary's build directory so relative asset paths resolve.
     cmd = [
         main_binary,
-        "--renderer", renderer,
+        "--renderer", "vis",
         "--save-xml",
         "--focus-plant",
         "-n", name,
-        "--days", str(dap),
+        "--dap", str(dap),
         "-s", str(seed),
         "--output", output_dir,
         "-f", tmp_params_path,
@@ -186,19 +214,34 @@ def generate_one(args: Tuple) -> Tuple[int, int, int, float, float, float, bool,
         else:
             out_file = None
 
+        # Newer Digital-Crops binary uses _0000.jpeg suffix for visualizer output
+        if out_file is not None and not os.path.exists(out_file):
+            alt_file = os.path.join(output_dir, f"{name}_0000.jpeg")
+            if os.path.exists(alt_file):
+                out_file = alt_file
+
         xml_file = os.path.join(output_dir, f"{name}_0000_plant_0000.xml")
         success = result.returncode == 0 and (out_file is None or os.path.exists(out_file))
 
-        # Render differentiable comparison images (_diff_fixed.png and _diff_focus.png)
+        # Render Python differentiable comparison images
+        # Primary pipeline: XML -> 15D organ graph -> explicit geometry -> render.
+        # XML direct render is kept as a backup/reference under *_diff_rend_xml.png.
+        diff_rend_file = os.path.join(output_dir, f"{name}_0000_diff_rend.png")
+        diff_rend_xml_file = os.path.join(output_dir, f"{name}_0000_diff_rend_xml.png")
         if success and os.path.exists(xml_file):
             try:
                 import torch
                 from PIL import Image
                 import numpy as np
+                import time
+                from diffusion_based.models.helios_geometry import build_helios_geometry_from_xml, nodes_to_geometry
                 from diffusion_based.models.helios_xml_parser import HeliosXMLParser
-                from diffusion_based.models.differentiable_renderer_3d import DifferentiablePlantRenderer3D
+                from diffusion_based.models.helios_rasterizer_3d import HeliosGeometryRasterizer
 
                 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                rasterizer = HeliosGeometryRasterizer(image_size=256).to(device)
+
+                # Parse XML into 15D organ graph (primary intermediate representation)
                 parser = HeliosXMLParser(xml_file)
                 parser.parse()
                 organ_nodes = parser.get_all_organ_nodes()
@@ -207,19 +250,42 @@ def generate_one(args: Tuple) -> Tuple[int, int, int, float, float, float, bool,
                     nodes_tensor = torch.stack([torch.tensor(n.to_15d(), dtype=torch.float32) for n in organ_nodes]).unsqueeze(0).to(device)
                     parents = torch.tensor([n.parent_idx for n in organ_nodes], dtype=torch.long).unsqueeze(0).to(device)
 
-                    diff_renderer = DifferentiablePlantRenderer3D(image_size=256).to(device)
-
+                    # Primary: 15D nodes -> explicit geometry -> render
+                    t0 = time.time()
                     with torch.no_grad():
-                        img_fixed = diff_renderer(nodes_tensor, parent_indices=parents, cam_azimuth_deg=float(cam_az), focus_plant=False)[0]
-                        img_focus = diff_renderer(nodes_tensor, parent_indices=parents, cam_azimuth_deg=float(cam_az), focus_plant=True)[0]
+                        tubes_15d, leaflets_15d, ellipsoids_15d = nodes_to_geometry(nodes_tensor, parents)
+                        img_15d = rasterizer.render_numpy_geometry(
+                            tubes_15d[0], leaflets_15d[0], ellipsoids_15d[0],
+                            camera_height=cam_height,
+                            distance_from_center=0.0,
+                            azimuth_deg=float(cam_az),
+                            focus_plant=True,
+                            background="ground",
+                        )
+                    diff_rend_time = time.time() - t0
+                    img_15d_np = (np.array(img_15d).clip(0, 1) * 255).astype(np.uint8)
+                    Image.fromarray(img_15d_np).save(diff_rend_file)
+                    stdout_text += f"\n(Python 15D diff rend: {diff_rend_time:.3f}s -> {diff_rend_file})"
 
-                    img_fixed_np = (img_fixed.permute(1, 2, 0).cpu().numpy().clip(0, 1) * 255).astype(np.uint8)
-                    img_focus_np = (img_focus.permute(1, 2, 0).cpu().numpy().clip(0, 1) * 255).astype(np.uint8)
-
-                    Image.fromarray(img_fixed_np).save(os.path.join(output_dir, f"{name}_0000_diff_fixed.png"))
-                    Image.fromarray(img_focus_np).save(os.path.join(output_dir, f"{name}_0000_diff_focus.png"))
+                # Backup/reference: direct XML-derived geometry render
+                geom = build_helios_geometry_from_xml(xml_file)
+                if geom.tubes or geom.leaflets:
+                    t0 = time.time()
+                    with torch.no_grad():
+                        img_xml = rasterizer.render_numpy_geometry(
+                            geom.tubes, geom.leaflets, geom.ellipsoids,
+                            camera_height=cam_height,
+                            distance_from_center=0.0,
+                            azimuth_deg=float(cam_az),
+                            focus_plant=True,
+                            background="ground",
+                        )
+                    diff_rend_xml_time = time.time() - t0
+                    img_xml_np = (img_xml.clip(0, 1) * 255).astype(np.uint8)
+                    Image.fromarray(img_xml_np).save(diff_rend_xml_file)
+                    stdout_text += f"\n(Python XML diff rend: {diff_rend_xml_time:.3f}s -> {diff_rend_xml_file})"
             except Exception as e_diff:
-                stdout_text += f"\n(Warning: Differentiable renderer failed: {e_diff})"
+                stdout_text += f"\n(Warning: Python differentiable renderer failed: {e_diff})"
 
         msg = stdout_text if success else f"{stdout_text}\n(Error: image file missing: {out_file})"
         return dap, seed, cam_az, cam_height, sun_elev, sun_az, success, msg
@@ -380,8 +446,9 @@ def main():
     print(f"Camera heights:    {cam_heights}")
     print(f"3D export:         {args.export_3d}")
     effective_workers = args.workers
-    if sys.platform == "darwin" and args.renderer == "vis" and effective_workers != 1:
-        print("[WARN] macOS + vis renderer + multiprocessing can race on the offscreen display. Forcing workers=1.")
+    # Linux and macOS both can race on the single GLFW/X11 display when rendering vis images in parallel.
+    if args.renderer in ("vis", "all") and effective_workers != 1:
+        print("[WARN] vis renderer + multiprocessing can race on the offscreen display. Forcing workers=1.")
         effective_workers = 1
     print(f"Parallel workers:  {effective_workers if effective_workers else 'auto (CPU count)'}")
 

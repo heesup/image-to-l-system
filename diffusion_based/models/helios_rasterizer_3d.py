@@ -48,6 +48,8 @@ class HeliosGeometryRasterizer(nn.Module):
         self.register_buffer("leaf_top_color", torch.tensor([0.38, 0.58, 0.25], dtype=torch.float32))
         self.register_buffer("bud_color", torch.tensor([0.80, 0.70, 0.15], dtype=torch.float32))
         self.register_buffer("bg_color", torch.tensor([0.12, 0.12, 0.10], dtype=torch.float32))
+        # Helios-like soil/ground color (tan/brown)
+        self.register_buffer("ground_color", torch.tensor([0.74, 0.67, 0.57], dtype=torch.float32))
         self.register_buffer("sun_dir", torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32))
 
     def _compute_camera(
@@ -135,7 +137,8 @@ class HeliosGeometryRasterizer(nn.Module):
         Zc_clip = torch.clamp(Zc, max=-self.near_plane)
         x_ndc = (focal_x * Xc) / (-Zc_clip)
         y_ndc = (focal_y * Yc) / (-Zc_clip)
-        px = x_ndc * 0.5 + 0.5
+        # Mirror X to match Helios visualizer convention.
+        px = -x_ndc * 0.5 + 0.5
         py = y_ndc * 0.5 + 0.5
         return torch.stack([px, py], dim=-1), Zc, focal_y * 0.5
 
@@ -189,6 +192,50 @@ class HeliosGeometryRasterizer(nn.Module):
         # Squeeze the broadcasted singleton dimension added by vertex coordinate slicing
         return torch.sigmoid(inside / self.leaf_sigma).squeeze(2)
 
+    def _render_leaf_triangles_chunked(
+        self,
+        a_2d: torch.Tensor,
+        b_2d: torch.Tensor,
+        c_2d: torch.Tensor,
+        Zc_tri: torch.Tensor,
+        organs: np.ndarray,
+        shade: torch.Tensor,
+        chunk: int = 128,
+    ) -> torch.Tensor:
+        """Render all leaf triangles in small chunks to avoid OOM."""
+        B, N, _ = a_2d.shape
+        device = a_2d.device
+        H = W = self.image_size
+        rgb = torch.zeros(B, 3, H, W, device=device)
+        acc_alpha = torch.zeros(B, 1, H, W, device=device)
+
+        # Sort all triangles by depth once
+        sorted_depth, sort_idx = torch.sort(Zc_tri, dim=1, descending=False)
+        a_sorted = torch.gather(a_2d, 1, sort_idx.unsqueeze(-1).expand(-1, -1, 2))
+        b_sorted = torch.gather(b_2d, 1, sort_idx.unsqueeze(-1).expand(-1, -1, 2))
+        c_sorted = torch.gather(c_2d, 1, sort_idx.unsqueeze(-1).expand(-1, -1, 2))
+        shade_sorted = torch.gather(shade, 1, sort_idx)
+        organ_sorted = organs[sort_idx[0].cpu().numpy()]
+
+        colors = [self.stem_color, self.petiole_color, self.leaf_color, self.bud_color]
+        for start in range(0, N, chunk):
+            end = min(start + chunk, N)
+            alpha_chunk = self._fill_triangle(
+                a_sorted[:, start:end],
+                b_sorted[:, start:end],
+                c_sorted[:, start:end],
+            )
+            for i in range(end - start):
+                global_i = start + i
+                a = alpha_chunk[:, i:i+1]
+                color = colors[int(organ_sorted[global_i])]
+                s = shade_sorted[0, global_i].item()
+                shaded = color * s
+                rgb = rgb + a * (1.0 - acc_alpha) * shaded.view(1, 3, 1, 1)
+                acc_alpha = acc_alpha + a * (1.0 - acc_alpha)
+                acc_alpha = torch.clamp(acc_alpha, 0.0, 1.0)
+        return torch.cat([rgb, acc_alpha], dim=1)
+
     def render_numpy_geometry(
         self,
         tubes: List[HeliosTube],
@@ -201,6 +248,7 @@ class HeliosGeometryRasterizer(nn.Module):
         target_center: Optional[np.ndarray] = None,
         sun_dir: Optional[np.ndarray] = None,
         focus_plant: bool = False,
+        background: Optional[str] = None,
     ) -> np.ndarray:
         """Render explicit numpy geometry and return an RGB numpy image."""
         device = next(self.buffers()).device
@@ -305,21 +353,16 @@ class HeliosGeometryRasterizer(nn.Module):
             b_2d, _, _ = self.project(b, cam)
             c_2d, _, _ = self.project(c, cam)
             _, Zc_tri, _ = self.project(d, cam)
-            alpha = self._fill_triangle(a_2d, b_2d, c_2d)
-            # leaf diffuse shading from face normal (double-sided leaves)
             n = torch.cross(b - a, c - a, dim=-1)
             n = F.normalize(n, dim=-1)
             ndotl = (n * sun).sum(dim=-1).abs()
             shade = 0.35 + 0.65 * ndotl.clamp(0, 1)
-            leaf_img = self._composite_by_depth(
-                alpha, organs, Zc_tri,
-                organ_colors=[self.stem_color, self.petiole_color, self.leaf_color, self.bud_color],
-                shade=shade,
+            leaf_img = self._render_leaf_triangles_chunked(
+                a_2d, b_2d, c_2d, Zc_tri, organs, shade, chunk=128
             )
             if image is None:
                 image = leaf_img
             else:
-                # composite leaf over tubes by depth
                 image = self._composite_images(image, leaf_img, Zc_tri.min(dim=1, keepdim=True)[0])
 
         if bud_center_list:
@@ -328,11 +371,13 @@ class HeliosGeometryRasterizer(nn.Module):
             center_2d, Zc_bud, ppm = self.project(center, cam)
             z_abs = Zc_bud.abs().clamp(min=self.near_plane)
             r_norm = (radius * ppm / z_abs).clamp(min=0.001, max=0.05)
+            # r_norm: (B, N) -> broadcast to (B, N, H, W)
+            r_norm = r_norm.unsqueeze(-1).unsqueeze(-1)
             dx = self.grid[..., 0] - center_2d[:, :, 0].unsqueeze(-1).unsqueeze(-1)
             dy = self.grid[..., 1] - center_2d[:, :, 1].unsqueeze(-1).unsqueeze(-1)
             dist = torch.sqrt(dx ** 2 + dy ** 2 + 1e-8)
             alpha = torch.sigmoid((r_norm - dist) / self.sigma)
-            bud_img = self._composite_by_depth(alpha, np.full(len(bud_center_list), 3, dtype=np.int64), Zc_bud, organ_colors=[self.bud_color])
+            bud_img = self._composite_by_depth(alpha, np.full(len(bud_center_list), 3, dtype=np.int64), Zc_bud)
             if image is None:
                 image = bud_img
             else:
@@ -344,11 +389,57 @@ class HeliosGeometryRasterizer(nn.Module):
             # blend with background
             covered = image[:, 3:4]
             rgb = image[:, :3]
-            bg = self.bg_color.view(1, 3, 1, 1).to(device)
-            image = rgb * covered + bg * (1.0 - covered)
+            bg = self.ground_color if background == "ground" else self.bg_color
+            bg = bg.view(1, 3, 1, 1).to(device)
+            rgb = rgb * covered + bg * (1.0 - covered)
+            # soft cast shadow on the ground, matching Helios's shadowed look
+            if background == "ground":
+                all_pts_t = torch.from_numpy(all_pts).float().to(device)
+                ground_z = float(all_pts_t[:, 2].min().item())
+                shadow_mask = self._cast_ground_shadow(all_pts_t, sun, cam, ground_z)
+                rgb = rgb * (1.0 - 0.55 * shadow_mask * (1.0 - covered)) + bg * (0.55 * shadow_mask * (1.0 - covered))
+            image = torch.cat([rgb, covered], dim=1)
 
         img_np = image[0].permute(1, 2, 0).detach().cpu().numpy()
         return np.clip(img_np, 0.0, 1.0)
+
+    def _cast_ground_shadow(
+        self,
+        points: torch.Tensor,
+        sun: torch.Tensor,
+        cam: Dict,
+        ground_z: float,
+    ) -> torch.Tensor:
+        """Return a soft (1,1,H,W) shadow mask cast onto the z=ground_z plane.
+
+        A plant point P shadows the ground where the ray from P along -sun first
+        hits the ground plane. Points are only cast onto the ground (never occlude
+        the plant). Vertical sun -> no horizontal offset, matching Helios.
+        """
+        n = torch.tensor([0.0, 0.0, 1.0], device=points.device, dtype=points.dtype)
+        s_n = (sun * n).sum()
+        if s_n <= 1e-6:
+            return self.grid.new_zeros(1, 1, self.image_size, self.image_size)
+        s_h = sun - n * s_n  # horizontal sun component
+        # height above ground plane
+        heights = (points @ n) - ground_z  # (N,)
+        r = heights.clamp(min=0.0)
+        t = r / s_n  # (N,)
+        G = points - t.unsqueeze(1) * sun.unsqueeze(0)
+        keep = r > 1e-4
+        if not keep.any():
+            return self.grid.new_zeros(1, 1, self.image_size, self.image_size)
+        G = G[keep]
+        # recenter at same target center as the camera used
+        G_2d, Zc_g, ppm = self.project(G.unsqueeze(0), cam)
+        z_abs = Zc_g.abs().clamp(min=self.near_plane)
+        r_norm = (0.6 * ppm / z_abs).unsqueeze(-1).unsqueeze(-1)
+        gx = self.grid[..., 0] - G_2d[:, :, 0].unsqueeze(-1).unsqueeze(-1)
+        gy = self.grid[..., 1] - G_2d[:, :, 1].unsqueeze(-1).unsqueeze(-1)
+        dist = torch.sqrt(gx ** 2 + gy ** 2 + 1e-8)
+        alpha = torch.sigmoid((r_norm - dist) / self.sigma)
+        mask = alpha.amax(dim=1, keepdim=True).clamp(0.0, 1.0)
+        return mask
 
     def _composite_by_depth(
         self,

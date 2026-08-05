@@ -304,6 +304,28 @@ class HeliosXMLParser:
 
         return sd
 
+    def _parse_geometry(self, elem: ET.Element, default_pos: np.ndarray) -> dict:
+        """Parse explicit <geometry> child if present."""
+        geom = {}
+        geom_elem = elem.find("geometry")
+        if geom_elem is not None:
+            pos = geom_elem.findtext("position")
+            if pos is not None:
+                geom['position'] = self._parse_vec3(pos)
+            tip = geom_elem.findtext("tip_position")
+            if tip is not None:
+                geom['tip_position'] = self._parse_vec3(tip)
+            direc = geom_elem.findtext("direction")
+            if direc is not None:
+                geom['direction'] = self._parse_vec3(direc)
+        if 'position' not in geom:
+            geom['position'] = default_pos.copy()
+        if 'tip_position' not in geom:
+            geom['tip_position'] = default_pos.copy()
+        if 'direction' not in geom:
+            geom['direction'] = np.array([0.0, 0.0, 1.0])
+        return geom
+
     def _parse_phytomer_element(self, phyt_elem: ET.Element, shoot_id: int, phyt_idx: int) -> Phytomer3D:
         p3d = Phytomer3D()
         p3d.shoot_id = shoot_id
@@ -312,6 +334,18 @@ class HeliosXMLParser:
         internode = phyt_elem.find("internode")
         if internode is None:
             return p3d
+
+        int_geom = self._parse_geometry(internode, self.base_position)
+        p3d.internode_pos = int_geom['position']
+        p3d.internode_tip = int_geom['tip_position']
+        p3d.internode_dir = int_geom['direction']
+        # Only store explicit vertices when the XML actually provided a <geometry> block.
+        # Otherwise leave them empty so parameter-based forward kinematics runs for
+        # legacy Helios XML files that don't contain explicit positions.
+        has_explicit_int_geom = internode.find("geometry") is not None
+        if has_explicit_int_geom:
+            p3d.internode_vertices = [p3d.internode_pos.copy(), p3d.internode_tip.copy()]
+            p3d.internode_radii = [p3d.internode_radius, p3d.internode_radius]
 
         p3d.internode_length = float(internode.findtext("internode_length", "0"))
         p3d.internode_radius = float(internode.findtext("internode_radius", "0"))
@@ -327,7 +361,11 @@ class HeliosXMLParser:
             internode.findtext("yaw_perturbations", ""))
 
         for petiole_elem in internode.findall("petiole"):
+            pet_geom = self._parse_geometry(petiole_elem, p3d.internode_tip)
             petiole_data = {
+                'base_pos': pet_geom['position'],
+                'tip_pos': pet_geom['tip_position'],
+                'axis': pet_geom['direction'],
                 'length': float(petiole_elem.findtext("petiole_length", "0")),
                 'radius': float(petiole_elem.findtext("petiole_radius", "0")),
                 'pitch': float(petiole_elem.findtext("petiole_pitch", "0")),
@@ -342,7 +380,11 @@ class HeliosXMLParser:
             }
 
             for leaf_elem in petiole_elem.findall("leaf"):
+                leaf_geom = self._parse_geometry(leaf_elem, pet_geom['tip_position'])
                 leaf_data = {
+                    'base_pos': leaf_geom['position'],
+                    'tip_pos': leaf_geom['tip_position'],
+                    'direction': leaf_geom['direction'],
                     'scale': float(leaf_elem.findtext("leaf_scale", "0")),
                     'pitch': float(leaf_elem.findtext("leaf_pitch", "0")),
                     'yaw': float(leaf_elem.findtext("leaf_yaw", "0")),
@@ -352,7 +394,11 @@ class HeliosXMLParser:
                 petiole_data['leaves'].append(leaf_data)
 
             for fbud_elem in petiole_elem.findall("floral_bud"):
+                bud_geom = self._parse_geometry(fbud_elem, pet_geom['tip_position'])
                 fbud_data = {
+                    'base_pos': bud_geom['position'],
+                    'tip_pos': bud_geom['tip_position'],
+                    'direction': bud_geom['direction'],
                     'bud_state': int(fbud_elem.findtext("bud_state", "0")),
                     'parent_index': int(fbud_elem.findtext("parent_index", "0")),
                     'bud_index': int(fbud_elem.findtext("bud_index", "0")),
@@ -379,6 +425,17 @@ class HeliosXMLParser:
         sd.internode_radii = []
 
         for phyt_idx, phyt in enumerate(sd.phytomers):
+            # If the XML provided explicit <geometry> blocks, trust them and skip
+            # parameter-based forward kinematics so that round-trips stay exact.
+            has_explicit_geometry = phyt.internode_vertices is not None and len(phyt.internode_vertices) > 0
+            if has_explicit_geometry:
+                vertices = [v.copy() for v in phyt.internode_vertices]
+                radii = list(phyt.internode_radii) if phyt.internode_radii else [phyt.internode_radius, phyt.internode_radius]
+                sd.internode_vertices.append(vertices)
+                sd.internode_radii.append(radii)
+                self._reconstruct_petiole_geometry(sd, phyt_idx, phyt, use_explicit=True)
+                continue
+
             internode_base = self._get_internode_base(sd, phyt_idx)
             internode_axis, petiole_rotation_axis, shoot_bending_axis = \
                 self._compute_internode_orientation(sd, phyt_idx)
@@ -513,13 +570,25 @@ class HeliosXMLParser:
 
         return internode_axis, petiole_rotation_axis, shoot_bending_axis
 
-    def _reconstruct_petiole_geometry(self, sd: ShootData, phyt_idx: int, phyt: Phytomer3D):
+    def _reconstruct_petiole_geometry(self, sd: ShootData, phyt_idx: int, phyt: Phytomer3D, use_explicit: bool = False):
         internode_axis, petiole_rotation_axis, _ = \
             self._compute_internode_orientation(sd, phyt_idx)
 
         internode_tip = phyt.internode_tip.copy()
 
         for pet_idx, petiole in enumerate(phyt.petioles):
+            # If explicit geometry was written into the XML, trust the stored
+            # positions/directions and only rebuild the vertices buffer for rendering.
+            if use_explicit and 'base_pos' in petiole:
+                petiole['vertices'] = [petiole['base_pos'].copy(), petiole['tip_pos'].copy()]
+                for leaf in petiole.get('leaves', []):
+                    if 'base_pos' in leaf:
+                        leaf['direction'] = _normalize(leaf['tip_pos'] - leaf['base_pos'])
+                for fbud in petiole.get('floral_buds', []):
+                    if 'base_pos' not in fbud:
+                        fbud['base_pos'] = petiole['tip_pos'].copy()
+                continue
+
             petiole_base = internode_tip.copy()
             petiole_pitch_rad = math.radians(petiole['pitch'])
             petiole_curvature = petiole['curvature']
