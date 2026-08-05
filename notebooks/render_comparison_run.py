@@ -20,18 +20,20 @@ if repo_root not in sys.path:
 from diffusion_based.models.helios_geometry import (
     build_helios_geometry_from_xml,
     nodes_to_geometry,
+    nodes_to_geometry_torch,
 )
 from diffusion_based.models.helios_xml_parser import HeliosXMLParser
 from diffusion_based.models.helios_rasterizer_3d import HeliosGeometryRasterizer
+from diffusion_based.models.differentiable_pipeline import DifferentiableHeliosRenderer
 
 print(f"PyTorch version: {torch.__version__}")
 print(f"CUDA available: {torch.cuda.is_available()}")
 if torch.cuda.is_available():
     print(f"CUDA device: {torch.cuda.get_device_name(0)}")
 # Using the test_dap10 dataset because the main output/plot_0000_vis.jpeg is all-black
-OUTPUT_DIR = "/home/lion397/codes/image-to-l-system/Digital-Crops/projects/syntheticdata_generation/build/output_test_dap10"
-XML_FILE = os.path.join(OUTPUT_DIR, "cowpea_dap010_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml")
-REF_IMAGE = os.path.join(OUTPUT_DIR, "cowpea_dap010_seed00_caz000_h1.0_se045_saz180_0000_vis.jpeg")
+OUTPUT_DIR = "/home/lion397/codes/image-to-l-system/Digital-Crops/projects/syntheticdata_generation/build/output"
+XML_FILE = os.path.join(OUTPUT_DIR, "plot_0000_plant_0000.xml")
+REF_IMAGE = os.path.join(OUTPUT_DIR, "plot_0000_vis.jpeg")
 
 # Camera parameters (matching RENDER_ALIGNMENT_DEBUG.md)
 CAMERA_HEIGHT = 1.0
@@ -136,6 +138,30 @@ img_xml_ground = img_xml_ground_rgba[..., :3]
 
 print(f"XML black bg shape: {img_xml_black.shape}, range: [{img_xml_black.min():.3f}, {img_xml_black.max():.3f}]")
 print(f"XML ground bg shape: {img_xml_ground.shape}, range: [{img_xml_ground.min():.3f}, {img_xml_ground.max():.3f}]")
+
+# ------------------------------------------------------------------
+# NEW: 15D Torch Renderer (fully differentiable)
+# ------------------------------------------------------------------
+print("--- Running differentiable torch renderer ---")
+diff_renderer = DifferentiableHeliosRenderer(rasterizer).to(device)
+
+with torch.no_grad():
+    img_torch_rgba = diff_renderer(
+        nodes_tensor,
+        parents,
+        camera_height=CAMERA_HEIGHT,
+        distance_from_center=DISTANCE_FROM_CENTER,
+        azimuth_deg=AZIMUTH_DEG,
+        focus_plant=True,
+        background=None,
+    )
+
+# Convert from (B, 4, H, W) to (H, W, 4) numpy
+img_torch_np = img_torch_rgba[0].permute(1, 2, 0).detach().cpu().numpy()
+img_torch_black = img_torch_np[..., :3]
+
+print(f"Torch black bg shape: {img_torch_black.shape}, range: [{img_torch_black.min():.3f}, {img_torch_black.max():.3f}]")
+
 def compute_metrics(ref, pred, multichannel=True):
     """Compute MAE and SSIM between two [0,1] RGB images."""
     mae = float(np.mean(np.abs(ref - pred)))
@@ -184,6 +210,11 @@ mae, sm = compute_metrics(ref_np_256, img_xml_ground)
 iou2, prec2, rec2 = compute_mask_iou(ref_np_256, img_xml_ground)
 results["XML ground bg"] = {"MAE": mae, "SSIM": sm, "IoU": iou2, "Precision": prec2, "Recall": rec2}
 
+# Torch renderer (black bg)
+mae, sm = compute_metrics(ref_np_256, img_torch_black)
+iou_t, prec_t, rec_t = compute_mask_iou(ref_np_256, img_torch_black)
+results["15D torch black bg"] = {"MAE": mae, "SSIM": sm, "IoU": iou_t, "Precision": prec_t, "Recall": rec_t}
+
 print("─" * 70)
 print(f"{'Variant':<20} {'MAE':>8} {'SSIM':>8} {'IoU':>8} {'Precision':>10} {'Recall':>8}")
 print("─" * 70)
@@ -196,7 +227,7 @@ print("  black bg   : MAE=0.319, SSIM=0.286")
 print("  ground bg  : MAE=0.237, SSIM=0.439")
 print("  XML render : MAE=0.319, SSIM=0.286")
 print("  15D nodes  : MAE=0.295, SSIM=0.304")
-fig, axes = plt.subplots(1, 5, figsize=(20, 4.5))
+fig, axes = plt.subplots(1, 6, figsize=(24, 4.5))
 
 titles = [
     "Helios ref",
@@ -204,8 +235,9 @@ titles = [
     f"ground bg\nMAE={results['XML ground bg']['MAE']:.3f}, SSIM={results['XML ground bg']['SSIM']:.3f}",
     f"XML render\nMAE={results['XML black bg']['MAE']:.3f}, SSIM={results['XML black bg']['SSIM']:.3f}",
     f"15D nodes\nMAE={results['15D black bg']['MAE']:.3f}, SSIM={results['15D black bg']['SSIM']:.3f}",
+    f"15D torch\nMAE={results['15D torch black bg']['MAE']:.3f}, SSIM={results['15D torch black bg']['SSIM']:.3f}",
 ]
-images = [ref_np_256, img_xml_black, img_xml_ground, img_xml_black, img_15d_black]
+images = [ref_np_256, img_xml_black, img_xml_ground, img_xml_black, img_15d_black, img_torch_black]
 
 for ax, img, title in zip(axes, images, titles):
     ax.imshow(np.clip(img, 0, 1))
@@ -350,7 +382,7 @@ import pandas as pd
 
 df = pd.DataFrame.from_dict(results, orient="index")
 df = df[["MAE", "SSIM", "IoU", "Precision", "Recall"]]
-display(df.round(3))
+print(df.round(3).to_string())
 
 print("\n--- Key observations ---")
 print(f"1. Ground background reduces MAE from {results['XML black bg']['MAE']:.3f} → {results['XML ground bg']['MAE']:.3f}")

@@ -17,6 +17,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from diffusion_based.models.helios_geometry import HeliosEllipsoid, HeliosLeaflet, HeliosTube
+from diffusion_based.models.helios_xml_parser import OrganNode3D
 
 
 class HeliosGeometryRasterizer(nn.Module):
@@ -37,7 +38,7 @@ class HeliosGeometryRasterizer(nn.Module):
         self.sigma = sigma
         self.leaf_sigma = leaf_sigma
 
-        y = torch.linspace(0, 1, image_size)
+        y = torch.linspace(1, 0, image_size)  # flip Y so 0=bottom, 1=top matches OpenGL NDC
         x = torch.linspace(0, 1, image_size)
         grid_y, grid_x = torch.meshgrid(y, x, indexing="ij")
         self.register_buffer("grid", torch.stack([grid_x, grid_y], dim=-1).unsqueeze(0).unsqueeze(0))
@@ -51,6 +52,18 @@ class HeliosGeometryRasterizer(nn.Module):
         # Helios-like soil/ground color (tan/brown)
         self.register_buffer("ground_color", torch.tensor([0.74, 0.67, 0.57], dtype=torch.float32))
         self.register_buffer("sun_dir", torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32))
+        # Fixed leaf mesh topology (matches _leaflet_local_mesh_torch in helios_geometry.py)
+        leaf_faces = []
+        Nx, Ny = 8, 6
+        for j in range(Ny):
+            for i in range(Nx):
+                v0 = j * (Nx + 1) + i
+                v1 = v0 + 1
+                v2 = v0 + (Nx + 1) + 1
+                v3 = v0 + (Nx + 1)
+                leaf_faces.append([v0, v1, v2])
+                leaf_faces.append([v0, v2, v3])
+        self.register_buffer("leaf_faces", torch.tensor(leaf_faces, dtype=torch.int64))
 
     def _compute_camera(
         self,
@@ -137,8 +150,7 @@ class HeliosGeometryRasterizer(nn.Module):
         Zc_clip = torch.clamp(Zc, max=-self.near_plane)
         x_ndc = (focal_x * Xc) / (-Zc_clip)
         y_ndc = (focal_y * Yc) / (-Zc_clip)
-        # Mirror X to match Helios visualizer convention.
-        px = -x_ndc * 0.5 + 0.5
+        px = x_ndc * 0.5 + 0.5
         py = y_ndc * 0.5 + 0.5
         return torch.stack([px, py], dim=-1), Zc, focal_y * 0.5
 
@@ -415,6 +427,8 @@ class HeliosGeometryRasterizer(nn.Module):
         A plant point P shadows the ground where the ray from P along -sun first
         hits the ground plane. Points are only cast onto the ground (never occlude
         the plant). Vertical sun -> no horizontal offset, matching Helios.
+
+        Uses chunked processing to avoid OOM when N is large (e.g. 5k-50k points).
         """
         n = torch.tensor([0.0, 0.0, 1.0], device=points.device, dtype=points.dtype)
         s_n = (sun * n).sum()
@@ -430,16 +444,26 @@ class HeliosGeometryRasterizer(nn.Module):
         if not keep.any():
             return self.grid.new_zeros(1, 1, self.image_size, self.image_size)
         G = G[keep]
+
         # recenter at same target center as the camera used
         G_2d, Zc_g, ppm = self.project(G.unsqueeze(0), cam)
         z_abs = Zc_g.abs().clamp(min=self.near_plane)
         r_norm = (0.6 * ppm / z_abs).unsqueeze(-1).unsqueeze(-1)
-        gx = self.grid[..., 0] - G_2d[:, :, 0].unsqueeze(-1).unsqueeze(-1)
-        gy = self.grid[..., 1] - G_2d[:, :, 1].unsqueeze(-1).unsqueeze(-1)
-        dist = torch.sqrt(gx ** 2 + gy ** 2 + 1e-8)
-        alpha = torch.sigmoid((r_norm - dist) / self.sigma)
-        mask = alpha.amax(dim=1, keepdim=True).clamp(0.0, 1.0)
-        return mask
+
+        # Chunked shadow accumulation to avoid OOM from broadcasting (N,H,W)
+        # At 256x256, each (N,1,H,W) tensor costs ~N*64KB. Chunk at 256 -> ~16MB per chunk.
+        chunk = 256
+        mask = self.grid.new_zeros(1, 1, self.image_size, self.image_size)
+        N = G_2d.shape[1]
+        for i in range(0, N, chunk):
+            g2d_chunk = G_2d[:, i:i+chunk, :]
+            rn_chunk = r_norm[:, i:i+chunk, :, :]
+            gx = self.grid[..., 0] - g2d_chunk[:, :, 0].unsqueeze(-1).unsqueeze(-1)
+            gy = self.grid[..., 1] - g2d_chunk[:, :, 1].unsqueeze(-1).unsqueeze(-1)
+            dist = torch.sqrt(gx ** 2 + gy ** 2 + 1e-8)
+            alpha = torch.sigmoid((rn_chunk - dist) / self.sigma)
+            mask = torch.maximum(mask, alpha.amax(dim=1, keepdim=True))
+        return mask.clamp(0.0, 1.0)
 
     def _composite_by_depth(
         self,
@@ -476,6 +500,265 @@ class HeliosGeometryRasterizer(nn.Module):
             acc_alpha = torch.clamp(acc_alpha, 0.0, 1.0)
 
         return torch.cat([rgb, acc_alpha], dim=1)
+
+    def _composite_by_depth_torch(
+        self,
+        alpha: torch.Tensor,      # (B, N, H, W)
+        organs: torch.Tensor,     # (N,) or (B, N) int64
+        depth: torch.Tensor,      # (B, N)
+        organ_colors: Optional[torch.Tensor] = None,  # (4, 3)
+        shade: Optional[torch.Tensor] = None,          # (B, N)
+    ) -> torch.Tensor:
+        """Composite alpha masks back-to-front by depth, fully differentiable."""
+        if organ_colors is None:
+            organ_colors = torch.stack([self.stem_color, self.petiole_color,
+                                        self.leaf_color, self.bud_color], dim=0)  # (4, 3)
+        B, N, H, W = alpha.shape
+        device = alpha.device
+        sorted_depth, sort_idx = torch.sort(depth, dim=1, descending=False)
+        alpha_sorted = torch.gather(alpha, 1, sort_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, H, W))
+
+        # Differentiable organ color lookup
+        if organs.dim() == 1:
+            organ_sorted = torch.gather(
+                organs.unsqueeze(0).expand(B, -1), 1, sort_idx
+            )  # (B, N)
+        else:
+            organ_sorted = torch.gather(organs, 1, sort_idx)  # (B, N)
+        colors_sorted = organ_colors[organ_sorted]  # (B, N, 3)
+
+        rgb = torch.zeros(B, 3, H, W, device=device)
+        acc_alpha = torch.zeros(B, 1, H, W, device=device)
+
+        for i in range(N):
+            a = alpha_sorted[:, i:i+1]  # (B, 1, H, W)
+            color = colors_sorted[:, i]    # (B, 3)
+            if shade is not None:
+                s = shade.gather(1, sort_idx[:, i:i+1])  # (B, 1)
+                shaded = color.unsqueeze(-1).unsqueeze(-1) * s.view(-1, 1, 1, 1)
+            else:
+                shaded = color.unsqueeze(-1).unsqueeze(-1)
+            rgb = rgb + a * (1.0 - acc_alpha) * shaded
+            acc_alpha = acc_alpha + a * (1.0 - acc_alpha)
+            acc_alpha = torch.clamp(acc_alpha, 0.0, 1.0)
+
+        return torch.cat([rgb, acc_alpha], dim=1)
+
+    def _render_leaf_triangles_torch(
+        self,
+        a_2d: torch.Tensor,       # (B, N_tris, 2)
+        b_2d: torch.Tensor,
+        c_2d: torch.Tensor,
+        Zc_tri: torch.Tensor,     # (B, N_tris)
+        organs: torch.Tensor,     # (B, N_tris) int64
+        shade: torch.Tensor,      # (B, N_tris)
+        chunk: int = 128,
+    ) -> torch.Tensor:
+        """Render leaf triangles fully differentiable."""
+        B, N, _ = a_2d.shape
+        device = a_2d.device
+        H = W = self.image_size
+
+        sorted_depth, sort_idx = torch.sort(Zc_tri, dim=1, descending=False)
+        a_sorted = torch.gather(a_2d, 1, sort_idx.unsqueeze(-1).expand(-1, -1, 2))
+        b_sorted = torch.gather(b_2d, 1, sort_idx.unsqueeze(-1).expand(-1, -1, 2))
+        c_sorted = torch.gather(c_2d, 1, sort_idx.unsqueeze(-1).expand(-1, -1, 2))
+        shade_sorted = torch.gather(shade, 1, sort_idx)
+        organ_sorted = torch.gather(organs, 1, sort_idx)  # (B, N)
+
+        organ_colors = torch.stack([self.stem_color, self.petiole_color,
+                                    self.leaf_color, self.bud_color], dim=0)  # (4, 3)
+        colors_sorted = organ_colors[organ_sorted]  # (B, N, 3)
+
+        rgb = torch.zeros(B, 3, H, W, device=device)
+        acc_alpha = torch.zeros(B, 1, H, W, device=device)
+
+        for start in range(0, N, chunk):
+            end = min(start + chunk, N)
+            alpha_chunk = self._fill_triangle(
+                a_sorted[:, start:end],
+                b_sorted[:, start:end],
+                c_sorted[:, start:end],
+            )  # (B, chunk, H, W)
+            for i in range(end - start):
+                global_i = start + i
+                a = alpha_chunk[:, i:i+1]
+                color = colors_sorted[:, global_i]  # (B, 3)
+                s = shade_sorted[:, global_i:global_i+1]  # (B, 1)
+                shaded = color.unsqueeze(-1).unsqueeze(-1) * s.view(-1, 1, 1, 1)
+                rgb = rgb + a * (1.0 - acc_alpha) * shaded
+                acc_alpha = acc_alpha + a * (1.0 - acc_alpha)
+                acc_alpha = torch.clamp(acc_alpha, 0.0, 1.0)
+        return torch.cat([rgb, acc_alpha], dim=1)
+
+    def render_torch_geometry(
+        self,
+        tube_verts: torch.Tensor,      # (B, N_tubes, 2, 3)
+        tube_radii: torch.Tensor,      # (B, N_tubes, 2)
+        tube_organs: torch.Tensor,     # (B, N_tubes) int64
+        leaf_verts: torch.Tensor,      # (B, N_leaflets, V, 3)
+        leaf_faces: torch.Tensor,      # (F, 3)
+        leaf_organs: torch.Tensor,     # (B, N_leaflets) int64
+        bud_centers: torch.Tensor,     # (B, N_buds, 3)
+        bud_radii: torch.Tensor,       # (B, N_buds)
+        bud_lengths: torch.Tensor,     # (B, N_buds)
+        bud_organs: torch.Tensor,      # (B, N_buds) int64
+        camera_height: float = 1.0,
+        distance_from_center: float = 0.0,
+        azimuth_deg: float = 0.0,
+        hfov_deg: Optional[float] = None,
+        target_center: Optional[torch.Tensor] = None,
+        sun_dir: Optional[torch.Tensor] = None,
+        focus_plant: bool = False,
+        background: Optional[str] = None,
+    ) -> torch.Tensor:
+        """Render explicit torch geometry and return RGBA (B, 4, H, W)."""
+        device = next(self.buffers()).device
+        B = tube_verts.shape[0]
+
+        # Collect all points for camera centering
+        all_pts = []
+        if tube_verts.numel():
+            all_pts.append(tube_verts.reshape(B, -1, 3))
+        if leaf_verts.numel():
+            all_pts.append(leaf_verts.reshape(B, -1, 3))
+        if bud_centers.numel():
+            all_pts.append(bud_centers)
+        if all_pts:
+            all_pts = torch.cat(all_pts, dim=1)
+        else:
+            all_pts = torch.zeros(B, 1, 3, device=device)
+
+        if target_center is None:
+            target_center = (all_pts.min(dim=1)[0] + all_pts.max(dim=1)[0]) / 2.0
+        target_center = target_center.to(device).view(B, 3)
+
+        if focus_plant:
+            hfov_deg = float(self.recompute_focus_plant_hfov(all_pts, camera_height, margin=1.05)[0])
+
+        cam = self._compute_camera(camera_height, distance_from_center, azimuth_deg, target_center, hfov_deg)
+
+        sun = self.sun_dir.to(device)
+        if sun_dir is not None:
+            sun = F.normalize(sun_dir.to(device), dim=-1)
+
+        image: Optional[torch.Tensor] = None
+
+        # ------------------------------------------------------------------
+        # Tubes - filter non-tube segments
+        # ------------------------------------------------------------------
+        if tube_verts.numel():
+            tube_mask = (tube_organs == 0) | (tube_organs == 1)  # INTERNODE or PETIOLE
+            keep_mask = tube_mask[0]  # (N,)
+            if keep_mask.any():
+                p1 = tube_verts[:, keep_mask, 0, :]  # (B, N_tubes, 3)
+                p2 = tube_verts[:, keep_mask, 1, :]
+                mid = (p1 + p2) / 2.0
+                w_m = (tube_radii[:, keep_mask, 0] + tube_radii[:, keep_mask, 1]) / 2.0
+                organs_k = tube_organs[:, keep_mask]
+
+                p1_2d, _, ppm = self.project(p1, cam)
+                p2_2d, _, _ = self.project(p2, cam)
+                _, Zc_mid, _ = self.project(mid, cam)
+
+                z_abs = Zc_mid.abs().clamp(min=self.near_plane)
+                widths = (w_m * 2.0 * ppm / z_abs).clamp(min=0.0005, max=0.08)
+                alpha = self._soft_line(p1_2d, p2_2d, widths)  # (B, N, H, W)
+
+                axis_norm = F.normalize(p2 - p1, dim=-1)
+                ndotl = (axis_norm * sun.view(1, 1, 3)).sum(dim=-1).abs()
+                shade = 0.5 + 0.5 * ndotl.clamp(0, 1)
+                image = self._composite_by_depth_torch(alpha, organs_k, Zc_mid, shade=shade)
+
+        # ------------------------------------------------------------------
+        # Leaves (triangulate) - filter non-leaf triangles
+        # ------------------------------------------------------------------
+        if leaf_verts.numel():
+            Fm = leaf_faces.shape[0]
+            # Expand leaf_faces to all leaflets
+            a = leaf_verts[:, :, leaf_faces[:, 0], :]  # (B, N_leaflets, F, 3)
+            b = leaf_verts[:, :, leaf_faces[:, 1], :]
+            c = leaf_verts[:, :, leaf_faces[:, 2], :]
+
+            # Flatten batch+leaflets+faces
+            a = a.reshape(B, -1, 3)  # (B, N_leaflets*F, 3)
+            b = b.reshape(B, -1, 3)
+            c = c.reshape(B, -1, 3)
+            tri_organs = leaf_organs.unsqueeze(2).expand(-1, -1, Fm).reshape(B, -1)
+
+            # Filter: keep only LEAF organ triangles
+            leaf_mask = (tri_organs == 2)  # (B, N*F)
+            # Flatten mask to 1D and gather
+            keep_mask = leaf_mask[0]  # (N*F,)
+            if keep_mask.any():
+                a = a[:, keep_mask]
+                b = b[:, keep_mask]
+                c = c[:, keep_mask]
+                tri_organs = tri_organs[:, keep_mask]
+
+                tri_center = (a + b + c) / 3.0
+                a_2d, _, _ = self.project(a, cam)
+                b_2d, _, _ = self.project(b, cam)
+                c_2d, _, _ = self.project(c, cam)
+                _, Zc_tri, _ = self.project(tri_center, cam)
+
+                n = torch.cross(b - a, c - a, dim=-1)
+                n = F.normalize(n, dim=-1)
+                ndotl = (n * sun.view(1, 1, 3)).sum(dim=-1).abs()
+                shade = 0.35 + 0.65 * ndotl.clamp(0, 1)
+
+                leaf_img = self._render_leaf_triangles_torch(
+                    a_2d, b_2d, c_2d, Zc_tri, tri_organs, shade, chunk=128
+                )
+                if image is None:
+                    image = leaf_img
+                else:
+                    image = self._composite_images(image, leaf_img, Zc_tri.min(dim=1, keepdim=True)[0])
+
+        # ------------------------------------------------------------------
+        # Buds (ellipsoid approximated as sphere in screen space) - filter non-buds
+        # ------------------------------------------------------------------
+        if bud_centers.numel():
+            bud_mask = (bud_organs == 3)  # (B, N)
+            keep_mask = bud_mask[0]  # (N,)
+            if keep_mask.any():
+                centers_k = bud_centers[:, keep_mask]
+                radii_k = bud_radii[:, keep_mask]
+                organs_k = bud_organs[:, keep_mask]
+                
+                center_2d, Zc_bud, ppm = self.project(centers_k, cam)
+                z_abs = Zc_bud.abs().clamp(min=self.near_plane)
+                r_norm = (radii_k * ppm / z_abs).clamp(min=0.001, max=0.05)
+                r_norm = r_norm.unsqueeze(-1).unsqueeze(-1)
+                dx = self.grid[..., 0] - center_2d[:, :, 0].unsqueeze(-1).unsqueeze(-1)
+                dy = self.grid[..., 1] - center_2d[:, :, 1].unsqueeze(-1).unsqueeze(-1)
+                dist = torch.sqrt(dx ** 2 + dy ** 2 + 1e-8)
+                alpha = torch.sigmoid((r_norm - dist) / self.sigma)
+                bud_img = self._composite_by_depth_torch(alpha, organs_k, Zc_bud)
+                if image is None:
+                    image = bud_img
+                else:
+                    image = self._composite_images(image, bud_img, Zc_bud.min(dim=1, keepdim=True)[0])
+
+        # ------------------------------------------------------------------
+        # Background
+        # ------------------------------------------------------------------
+        if image is None:
+            image = self.bg_color.view(1, 3, 1, 1).expand(B, 3, self.image_size, self.image_size).to(device)
+            image = torch.cat([image, torch.zeros(B, 1, self.image_size, self.image_size, device=device)], dim=1)
+        else:
+            covered = image[:, 3:4]
+            rgb = image[:, :3]
+            bg = self.ground_color if background == "ground" else self.bg_color
+            bg = bg.view(1, 3, 1, 1).to(device)
+            rgb = rgb * covered + bg * (1.0 - covered)
+            if background == "ground":
+                ground_z = float(all_pts[..., 2].min().item())
+                shadow_mask = self._cast_ground_shadow(all_pts.reshape(-1, 3), sun, cam, ground_z)
+                rgb = rgb * (1.0 - 0.55 * shadow_mask * (1.0 - covered)) + bg * (0.55 * shadow_mask * (1.0 - covered))
+            image = torch.cat([rgb, covered], dim=1)
+
+        return image
 
     def _composite_images(self, base: torch.Tensor, overlay: torch.Tensor, overlay_depth: torch.Tensor) -> torch.Tensor:
         """Composite overlay RGBA over base RGBA by per-pixel depth."""

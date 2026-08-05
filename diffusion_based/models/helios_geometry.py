@@ -846,6 +846,156 @@ def _direction_from_angles(pitches: torch.Tensor, yaws: torch.Tensor) -> torch.T
     return torch.stack([dx, dy, dz], dim=-1)
 
 
+def _leaflet_local_mesh_torch(device: Optional[torch.device] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Return a simple leaf prototype in its local frame as torch Tensors.
+
+    Uses pure torch ops for vertex grid creation.  Scale is fixed to 1.0;
+    callers should multiply by the desired leaf length.
+    """
+    L = 1.0
+    aspect = 0.7
+    W = L * aspect
+    Nx = 8
+    Ny = 6
+
+    j = torch.arange(Ny + 1, dtype=torch.float32, device=device)
+    i = torch.arange(Nx + 1, dtype=torch.float32, device=device)
+    yy = j * (W / Ny) - 0.5 * W          # (Ny+1,)
+    xx = i * (1.0 / Nx)                   # (Nx+1,)
+
+    y_grid, x_grid = torch.meshgrid(yy, xx, indexing="ij")  # (Ny+1, Nx+1)
+
+    taper = torch.sin(math.pi * x_grid)
+    y_eff = y_grid * taper
+    z_arch = (
+        0.08 * L
+        * torch.sin(math.pi * x_grid)
+        * (1.0 - 4.0 * (y_grid / max(W, 1e-6)) ** 2)
+    )
+
+    verts = torch.stack([x_grid * L, y_eff, z_arch], dim=-1).reshape(-1, 3)
+
+    faces = []
+    for jj in range(Ny):
+        for ii in range(Nx):
+            v0 = jj * (Nx + 1) + ii
+            v1 = v0 + 1
+            v2 = v0 + (Nx + 1) + 1
+            v3 = v0 + (Nx + 1)
+            faces.append([v0, v1, v2])
+            faces.append([v0, v2, v3])
+    faces_t = torch.tensor(faces, dtype=torch.int64, device=device)
+    return verts, faces_t
+
+
+def nodes_to_geometry_torch(
+    nodes: torch.Tensor,
+    parent_indices: Optional[torch.Tensor] = None,
+) -> Tuple[
+    torch.Tensor, torch.Tensor, torch.Tensor,
+    torch.Tensor, torch.Tensor, torch.Tensor,
+    torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
+]:
+    """Convert a batch of 15D organ-graph nodes to explicit Helios geometry (torch).
+
+    All returned tensors preserve the node dimension ``N`` so the forward pass
+    stays fully differentiable.  Non-matching organ types produce degenerate
+    geometry that is masked out in the rasterizer.
+
+    Returns:
+        tube_verts:   (B, N, 2, 3)
+        tube_radii:   (B, N, 2)
+        tube_organs:  (B, N)
+        leaf_verts:   (B, N, V, 3)   world-space
+        leaf_faces:   (F, 3)
+        leaf_organs:  (B, N)
+        bud_centers:  (B, N, 3)
+        bud_radii:    (B, N)
+        bud_lengths:  (B, N)
+        bud_organs:   (B, N)
+    """
+    B, N, _ = nodes.shape
+    device = nodes.device
+
+    positions = nodes[..., :3]
+    lengths = nodes[..., 3].clamp(min=1e-6)
+    radii = nodes[..., 4].clamp(min=1e-6)
+    pitches = nodes[..., 5]
+    yaws = nodes[..., 6]
+    organ_logits = nodes[..., 8:12]
+    existence = nodes[..., 14]
+
+    directions = _direction_from_angles(pitches, yaws)  # (B, N, 3)
+    organ = organ_logits.argmax(dim=-1)                 # (B, N)
+
+    # ------------------------------------------------------------------
+    # Tubes (internodes + petioles)
+    # ------------------------------------------------------------------
+    is_tube = (
+        (organ == OrganNode3D.INTERNODE) | (organ == OrganNode3D.PETIOLE)
+    ).float()
+    tube_lengths = lengths * is_tube
+    tips = positions + tube_lengths.unsqueeze(-1) * directions
+    tube_verts = torch.stack([positions, tips], dim=2)          # (B, N, 2, 3)
+
+    is_petiole = (organ == OrganNode3D.PETIOLE).float()
+    r_tip = radii * (1.0 - 0.5 * is_petiole)
+    tube_radii = torch.stack([radii, r_tip], dim=2)           # (B, N, 2)
+    tube_organs = organ                                         # (B, N)
+
+    # ------------------------------------------------------------------
+    # Leaves
+    # ------------------------------------------------------------------
+    local_verts, leaf_faces = _leaflet_local_mesh_torch(device=device)
+    V = local_verts.shape[0]
+
+    is_leaf = (organ == OrganNode3D.LEAF).float()
+    leaf_lengths = lengths * is_leaf                              # (B, N)
+
+    local_scaled = local_verts.view(1, 1, V, 3) * leaf_lengths.view(B, N, 1, 1)
+
+    x_axis = directions
+    tmp = torch.where(
+        x_axis[..., 2:3].abs() < 0.9,
+        torch.tensor([0.0, 0.0, 1.0], device=device),
+        torch.tensor([0.0, 1.0, 0.0], device=device),
+    )
+    y_axis = torch.cross(tmp.expand_as(x_axis), x_axis, dim=-1)
+    y_axis = F.normalize(y_axis, dim=-1)
+    z_axis = torch.cross(x_axis, y_axis, dim=-1)
+
+    world_verts = (
+        local_scaled[..., 0:1] * x_axis.unsqueeze(2)
+        + local_scaled[..., 1:2] * y_axis.unsqueeze(2)
+        + local_scaled[..., 2:3] * z_axis.unsqueeze(2)
+    )                                                           # (B, N, V, 3)
+    world_verts = world_verts + positions.unsqueeze(2)
+
+    # Collapse non-leaves to a single point so triangles have ~zero area
+    leaf_verts = torch.where(
+        is_leaf.view(B, N, 1, 1) > 0,
+        world_verts,
+        positions.unsqueeze(2),
+    )
+    leaf_organs = organ  # Actual organ types (not all LEAF)
+
+    # ------------------------------------------------------------------
+    # Buds
+    # ------------------------------------------------------------------
+    is_bud = (organ == OrganNode3D.FLORAL_BUD).float()
+    bud_centers = positions                                     # (B, N, 3)
+    bud_radii = radii * is_bud                                  # (B, N)
+    bud_lengths = lengths * is_bud                                # (B, N)
+    bud_organs = torch.full((B, N), OrganNode3D.FLORAL_BUD,
+                            dtype=torch.long, device=device)
+
+    return (
+        tube_verts, tube_radii, tube_organs,
+        leaf_verts, leaf_faces, leaf_organs,
+        bud_centers, bud_radii, bud_lengths, bud_organs,
+    )
+
+
 def nodes_to_geometry(
     nodes: torch.Tensor,
     parent_indices: Optional[torch.Tensor] = None,
