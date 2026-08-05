@@ -719,7 +719,7 @@ class HeliosGeometryRasterizer(nn.Module):
         # Buds (ellipsoid approximated as sphere in screen space) - filter non-buds
         # ------------------------------------------------------------------
         if bud_centers.numel():
-            bud_mask = (bud_organs == 3)  # (B, N)
+            bud_mask = (bud_organs == 3) & (bud_radii > 1e-4)  # (B, N)
             keep_mask = bud_mask[0]  # (N,)
             if keep_mask.any():
                 centers_k = bud_centers[:, keep_mask]
@@ -769,5 +769,7 @@ class HeliosGeometryRasterizer(nn.Module):
         over_a = overlay[:, 3:4]
         out_a = over_a + base_a * (1.0 - over_a)
         out_rgb = over_rgb * over_a + base_rgb * base_a * (1.0 - over_a)
-        out_rgb = torch.where(out_a > 1e-6, out_rgb / out_a, out_rgb)
+        # Avoid 0/0 NaN in backward: clamp denominator, keep 0 rgb where out_a is 0.
+        out_rgb = out_rgb / out_a.clamp(min=1e-6)
+        out_rgb = torch.where(out_a > 1e-6, out_rgb, torch.zeros_like(out_rgb))
         return torch.cat([out_rgb, out_a], dim=1)

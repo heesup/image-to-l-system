@@ -249,19 +249,14 @@ def _leaflet_from_node(node: OrganNode3D) -> HeliosLeaflet:
 
     R = np.stack([midrib_dir, width_axis, normal_axis], axis=1)
 
-    yaw = math.radians(node.yaw)
-    pitch = math.radians(node.pitch)
+    # The midrib direction already encodes pitch/yaw (direction = f(pitch, yaw)).
+    # Only apply the leaf roll (twist about the midrib) to avoid double rotation.
     roll = math.radians(node.roll)
 
-    # Apply intrinsic yaw about local normal, pitch about local width axis, roll about midrib
-    cy, sy = math.cos(yaw), math.sin(yaw)
-    Ry = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
-    cp, sp = math.cos(pitch), math.sin(pitch)
-    Rp = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
     cr, sr = math.cos(roll), math.sin(roll)
     Rr = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
 
-    R_total = R @ Rr @ Rp @ Ry
+    R_total = R @ Rr
     verts = (R_total @ verts.T).T + node.position
     return HeliosLeaflet(vertices=verts.astype(np.float32), faces=faces, organ=OrganNode3D.LEAF)
 
@@ -922,11 +917,16 @@ def nodes_to_geometry_torch(
     radii = nodes[..., 4].clamp(min=1e-6)
     pitches = nodes[..., 5]
     yaws = nodes[..., 6]
+    rolls = nodes[..., 7]
     organ_logits = nodes[..., 8:12]
     existence = nodes[..., 14]
 
     directions = _direction_from_angles(pitches, yaws)  # (B, N, 3)
     organ = organ_logits.argmax(dim=-1)                 # (B, N)
+
+    # Existence mask: nodes with existence<=0.5 (e.g. dormant floral buds) are
+    # not rendered. Applied consistently to tubes, leaves and buds below.
+    exist_mask = (existence > 0.5).float()
 
     # ------------------------------------------------------------------
     # Tubes (internodes + petioles)
@@ -934,13 +934,13 @@ def nodes_to_geometry_torch(
     is_tube = (
         (organ == OrganNode3D.INTERNODE) | (organ == OrganNode3D.PETIOLE)
     ).float()
-    tube_lengths = lengths * is_tube
+    tube_lengths = lengths * is_tube * exist_mask
     tips = positions + tube_lengths.unsqueeze(-1) * directions
     tube_verts = torch.stack([positions, tips], dim=2)          # (B, N, 2, 3)
 
     is_petiole = (organ == OrganNode3D.PETIOLE).float()
-    r_tip = radii * (1.0 - 0.5 * is_petiole)
-    tube_radii = torch.stack([radii, r_tip], dim=2)           # (B, N, 2)
+    r_tip = radii * (1.0 - 0.5 * is_petiole) * exist_mask
+    tube_radii = torch.stack([radii * exist_mask, r_tip], dim=2)   # (B, N, 2)
     tube_organs = organ                                         # (B, N)
 
     # ------------------------------------------------------------------
@@ -950,7 +950,7 @@ def nodes_to_geometry_torch(
     V = local_verts.shape[0]
 
     is_leaf = (organ == OrganNode3D.LEAF).float()
-    leaf_lengths = lengths * is_leaf                              # (B, N)
+    leaf_lengths = lengths * is_leaf * exist_mask                  # (B, N)
 
     local_scaled = local_verts.view(1, 1, V, 3) * leaf_lengths.view(B, N, 1, 1)
 
@@ -964,16 +964,32 @@ def nodes_to_geometry_torch(
     y_axis = F.normalize(y_axis, dim=-1)
     z_axis = torch.cross(x_axis, y_axis, dim=-1)
 
-    world_verts = (
-        local_scaled[..., 0:1] * x_axis.unsqueeze(2)
-        + local_scaled[..., 1:2] * y_axis.unsqueeze(2)
-        + local_scaled[..., 2:3] * z_axis.unsqueeze(2)
-    )                                                           # (B, N, V, 3)
+    # Basis change from the leaf-local frame (x=midrib, y=width, z=normal) to world.
+    R = torch.stack([x_axis, y_axis, z_axis], dim=-1)             # (B, N, 3, 3) columns
+
+    # The midrib direction already encodes pitch/yaw (direction = f(pitch, yaw)).
+    # Only apply the leaf roll (twist about the midrib) to avoid double rotation.
+    cr = torch.cos(rolls * math.pi / 180.0)
+    sr = torch.sin(rolls * math.pi / 180.0)
+
+    Rr = torch.zeros(B, N, 3, 3, device=device)
+    Rr[..., 0, 0] = 1.0
+    Rr[..., 1, 1] = cr
+    Rr[..., 1, 2] = -sr
+    Rr[..., 2, 1] = sr
+    Rr[..., 2, 2] = cr
+
+    R_total = R @ Rr                                               # (B, N, 3, 3)
+
+    # world = R_total (B,N,3,3) @ local (B,N,V,3); einsum over last two axes.
+    world_verts = torch.einsum("bnij,bnvj->bniv", R_total, local_scaled)  # (B,N,3,V)
+    world_verts = torch.movedim(world_verts, -2, -1)               # (B, N, V, 3)
     world_verts = world_verts + positions.unsqueeze(2)
 
-    # Collapse non-leaves to a single point so triangles have ~zero area
+    # Collapse non-leaves and non-existent leaves to a single point so
+    # triangles have ~zero area.
     leaf_verts = torch.where(
-        is_leaf.view(B, N, 1, 1) > 0,
+        (is_leaf * exist_mask).view(B, N, 1, 1) > 0,
         world_verts,
         positions.unsqueeze(2),
     )
@@ -984,10 +1000,9 @@ def nodes_to_geometry_torch(
     # ------------------------------------------------------------------
     is_bud = (organ == OrganNode3D.FLORAL_BUD).float()
     bud_centers = positions                                     # (B, N, 3)
-    bud_radii = radii * is_bud                                  # (B, N)
-    bud_lengths = lengths * is_bud                                # (B, N)
-    bud_organs = torch.full((B, N), OrganNode3D.FLORAL_BUD,
-                            dtype=torch.long, device=device)
+    bud_radii = radii * is_bud * exist_mask                     # (B, N)
+    bud_lengths = lengths * is_bud * exist_mask                 # (B, N)
+    bud_organs = organ                                          # (B, N) actual organ types
 
     return (
         tube_verts, tube_radii, tube_organs,
