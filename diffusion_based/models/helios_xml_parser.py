@@ -166,6 +166,20 @@ class Phytomer3D:
                 fnode.shoot_id = self.shoot_id
                 fnode.phytomer_idx = self.phytomer_index
 
+                # Use the reconstructed peduncle direction/head when available
+                # (set by _reconstruct_petiole_geometry); otherwise fall back to
+                # the geometry stored in the XML (or a vertical default).
+                if 'head_pos' in fbud:
+                    fnode.tip_position = fbud['head_pos'].copy()
+                    fnode.direction = fbud['peduncle_dir'].copy()
+                elif np.linalg.norm(fbud.get('tip_pos', np.zeros(3))) > 1e-9:
+                    fnode.tip_position = fbud['tip_pos'].copy()
+                    d = fnode.tip_position - fnode.position
+                    fnode.direction = d / (np.linalg.norm(d) + 1e-12)
+                else:
+                    fnode.tip_position = fbud.get('base_pos', fnode.position).copy()
+                    fnode.direction = np.array([0.0, 0.0, 1.0])
+
                 # In Helios C++, buds only render geometry if bud_state is FLOWER_OPEN or FLOWER_CLOSED
                 # bud_state: 0=dormant, 1=dead, 2=active, 3=flower_closed, 4=flower_open, 5=fruit_developing
                 state = fbud.get('bud_state', 0)
@@ -707,7 +721,61 @@ class HeliosXMLParser:
                 leaf['pitch'] = math.degrees(math.asin(clamp_val(leaf_direction[2], -1.0, 1.0)))
 
             for fbud in petiole.get('floral_buds', []):
+                # Reconstruct the peduncle (floral-bud stem) direction and head
+                # position following Helios PlantArchitecture.cpp
+                # `Phytomer::updateInflorescence`:
+                #   1. start with the internode axis,
+                #   2. apply peduncle pitch about the inflorescence bending axis
+                #      (= cross(parent_internode_axis, petiole_axis)),
+                #   3. accumulate curvature toward vertical along segments.
                 fbud['base_pos'] = pet_vertices[-1].copy()
+                bud_base = pet_vertices[-1].copy()
+                peduncle_pitch = fbud.get('peduncle_pitch', 0.0)
+                peduncle_curvature = fbud.get('peduncle_curvature', 0.0)
+                peduncle_length = fbud.get('peduncle_length', 0.0)
+
+                # Helios: peduncle_axis = getInternodeAxisVector(1) (internode axis).
+                bud_axis = _normalize(internode_axis)
+                # inflorescence_bending_axis = cross(parent_internode_axis, petiole_axis_actual)
+                # where petiole_axis_actual is the petiole's final (curved) axis = pet_axis.
+                bend_axis = _normalize(np.cross(internode_axis, pet_axis))
+                if not np.isfinite(bend_axis).all() or np.linalg.norm(bend_axis) < 1e-6:
+                    bend_axis = np.array([1.0, 0.0, 0.0])
+                if abs(peduncle_pitch) > 1e-10:
+                    bud_axis = _rotate_point_about_line(
+                        bud_axis, bend_axis, math.radians(peduncle_pitch))
+
+                n_seg = max(1, int(petiole.get('length_segments', 3)))
+                dr = peduncle_length / float(n_seg)
+                bud_pos = bud_base.copy()
+                if abs(peduncle_curvature) > 1e-10:
+                    # Horizontal bending axis perpendicular to current direction.
+                    # Match C++: theta_curvature = deg2rad(curvature * dr)  (degrees per segment).
+                    h_bend = np.cross(bud_axis, np.array([0.0, 0.0, 1.0]))
+                    h_norm = np.linalg.norm(h_bend)
+                    sign = 1.0 if peduncle_curvature > 0 else -1.0
+                    target = np.array([0.0, 0.0, sign])
+                    theta_curv = math.radians(peduncle_curvature * dr)
+                    for _ in range(n_seg):
+                        if h_norm > 1e-3:
+                            h_bend_u = h_bend / h_norm
+                            cos_ang = max(-1.0, min(1.0, np.dot(bud_axis, target)))
+                            theta_target = math.acos(cos_ang)
+                            if abs(theta_curv) >= theta_target:
+                                bud_axis = target.copy()
+                            else:
+                                bud_axis = _rotate_point_about_line(
+                                    bud_axis, h_bend_u, theta_curv)
+                            h_bend = np.cross(bud_axis, np.array([0.0, 0.0, 1.0]))
+                            h_norm = np.linalg.norm(h_bend)
+                        else:
+                            bud_axis = target.copy()
+                        bud_pos = bud_pos + dr * _normalize(bud_axis)
+                else:
+                    bud_pos = bud_base + peduncle_length * _normalize(bud_axis)
+
+                fbud['head_pos'] = bud_pos.copy()
+                fbud['peduncle_dir'] = _normalize(bud_axis)
 
     def _parse_vec3(self, text: str) -> np.ndarray:
         parts = text.strip().split()
