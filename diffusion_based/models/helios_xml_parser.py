@@ -58,22 +58,35 @@ class OrganNode3D:
         self.shoot_id = 0                 # shoot hierarchy ID
         self.phytomer_idx = 0             # phytomer index along shoot
         self.existence = 1.0              # confidence [0, 1]
+        self.flower_head_radius = 0.0     # visible flower/fruit head radius (m)
 
         self.tip_position = np.zeros(3)   # tip position
         self.direction = np.array([0.0, 0.0, 1.0])
         self.parent_idx = -1              # global parent index in node list
 
     def to_15d(self) -> np.ndarray:
-        """Convert to 15D feature vector."""
+        """Convert to 15D feature vector (no flower-head radius)."""
+        v = self.to_16d()
+        return v[:15]
+
+    def to_16d(self) -> np.ndarray:
+        """Convert to 16D feature vector.
+
+        Layout: [xyz(3), length, radius, pitch, yaw, roll, organ_onehot(4),
+                 shoot_id, phytomer_idx, existence, flower_head_radius].
+        Channel 15 (flower_head_radius) is the radius of the visible flower /
+        fruit head at the tip of a floral bud. It is 0 for non-floral organs.
+        """
         one_hot = np.zeros(4)
         one_hot[self.organ_type] = 1.0
+        head_r = self.flower_head_radius if self.organ_type == OrganNode3D.FLORAL_BUD else 0.0
         return np.array([
             self.position[0], self.position[1], self.position[2],
             self.length, self.radius,
             self.pitch, self.yaw, self.roll,
             one_hot[0], one_hot[1], one_hot[2], one_hot[3],
             float(self.shoot_id), float(self.phytomer_idx),
-            self.existence,
+            self.existence, float(head_r),
         ])
 
 
@@ -159,6 +172,11 @@ class Phytomer3D:
                 # In early DAP (short internodes), floral buds with unexpanded peduncle (length > 0.1m) are not rendered
                 if state in [3, 4] or (state >= 5 and fnode.length < 0.05):
                     fnode.existence = 1.0
+                    # Visible flower/fruit head sits at the peduncle tip. C++ renders
+                    # an inflorescence prototype scaled by flower_prototype_scale
+                    # (e.g. 0.03 m for cowpea / bean). We surface that radius as a
+                    # 16D channel so the differentiable renderer can draw it.
+                    fnode.flower_head_radius = 0.03
                 else:
                     fnode.existence = 0.0  # Hide unrendered dormant floral bud
 

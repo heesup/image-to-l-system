@@ -920,6 +920,12 @@ def nodes_to_geometry_torch(
     rolls = nodes[..., 7]
     organ_logits = nodes[..., 8:12]
     existence = nodes[..., 14]
+    # Channel 15 (optional): visible flower/fruit head radius. Absent for the
+    # classic 15D layout, so default to 0.
+    if nodes.shape[-1] >= 16:
+        flower_head_radius = nodes[..., 15].clamp(min=0.0)
+    else:
+        flower_head_radius = torch.zeros_like(existence)
 
     directions = _direction_from_angles(pitches, yaws)  # (B, N, 3)
     organ = organ_logits.argmax(dim=-1)                 # (B, N)
@@ -999,10 +1005,22 @@ def nodes_to_geometry_torch(
     # Buds
     # ------------------------------------------------------------------
     is_bud = (organ == OrganNode3D.FLORAL_BUD).float()
-    bud_centers = positions                                     # (B, N, 3)
-    bud_radii = radii * is_bud * exist_mask                     # (B, N)
-    bud_lengths = lengths * is_bud * exist_mask                 # (B, N)
     bud_organs = organ                                          # (B, N) actual organ types
+
+    # Visible flower/fruit head sits at the tip of the peduncle, rendered as a
+    # sphere with radius = flower_head_radius (channel 15) when a flower exists.
+    # Interior/stem part is the peduncle tube already handled above (tube branch).
+    has_head = (flower_head_radius > 1e-4).float()
+    head_radius = flower_head_radius * has_head * exist_mask     # (B, N)
+    # Fallback for the classic 15D layout (no channel 15): draw the peduncle tip
+    # with the stored radius so gradients still flow for 15D inputs.
+    if nodes.shape[-1] >= 16:
+        bud_radii = head_radius
+    else:
+        bud_radii = radii * is_bud * exist_mask
+    bud_centers = positions + directions * lengths.unsqueeze(-1)  # peduncle tip (B, N, 3)
+    bud_lengths = bud_radii
+    bud_organs = organ
 
     return (
         tube_verts, tube_radii, tube_organs,

@@ -95,7 +95,7 @@ for row, (label, cfg) in enumerate(DAP_CONFIG.items()):
 
     # --- 15D Torch (differentiable) ---
     nodes = parser.get_all_organ_nodes()
-    arr = np.array([n.to_15d() for n in nodes], dtype=np.float32)
+    arr = np.array([n.to_16d() for n in nodes], dtype=np.float32)
     nt = torch.tensor(arr, dtype=torch.float32).unsqueeze(0).to(device)
     parents = torch.tensor([n.parent_idx for n in nodes], dtype=torch.long).unsqueeze(0).to(device)
 
@@ -145,7 +145,7 @@ for label, cfg in DAP_CONFIG.items():
     t_xml = (time.time() - t0) * 1000
 
     nodes = parser.get_all_organ_nodes()
-    arr = np.array([n.to_15d() for n in nodes], dtype=np.float32)
+    arr = np.array([n.to_16d() for n in nodes], dtype=np.float32)
     nt = torch.tensor(arr, dtype=torch.float32).unsqueeze(0).to(device)
     parents = torch.tensor([n.parent_idx for n in nodes], dtype=torch.long).unsqueeze(0).to(device)
     t0 = time.time()
