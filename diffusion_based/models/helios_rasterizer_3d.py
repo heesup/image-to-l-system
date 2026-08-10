@@ -707,10 +707,10 @@ class HeliosGeometryRasterizer(nn.Module):
         image: Optional[torch.Tensor] = None
 
         # ------------------------------------------------------------------
-        # Tubes - filter non-tube segments
+        # Tubes - filter non-tube segments (INTERNODE, PETIOLE, POD)
         # ------------------------------------------------------------------
         if tube_verts.numel():
-            tube_mask = (tube_organs == 0) | (tube_organs == 1)  # INTERNODE or PETIOLE
+            tube_mask = (tube_organs == OrganNode3D.INTERNODE) | (tube_organs == OrganNode3D.PETIOLE) | (tube_organs == OrganNode3D.POD)
             keep_mask = tube_mask[0]  # (N,)
             if keep_mask.any():
                 p1 = tube_verts[:, keep_mask, 0, :]  # (B, N_tubes, 3)
@@ -859,11 +859,12 @@ class HeliosGeometryRasterizer(nn.Module):
     ) -> torch.Tensor:
         """Render HeliosPlantGeometryTorch or raw geometry directly."""
         if hasattr(geom, "get_geometry_tensors"):
+            tensors = geom.get_geometry_tensors()
             (
                 tube_verts, tube_radii, tube_organs,
                 leaf_verts, leaf_faces, leaf_organs,
                 ell_centers, ell_radii, ell_lengths, ell_organs
-            ) = geom.get_geometry_tensors()
+            ) = tensors[:10]
             return self.render_torch_geometry(
                 tube_verts, tube_radii, tube_organs,
                 leaf_verts, leaf_faces, leaf_organs,
