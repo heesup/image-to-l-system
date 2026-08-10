@@ -370,30 +370,34 @@ def build_helios_geometry_from_xml(xml_path: str) -> HeliosPlantGeometry:
                 # Floral buds / Flowers / Pods
                 for fbud in pet.get("floral_buds", []):
                     state = fbud.get("bud_state", 0)
-                    # Determine organ type from bud_state
-                    if state in [3, 4]:
-                        organ = OrganNode3D.FLOWER
-                    elif state >= 5:
-                        organ = OrganNode3D.POD
-                    else:
+                    if state not in [3, 4, 5]:
                         continue  # dormant / dead / unexpanded: skip
 
-                    # Center = peduncle tip (head_pos), fallback to petiole tip
-                    center = fbud.get("head_pos",
-                             fbud.get("tip_pos",
-                             fbud.get("base_pos",
-                             pet.get("tip_pos", phyt.internode_tip))))
-                    # Head radius: from flower_prototype_scale XML tag, else fixed 0.03 m for cowpea
-                    # NOTE: peduncle_radius is the stem radius, NOT the flower head size
-                    head_r = fbud.get("flower_prototype_scale", 0.03)
-                    if head_r < 0.005:   # sanity clamp: must be visible
-                        head_r = 0.03
+                    # Add peduncle tube connecting petiole tip to flower/pod head
+                    base_pos = fbud.get("base_pos", pet.get("tip_pos", phyt.internode_tip))
+                    head_pos = fbud.get("head_pos", base_pos)
+                    if np.linalg.norm(head_pos - base_pos) > 0.005:
+                        ped_r = fbud.get("peduncle_radius", 0.002)
+                        geom.tubes.append(HeliosTube(
+                            vertices=np.array([base_pos, head_pos], dtype=np.float32),
+                            radii=np.array([ped_r, ped_r], dtype=np.float32),
+                            organ=OrganNode3D.PETIOLE,
+                        ))
+
+                    if state in [3, 4]:
+                        organ = OrganNode3D.FLOWER
+                        head_r = 0.010  # 1cm radius blossom (matches GT Helios flower size)
+                    else:
+                        organ = OrganNode3D.POD
+                        head_r = 0.005  # 5mm radius pod head
+
                     geom.ellipsoids.append(HeliosEllipsoid(
-                        center=np.asarray(center, dtype=np.float64).copy(),
+                        center=np.asarray(head_pos, dtype=np.float64).copy(),
                         radius=head_r,
-                        length=head_r,  # sphere: length == radius
+                        length=head_r,
                         organ=organ,
                     ))
+
 
 
 
