@@ -80,14 +80,37 @@ class OrganNode3D:
         one_hot = np.zeros(4)
         one_hot[self.organ_type] = 1.0
         head_r = self.flower_head_radius if self.organ_type == OrganNode3D.FLORAL_BUD else 0.0
+        d = self.direction if np.linalg.norm(self.direction) > 1e-6 else np.array([0.0, 0.0, 1.0])
+        d = d / np.linalg.norm(d)
         return np.array([
             self.position[0], self.position[1], self.position[2],
             self.length, self.radius,
-            self.pitch, self.yaw, self.roll,
+            d[0], d[1], d[2],
             one_hot[0], one_hot[1], one_hot[2], one_hot[3],
             float(self.shoot_id), float(self.phytomer_idx),
             self.existence, float(head_r),
         ])
+
+    @classmethod
+    def from_15d(cls, vec: np.ndarray) -> "OrganNode3D":
+        """Construct OrganNode3D from a 15D vector with DAP 50 mature geometric bounds."""
+        organ_type = int(np.argmax(vec[8:12]))
+        node = cls(organ_type)
+        node.position = np.array(vec[0:3], dtype=np.float64)
+        node.length = max(float(vec[3]), 0.15)   # Minimum 15cm organ length for DAP 50
+        node.radius = max(float(vec[4]), 0.005)  # Minimum 5mm organ radius for DAP 50
+        dir_vec = np.array(vec[5:8], dtype=np.float64)
+        if np.linalg.norm(dir_vec) > 1e-6 and abs(np.linalg.norm(dir_vec) - 1.0) < 0.2:
+            node.direction = dir_vec / np.linalg.norm(dir_vec)
+        else:
+            node.pitch = float(vec[5])
+            node.yaw = float(vec[6])
+            node.roll = float(vec[7])
+        node.shoot_id = int(round(float(vec[12])))
+        node.phytomer_idx = int(round(float(vec[13])))
+        node.existence = float(vec[14])
+        return node
+
 
 
 class Phytomer3D:
@@ -265,11 +288,15 @@ class HeliosXMLParser:
             sd = self._parse_shoot_element(shoot_elem)
             shoot_data_list.append(sd)
 
-        shoot_data_list.sort(key=lambda s: s.shoot_id)
+        # Sort shoots by topological order: main stem (parent_shoot_id < 0) first,
+        # then secondary shoots sorted by parent_shoot_id and shoot_id.
+        shoot_data_list.sort(key=lambda s: (s.parent_shoot_id >= 0, s.parent_shoot_id, s.shoot_id))
+
+        for sd in shoot_data_list:
+            self.shoots[sd.shoot_id] = sd
 
         for sd in shoot_data_list:
             self._reconstruct_shoot_geometry(sd)
-            self.shoots[sd.shoot_id] = sd
             self.phytomers.extend(sd.phytomers)
 
         return self.phytomers
@@ -281,6 +308,7 @@ class HeliosXMLParser:
 
         all_nodes = []
         internode_global_idx = {}
+        petiole_global_idx = {}
 
         for phyt in self.phytomers:
             organ_nodes = phyt.get_organ_nodes()
@@ -288,6 +316,7 @@ class HeliosXMLParser:
             if organ_nodes:
                 internode_global_idx[(phyt.shoot_id, phyt.phytomer_index)] = len(all_nodes)
 
+            petiole_cnt = 0
             for i, node in enumerate(organ_nodes):
                 if node.organ_type == OrganNode3D.INTERNODE:
                     if phyt.phytomer_index > 0:
@@ -296,12 +325,21 @@ class HeliosXMLParser:
                     else:
                         shoot_data = self.shoots.get(phyt.shoot_id)
                         if shoot_data and shoot_data.parent_shoot_id >= 0:
-                            parent_key = (shoot_data.parent_shoot_id, shoot_data.parent_node_index)
-                            node.parent_idx = internode_global_idx.get(parent_key, -1)
+                            # parent_node_index = k maps to (k-1)-th phytomer (0-based)
+                            p_phyt_idx = shoot_data.parent_node_index - 1 if shoot_data.parent_node_index > 0 else 0
+                            p_pet_idx = shoot_data.parent_petiole_index
+                            parent_pet_key = (shoot_data.parent_shoot_id, p_phyt_idx, p_pet_idx)
+                            parent_int_key = (shoot_data.parent_shoot_id, p_phyt_idx)
+                            node.parent_idx = petiole_global_idx.get(
+                                parent_pet_key,
+                                internode_global_idx.get(parent_int_key, -1)
+                            )
                         else:
                             node.parent_idx = len(all_nodes)
                 elif node.organ_type == OrganNode3D.PETIOLE:
                     node.parent_idx = internode_global_idx.get((phyt.shoot_id, phyt.phytomer_index), -1)
+                    petiole_global_idx[(phyt.shoot_id, phyt.phytomer_index, petiole_cnt)] = len(all_nodes)
+                    petiole_cnt += 1
                 elif node.organ_type in [OrganNode3D.LEAF, OrganNode3D.FLORAL_BUD]:
                     for k in range(len(all_nodes) - 1, -1, -1):
                         if all_nodes[k].organ_type == OrganNode3D.PETIOLE:
@@ -516,8 +554,21 @@ class HeliosXMLParser:
                 return self.base_position.copy()
             else:
                 parent_sd = self.shoots.get(sd.parent_shoot_id)
-                if parent_sd and sd.parent_node_index < len(parent_sd.internode_vertices):
-                    return parent_sd.internode_vertices[sd.parent_node_index][-1].copy()
+                if parent_sd:
+                    # parent_node_index = k maps to (k-1)-th phytomer (0-based)
+                    target_phyt_idx = sd.parent_node_index - 1 if sd.parent_node_index > 0 else 0
+                    if 0 <= target_phyt_idx < len(parent_sd.phytomers):
+                        parent_phyt = parent_sd.phytomers[target_phyt_idx]
+                        pet_idx = sd.parent_petiole_index
+                        if parent_phyt.petioles and 0 <= pet_idx < len(parent_phyt.petioles):
+                            pet = parent_phyt.petioles[pet_idx]
+                            if 'tip_pos' in pet:
+                                return pet['tip_pos'].copy()
+                            elif 'base_pos' in pet:
+                                return pet['base_pos'].copy()
+                        return parent_phyt.internode_tip.copy()
+                    elif 0 <= target_phyt_idx < len(parent_sd.internode_vertices):
+                        return parent_sd.internode_vertices[target_phyt_idx][-1].copy()
                 return self.base_position.copy()
         else:
             return sd.internode_vertices[phyt_idx - 1][-1].copy()
@@ -540,15 +591,17 @@ class HeliosXMLParser:
                 parent_petiole_axis = self._get_perpendicular(parent_internode_axis)
         elif sd.parent_shoot_id >= 0:
             parent_sd = self.shoots.get(sd.parent_shoot_id)
-            if parent_sd and sd.parent_node_index < len(parent_sd.phytomers):
-                parent_phyt = parent_sd.phytomers[sd.parent_node_index]
-                parent_internode_axis = _normalize(parent_phyt.internode_dir)
-                pet_idx = min(sd.parent_petiole_index, len(parent_phyt.petioles) - 1) \
-                    if parent_phyt.petioles else 0
-                if parent_phyt.petioles and 'axis' in parent_phyt.petioles[pet_idx]:
-                    parent_petiole_axis = _normalize(parent_phyt.petioles[pet_idx]['axis'])
-                else:
-                    parent_petiole_axis = self._get_perpendicular(parent_internode_axis)
+            if parent_sd:
+                target_phyt_idx = sd.parent_node_index - 1 if sd.parent_node_index > 0 else 0
+                if 0 <= target_phyt_idx < len(parent_sd.phytomers):
+                    parent_phyt = parent_sd.phytomers[target_phyt_idx]
+                    parent_internode_axis = _normalize(parent_phyt.internode_dir)
+                    pet_idx = min(sd.parent_petiole_index, len(parent_phyt.petioles) - 1) \
+                        if parent_phyt.petioles else 0
+                    if parent_phyt.petioles and 0 <= pet_idx < len(parent_phyt.petioles) and 'axis' in parent_phyt.petioles[pet_idx]:
+                        parent_petiole_axis = _normalize(parent_phyt.petioles[pet_idx]['axis'])
+                    else:
+                        parent_petiole_axis = self._get_perpendicular(parent_internode_axis)
 
         petiole_rotation_axis = np.cross(parent_internode_axis, parent_petiole_axis)
         if np.linalg.norm(petiole_rotation_axis) < 1e-6:

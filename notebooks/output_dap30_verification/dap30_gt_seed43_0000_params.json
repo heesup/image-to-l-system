@@ -1,0 +1,115 @@
+{
+    "seed": 43,
+    "metadata": {
+        "year": 2025,
+        "location": "Davis",
+        "plant_type": "cowpea",
+        "dap": 30
+    },
+    "environment": {
+        "soil": {
+            "soil_color": [
+                0.61,
+                0.58,
+                0.55
+            ],
+            "use_obj_ground": true,
+            "rotate_obj": 90.0,
+            "obj_file_path": "../../../obj/dirt_rocks.obj",
+            "spectral_data": {
+                "reflectivity": "soil_reflectivity_0003"
+            },
+            "specular_exponent": 0.0
+        },
+        "sun": {
+            "elevation_degrees": 54.816,
+            "azimuth_degrees": 37.0493,
+            "shadow": true
+        }
+    },
+    "field": {
+        "layout": {
+            "mode": "manual",
+            "plot_size_x": 1.5,
+            "plot_size_y": 1.5,
+            "plot_size_z": 0.2,
+            "num_beds": 1,
+            "num_rows": 1
+        },
+        "plots": [
+            {
+                "bed": 1,
+                "row": 1,
+                "plants": [
+                    {
+                        "x": 0,
+                        "y": 0,
+                        "xml": "/home/lion397/codes/image-to-l-system/notebooks/output_dap30_verification/dap30_gt_seed43_0000_plant_0000.xml"
+                    }
+                ]
+            }
+        ],
+        "num_beds": 1,
+        "num_rows": 1,
+        "plot_shape": {
+            "mode": "manual",
+            "plot_size_x": 1.5,
+            "plot_size_y": 1.5,
+            "plot_size_z": 0.2,
+            "num_beds": 1,
+            "num_rows": 1,
+            "sampling": {
+                "num_beds": 1,
+                "num_rows": 1,
+                "size_x": 1.0,
+                "size_y": 1.0,
+                "plant_spacing_x": 0.5818,
+                "plant_spacing_y": 0.9055,
+                "plant_count": 7,
+                "planting_rows": 1
+            },
+            "obj_file_path": "../../../obj/dirt_rocks.obj"
+        }
+    },
+    "plant_properties": {
+        "leaf_optics": {
+            "number_layers": 1.7329,
+            "chlorophyll_content": 2.3065,
+            "carotenoid_content": 13.1174,
+            "anthocyan_content": 1.2243,
+            "brown_pigments": 0.0145,
+            "water_mass": 0.0169,
+            "dry_mass": 0.0076,
+            "protein": 0.0,
+            "carbon_constituents": 0.0,
+            "specular_exponent": 16
+        },
+        "architecture": {
+            "phytomer_parameters": {
+                "leaf_pitch": 17.7728
+            },
+            "flower_bud_break_probability": 0.1179
+        }
+    },
+    "camera": {
+        "sensor": {
+            "focal_plane_distance_difference": 0.5,
+            "exposure_mode": "ISO",
+            "ISO": 8362,
+            "shutter_speed": "1/125",
+            "lens_diameter": 0.0028,
+            "resolution_x": 720,
+            "resolution_y": 720,
+            "model": "Basler_acA2500-20gc"
+        },
+        "positioning": {
+            "focusing_plants": true,
+            "camera_height": 5.0,
+            "distance_from_center": 0.01,
+            "azimuth_angle": 0.0,
+            "lookat_offset_x": 0.0,
+            "lookat_offset_y": 0.0,
+            "lookat_offset_z": 0.0
+        }
+    }
+}

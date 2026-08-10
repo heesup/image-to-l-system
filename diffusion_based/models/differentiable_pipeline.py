@@ -35,6 +35,7 @@ class DifferentiableHeliosRenderer(nn.Module):
         sun_dir: Optional[torch.Tensor] = None,
         focus_plant: bool = False,
         background: Optional[str] = None,
+        leaf_sigma: Optional[float] = None,
     ) -> torch.Tensor:
         """Render 15D nodes to RGBA (B, 4, H, W)."""
         (
@@ -69,4 +70,5 @@ class DifferentiableHeliosRenderer(nn.Module):
             sun_dir=sun_dir,
             focus_plant=focus_plant,
             background=background,
+            leaf_sigma=leaf_sigma,
         )

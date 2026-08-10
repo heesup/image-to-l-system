@@ -43,15 +43,16 @@ class HeliosGeometryRasterizer(nn.Module):
         grid_y, grid_x = torch.meshgrid(y, x, indexing="ij")
         self.register_buffer("grid", torch.stack([grid_x, grid_y], dim=-1).unsqueeze(0).unsqueeze(0))
 
-        self.register_buffer("stem_color", torch.tensor([0.20, 0.30, 0.10], dtype=torch.float32))
-        self.register_buffer("petiole_color", torch.tensor([0.22, 0.32, 0.08], dtype=torch.float32))
-        self.register_buffer("leaf_color", torch.tensor([0.30, 0.50, 0.18], dtype=torch.float32))
-        self.register_buffer("leaf_top_color", torch.tensor([0.38, 0.58, 0.25], dtype=torch.float32))
+        self.register_buffer("stem_color", torch.tensor([0.45, 0.38, 0.22], dtype=torch.float32))
+        self.register_buffer("petiole_color", torch.tensor([0.42, 0.36, 0.20], dtype=torch.float32))
+        self.register_buffer("leaf_color", torch.tensor([0.34, 0.52, 0.20], dtype=torch.float32))
+        self.register_buffer("leaf_top_color", torch.tensor([0.40, 0.58, 0.26], dtype=torch.float32))
         self.register_buffer("bud_color", torch.tensor([0.80, 0.70, 0.15], dtype=torch.float32))
         self.register_buffer("bg_color", torch.tensor([0.12, 0.12, 0.10], dtype=torch.float32))
         # Helios-like soil/ground color (tan/brown)
         self.register_buffer("ground_color", torch.tensor([0.74, 0.67, 0.57], dtype=torch.float32))
-        self.register_buffer("sun_dir", torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32))
+        # Match Helios 45 deg sun elevation (el=45, az=180 -> [0.0, 0.7071, 0.7071])
+        self.register_buffer("sun_dir", torch.tensor([0.0, 0.70710678, 0.70710678], dtype=torch.float32))
         # Fixed leaf mesh topology (matches _leaflet_local_mesh_torch in helios_geometry.py)
         leaf_faces = []
         Nx, Ny = 8, 6
@@ -107,9 +108,9 @@ class HeliosGeometryRasterizer(nn.Module):
         min_xy = all_points[..., :2].min(dim=1)[0]  # (B, 2)
         max_xy = all_points[..., :2].max(dim=1)[0]
         span_xy = (max_xy - min_xy) * margin  # (B, 2)
-        max_span = span_xy.max(dim=1)[0]  # (B,)
+        max_span = torch.clamp(span_xy.max(dim=1)[0], min=0.01)  # (B,)
         hfov_rad = 2.0 * torch.atan(max_span / (2.0 * cam_h.clamp(min=1e-6)))
-        return hfov_rad * 180.0 / math.pi
+        return torch.clamp(hfov_rad * 180.0 / math.pi, min=1.0, max=170.0)
 
     def project(
         self,
@@ -142,9 +143,13 @@ class HeliosGeometryRasterizer(nn.Module):
         Yc = (rel * up.unsqueeze(1)).sum(dim=-1)
         Zc = (rel * (-fwd.unsqueeze(1))).sum(dim=-1)
 
-        fov_y = math.radians(cam["hfov_deg"])
-        focal_y = 1.0 / math.tan(fov_y / 2.0)
+        # Convert HFOV → VFOV to match C++ Helios Visualizer pipeline:
+        #   main.cpp: vis.setCameraFieldOfView(HFOVtoVFOV(HFOV, aspect))
+        #   VisualizerCore.cpp: glm::perspective(radians(VFOV), aspect, near, far)
+        hfov_rad = math.radians(cam["hfov_deg"])
         aspect = cam["image_width"] / max(cam["image_height"], 1)
+        vfov_rad = 2.0 * math.atan(math.tan(hfov_rad / 2.0) / aspect)
+        focal_y = 1.0 / math.tan(vfov_rad / 2.0)
         focal_x = focal_y / aspect
 
         Zc_clip = torch.clamp(Zc, max=-self.near_plane)
@@ -167,15 +172,15 @@ class HeliosGeometryRasterizer(nn.Module):
         return torch.sigmoid((half_w - dist) / self.sigma)
 
     def _fill_triangle(
-        self, a: torch.Tensor, b: torch.Tensor, c: torch.Tensor
+        self, a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, leaf_sigma: Optional[float] = None
     ) -> torch.Tensor:
         """Soft edge-function triangle mask for a batch of triangles (B, N, 2).
 
         Args:
             a, b, c: vertex screen positions of shape (B, N, 2).
-
+            leaf_sigma: optional override for soft rasterizer sigma
         Returns:
-            Alpha mask of shape (B, N, H, W).
+            (B, N, H, W) soft mask in [0, 1].
         """
         # self.grid is (1, 1, H, W, 2)
         gx = self.grid[..., 0]  # (1, 1, H, W)
@@ -199,10 +204,12 @@ class HeliosGeometryRasterizer(nn.Module):
         area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
         sign = torch.where(area >= 0, 1.0, -1.0)
         inside = torch.minimum(torch.minimum(e0 * sign, e1 * sign), e2 * sign)
-        # Normalize by triangle area so softness is in barycentric/distance units
-        inside = inside / (area.abs() + 1e-8)
-        # Squeeze the broadcasted singleton dimension added by vertex coordinate slicing
-        return torch.sigmoid(inside / self.leaf_sigma).squeeze(2)
+        area_abs = area.abs()
+        inside = inside / (area_abs + 1e-8)
+        sigma_val = leaf_sigma if leaf_sigma is not None else self.leaf_sigma
+        alpha = torch.sigmoid(inside / sigma_val).squeeze(2)
+        valid_tri = (area_abs > 1e-6).squeeze(2)
+        return torch.where(valid_tri, alpha, torch.zeros_like(alpha))
 
     def _render_leaf_triangles_chunked(
         self,
@@ -401,11 +408,32 @@ class HeliosGeometryRasterizer(nn.Module):
             # blend with background
             covered = image[:, 3:4]
             rgb = image[:, :3]
-            bg = self.ground_color if background == "ground" else self.bg_color
-            bg = bg.view(1, 3, 1, 1).to(device)
+            
+            is_ground = False
+            if isinstance(background, (torch.Tensor, np.ndarray)):
+                is_ground = True
+                if isinstance(background, np.ndarray):
+                    bg_t = torch.from_numpy(background).float().to(device)
+                else:
+                    bg_t = background.float().to(device)
+                if bg_t.ndim == 3:
+                    if bg_t.shape[2] == 3:
+                        bg_t = bg_t.permute(2, 0, 1)
+                    bg_t = bg_t.unsqueeze(0)
+                elif bg_t.ndim == 2:
+                    bg_t = bg_t.unsqueeze(0).unsqueeze(0).expand(1, 3, -1, -1)
+                bg = bg_t
+            elif background == "ground":
+                is_ground = True
+                bg = self.ground_color.view(1, 3, 1, 1).to(device)
+            elif background == "black":
+                bg = torch.zeros(1, 3, 1, 1, device=device)
+            else:
+                bg = self.bg_color.view(1, 3, 1, 1).to(device)
+                
             rgb = rgb * covered + bg * (1.0 - covered)
             # soft cast shadow on the ground, matching Helios's shadowed look
-            if background == "ground":
+            if is_ground:
                 all_pts_t = torch.from_numpy(all_pts).float().to(device)
                 ground_z = float(all_pts_t[:, 2].min().item())
                 shadow_mask = self._cast_ground_shadow(all_pts_t, sun, cam, ground_z)
@@ -553,6 +581,7 @@ class HeliosGeometryRasterizer(nn.Module):
         organs: torch.Tensor,     # (B, N_tris) int64
         shade: torch.Tensor,      # (B, N_tris)
         chunk: int = 128,
+        leaf_sigma: Optional[float] = None,
     ) -> torch.Tensor:
         """Render leaf triangles fully differentiable."""
         B, N, _ = a_2d.shape
@@ -579,6 +608,7 @@ class HeliosGeometryRasterizer(nn.Module):
                 a_sorted[:, start:end],
                 b_sorted[:, start:end],
                 c_sorted[:, start:end],
+                leaf_sigma=leaf_sigma,
             )  # (B, chunk, H, W)
             for i in range(end - start):
                 global_i = start + i
@@ -611,21 +641,38 @@ class HeliosGeometryRasterizer(nn.Module):
         sun_dir: Optional[torch.Tensor] = None,
         focus_plant: bool = False,
         background: Optional[str] = None,
+        leaf_sigma: Optional[float] = None,
     ) -> torch.Tensor:
         """Render explicit torch geometry and return RGBA (B, 4, H, W)."""
         device = next(self.buffers()).device
         B = tube_verts.shape[0]
 
-        # Collect all points for camera centering
-        all_pts = []
-        if tube_verts.numel():
-            all_pts.append(tube_verts.reshape(B, -1, 3))
-        if leaf_verts.numel():
-            all_pts.append(leaf_verts.reshape(B, -1, 3))
-        if bud_centers.numel():
-            all_pts.append(bud_centers)
-        if all_pts:
-            all_pts = torch.cat(all_pts, dim=1)
+        # Collect active visible points for camera centering & HFOV
+        active_pts_list = []
+        if tube_verts.numel() and tube_radii.numel():
+            active_tube_mask = (tube_radii > 1e-4).any(dim=-1)  # (B, N)
+            for b in range(B):
+                t_b = tube_verts[b][active_tube_mask[b]].reshape(-1, 3)
+                if t_b.shape[0] > 0:
+                    active_pts_list.append(t_b)
+        if leaf_verts.numel() and leaf_organs.numel():
+            leaf_var = leaf_verts.var(dim=2).sum(dim=-1)  # (B, N)
+            active_leaf_mask = (leaf_organs == OrganNode3D.LEAF) & (leaf_var > 1e-6)  # (B, N)
+            for b in range(B):
+                l_b = leaf_verts[b][active_leaf_mask[b]].reshape(-1, 3)
+                if l_b.shape[0] > 0:
+                    active_pts_list.append(l_b)
+        if bud_centers.numel() and bud_organs.numel():
+            active_bud_mask = (bud_organs == OrganNode3D.FLORAL_BUD) & (bud_radii > 1e-4)
+            for b in range(B):
+                b_b = bud_centers[b][active_bud_mask[b]].reshape(-1, 3)
+                if b_b.shape[0] > 0:
+                    active_pts_list.append(b_b)
+
+        if active_pts_list:
+            all_pts = torch.cat(active_pts_list, dim=0).unsqueeze(0)  # (B=1, K, 3)
+        elif tube_verts.numel():
+            all_pts = tube_verts.reshape(B, -1, 3)
         else:
             all_pts = torch.zeros(B, 1, 3, device=device)
 
@@ -662,11 +709,12 @@ class HeliosGeometryRasterizer(nn.Module):
                 _, Zc_mid, _ = self.project(mid, cam)
 
                 z_abs = Zc_mid.abs().clamp(min=self.near_plane)
-                widths = (w_m * 2.0 * ppm / z_abs).clamp(min=0.0005, max=0.08)
+                raw_widths = (w_m * 2.0 * ppm / z_abs).clamp(min=0.0005, max=0.08)
+                widths = torch.where(w_m > 1e-4, raw_widths, torch.zeros_like(raw_widths))
                 alpha = self._soft_line(p1_2d, p2_2d, widths)  # (B, N, H, W)
 
                 axis_norm = F.normalize(p2 - p1, dim=-1)
-                ndotl = (axis_norm * sun.view(1, 1, 3)).sum(dim=-1).abs()
+                ndotl = (axis_norm * sun).sum(dim=-1).abs()
                 shade = 0.5 + 0.5 * ndotl.clamp(0, 1)
                 image = self._composite_by_depth_torch(alpha, organs_k, Zc_mid, shade=shade)
 
@@ -704,11 +752,11 @@ class HeliosGeometryRasterizer(nn.Module):
 
                 n = torch.cross(b - a, c - a, dim=-1)
                 n = F.normalize(n, dim=-1)
-                ndotl = (n * sun.view(1, 1, 3)).sum(dim=-1).abs()
+                ndotl = (n * sun).sum(dim=-1).abs()
                 shade = 0.35 + 0.65 * ndotl.clamp(0, 1)
 
                 leaf_img = self._render_leaf_triangles_torch(
-                    a_2d, b_2d, c_2d, Zc_tri, tri_organs, shade, chunk=128
+                    a_2d, b_2d, c_2d, Zc_tri, tri_organs, shade, chunk=128, leaf_sigma=leaf_sigma
                 )
                 if image is None:
                     image = leaf_img
@@ -749,10 +797,32 @@ class HeliosGeometryRasterizer(nn.Module):
         else:
             covered = image[:, 3:4]
             rgb = image[:, :3]
-            bg = self.ground_color if background == "ground" else self.bg_color
-            bg = bg.view(1, 3, 1, 1).to(device)
+            
+            is_ground = False
+            if isinstance(background, (torch.Tensor, np.ndarray)):
+                is_ground = True
+                if isinstance(background, np.ndarray):
+                    bg_t = torch.from_numpy(background).float().to(device)
+                else:
+                    bg_t = background.float().to(device)
+                if bg_t.ndim == 3:
+                    if bg_t.shape[2] == 3:
+                        bg_t = bg_t.permute(2, 0, 1)
+                    bg_t = bg_t.unsqueeze(0).expand(B, -1, -1, -1)
+                elif bg_t.ndim == 4:
+                    if bg_t.shape[3] == 3:
+                        bg_t = bg_t.permute(0, 3, 1, 2)
+                bg = bg_t
+            elif background == "ground":
+                is_ground = True
+                bg = self.ground_color.view(1, 3, 1, 1).expand(B, 3, self.image_size, self.image_size).to(device)
+            elif background == "black":
+                bg = torch.zeros(B, 3, self.image_size, self.image_size, device=device)
+            else:
+                bg = self.bg_color.view(1, 3, 1, 1).expand(B, 3, self.image_size, self.image_size).to(device)
+                
             rgb = rgb * covered + bg * (1.0 - covered)
-            if background == "ground":
+            if is_ground:
                 ground_z = float(all_pts[..., 2].min().item())
                 shadow_mask = self._cast_ground_shadow(all_pts.reshape(-1, 3), sun, cam, ground_z)
                 rgb = rgb * (1.0 - 0.55 * shadow_mask * (1.0 - covered)) + bg * (0.55 * shadow_mask * (1.0 - covered))
