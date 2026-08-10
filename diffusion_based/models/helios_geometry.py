@@ -373,26 +373,37 @@ def build_helios_geometry_from_xml(xml_path: str) -> HeliosPlantGeometry:
                     if state in [0, 5]:
                         continue  # 0: BUD_DORMANT, 5: BUD_DEAD -> Skip
 
-                    # Add peduncle tube connecting petiole tip to flower/pod head
                     base_pos = fbud.get("base_pos", pet.get("tip_pos", phyt.internode_tip))
-                    head_pos = fbud.get("head_pos", base_pos)
-                    if np.linalg.norm(head_pos - base_pos) > 0.003:
-                        ped_r = fbud.get("peduncle_radius", 0.002)
-                        geom.tubes.append(HeliosTube(
-                            vertices=np.array([base_pos, head_pos], dtype=np.float32),
-                            radii=np.array([ped_r, ped_r], dtype=np.float32),
-                            organ=OrganNode3D.PETIOLE,
-                        ))
 
                     if state == 1:
+                        # BUD_ACTIVE: Unexpanded bud sits directly at petiole base, no long peduncle tube
                         organ = OrganNode3D.FLORAL_BUD
-                        head_r = 0.004  # 4mm active floral bud
+                        head_r = 0.003  # 3mm unexpanded floral bud
+                        head_pos = base_pos
                     elif state in [2, 3]:
+                        # BUD_FLOWER_CLOSED / OPEN: Flower blossom on extended peduncle stalk
                         organ = OrganNode3D.FLOWER
-                        head_r = 0.010  # 1cm open/closed flower blossom (yellow)
+                        head_r = 0.010  # 1cm flower blossom (yellow)
+                        head_pos = fbud.get("head_pos", base_pos)
+                        if np.linalg.norm(head_pos - base_pos) > 0.003:
+                            ped_r = fbud.get("peduncle_radius", 0.002)
+                            geom.tubes.append(HeliosTube(
+                                vertices=np.array([base_pos, head_pos], dtype=np.float32),
+                                radii=np.array([ped_r, ped_r], dtype=np.float32),
+                                organ=OrganNode3D.PETIOLE,
+                            ))
                     elif state == 4:
+                        # BUD_FRUITING: Pod / Fruit on extended peduncle stalk
                         organ = OrganNode3D.POD
-                        head_r = 0.006  # 6mm pod/fruit head (cyan-green)
+                        head_r = 0.006  # 6mm pod head (cyan-green)
+                        head_pos = fbud.get("head_pos", base_pos)
+                        if np.linalg.norm(head_pos - base_pos) > 0.003:
+                            ped_r = fbud.get("peduncle_radius", 0.002)
+                            geom.tubes.append(HeliosTube(
+                                vertices=np.array([base_pos, head_pos], dtype=np.float32),
+                                radii=np.array([ped_r, ped_r], dtype=np.float32),
+                                organ=OrganNode3D.PETIOLE,
+                            ))
                     else:
                         continue
 

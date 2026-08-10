@@ -280,12 +280,12 @@ def main():
 
         # Col 2 (Col 3 user request): Organ Segmentation Mask
         axes[row_idx, 2].imshow(res["seg_mask_np"])
-        axes[row_idx, 2].set_title(f"DAP {dap} - Organ Mask", color="cyan", fontsize=12, fontweight="bold")
+        axes[row_idx, 2].set_title(f"DAP {dap} - Organ Mask\n(Yellow: Flower | Cyan: Pod | Green: Plant)", color="cyan", fontsize=11, fontweight="bold")
         axes[row_idx, 2].axis("off")
 
         # Col 3: PyTorch Differentiable Renderer
         axes[row_idx, 3].imshow(res["torch_rgb"])
-        axes[row_idx, 3].set_title(f"DAP {dap} - PyTorch Diff Renderer\n(Render: {res['torch_time_ms']:.2f} ms)", color="springgreen", fontsize=12, fontweight="bold")
+        axes[row_idx, 3].set_title(f"DAP {dap} - PyTorch Diff Renderer\n(Render: {res['torch_time_ms']:.2f} ms)", color="springgreen", fontsize=11, fontweight="bold")
         axes[row_idx, 3].axis("off")
 
         # Col 4: Difference Map & Summary Box
@@ -299,10 +299,17 @@ def main():
             f"-------------------------------------\n"
             f"• SSIM    : {res['ssim']:.4f}\n"
             f"• IoU     : {res['iou']:.4f}\n"
-            f"• MAE     : {res['mae']:.5f}"
+            f"• MAE     : {res['mae']:.5f}\n"
+            f"-------------------------------------\n"
+            f"Organ Colors Legend:\n"
+            f"  - Stem / Petiole : Brown\n"
+            f"  - Leaf           : Green\n"
+            f"  - Floral Bud     : Yellow-Green\n"
+            f"  - Flower         : Yellow\n"
+            f"  - Pod / Fruit    : Cyan-Green"
         )
         axes[row_idx, 4].text(
-            0.05, 0.5, summary_text, color="springgreen", fontsize=10, family="monospace",
+            0.05, 0.5, summary_text, color="springgreen", fontsize=9.5, family="monospace",
             verticalalignment="center", bbox=dict(boxstyle="round,pad=0.8", facecolor="#111111", edgecolor="springgreen", alpha=0.9)
         )
         axes[row_idx, 4].axis("off")
