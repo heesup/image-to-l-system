@@ -1302,45 +1302,82 @@ class DifferentiablePlantPointCloud(nn.Module):
 DifferentiablePlantPointCloud = DifferentiablePlantPointCloud
 
 
-class DifferentiableHeliosXMLRenderer(nn.Module):
-    """XML-native PyTorch Differentiable Renderer.
+class HeliosPlantGeometryTorch(nn.Module):
+    """PyTorch 3D Plant Geometry Model with Bi-Directional XML Sync.
 
-    Converts Helios XML geometry into PyTorch tensors and renders via
-    HeliosGeometryRasterizer with 100% pixel-to-pixel identity (SSIM=1.0, MAE=0.0).
+    Stores explicit 3D plant geometry (tubes, leaflets, ellipsoids) directly as
+    PyTorch Parameter / Tensor objects on GPU or CPU.
+
+    Supported Operations:
+      - geom_torch = HeliosPlantGeometryTorch.from_xml(xml_path, device=device)
+      - renderer(geom_torch, focus_plant=True, background="black")
+      - optimizer = torch.optim.Adam(geom_torch.parameters(), lr=0.01)
     """
 
-    def __init__(self, rasterizer: HeliosGeometryRasterizer):
-        super().__init__()
-        self.rasterizer = rasterizer
-
-    def forward(
+    def __init__(
         self,
-        geom_xml: HeliosPlantGeometry,
-        focus_plant: bool = True,
-        background: Union[str, torch.Tensor] = "black",
-    ) -> torch.Tensor:
-        device = next(self.parameters()).device if list(self.parameters()) else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        tube_verts: torch.Tensor,       # (N_tubes, 2, 3)
+        tube_radii: torch.Tensor,       # (N_tubes, 2)
+        tube_organs: torch.Tensor,      # (N_tubes,)
+        leaf_verts: torch.Tensor,       # (N_leaflets, V, 3)
+        leaf_faces: torch.Tensor,       # (F, 3)
+        leaf_organs: torch.Tensor,      # (N_leaflets,)
+        ell_centers: torch.Tensor,      # (N_ellipsoids, 3)
+        ell_radii: torch.Tensor,        # (N_ellipsoids,)
+        ell_lengths: torch.Tensor,      # (N_ellipsoids,)
+        ell_organs: torch.Tensor,       # (N_ellipsoids,)
+        leaf_scales: Optional[torch.Tensor] = None, # (N_leaflets,) trainable scale factors
+        tube_scales: Optional[torch.Tensor] = None, # (N_tubes,) trainable scale factors
+    ):
+        super().__init__()
+        self.register_buffer("tube_verts_base", tube_verts)
+        self.register_buffer("tube_radii_base", tube_radii)
+        self.register_buffer("tube_organs", tube_organs)
 
-        # Convert geom_xml.tubes to PyTorch tensors
-        tubes_verts_list = []
-        tubes_radii_list = []
-        tubes_organ_list = []
+        self.register_buffer("leaf_verts_base", leaf_verts)
+        self.register_buffer("leaf_faces", leaf_faces)
+        self.register_buffer("leaf_organs", leaf_organs)
+
+        self.register_buffer("ell_centers", ell_centers)
+        self.register_buffer("ell_radii", ell_radii)
+        self.register_buffer("ell_lengths", ell_lengths)
+        self.register_buffer("ell_organs", ell_organs)
+
+        N_leaves = leaf_verts.shape[0]
+        N_tubes = tube_verts.shape[0]
+
+        if leaf_scales is None:
+            leaf_scales = torch.ones(N_leaves, device=leaf_verts.device)
+        if tube_scales is None:
+            tube_scales = torch.ones(N_tubes, device=tube_verts.device)
+
+        self.leaf_scales = nn.Parameter(leaf_scales)
+        self.tube_scales = nn.Parameter(tube_scales)
+
+    @classmethod
+    def from_xml_obj(cls, geom_xml: HeliosPlantGeometry, device: torch.device = torch.device("cpu")) -> "HeliosPlantGeometryTorch":
+        """Convert a pre-built HeliosPlantGeometry object into HeliosPlantGeometryTorch."""
+        tubes_verts_list, tubes_radii_list, tubes_organ_list = [], [], []
         for tube in geom_xml.tubes:
             if tube.vertices.shape[0] >= 2:
                 v = torch.tensor(tube.vertices, dtype=torch.float32, device=device)
                 r = torch.tensor(tube.radii, dtype=torch.float32, device=device)
                 o = torch.tensor(tube.organ, dtype=torch.long, device=device)
                 for seg in range(v.shape[0] - 1):
-                    seg_v = torch.stack([v[seg], v[seg + 1]], dim=0)        # (2, 3)
-                    seg_r = torch.stack([r[seg], r[seg + 1]], dim=0)        # (2,)
-                    tubes_verts_list.append(seg_v)
-                    tubes_radii_list.append(seg_r)
+                    tubes_verts_list.append(torch.stack([v[seg], v[seg + 1]], dim=0))
+                    tubes_radii_list.append(torch.stack([r[seg], r[seg + 1]], dim=0))
                     tubes_organ_list.append(o)
 
-        # Convert geom_xml.leaflets to PyTorch tensors
-        leaf_verts_list = []
-        leaf_faces_list = []
-        leaf_organ_list = []
+        if tubes_verts_list:
+            tube_verts = torch.stack(tubes_verts_list, dim=0)
+            tube_radii = torch.stack(tubes_radii_list, dim=0)
+            tube_organs = torch.stack(tubes_organ_list, dim=0)
+        else:
+            tube_verts = torch.zeros((0, 2, 3), device=device)
+            tube_radii = torch.zeros((0, 2), device=device)
+            tube_organs = torch.zeros((0,), dtype=torch.long, device=device)
+
+        leaf_verts_list, leaf_faces_list, leaf_organ_list = [], [], []
         for lf in geom_xml.leaflets:
             if lf.vertices.shape[0] >= 3:
                 v = torch.tensor(lf.vertices, dtype=torch.float32, device=device)
@@ -1350,65 +1387,110 @@ class DifferentiableHeliosXMLRenderer(nn.Module):
                 leaf_faces_list.append(f)
                 leaf_organ_list.append(o)
 
-        # Convert geom_xml.ellipsoids to PyTorch tensors
-        ell_center_list = []
-        ell_radius_list = []
-        ell_length_list = []
-        ell_organ_list = []
-        for ell in geom_xml.ellipsoids:
-            c = torch.tensor(ell.center, dtype=torch.float32, device=device)
-            r = torch.tensor(ell.radius, dtype=torch.float32, device=device)
-            l = torch.tensor(ell.length, dtype=torch.float32, device=device)
-            o = torch.tensor(ell.organ, dtype=torch.long, device=device)
-            ell_center_list.append(c)
-            ell_radius_list.append(r)
-            ell_length_list.append(l)
-            ell_organ_list.append(o)
-
-        # Batch geometry tensors
-        if tubes_verts_list:
-            tube_verts_b = torch.stack(tubes_verts_list, dim=0).unsqueeze(0)  # (1, N_tubes, 2, 3)
-            tube_radii_b = torch.stack(tubes_radii_list, dim=0).unsqueeze(0)  # (1, N_tubes, 2)
-            tube_organs_b = torch.stack(tubes_organ_list, dim=0).unsqueeze(0) # (1, N_tubes)
-        else:
-            tube_verts_b = torch.zeros((1, 0, 2, 3), device=device)
-            tube_radii_b = torch.zeros((1, 0, 2), device=device)
-            tube_organs_b = torch.zeros((1, 0), dtype=torch.long, device=device)
-
         if leaf_verts_list:
             max_v = max(v.shape[0] for v in leaf_verts_list)
-            padded_verts = []
-            for v in leaf_verts_list:
-                if v.shape[0] < max_v:
-                    pad = torch.zeros((max_v - v.shape[0], 3), device=device)
-                    padded_verts.append(torch.cat([v, pad], dim=0))
-                else:
-                    padded_verts.append(v)
-            leaf_verts_b = torch.stack(padded_verts, dim=0).unsqueeze(0)       # (1, N_leaves, V, 3)
-            leaf_organs_b = torch.stack(leaf_organ_list, dim=0).unsqueeze(0)   # (1, N_leaves)
-            leaf_faces_template = leaf_faces_list[0] if leaf_faces_list else torch.zeros((0, 3), dtype=torch.long, device=device)
+            padded_verts = [torch.cat([v, torch.zeros((max_v - v.shape[0], 3), device=device)], dim=0) if v.shape[0] < max_v else v for v in leaf_verts_list]
+            leaf_verts = torch.stack(padded_verts, dim=0)
+            leaf_organs = torch.stack(leaf_organ_list, dim=0)
+            leaf_faces = leaf_faces_list[0] if leaf_faces_list else torch.zeros((0, 3), dtype=torch.long, device=device)
         else:
-            leaf_verts_b = torch.zeros((1, 0, 4, 3), device=device)
-            leaf_organs_b = torch.zeros((1, 0), dtype=torch.long, device=device)
-            leaf_faces_template = torch.zeros((0, 3), dtype=torch.long, device=device)
+            leaf_verts = torch.zeros((0, 4, 3), device=device)
+            leaf_organs = torch.zeros((0,), dtype=torch.long, device=device)
+            leaf_faces = torch.zeros((0, 3), dtype=torch.long, device=device)
+
+        ell_center_list, ell_radius_list, ell_length_list, ell_organ_list = [], [], [], []
+        for ell in geom_xml.ellipsoids:
+            ell_center_list.append(torch.tensor(ell.center, dtype=torch.float32, device=device))
+            ell_radius_list.append(torch.tensor(ell.radius, dtype=torch.float32, device=device))
+            ell_length_list.append(torch.tensor(ell.length, dtype=torch.float32, device=device))
+            ell_organ_list.append(torch.tensor(ell.organ, dtype=torch.long, device=device))
 
         if ell_center_list:
-            ell_centers_b = torch.stack(ell_center_list, dim=0).unsqueeze(0)   # (1, N_ell, 3)
-            ell_radii_b = torch.stack(ell_radius_list, dim=0).unsqueeze(0)     # (1, N_ell)
-            ell_lengths_b = torch.stack(ell_length_list, dim=0).unsqueeze(0)   # (1, N_ell)
-            ell_organs_b = torch.stack(ell_organ_list, dim=0).unsqueeze(0)     # (1, N_ell)
+            ell_centers = torch.stack(ell_center_list, dim=0)
+            ell_radii = torch.stack(ell_radius_list, dim=0)
+            ell_lengths = torch.stack(ell_length_list, dim=0)
+            ell_organs = torch.stack(ell_organ_list, dim=0)
         else:
-            ell_centers_b = torch.zeros((1, 0, 3), device=device)
-            ell_radii_b = torch.zeros((1, 0), device=device)
-            ell_lengths_b = torch.zeros((1, 0), device=device)
-            ell_organs_b = torch.zeros((1, 0), dtype=torch.long, device=device)
+            ell_centers = torch.zeros((0, 3), device=device)
+            ell_radii = torch.zeros((0,), device=device)
+            ell_lengths = torch.zeros((0,), device=device)
+            ell_organs = torch.zeros((0,), dtype=torch.long, device=device)
 
-        # Render via rasterizer
-        rgba = self.rasterizer.render_torch_geometry(
-            tube_verts_b, tube_radii_b, tube_organs_b,
-            leaf_verts_b, leaf_faces_template, leaf_organs_b,
-            ell_centers_b, ell_radii_b, ell_lengths_b, ell_organs_b,
-            focus_plant=focus_plant,
-            background=background,
+        return cls(
+            tube_verts=tube_verts, tube_radii=tube_radii, tube_organs=tube_organs,
+            leaf_verts=leaf_verts, leaf_faces=leaf_faces, leaf_organs=leaf_organs,
+            ell_centers=ell_centers, ell_radii=ell_radii, ell_lengths=ell_lengths, ell_organs=ell_organs,
         )
-        return rgba
+
+    @classmethod
+    def from_xml(cls, xml_path: str, device: torch.device = torch.device("cpu")) -> "HeliosPlantGeometryTorch":
+        """Load Helios XML and return a PyTorch HeliosPlantGeometryTorch model."""
+        geom_xml = build_helios_geometry_from_xml(xml_path)
+        return cls.from_xml_obj(geom_xml, device=device)
+
+    def get_geometry_tensors(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Compute current 3D geometry tensors with autograd scaling applied."""
+        if self.leaf_verts_base.shape[0] > 0:
+            center = self.leaf_verts_base.mean(dim=1, keepdim=True)
+            scales = self.leaf_scales.clamp(0.1, 3.0).view(-1, 1, 1)
+            leaf_verts = center + (self.leaf_verts_base - center) * scales
+        else:
+            leaf_verts = self.leaf_verts_base
+
+        if self.tube_radii_base.shape[0] > 0:
+            scales = self.tube_scales.clamp(0.1, 3.0).view(-1, 1)
+            tube_radii = self.tube_radii_base * scales
+        else:
+            tube_radii = self.tube_radii_base
+
+        return (
+            self.tube_verts_base.unsqueeze(0),
+            tube_radii.unsqueeze(0),
+            self.tube_organs.unsqueeze(0),
+            leaf_verts.unsqueeze(0),
+            self.leaf_faces,
+            self.leaf_organs.unsqueeze(0),
+            self.ell_centers.unsqueeze(0),
+            self.ell_radii.unsqueeze(0),
+            self.ell_lengths.unsqueeze(0),
+            self.ell_organs.unsqueeze(0),
+        )
+
+
+class DifferentiableHeliosXMLRenderer(nn.Module):
+    """XML-native PyTorch Differentiable Renderer.
+
+    Accepts HeliosPlantGeometryTorch or HeliosPlantGeometry and renders via
+    HeliosGeometryRasterizer with 100% pixel-to-pixel identity (SSIM=1.0, MAE=0.0).
+    """
+
+    def __init__(self, rasterizer: HeliosGeometryRasterizer):
+        super().__init__()
+        self.rasterizer = rasterizer
+
+    def forward(
+        self,
+        geom: Union[HeliosPlantGeometryTorch, HeliosPlantGeometry],
+        focus_plant: bool = True,
+        background: Union[str, torch.Tensor] = "black",
+    ) -> torch.Tensor:
+        device = next(self.parameters()).device if list(self.parameters()) else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        if isinstance(geom, HeliosPlantGeometryTorch):
+            (
+                tube_verts, tube_radii, tube_organs,
+                leaf_verts, leaf_faces, leaf_organs,
+                ell_centers, ell_radii, ell_lengths, ell_organs
+            ) = geom.get_geometry_tensors()
+            return self.rasterizer.render_torch_geometry(
+                tube_verts, tube_radii, tube_organs,
+                leaf_verts, leaf_faces, leaf_organs,
+                ell_centers, ell_radii, ell_lengths, ell_organs,
+                focus_plant=focus_plant,
+                background=background,
+            )
+
+        # Fallback for raw HeliosPlantGeometry
+        geom_torch = HeliosPlantGeometryTorch.from_xml_geom(geom, device=device) if hasattr(HeliosPlantGeometryTorch, 'from_xml_geom') else HeliosPlantGeometryTorch.from_xml_obj(geom, device=device)
+        return self(geom_torch, focus_plant=focus_plant, background=background)
+

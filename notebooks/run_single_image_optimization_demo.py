@@ -30,22 +30,19 @@ def main():
     
     # 1. Target Geometry & Image from GT Helios XML
     rasterizer = HeliosGeometryRasterizer(image_size=128).to(device)
-    geom_gt = build_helios_geometry_from_xml(xml_path)
+    geom_gt = HeliosPlantGeometryTorch.from_xml(xml_path, device=device)
     
     xml_renderer = DifferentiableHeliosXMLRenderer(rasterizer).to(device)
     with torch.no_grad():
         target_rgba = xml_renderer(geom_gt, focus_plant=True, background="black")
-    target_rgb = target_rgba[0, :3].permute(1, 2, 0).clip(0, 1)  # (256, 256, 3)
+    target_rgb = target_rgba[0, :3].permute(1, 2, 0).clip(0, 1)  # (128, 128, 3)
     
-    # 2. Differentiable Plant Graph Parameterization for Optimization
-    # Optimize leaf scale, petiole length, and internode scale factors differentiably
-    N_leaves = len(geom_gt.leaflets)
-    N_tubes = len(geom_gt.tubes)
+    # 2. Differentiable Plant Graph Parameterization via HeliosPlantGeometryTorch
+    geom_opt = HeliosPlantGeometryTorch.from_xml(xml_path, device=device)
+    geom_opt.leaf_scales.data.fill_(0.6)
+    geom_opt.tube_scales.data.fill_(0.7)
     
-    leaf_scale_params = nn.Parameter(torch.full((N_leaves,), 0.6, device=device))  # Initialized smaller
-    tube_scale_params = nn.Parameter(torch.full((N_tubes,), 0.7, device=device))
-    
-    optimizer = optim.Adam([leaf_scale_params, tube_scale_params], lr=0.03)
+    optimizer = optim.Adam(geom_opt.parameters(), lr=0.03)
     
     history_images = []
     history_losses = []
@@ -59,64 +56,7 @@ def main():
     t0 = time.time()
     for step in range(num_steps + 1):
         optimizer.zero_grad()
-        
-        # Apply differentiable scaling to plant geometry vertices
-        current_leaf_scales = leaf_scale_params.clamp(0.1, 2.0)
-        current_tube_scales = tube_scale_params.clamp(0.1, 2.0)
-        
-        # Clone geometry with parameterized scaling
-        tubes_verts_list = []
-        tubes_radii_list = []
-        tubes_organ_list = []
-        for i, tube in enumerate(geom_gt.tubes):
-            if tube.vertices.shape[0] >= 2:
-                v = torch.tensor(tube.vertices, dtype=torch.float32, device=device)
-                r = torch.tensor(tube.radii, dtype=torch.float32, device=device) * current_tube_scales[i]
-                o = torch.tensor(tube.organ, dtype=torch.long, device=device)
-                for seg in range(v.shape[0] - 1):
-                    seg_v = torch.stack([v[seg], v[seg + 1]], dim=0)
-                    seg_r = torch.stack([r[seg], r[seg + 1]], dim=0)
-                    tubes_verts_list.append(seg_v)
-                    tubes_radii_list.append(seg_r)
-                    tubes_organ_list.append(o)
-
-        leaf_verts_list = []
-        leaf_faces_list = []
-        leaf_organ_list = []
-        for i, lf in enumerate(geom_gt.leaflets):
-            if lf.vertices.shape[0] >= 3:
-                # Scale leaf mesh vertices relative to center
-                v_orig = torch.tensor(lf.vertices, dtype=torch.float32, device=device)
-                center = v_orig.mean(dim=0, keepdim=True)
-                v_scaled = center + (v_orig - center) * current_leaf_scales[i]
-                f = torch.tensor(lf.faces, dtype=torch.long, device=device) if lf.faces.shape[0] > 0 else torch.zeros((0, 3), dtype=torch.long, device=device)
-                o = torch.tensor(lf.organ, dtype=torch.long, device=device)
-                leaf_verts_list.append(v_scaled)
-                leaf_faces_list.append(f)
-                leaf_organ_list.append(o)
-
-        tube_verts_b = torch.stack(tubes_verts_list, dim=0).unsqueeze(0)
-        tube_radii_b = torch.stack(tubes_radii_list, dim=0).unsqueeze(0)
-        tube_organs_b = torch.stack(tubes_organ_list, dim=0).unsqueeze(0)
-
-        max_v = max(v.shape[0] for v in leaf_verts_list)
-        padded_verts = [torch.cat([v, torch.zeros((max_v - v.shape[0], 3), device=device)], dim=0) if v.shape[0] < max_v else v for v in leaf_verts_list]
-        leaf_verts_b = torch.stack(padded_verts, dim=0).unsqueeze(0)
-        leaf_organs_b = torch.stack(leaf_organ_list, dim=0).unsqueeze(0)
-        leaf_faces_template = leaf_faces_list[0]
-
-        ell_centers_b = torch.zeros((1, 0, 3), device=device)
-        ell_radii_b = torch.zeros((1, 0), device=device)
-        ell_lengths_b = torch.zeros((1, 0), device=device)
-        ell_organs_b = torch.zeros((1, 0), dtype=torch.long, device=device)
-
-        rendered_rgba = rasterizer.render_torch_geometry(
-            tube_verts_b, tube_radii_b, tube_organs_b,
-            leaf_verts_b, leaf_faces_template, leaf_organs_b,
-            ell_centers_b, ell_radii_b, ell_lengths_b, ell_organs_b,
-            focus_plant=True,
-            background="black",
-        )
+        rendered_rgba = xml_renderer(geom_opt, focus_plant=True, background="black")
         rendered_rgb = rendered_rgba[0, :3].permute(1, 2, 0)
         
         # Loss: L1 + MSE + Alpha silhouette

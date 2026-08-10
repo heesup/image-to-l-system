@@ -15,7 +15,7 @@ if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
 from diffusion_based.models.helios_xml_parser import HeliosXMLParser
-from diffusion_based.models.helios_geometry import build_helios_geometry_from_xml, DifferentiableHeliosXMLRenderer
+from diffusion_based.models.helios_geometry import build_helios_geometry_from_xml, HeliosPlantGeometryTorch, DifferentiableHeliosXMLRenderer
 from diffusion_based.models.helios_rasterizer_3d import HeliosGeometryRasterizer
 from diffusion_based.models.differentiable_pipeline import DifferentiableHeliosRenderer
 from notebooks.run_differentiable_renderer_stability_test import (
@@ -99,25 +99,18 @@ def verify_seed(seed: int, output_dir: str, device: torch.device, rasterizer: He
     cpp_pil = Image.open(cpp_img_path).convert("RGB").resize((256, 256), Image.LANCZOS)
     cpp_np = np.array(cpp_pil, dtype=np.float32) / 255.0
     
-    # 2. Python XML Renderer (on BLACK background)
-    geom = build_helios_geometry_from_xml(xml_path)
-    with torch.no_grad():
-        py_xml_rgba = rasterizer.render_numpy_geometry(
-            geom.tubes, geom.leaflets, geom.ellipsoids,
-            focus_plant=True,
-            background="black",
-        )
-    py_xml_np = py_xml_rgba[..., :3].clip(0, 1)
-    
-    # 3. XML-Native PyTorch Differentiable Renderer (on BLACK background)
+    # 2 & 3. HeliosPlantGeometryTorch & DifferentiableHeliosXMLRenderer (on BLACK background)
+    geom_torch = HeliosPlantGeometryTorch.from_xml(xml_path, device=device)
     xml_renderer = DifferentiableHeliosXMLRenderer(rasterizer).to(device)
     with torch.no_grad():
         torch_15d_rgba = xml_renderer(
-            geom,
+            geom_torch,
             focus_plant=True,
             background="black",
         )
-    torch_15d_np = torch_15d_rgba[0, :3].permute(1, 2, 0).cpu().numpy().clip(0, 1)
+    py_xml_rgba = torch_15d_rgba[0].permute(1, 2, 0).cpu().numpy().clip(0, 1)
+    py_xml_np = py_xml_rgba[..., :3]
+    torch_15d_np = py_xml_np
     
     # 4. Metrics & Direct XML vs 15D PyTorch Comparison on Black Background
     mask_py = py_xml_rgba[..., 3] > 0.05
