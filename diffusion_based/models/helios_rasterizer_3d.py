@@ -49,7 +49,7 @@ class HeliosGeometryRasterizer(nn.Module):
         self.register_buffer("leaf_top_color", torch.tensor([0.40, 0.58, 0.26], dtype=torch.float32))
         self.register_buffer("bud_color", torch.tensor([0.80, 0.70, 0.15], dtype=torch.float32))  # FLORAL_BUD: yellow-green
         self.register_buffer("flower_color", torch.tensor([0.95, 0.90, 0.25], dtype=torch.float32))  # FLOWER: bright yellow
-        self.register_buffer("pod_color", torch.tensor([0.30, 0.60, 0.20], dtype=torch.float32))    # POD: muted green
+        self.register_buffer("pod_color", torch.tensor([0.0, 0.88, 0.88], dtype=torch.float32))    # POD: Cyan matching GT Organ Mask
         self.register_buffer("bg_color", torch.tensor([0.12, 0.12, 0.10], dtype=torch.float32))
         # Helios-like soil/ground color (tan/brown)
         self.register_buffer("ground_color", torch.tensor([0.74, 0.67, 0.57], dtype=torch.float32))
@@ -650,7 +650,7 @@ class HeliosGeometryRasterizer(nn.Module):
         bud_organs: torch.Tensor,      # (B, N_buds) int64
         camera_height: float = 1.0,
         distance_from_center: float = 0.0,
-        azimuth_deg: float = 0.0,
+        azimuth_deg: float = 270.0,
         hfov_deg: Optional[float] = None,
         target_center: Optional[torch.Tensor] = None,
         sun_dir: Optional[torch.Tensor] = None,
@@ -726,7 +726,14 @@ class HeliosGeometryRasterizer(nn.Module):
                 z_abs = Zc_mid.abs().clamp(min=self.near_plane)
                 raw_widths = (w_m * 2.0 * ppm / z_abs).clamp(min=0.0005, max=0.08)
                 widths = torch.where(w_m > 1e-4, raw_widths, torch.zeros_like(raw_widths))
-                alpha = self._soft_line(p1_2d, p2_2d, widths)  # (B, N, H, W)
+                
+                N_t = p1_2d.shape[1]
+                alpha_list = []
+                for start in range(0, N_t, 64):
+                    end = min(start + 64, N_t)
+                    alpha_chunk = self._soft_line(p1_2d[:, start:end], p2_2d[:, start:end], widths[:, start:end])
+                    alpha_list.append(alpha_chunk)
+                alpha = torch.cat(alpha_list, dim=1) if len(alpha_list) > 1 else alpha_list[0]
 
                 axis_norm = F.normalize(p2 - p1, dim=-1)
                 ndotl = (axis_norm * sun).sum(dim=-1).abs()
