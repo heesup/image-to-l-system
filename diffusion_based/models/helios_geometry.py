@@ -370,13 +370,13 @@ def build_helios_geometry_from_xml(xml_path: str) -> HeliosPlantGeometry:
                 # Floral buds / Flowers / Pods
                 for fbud in pet.get("floral_buds", []):
                     state = fbud.get("bud_state", 0)
-                    if state not in [3, 4, 5]:
-                        continue  # dormant / dead / unexpanded: skip
+                    if state in [0, 5]:
+                        continue  # 0: BUD_DORMANT, 5: BUD_DEAD -> Skip
 
                     # Add peduncle tube connecting petiole tip to flower/pod head
                     base_pos = fbud.get("base_pos", pet.get("tip_pos", phyt.internode_tip))
                     head_pos = fbud.get("head_pos", base_pos)
-                    if np.linalg.norm(head_pos - base_pos) > 0.005:
+                    if np.linalg.norm(head_pos - base_pos) > 0.003:
                         ped_r = fbud.get("peduncle_radius", 0.002)
                         geom.tubes.append(HeliosTube(
                             vertices=np.array([base_pos, head_pos], dtype=np.float32),
@@ -384,12 +384,17 @@ def build_helios_geometry_from_xml(xml_path: str) -> HeliosPlantGeometry:
                             organ=OrganNode3D.PETIOLE,
                         ))
 
-                    if state in [3, 4]:
+                    if state == 1:
+                        organ = OrganNode3D.FLORAL_BUD
+                        head_r = 0.004  # 4mm active floral bud
+                    elif state in [2, 3]:
                         organ = OrganNode3D.FLOWER
-                        head_r = 0.010  # 1cm radius blossom (matches GT Helios flower size)
-                    else:
+                        head_r = 0.010  # 1cm open/closed flower blossom (yellow)
+                    elif state == 4:
                         organ = OrganNode3D.POD
-                        head_r = 0.005  # 5mm radius pod head
+                        head_r = 0.006  # 6mm pod/fruit head (cyan-green)
+                    else:
+                        continue
 
                     geom.ellipsoids.append(HeliosEllipsoid(
                         center=np.asarray(head_pos, dtype=np.float64).copy(),
@@ -1181,12 +1186,12 @@ def nodes_to_geometry(
                                + local_verts[:, 2:3] * z)
                 world_verts = (world_verts + base).astype(np.float32)
                 all_leaflets[b].append(HeliosLeaflet(vertices=world_verts, faces=faces, organ=OrganNode3D.LEAF))
-            elif organ[i] == OrganNode3D.FLORAL_BUD:
+            elif organ[i] in (OrganNode3D.FLORAL_BUD, OrganNode3D.FLOWER, OrganNode3D.POD):
                 all_ellipsoids[b].append(HeliosEllipsoid(
                     center=base.astype(np.float32),
                     radius=float(r),
                     length=float(lengths[i]),
-                    organ=OrganNode3D.FLORAL_BUD,
+                    organ=int(organ[i]),
                 ))
     return all_tubes, all_leaflets, all_ellipsoids
 
