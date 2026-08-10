@@ -4,7 +4,59 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Tuple
 
-from diffusion_based.models.graph_diffuser import SinusoidalPosEmb, MultiScaleSpatialEncoder
+from torchvision.models import resnet18, ResNet18_Weights
+
+class SinusoidalPosEmb(nn.Module):
+    """Sinusoidal Timestep Embeddings for Diffusion."""
+    def __init__(self, dim: int):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        device = x.device
+        half_dim = self.dim // 2
+        emb = math.log(10000) / (half_dim - 1)
+        emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
+        emb = x[:, None] * emb[None, :]
+        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
+        return emb
+
+class MultiScaleSpatialEncoder(nn.Module):
+    """Multi-Scale Spatial Feature Encoder for 3D Graph Diffuser."""
+    def __init__(self, out_dim: int = 256, output_tokens: int = 16):
+        super().__init__()
+        self.output_tokens = output_tokens
+        weights = ResNet18_Weights.DEFAULT
+        resnet = resnet18(weights=weights)
+
+        self.stem = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu)
+        self.layer1 = resnet.layer1
+        self.layer2 = resnet.layer2
+        self.layer3 = resnet.layer3
+
+        self.proj1 = nn.Sequential(nn.AdaptiveAvgPool2d((output_tokens, output_tokens)), nn.Conv2d(64, out_dim // 4, 1))
+        self.proj2 = nn.Sequential(nn.AdaptiveAvgPool2d((output_tokens, output_tokens)), nn.Conv2d(128, out_dim // 4, 1))
+        self.proj3 = nn.Sequential(nn.AdaptiveAvgPool2d((output_tokens, output_tokens)), nn.Conv2d(256, out_dim // 2, 1))
+        self.final_proj = nn.Linear(out_dim, out_dim)
+
+    def forward(self, img: torch.Tensor) -> torch.Tensor:
+        if img.shape[1] == 1:
+            img = img.repeat(1, 3, 1, 1)
+
+        x0 = self.stem(img)
+        x1 = self.layer1(x0)
+        x2 = self.layer2(x1)
+        x3 = self.layer3(x2)
+
+        p1 = self.proj1(x1)
+        p2 = self.proj2(x2)
+        p3 = self.proj3(x3)
+
+        feat_map = torch.cat([p1, p2, p3], dim=1)
+        B, C, H, W = feat_map.shape
+        tokens = feat_map.permute(0, 2, 3, 1).reshape(B, H * W, C)
+        return self.final_proj(tokens)
+
 from diffusion_based.models.knn_attention import KNNTransformerDecoderLayer
 
 

@@ -120,10 +120,12 @@ python diffusion_based/training/train_diffusion_3d.py \
 
 ---
 
-## Legacy Modules
+## Legacy Modules & Archived Files
 
-The following directories are not part of the active pipeline and are kept for reference only:
+The following directories and files are archived under **`legacy/`** for historical reference:
 
-- `lm_based/`
-- `l-systems-gnn/` top-level helpers
-- older 2D renderers in `dataset/`
+- **`legacy/graph_diffuser.py`**: Legacy 2D graph diffusion model (superseded by `graph_diffuser_3d.py`).
+- **`legacy/differentiable_renderer.py`**: Early 2D line soft-rasterizer prototype (superseded by `helios_rasterizer_3d.py`).
+- **`legacy/helios_geometry_legacy_15d.py`**: Legacy 15D node approximation renderer (superseded by `DifferentiableHeliosXMLRenderer` and `HeliosPlantGeometryTorch`).
+- **`legacy/verify_*.py`**: One-off verification scripts for early 15D renderer prototypes.
+- `lm_based/` & `l-systems-gnn/`: Legacy 2D text/L-System language model experiments.
