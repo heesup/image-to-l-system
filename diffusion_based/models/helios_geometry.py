@@ -321,7 +321,6 @@ def build_helios_geometry_from_xml(xml_path: str) -> HeliosPlantGeometry:
 
     # We will re-run the forward kinematics from the raw phytomer parameters.
     # The parser already has helper data structures in self.shoots.
-    # For exactness we recompute here from the raw XML elements directly.
     root = parser.root
     plant_elem = root.find(".//plant_instance")
     if plant_elem is None:
@@ -335,7 +334,7 @@ def build_helios_geometry_from_xml(xml_path: str) -> HeliosPlantGeometry:
         sd = parser._parse_shoot_element(shoot_elem)
         shoots_data[sd.shoot_id] = sd
 
-    # Compute parent axis info from parsed shoots
+    # Compute parent axis info and 3D geometry (leaves, tubes, floral bud head_pos)
     for sd in sorted(shoots_data.values(), key=lambda s: s.shoot_id):
         _reconstruct_shoot_geometry_exact(sd, shoots_data, base_position)
 
@@ -680,6 +679,16 @@ def _reconstruct_shoot_geometry_exact(
         # --- floral buds ---
         for fbud in pet.get("floral_buds", []):
             fbud["base_pos"] = pet_vertices[-1].copy()
+            ped_len = fbud.get("peduncle_length", 0.0)
+            ped_pitch = math.radians(fbud.get("peduncle_pitch", 0.0))
+            bud_axis = pet_axis.copy()
+            if abs(ped_pitch) > 1e-10:
+                bud_axis = _np_rodrigues(bud_axis, pet_rot_axis, abs(ped_pitch))
+            if ped_len > 0:
+                fbud["head_pos"] = pet_vertices[-1] + ped_len * _np_normalize(bud_axis)
+            else:
+                fbud["head_pos"] = pet_vertices[-1].copy()
+
 
 
 def _get_perp(v: np.ndarray) -> np.ndarray:
