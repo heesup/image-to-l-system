@@ -370,23 +370,12 @@ def build_helios_geometry_from_xml(xml_path: str) -> HeliosPlantGeometry:
                 # Floral buds / Flowers / Pods
                 for fbud in pet.get("floral_buds", []):
                     state = fbud.get("bud_state", 0)
-                    if state in [0, 5]:
-                        continue  # 0: BUD_DORMANT, 5: BUD_DEAD -> Skip
+                    if state not in [2, 3, 4]:
+                        continue  # 0: DORMANT, 1: ACTIVE (unexpanded bud), 5: DEAD -> Skip (matches C++ Helios GT)
 
                     base_pos = fbud.get("base_pos", pet.get("tip_pos", phyt.internode_tip))
 
-                    if state == 1:
-                        # BUD_ACTIVE: Unexpanded bud sits directly at petiole base, no long peduncle tube
-                        organ = OrganNode3D.FLORAL_BUD
-                        head_r = 0.004  # 4mm unexpanded floral bud
-                        head_pos = base_pos
-                        geom.ellipsoids.append(HeliosEllipsoid(
-                            center=np.asarray(head_pos, dtype=np.float64).copy(),
-                            radius=head_r,
-                            length=head_r,
-                            organ=organ,
-                        ))
-                    elif state in [2, 3]:
+                    if state in [2, 3]:
                         # BUD_FLOWER_CLOSED / OPEN: Flower blossom on extended peduncle stalk
                         organ = OrganNode3D.FLOWER
                         head_r = 0.015  # 1.5cm flower blossom (yellow)
