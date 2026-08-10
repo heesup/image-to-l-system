@@ -378,41 +378,51 @@ def build_helios_geometry_from_xml(xml_path: str) -> HeliosPlantGeometry:
                     if state == 1:
                         # BUD_ACTIVE: Unexpanded bud sits directly at petiole base, no long peduncle tube
                         organ = OrganNode3D.FLORAL_BUD
-                        head_r = 0.003  # 3mm unexpanded floral bud
+                        head_r = 0.004  # 4mm unexpanded floral bud
                         head_pos = base_pos
+                        geom.ellipsoids.append(HeliosEllipsoid(
+                            center=np.asarray(head_pos, dtype=np.float64).copy(),
+                            radius=head_r,
+                            length=head_r,
+                            organ=organ,
+                        ))
                     elif state in [2, 3]:
                         # BUD_FLOWER_CLOSED / OPEN: Flower blossom on extended peduncle stalk
                         organ = OrganNode3D.FLOWER
-                        head_r = 0.010  # 1cm flower blossom (yellow)
+                        head_r = 0.015  # 1.5cm flower blossom (yellow)
                         head_pos = fbud.get("head_pos", base_pos)
                         if np.linalg.norm(head_pos - base_pos) > 0.003:
-                            ped_r = fbud.get("peduncle_radius", 0.002)
+                            ped_r = fbud.get("peduncle_radius", 0.0022)
                             geom.tubes.append(HeliosTube(
                                 vertices=np.array([base_pos, head_pos], dtype=np.float32),
                                 radii=np.array([ped_r, ped_r], dtype=np.float32),
                                 organ=OrganNode3D.PETIOLE,
                             ))
+                        geom.ellipsoids.append(HeliosEllipsoid(
+                            center=np.asarray(head_pos, dtype=np.float64).copy(),
+                            radius=head_r,
+                            length=head_r,
+                            organ=organ,
+                        ))
                     elif state == 4:
                         # BUD_FRUITING: Pod / Fruit on extended peduncle stalk
-                        organ = OrganNode3D.POD
-                        head_r = 0.006  # 6mm pod head (cyan-green)
+                        # Render extended 18cm long hanging pod tube downward from head_pos
                         head_pos = fbud.get("head_pos", base_pos)
                         if np.linalg.norm(head_pos - base_pos) > 0.003:
-                            ped_r = fbud.get("peduncle_radius", 0.002)
+                            ped_r = fbud.get("peduncle_radius", 0.0022)
                             geom.tubes.append(HeliosTube(
                                 vertices=np.array([base_pos, head_pos], dtype=np.float32),
                                 radii=np.array([ped_r, ped_r], dtype=np.float32),
                                 organ=OrganNode3D.PETIOLE,
                             ))
-                    else:
-                        continue
-
-                    geom.ellipsoids.append(HeliosEllipsoid(
-                        center=np.asarray(head_pos, dtype=np.float64).copy(),
-                        radius=head_r,
-                        length=head_r,
-                        organ=organ,
-                    ))
+                        # 18cm hanging pod tube extending downward (gravity direction)
+                        pod_tail = head_pos + np.array([0.0, 0.0, -0.18], dtype=np.float32)
+                        pod_mid = head_pos + np.array([0.01, 0.01, -0.09], dtype=np.float32)
+                        geom.tubes.append(HeliosTube(
+                            vertices=np.array([head_pos, pod_mid, pod_tail], dtype=np.float32),
+                            radii=np.array([0.006, 0.008, 0.004], dtype=np.float32),
+                            organ=OrganNode3D.POD,
+                        ))
 
 
 
@@ -698,16 +708,22 @@ def _reconstruct_shoot_geometry_exact(
 
         # --- floral buds ---
         for fbud in pet.get("floral_buds", []):
-            fbud["base_pos"] = pet_vertices[-1].copy()
+            fbud["base_pos"] = pet_vertices[0].copy()
             ped_len = fbud.get("peduncle_length", 0.0)
             ped_pitch = math.radians(fbud.get("peduncle_pitch", 0.0))
-            bud_axis = pet_axis.copy()
+            ped_curv = math.radians(fbud.get("peduncle_curvature", 0.0))
+
+            # Peduncle grows from petiole base on main stem
+            bud_axis = internode_axis.copy()
             if abs(ped_pitch) > 1e-10:
                 bud_axis = _np_rodrigues(bud_axis, pet_rot_axis, abs(ped_pitch))
+            if abs(ped_curv) > 1e-10:
+                bud_axis = _np_rodrigues(bud_axis, internode_axis, ped_curv)
+
             if ped_len > 0:
-                fbud["head_pos"] = pet_vertices[-1] + ped_len * _np_normalize(bud_axis)
+                fbud["head_pos"] = fbud["base_pos"] + ped_len * _np_normalize(bud_axis)
             else:
-                fbud["head_pos"] = pet_vertices[-1].copy()
+                fbud["head_pos"] = fbud["base_pos"].copy()
 
 
 
