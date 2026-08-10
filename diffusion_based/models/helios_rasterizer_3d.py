@@ -47,7 +47,9 @@ class HeliosGeometryRasterizer(nn.Module):
         self.register_buffer("petiole_color", torch.tensor([0.42, 0.36, 0.20], dtype=torch.float32))
         self.register_buffer("leaf_color", torch.tensor([0.34, 0.52, 0.20], dtype=torch.float32))
         self.register_buffer("leaf_top_color", torch.tensor([0.40, 0.58, 0.26], dtype=torch.float32))
-        self.register_buffer("bud_color", torch.tensor([0.80, 0.70, 0.15], dtype=torch.float32))
+        self.register_buffer("bud_color", torch.tensor([0.80, 0.70, 0.15], dtype=torch.float32))  # FLORAL_BUD: yellow-green
+        self.register_buffer("flower_color", torch.tensor([0.95, 0.90, 0.25], dtype=torch.float32))  # FLOWER: bright yellow
+        self.register_buffer("pod_color", torch.tensor([0.30, 0.60, 0.20], dtype=torch.float32))    # POD: muted green
         self.register_buffer("bg_color", torch.tensor([0.12, 0.12, 0.10], dtype=torch.float32))
         # Helios-like soil/ground color (tan/brown)
         self.register_buffer("ground_color", torch.tensor([0.74, 0.67, 0.57], dtype=torch.float32))
@@ -503,7 +505,14 @@ class HeliosGeometryRasterizer(nn.Module):
     ) -> torch.Tensor:
         """Composite alpha masks back-to-front by depth, return (B, 4, H, W) RGBA."""
         if organ_colors is None:
-            organ_colors = [self.stem_color, self.petiole_color, self.leaf_color, self.bud_color]
+            organ_colors = [
+                self.stem_color,    # 0 INTERNODE
+                self.petiole_color, # 1 PETIOLE
+                self.leaf_color,    # 2 LEAF
+                self.bud_color,     # 3 FLORAL_BUD
+                self.flower_color,  # 4 FLOWER
+                self.pod_color,     # 5 POD
+            ]
         B, N, H, W = alpha.shape
         device = alpha.device
         sorted_depth, sort_idx = torch.sort(depth, dim=1, descending=False)  # back to front
@@ -539,8 +548,14 @@ class HeliosGeometryRasterizer(nn.Module):
     ) -> torch.Tensor:
         """Composite alpha masks back-to-front by depth, fully differentiable."""
         if organ_colors is None:
-            organ_colors = torch.stack([self.stem_color, self.petiole_color,
-                                        self.leaf_color, self.bud_color], dim=0)  # (4, 3)
+            organ_colors = torch.stack([
+                self.stem_color,    # 0 INTERNODE
+                self.petiole_color, # 1 PETIOLE
+                self.leaf_color,    # 2 LEAF
+                self.bud_color,     # 3 FLORAL_BUD
+                self.flower_color,  # 4 FLOWER
+                self.pod_color,     # 5 POD
+            ], dim=0)  # (6, 3)
         B, N, H, W = alpha.shape
         device = alpha.device
         sorted_depth, sort_idx = torch.sort(depth, dim=1, descending=False)
@@ -666,13 +681,13 @@ class HeliosGeometryRasterizer(nn.Module):
             active_bud_mask = (bud_organs == OrganNode3D.FLORAL_BUD) & (bud_radii > 1e-4)
             for b in range(B):
                 b_b = bud_centers[b][active_bud_mask[b]].reshape(-1, 3)
-                if b_b.shape[0] > 0:
-                    active_pts_list.append(b_b)
-
-        if active_pts_list:
-            all_pts = torch.cat(active_pts_list, dim=0).unsqueeze(0)  # (B=1, K, 3)
-        elif tube_verts.numel():
-            all_pts = tube_verts.reshape(B, -1, 3)
+        pts_list = []
+        if tube_verts.numel():
+            pts_list.append(tube_verts.reshape(B, -1, 3))
+        if leaf_verts.numel():
+            pts_list.append(leaf_verts.reshape(B, -1, 3))
+        if pts_list:
+            all_pts = torch.cat(pts_list, dim=1)
         else:
             all_pts = torch.zeros(B, 1, 3, device=device)
 
@@ -764,29 +779,35 @@ class HeliosGeometryRasterizer(nn.Module):
                     image = self._composite_images(image, leaf_img, Zc_tri.min(dim=1, keepdim=True)[0])
 
         # ------------------------------------------------------------------
-        # Buds (ellipsoid approximated as sphere in screen space) - filter non-buds
+        # Buds / Flowers / Pods  (all stored as ellipsoid/sphere primitives)
         # ------------------------------------------------------------------
         if bud_centers.numel():
-            bud_mask = (bud_organs == 3) & (bud_radii > 1e-4)  # (B, N)
-            keep_mask = bud_mask[0]  # (N,)
-            if keep_mask.any():
+            for organ_type_id, organ_label in [
+                (OrganNode3D.FLORAL_BUD, "bud"),
+                (OrganNode3D.FLOWER, "flower"),
+                (OrganNode3D.POD, "pod"),
+            ]:
+                type_mask = (bud_organs == organ_type_id) & (bud_radii > 1e-4)
+                keep_mask = type_mask[0]
+                if not keep_mask.any():
+                    continue
                 centers_k = bud_centers[:, keep_mask]
                 radii_k = bud_radii[:, keep_mask]
                 organs_k = bud_organs[:, keep_mask]
-                
+
                 center_2d, Zc_bud, ppm = self.project(centers_k, cam)
                 z_abs = Zc_bud.abs().clamp(min=self.near_plane)
-                r_norm = (radii_k * ppm / z_abs).clamp(min=0.001, max=0.05)
+                r_norm = (radii_k * ppm / z_abs).clamp(min=0.001, max=0.10)
                 r_norm = r_norm.unsqueeze(-1).unsqueeze(-1)
                 dx = self.grid[..., 0] - center_2d[:, :, 0].unsqueeze(-1).unsqueeze(-1)
                 dy = self.grid[..., 1] - center_2d[:, :, 1].unsqueeze(-1).unsqueeze(-1)
                 dist = torch.sqrt(dx ** 2 + dy ** 2 + 1e-8)
                 alpha = torch.sigmoid((r_norm - dist) / self.sigma)
-                bud_img = self._composite_by_depth_torch(alpha, organs_k, Zc_bud)
+                prim_img = self._composite_by_depth_torch(alpha, organs_k, Zc_bud)
                 if image is None:
-                    image = bud_img
+                    image = prim_img
                 else:
-                    image = self._composite_images(image, bud_img, Zc_bud.min(dim=1, keepdim=True)[0])
+                    image = self._composite_images(image, prim_img, Zc_bud.min(dim=1, keepdim=True)[0])
 
         # ------------------------------------------------------------------
         # Background

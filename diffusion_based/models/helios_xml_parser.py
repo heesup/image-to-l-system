@@ -45,7 +45,10 @@ class OrganNode3D:
     INTERNODE = 0
     PETIOLE = 1
     LEAF = 2
-    FLORAL_BUD = 3
+    FLORAL_BUD = 3   # dormant / active bud (not yet open)
+    FLOWER = 4       # open or closed flower (bud_state 3 or 4)
+    POD = 5          # developing fruit / pod (bud_state >= 5)
+    NUM_ORGAN_TYPES = 6
 
     def __init__(self, organ_type: int):
         self.organ_type = organ_type
@@ -64,52 +67,83 @@ class OrganNode3D:
         self.direction = np.array([0.0, 0.0, 1.0])
         self.parent_idx = -1              # global parent index in node list
 
-    def to_15d(self) -> np.ndarray:
-        """Convert to 15D feature vector (no flower-head radius)."""
-        v = self.to_16d()
-        return v[:15]
+    def to_vec(self) -> np.ndarray:
+        """Serialize this node to a fixed-length feature vector (currently 18D).
 
-    def to_16d(self) -> np.ndarray:
-        """Convert to 16D feature vector.
-
-        Layout: [xyz(3), length, radius, pitch, yaw, roll, organ_onehot(4),
-                 shoot_id, phytomer_idx, existence, flower_head_radius].
-        Channel 15 (flower_head_radius) is the radius of the visible flower /
-        fruit head at the tip of a floral bud. It is 0 for non-floral organs.
+        Layout:
+          [0:3]   xyz          - base position (m)
+          [3]     length       - organ length (m)
+          [4]     radius       - organ radius (m)
+          [5:8]   dir_xyz      - unit direction vector
+          [8:14]  organ_onehot - 6-channel one-hot (INTERNODE, PETIOLE, LEAF,
+                                  FLORAL_BUD, FLOWER, POD)
+          [14]    shoot_id
+          [15]    phytomer_idx
+          [16]    existence    - confidence [0, 1]
+          [17]    head_radius  - flower/pod head radius (m); 0 for non-floral
         """
-        one_hot = np.zeros(4)
-        one_hot[self.organ_type] = 1.0
-        head_r = self.flower_head_radius if self.organ_type == OrganNode3D.FLORAL_BUD else 0.0
+        one_hot = np.zeros(OrganNode3D.NUM_ORGAN_TYPES)  # 6D
+        ot = min(self.organ_type, OrganNode3D.NUM_ORGAN_TYPES - 1)
+        one_hot[ot] = 1.0
+        head_r = self.flower_head_radius if self.organ_type in (
+            OrganNode3D.FLORAL_BUD, OrganNode3D.FLOWER, OrganNode3D.POD) else 0.0
         d = self.direction if np.linalg.norm(self.direction) > 1e-6 else np.array([0.0, 0.0, 1.0])
         d = d / np.linalg.norm(d)
         return np.array([
             self.position[0], self.position[1], self.position[2],
             self.length, self.radius,
             d[0], d[1], d[2],
-            one_hot[0], one_hot[1], one_hot[2], one_hot[3],
+            one_hot[0], one_hot[1], one_hot[2], one_hot[3], one_hot[4], one_hot[5],
             float(self.shoot_id), float(self.phytomer_idx),
             self.existence, float(head_r),
         ])
 
     @classmethod
-    def from_15d(cls, vec: np.ndarray) -> "OrganNode3D":
-        """Construct OrganNode3D from a 15D vector with DAP 50 mature geometric bounds."""
-        organ_type = int(np.argmax(vec[8:12]))
+    def from_vec(cls, vec: np.ndarray) -> "OrganNode3D":
+        """Construct an OrganNode3D from a serialized feature vector.
+
+        Supports both the legacy 16D layout (4-channel one-hot at indices 8:12)
+        and the current 18D layout (6-channel one-hot at indices 8:14).
+        """
+        if len(vec) >= 18:
+            organ_type = int(np.argmax(vec[8:14]))
+        else:
+            organ_type = int(np.argmax(vec[8:12]))
         node = cls(organ_type)
         node.position = np.array(vec[0:3], dtype=np.float64)
-        node.length = max(float(vec[3]), 0.15)   # Minimum 15cm organ length for DAP 50
-        node.radius = max(float(vec[4]), 0.005)  # Minimum 5mm organ radius for DAP 50
+        node.length = float(vec[3])
+        node.radius = float(vec[4])
         dir_vec = np.array(vec[5:8], dtype=np.float64)
-        if np.linalg.norm(dir_vec) > 1e-6 and abs(np.linalg.norm(dir_vec) - 1.0) < 0.2:
+        if np.linalg.norm(dir_vec) > 1e-6:
             node.direction = dir_vec / np.linalg.norm(dir_vec)
-        else:
-            node.pitch = float(vec[5])
-            node.yaw = float(vec[6])
-            node.roll = float(vec[7])
-        node.shoot_id = int(round(float(vec[12])))
-        node.phytomer_idx = int(round(float(vec[13])))
-        node.existence = float(vec[14])
+        node.shoot_id = int(round(float(vec[14 if len(vec) >= 18 else 12])))
+        node.phytomer_idx = int(round(float(vec[15 if len(vec) >= 18 else 13])))
+        node.existence = float(vec[16 if len(vec) >= 18 else 14])
+        if len(vec) >= 18:
+            node.flower_head_radius = float(vec[17])
         return node
+
+    # ------------------------------------------------------------------
+    # Deprecated aliases (kept for backward compatibility)
+    # ------------------------------------------------------------------
+    def to_vec_legacy(self) -> np.ndarray:
+        """Deprecated: use to_vec(). Returns same result."""
+        return self.to_vec()
+
+    def to_16d(self) -> np.ndarray:
+        """Deprecated alias for to_vec()."""
+        return self.to_vec()
+
+    def to_15d(self) -> np.ndarray:
+        """Deprecated: returns first 15 elements of to_vec() (drops head_radius)."""
+        return self.to_vec()[:15]
+
+    @classmethod
+    def from_15d(cls, vec: np.ndarray) -> "OrganNode3D":
+        """Deprecated alias for from_vec()."""
+        return cls.from_vec(vec)
+
+
 
 
 
@@ -203,19 +237,25 @@ class Phytomer3D:
                     fnode.tip_position = fbud.get('base_pos', fnode.position).copy()
                     fnode.direction = np.array([0.0, 0.0, 1.0])
 
-                # In Helios C++, buds only render geometry if bud_state is FLOWER_OPEN or FLOWER_CLOSED
-                # bud_state: 0=dormant, 1=dead, 2=active, 3=flower_closed, 4=flower_open, 5=fruit_developing
+                # bud_state: 0=dormant, 1=dead, 2=active, 3=flower_closed, 4=flower_open, 5+=fruit/pod
                 state = fbud.get('bud_state', 0)
-                # In early DAP (short internodes), floral buds with unexpanded peduncle (length > 0.1m) are not rendered
-                if state in [3, 4] or (state >= 5 and fnode.length < 0.05):
+                if state in [3, 4]:
+                    # Open/closed flower → FLOWER organ type
+                    fnode.organ_type = OrganNode3D.FLOWER
                     fnode.existence = 1.0
-                    # Visible flower/fruit head sits at the peduncle tip. C++ renders
-                    # an inflorescence prototype scaled by flower_prototype_scale
-                    # (e.g. 0.03 m for cowpea / bean). We surface that radius as a
-                    # 16D channel so the differentiable renderer can draw it.
-                    fnode.flower_head_radius = 0.03
+                    fnode.flower_head_radius = fbud.get('flower_prototype_scale', 0.03)
+                elif state >= 5:
+                    # Developing fruit / pod → POD organ type
+                    fnode.organ_type = OrganNode3D.POD
+                    fnode.existence = 1.0
+                    fnode.flower_head_radius = fbud.get('flower_prototype_scale', 0.03)
+                elif state == 2:
+                    # Active (unexpanded) dormant bud → FLORAL_BUD, hide if peduncle not yet extended
+                    fnode.organ_type = OrganNode3D.FLORAL_BUD
+                    fnode.existence = 1.0 if fnode.length >= 0.01 else 0.0
+                    fnode.flower_head_radius = 0.0
                 else:
-                    fnode.existence = 0.0  # Hide unrendered dormant floral bud
+                    fnode.existence = 0.0  # dormant / dead
 
                 nodes.append(fnode)
 
@@ -483,6 +523,15 @@ class HeliosXMLParser:
                     fbud_data['peduncle_pitch'] = float(peduncle_elem.findtext("pitch", "0"))
                     fbud_data['peduncle_curvature'] = float(peduncle_elem.findtext("curvature", "0"))
                     fbud_data['peduncle_roll'] = float(peduncle_elem.findtext("roll", "0"))
+
+                # flower_offset / flower_prototype_scale = sphere radius for the flower/pod head
+                flower_offset_raw = fbud_elem.findtext("flower_offset", None)
+                if flower_offset_raw is not None:
+                    fbud_data['flower_prototype_scale'] = float(flower_offset_raw)
+                else:
+                    proto_scale = fbud_elem.findtext("flower_prototype_scale", None)
+                    if proto_scale is not None:
+                        fbud_data['flower_prototype_scale'] = float(proto_scale)
 
                 petiole_data['floral_buds'].append(fbud_data)
 

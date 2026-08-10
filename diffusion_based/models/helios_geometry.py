@@ -368,18 +368,35 @@ def build_helios_geometry_from_xml(xml_path: str) -> HeliosPlantGeometry:
                             organ=OrganNode3D.LEAF,
                         ))
 
-                # Floral buds
+                # Floral buds / Flowers / Pods
                 for fbud in pet.get("floral_buds", []):
                     state = fbud.get("bud_state", 0)
-                    # only render expanded flowers/fruits
-                    if state in [3, 4] or (state >= 5 and fbud.get("peduncle_length", 0.0) < 0.05):
-                        center = fbud.get("base_pos", pet.get("tip_pos", phyt.internode_tip))
-                        geom.ellipsoids.append(HeliosEllipsoid(
-                            center=center.copy(),
-                            radius=fbud.get("peduncle_radius", 0.0),
-                            length=fbud.get("peduncle_length", 0.0),
-                            organ=OrganNode3D.FLORAL_BUD,
-                        ))
+                    # Determine organ type from bud_state
+                    if state in [3, 4]:
+                        organ = OrganNode3D.FLOWER
+                    elif state >= 5:
+                        organ = OrganNode3D.POD
+                    else:
+                        continue  # dormant / dead / unexpanded: skip
+
+                    # Center = peduncle tip (head_pos), fallback to petiole tip
+                    center = fbud.get("head_pos",
+                             fbud.get("tip_pos",
+                             fbud.get("base_pos",
+                             pet.get("tip_pos", phyt.internode_tip))))
+                    # Head radius: from flower_prototype_scale XML tag, else fixed 0.03 m for cowpea
+                    # NOTE: peduncle_radius is the stem radius, NOT the flower head size
+                    head_r = fbud.get("flower_prototype_scale", 0.03)
+                    if head_r < 0.005:   # sanity clamp: must be visible
+                        head_r = 0.03
+                    geom.ellipsoids.append(HeliosEllipsoid(
+                        center=np.asarray(center, dtype=np.float64).copy(),
+                        radius=head_r,
+                        length=head_r,  # sphere: length == radius
+                        organ=organ,
+                    ))
+
+
 
     return geom
 
@@ -917,21 +934,26 @@ def nodes_to_geometry_torch(
     positions = nodes[..., :3]
     lengths = nodes[..., 3].clamp(min=1e-6)
     radii = nodes[..., 4].clamp(min=1e-6)
-    pitches = nodes[..., 5]
-    yaws = nodes[..., 6]
-    rolls = nodes[..., 7]
-    organ_logits = nodes[..., 8:12]
-    existence = nodes[..., 14]
-    # Channel 15 (optional): visible flower/fruit head radius. Absent for the
-    # classic 15D layout, so default to 0.
-    if nodes.shape[-1] >= 16:
-        flower_head_radius = nodes[..., 15].clamp(min=0.0)
+    # Support 18D (6-ch one-hot at 8:14) and legacy 16D (4-ch one-hot at 8:12)
+    if nodes.shape[-1] >= 18:
+        # New 18D layout: [xyz(3), len, rad, dir(3), onehot(6), shoot_id, phytomer, exist, head_r]
+        dir_raw = nodes[..., 5:8]
+        organ_logits = nodes[..., 8:14]   # 6-channel
+        existence = nodes[..., 16]
+        flower_head_radius = nodes[..., 17].clamp(min=0.0)
     else:
-        flower_head_radius = torch.zeros_like(existence)
+        # Legacy 16D layout: [xyz(3), len, rad, pitch, yaw, roll, onehot(4), shoot_id, phytomer, exist, head_r]
+        dir_raw = nodes[..., 5:8]
+        organ_logits = nodes[..., 8:12]   # 4-channel (pad to 6 for unified path)
+        pad = torch.zeros(*organ_logits.shape[:-1], 2, device=nodes.device, dtype=nodes.dtype)
+        organ_logits = torch.cat([organ_logits, pad], dim=-1)  # → 6-channel
+        existence = nodes[..., 14]
+        flower_head_radius = nodes[..., 15].clamp(min=0.0) if nodes.shape[-1] >= 16 else torch.zeros_like(existence)
 
-    norm_567 = torch.linalg.norm(nodes[..., 5:8], dim=-1, keepdim=True)
+    norm_567 = torch.linalg.norm(dir_raw, dim=-1, keepdim=True)
     is_dir_vec = (torch.abs(norm_567 - 1.0) < 0.2).float()
-    unit_dirs = nodes[..., 5:8] / (norm_567 + 1e-8)
+    unit_dirs = dir_raw / (norm_567 + 1e-8)
+    pitches = dir_raw[..., 0]; yaws = dir_raw[..., 1]  # angle fallback
     angle_dirs = _direction_from_angles(pitches, yaws)
     directions = is_dir_vec * unit_dirs + (1.0 - is_dir_vec) * angle_dirs  # (B, N, 3)
     organ = organ_logits.argmax(dim=-1)                 # (B, N)
@@ -1051,23 +1073,27 @@ def nodes_to_geometry_torch(
     # ------------------------------------------------------------------
     # Buds
     # ------------------------------------------------------------------
-    is_bud = (organ == OrganNode3D.FLORAL_BUD).float()
+    is_bud = (
+        (organ == OrganNode3D.FLORAL_BUD) |
+        (organ == OrganNode3D.FLOWER) |
+        (organ == OrganNode3D.POD)
+    ).float()
     bud_organs = organ                                          # (B, N) actual organ types
 
     # Visible flower/fruit head sits at the tip of the peduncle, rendered as a
-    # sphere with radius = flower_head_radius (channel 15) when a flower exists.
+    # sphere with radius = flower_head_radius (channel 17 in 18D) when a flower exists.
     # Interior/stem part is the peduncle tube already handled above (tube branch).
     has_head = (flower_head_radius > 1e-4).float()
     head_radius = flower_head_radius * has_head * exist_mask     # (B, N)
-    # Fallback for the classic 15D layout (no channel 15): draw the peduncle tip
-    # with the stored radius so gradients still flow for 15D inputs.
-    if nodes.shape[-1] >= 16:
+    # For 18D nodes use flower_head_radius; for legacy 16D use organ radius as fallback
+    if nodes.shape[-1] >= 18:
         bud_radii = head_radius
     else:
-        bud_radii = radii * is_bud * exist_mask
+        bud_radii = head_radius + radii * is_bud * exist_mask * (1.0 - has_head)
     bud_centers = positions + directions * lengths.unsqueeze(-1)  # peduncle tip (B, N, 3)
     bud_lengths = bud_radii
     bud_organs = organ
+
 
     return (
         tube_verts, tube_radii, tube_organs,
@@ -1330,6 +1356,9 @@ class HeliosPlantGeometryTorch(nn.Module):
         ell_organs: torch.Tensor,       # (N_ellipsoids,)
         leaf_scales: Optional[torch.Tensor] = None, # (N_leaflets,) trainable scale factors
         tube_scales: Optional[torch.Tensor] = None, # (N_tubes,) trainable scale factors
+        leaf_existence: Optional[torch.Tensor] = None, # (N_leaflets,) continuous existence [0,1]
+        tube_existence: Optional[torch.Tensor] = None, # (N_tubes,) continuous existence [0,1]
+        bud_existence: Optional[torch.Tensor] = None, # (N_ellipsoids,) continuous existence [0,1]
     ):
         super().__init__()
         self.register_buffer("tube_verts_base", tube_verts)
@@ -1347,14 +1376,24 @@ class HeliosPlantGeometryTorch(nn.Module):
 
         N_leaves = leaf_verts.shape[0]
         N_tubes = tube_verts.shape[0]
+        N_buds = ell_centers.shape[0]
 
         if leaf_scales is None:
             leaf_scales = torch.ones(N_leaves, device=leaf_verts.device)
         if tube_scales is None:
             tube_scales = torch.ones(N_tubes, device=tube_verts.device)
+        if leaf_existence is None:
+            leaf_existence = torch.ones(N_leaves, device=leaf_verts.device)
+        if tube_existence is None:
+            tube_existence = torch.ones(N_tubes, device=tube_verts.device)
+        if bud_existence is None:
+            bud_existence = torch.ones(N_buds, device=ell_centers.device)
 
         self.leaf_scales = nn.Parameter(leaf_scales)
         self.tube_scales = nn.Parameter(tube_scales)
+        self.leaf_existence = nn.Parameter(leaf_existence)
+        self.tube_existence = nn.Parameter(tube_existence)
+        self.bud_existence = nn.Parameter(bud_existence)
 
     @classmethod
     def from_xml_obj(cls, geom_xml: HeliosPlantGeometry, device: torch.device = torch.device("cpu")) -> "HeliosPlantGeometryTorch":
@@ -1430,20 +1469,30 @@ class HeliosPlantGeometryTorch(nn.Module):
         geom_xml = build_helios_geometry_from_xml(xml_path)
         return cls.from_xml_obj(geom_xml, device=device)
 
-    def get_geometry_tensors(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Compute current 3D geometry tensors with autograd scaling applied."""
+    def get_geometry_tensors(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Compute current 3D geometry tensors with autograd scaling and existence applied."""
         if self.leaf_verts_base.shape[0] > 0:
             center = self.leaf_verts_base.mean(dim=1, keepdim=True)
             scales = self.leaf_scales.clamp(0.1, 3.0).view(-1, 1, 1)
             leaf_verts = center + (self.leaf_verts_base - center) * scales
+            # Apply continuous existence: existence -> scale multiplier on each leaf
+            leaf_exist = self.leaf_existence.clamp(0.0, 1.0).view(-1, 1, 1)
+            leaf_verts = leaf_verts * leaf_exist
         else:
             leaf_verts = self.leaf_verts_base
 
         if self.tube_radii_base.shape[0] > 0:
             scales = self.tube_scales.clamp(0.1, 3.0).view(-1, 1)
             tube_radii = self.tube_radii_base * scales
+            tube_exist = self.tube_existence.clamp(0.0, 1.0).view(-1, 1)
+            tube_radii = tube_radii * tube_exist
         else:
             tube_radii = self.tube_radii_base
+
+        ell_radii = self.ell_radii
+        if self.ell_radii.shape[0] > 0:
+            bud_exist = self.bud_existence.clamp(0.0, 1.0).view(-1)
+            ell_radii = self.ell_radii * bud_exist
 
         return (
             self.tube_verts_base.unsqueeze(0),
@@ -1453,9 +1502,14 @@ class HeliosPlantGeometryTorch(nn.Module):
             self.leaf_faces,
             self.leaf_organs.unsqueeze(0),
             self.ell_centers.unsqueeze(0),
-            self.ell_radii.unsqueeze(0),
+            ell_radii.unsqueeze(0),
             self.ell_lengths.unsqueeze(0),
             self.ell_organs.unsqueeze(0),
+            torch.cat([self.leaf_existence.clamp(0.0, 1.0),
+                       self.tube_existence.clamp(0.0, 1.0),
+                       self.bud_existence.clamp(0.0, 1.0)], dim=0),
+            torch.cat([self.leaf_scales.clamp(0.1, 3.0),
+                       self.tube_scales.clamp(0.1, 3.0)], dim=0),
         )
 
 

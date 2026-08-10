@@ -83,16 +83,25 @@ def generate_gt_sample(output_dir: str, dap: int, seed: int = 42) -> dict:
     }
 
 def main():
-    output_dir = os.path.join(repo_root, "notebooks", "output_dap_benchmark")
+    import argparse
+    parser = argparse.ArgumentParser(description="Multi-DAP Helios vs PyTorch Renderer Benchmark")
+    parser.add_argument("--daps", type=int, nargs="+", default=[10, 30, 50],
+                        help="List of DAP values to benchmark (e.g. --daps 10 30 50 100)")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--out", type=str, default=None, help="Output directory (default: notebooks/output_dap_benchmark)")
+    args = parser.parse_args()
+
+    output_dir = args.out or os.path.join(repo_root, "notebooks", "output_dap_benchmark")
     os.makedirs(output_dir, exist_ok=True)
-    
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Running Multi-DAP (10, 30, 50) Renderer Benchmark on device: {device}")
-    
+    dap_str = ", ".join(str(d) for d in args.daps)
+    print(f"Running Multi-DAP ({dap_str}) Renderer Benchmark on device: {device}")
+
     rasterizer = HeliosGeometryRasterizer(image_size=256).to(device)
-    
-    daps = [10, 30, 50]
-    seed = 42
+
+    daps = args.daps
+    seed = args.seed
     results = []
     
     for dap in daps:
@@ -200,7 +209,8 @@ def main():
         axes[row_idx, 3].axis("off")
 
     plt.tight_layout()
-    bench_fig_path = os.path.join(output_dir, "dap_10_30_50_renderer_benchmark.png")
+    dap_tag = "_".join(str(d) for d in daps)
+    bench_fig_path = os.path.join(output_dir, f"dap_{dap_tag}_renderer_benchmark.png")
     plt.savefig(bench_fig_path, dpi=200, bbox_inches="tight", facecolor="black")
     plt.close()
     print(f"\nSaved Multi-DAP Renderer Benchmark Figure to: {bench_fig_path}")
