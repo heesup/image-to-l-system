@@ -30,9 +30,11 @@ from diffusion_based.models.helios_xml_parser import (
     OrganNode3D,
     Phytomer3D,
     ShootData,
-    _normalize as _np_normalize,
-    _rotate_point_about_line as _np_rodrigues,
 )
+
+_normalize = lambda x: x / (np.linalg.norm(x) + 1e-8)
+_np_normalize = _normalize
+_np_rodrigues = lambda p, axis, angle: p * math.cos(angle) + np.cross(axis, p) * math.sin(angle) + axis * np.dot(axis, p) * (1 - math.cos(angle))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1457,40 +1459,8 @@ class HeliosPlantGeometryTorch(nn.Module):
         )
 
 
-class DifferentiableHeliosXMLRenderer(nn.Module):
-    """XML-native PyTorch Differentiable Renderer.
-
-    Accepts HeliosPlantGeometryTorch or HeliosPlantGeometry and renders via
-    HeliosGeometryRasterizer with 100% pixel-to-pixel identity (SSIM=1.0, MAE=0.0).
-    """
-
-    def __init__(self, rasterizer: HeliosGeometryRasterizer):
-        super().__init__()
-        self.rasterizer = rasterizer
-
-    def forward(
-        self,
-        geom: Union[HeliosPlantGeometryTorch, HeliosPlantGeometry],
-        focus_plant: bool = True,
-        background: Union[str, torch.Tensor] = "black",
-    ) -> torch.Tensor:
-        device = next(self.parameters()).device if list(self.parameters()) else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        if isinstance(geom, HeliosPlantGeometryTorch):
-            (
-                tube_verts, tube_radii, tube_organs,
-                leaf_verts, leaf_faces, leaf_organs,
-                ell_centers, ell_radii, ell_lengths, ell_organs
-            ) = geom.get_geometry_tensors()
-            return self.rasterizer.render_torch_geometry(
-                tube_verts, tube_radii, tube_organs,
-                leaf_verts, leaf_faces, leaf_organs,
-                ell_centers, ell_radii, ell_lengths, ell_organs,
-                focus_plant=focus_plant,
-                background=background,
-            )
-
-        # Fallback for raw HeliosPlantGeometry
-        geom_torch = HeliosPlantGeometryTorch.from_xml_geom(geom, device=device) if hasattr(HeliosPlantGeometryTorch, 'from_xml_geom') else HeliosPlantGeometryTorch.from_xml_obj(geom, device=device)
-        return self(geom_torch, focus_plant=focus_plant, background=background)
+def DifferentiableHeliosXMLRenderer(*args, **kwargs):
+    """Lazy factory function returning HeliosGeometryRasterizer for backward compatibility."""
+    from diffusion_based.models.helios_rasterizer_3d import HeliosGeometryRasterizer
+    return HeliosGeometryRasterizer(*args, **kwargs)
 

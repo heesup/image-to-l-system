@@ -830,6 +830,31 @@ class HeliosGeometryRasterizer(nn.Module):
 
         return image
 
+    def forward(
+        self,
+        geom: Any,
+        focus_plant: bool = True,
+        background: Union[str, torch.Tensor] = "black",
+    ) -> torch.Tensor:
+        """Render HeliosPlantGeometryTorch or raw geometry directly."""
+        if hasattr(geom, "get_geometry_tensors"):
+            (
+                tube_verts, tube_radii, tube_organs,
+                leaf_verts, leaf_faces, leaf_organs,
+                ell_centers, ell_radii, ell_lengths, ell_organs
+            ) = geom.get_geometry_tensors()
+            return self.render_torch_geometry(
+                tube_verts, tube_radii, tube_organs,
+                leaf_verts, leaf_faces, leaf_organs,
+                ell_centers, ell_radii, ell_lengths, ell_organs,
+                focus_plant=focus_plant,
+                background=background,
+            )
+        from diffusion_based.models.helios_geometry import HeliosPlantGeometryTorch
+        device = next(self.parameters()).device if list(self.parameters()) else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        geom_torch = HeliosPlantGeometryTorch.from_xml_obj(geom, device=device)
+        return self(geom_torch, focus_plant=focus_plant, background=background)
+
     def _composite_images(self, base: torch.Tensor, overlay: torch.Tensor, overlay_depth: torch.Tensor) -> torch.Tensor:
         """Composite overlay RGBA over base RGBA by per-pixel depth."""
         # base: (B, 4, H, W), overlay: (B, 4, H, W)

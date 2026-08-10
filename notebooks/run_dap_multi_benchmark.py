@@ -50,6 +50,7 @@ def generate_gt_sample(output_dir: str, dap: int, seed: int = 42) -> dict:
         main_binary,
         "--renderer", "vis",
         "--save-xml",
+        "--focus-plant",
         "--dap", str(dap),
         "--output-dir", output_dir,
         "--params-file", params_file,

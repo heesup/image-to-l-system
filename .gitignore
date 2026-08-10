@@ -33,3 +33,5 @@ render_*.png
 side_by_side_*.png
 train_*.pid
 generate_dataset.log
+dataset/helios_data/
+notebooks/output*
