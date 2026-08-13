@@ -27,8 +27,8 @@ from mpl_toolkits.mplot3d import Axes3D
 # Allow imports from repo root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from diffusion_based.models.helios_geometry import build_helios_geometry_from_xml
-from diffusion_based.models.pointcloud_loss_3d import (
+from diffusion_based.models.legacy.helios_geometry_track_a import build_helios_geometry_from_xml
+from diffusion_based.models.legacy.pointcloud_loss_3d_track_a import (
     chamfer_distance_numpy,
     normalize_point_clouds,
     write_ply,

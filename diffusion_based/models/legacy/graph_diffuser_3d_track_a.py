@@ -57,28 +57,35 @@ class MultiScaleSpatialEncoder(nn.Module):
         tokens = feat_map.permute(0, 2, 3, 1).reshape(B, H * W, C)
         return self.final_proj(tokens)
 
-from diffusion_based.models.knn_attention import KNNTransformerDecoderLayer
+from diffusion_based.models.legacy.knn_attention_track_a import KNNTransformerDecoderLayer
 
 
 class PlantGraphDiffuser3D(nn.Module):
     """3D Vision-Conditioned Graph Diffuser.
 
-    Denoises 15D 3D botanical organ primitives from a 2D projection image.
-    Node feature layout:
-        0-2: x, y, z
-        3:   length / scale
-        4:   radius / thickness
-        5-7: pitch, yaw, roll
-        8-11: organ_type one-hot (internode, petiole, leaf, floral_bud)
-        12:  shoot_id
-        13:  phytomer_idx
-        14:  existence
+    Denoises 25D 3D botanical organ primitives from a 2D projection image.
+    Node feature layout (25D):
+        0-2:   x, y, z
+        3:     length / scale
+        4:     radius / thickness
+        5-13:  3x3 orientation matrix (row-major), local frame to world
+        14-19: organ_type one-hot (internode, petiole, leaf, floral_bud, flower, pod)
+        20:    shoot_id
+        21:    phytomer_idx
+        22:    existence
+        23:    flower_head_radius
+        24:    parent_idx
+
+    For backward compatibility, a 15D/19D/22D input can still be projected because
+    ``node_proj`` operates on the concatenation [nodes, existence] with the
+    provided ``node_dim``. The organ-type head assumes ``node_dim >= 14`` and
+    reads the first organ-type channels available.
 
     Uses sparse 3D Euclidean k-NN parent prediction (k = 16) to keep
     topology prediction at O(N*k) memory/compute instead of O(N^2).
     """
 
-    def __init__(self, max_nodes: int = 2048, node_dim: int = 15,
+    def __init__(self, max_nodes: int = 2048, node_dim: int = 25,
                  embed_dim: int = 256, num_layers: int = 4,
                  k_nearest: int = 16):
         super().__init__()
@@ -138,8 +145,9 @@ class PlantGraphDiffuser3D(nn.Module):
         )
         self.existence_pred_head = nn.Linear(embed_dim, 1)
 
-        # Organ Type Classification Head (4-class)
-        self.organ_type_head = nn.Linear(embed_dim, 4)
+        # Organ Type Classification Head (6-class for 22D nodes:
+        # INTERNODE, PETIOLE, LEAF, FLORAL_BUD, FLOWER, POD)
+        self.organ_type_head = nn.Linear(embed_dim, 6)
 
         # DAP-based adaptive node-budget head: predicts expected active node count.
         # Trained as a regression over the true active node count / max_nodes.
@@ -193,7 +201,7 @@ class PlantGraphDiffuser3D(nn.Module):
                 dap: torch.Tensor = None) -> Dict[str, torch.Tensor]:
         """
         Args:
-            noisy_nodes: (B, N, 15) 15D organ primitives
+            noisy_nodes: (B, N, node_dim) organ primitives (22D by default)
             noisy_existence: (B, N, 1)
             timesteps: (B,)
             images: (B, 3, H, W) 2D projection input image
@@ -201,20 +209,19 @@ class PlantGraphDiffuser3D(nn.Module):
             dap: (B, 1) optional normalized days-after-planting
 
         Returns:
-            pred_x0: (B, N, 15)
-            pred_node_noise: (B, N, 15)
+            pred_x0: (B, N, node_dim)
+            pred_node_noise: (B, N, node_dim)
             pred_existence_logits: (B, N)
             pred_parent_logits: (B, N, k)
             pred_parent_candidates: (B, N, k)  # k-NN candidate indices
-            pred_organ_type_logits: (B, N, 4)
+            pred_organ_type_logits: (B, N, 6)
             pred_node_budget: (B,)
         """
         B, N, _ = noisy_nodes.shape
         device = noisy_nodes.device
 
-        # 1. Extract 2D spatial vision key/value features (B, 1024, embed_dim)
-        img_feats = self.vision_encoder(images)
-        img_feats = img_feats.flatten(2).permute(0, 2, 1)
+        # 1. Extract 2D spatial vision key/value features (B, M, embed_dim)
+        img_feats = self.vision_encoder(images)  # (B, M, embed_dim)
 
         # Inject camera pose angle condition if provided
         if camera_poses is not None:
@@ -224,8 +231,16 @@ class PlantGraphDiffuser3D(nn.Module):
         # 2. Compute timestep embeddings
         t_emb = self.time_emb(timesteps).unsqueeze(1)
 
-        # 3. Project 15D node inputs with learned position embeddings
-        node_in = torch.cat([noisy_nodes, noisy_existence], dim=-1)  # (B, N, 16)
+        # 3. Project node inputs with learned position embeddings
+        # Pad/truncate to the expected node_dim for the projection layer.
+        if noisy_nodes.shape[-1] < self.node_dim:
+            pad_size = self.node_dim - noisy_nodes.shape[-1]
+            node_in = F.pad(noisy_nodes, (0, pad_size))
+        elif noisy_nodes.shape[-1] > self.node_dim:
+            node_in = noisy_nodes[..., :self.node_dim]
+        else:
+            node_in = noisy_nodes
+        node_in = torch.cat([node_in, noisy_existence], dim=-1)  # (B, N, node_dim+1)
         node_indices = torch.arange(N, device=device).unsqueeze(0).expand(B, N)
         h_nodes = self.node_proj(node_in) + t_emb + self.node_pos_emb(node_indices)
 
@@ -241,12 +256,12 @@ class PlantGraphDiffuser3D(nn.Module):
         for layer in self.transformer_layers:
             h_nodes = layer(tgt=h_nodes, memory=img_feats, knn_indices=knn_indices)
 
-        # 6. Predict direct 15D organ attributes & existence
+        # 6. Predict direct organ attributes & existence
         pred_x0 = torch.clamp(self.node_pred_head(h_nodes), 0.0, 1.0)
         pred_existence_logits = self.existence_pred_head(h_nodes).squeeze(-1)
 
-        # 7. Predict 4-class organ type
-        pred_organ_type_logits = self.organ_type_head(h_nodes)  # (B, N, 4)
+        # 7. Predict 6-class organ type
+        pred_organ_type_logits = self.organ_type_head(h_nodes)  # (B, N, 6)
 
         # 8. Predict DAP-based adaptive node budget (normalized [0,1])
         # Use the mean pooled node feature + global DAP/image context.
@@ -257,6 +272,22 @@ class PlantGraphDiffuser3D(nn.Module):
         coords_3d = pred_x0[:, :, :3]  # (B, N, 3)
         parent_candidates = self._compute_knn_indices(coords_3d)  # (B, N, k)
         pred_parent_logits = self._sparse_parent_logits(h_nodes, parent_candidates)
+
+        # 10. Enforce valid rotation matrices for the 9 orientation channels.
+        # For 25D outputs, channels 5:14 are the flattened local-to-world R matrix.
+        if self.node_dim >= 25:
+            R_flat = pred_x0[:, :, 5:14].reshape(B, N, 3, 3)
+            # Gram-Schmidt orthonormalization (rows)
+            r1 = F.normalize(R_flat[:, :, 0, :], dim=-1)
+            r2 = R_flat[:, :, 1, :] - (R_flat[:, :, 1, :] * r1).sum(dim=-1, keepdim=True) * r1
+            r2 = F.normalize(r2, dim=-1)
+            r3 = torch.cross(r1, r2, dim=-1)
+            R_orth = torch.stack([r1, r2, r3], dim=2).reshape(B, N, 9)
+            pred_x0 = torch.cat([
+                pred_x0[:, :, :5],
+                R_orth,
+                pred_x0[:, :, 14:],
+            ], dim=-1)
 
         # Infer noise from x0
         pred_node_noise = noisy_nodes - pred_x0

@@ -31,7 +31,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from diffusion_based.models.helios_geometry import (
+from diffusion_based.models.legacy.helios_geometry_track_a import (
     HeliosEllipsoid,
     HeliosLeaflet,
     HeliosPlantGeometry,
@@ -48,7 +48,7 @@ from diffusion_based.models.helios_xml_parser import (
     _normalize as _np_normalize,
     _rotate_point_about_line as _np_rodrigues,
 )
-from diffusion_based.models.helios_rasterizer_3d import HeliosGeometryRasterizer
+from diffusion_based.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
 
 
 # Backward-compatible aliases for the shared geometry dataclasses.

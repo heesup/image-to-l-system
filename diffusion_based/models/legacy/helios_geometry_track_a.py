@@ -80,6 +80,87 @@ class HeliosPlantGeometry:
     leaflets: List[HeliosLeaflet] = field(default_factory=list)
     ellipsoids: List[HeliosEllipsoid] = field(default_factory=list)
 
+    def get_geometry_tensors(
+        self,
+        device: Optional[torch.device] = None,
+    ) -> Tuple[
+        torch.Tensor, torch.Tensor, torch.Tensor,
+        torch.Tensor, torch.Tensor, torch.Tensor,
+        torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
+    ]:
+        """Convert this numpy geometry to batched torch tensors for rasterization.
+
+        Matches the 10-tensor output expected by HeliosGeometryRasterizer.
+        """
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        tube_verts_list, tube_radii_list, tube_organ_list = [], [], []
+        for tube in self.tubes:
+            if tube.vertices.shape[0] < 2:
+                continue
+            v = torch.from_numpy(tube.vertices).float().to(device)
+            r = torch.from_numpy(tube.radii).float().to(device)
+            o = torch.tensor(tube.organ, dtype=torch.long, device=device)
+            for seg in range(v.shape[0] - 1):
+                tube_verts_list.append(torch.stack([v[seg], v[seg + 1]], dim=0))
+                tube_radii_list.append(torch.stack([r[seg], r[seg + 1]], dim=0))
+                tube_organ_list.append(o)
+
+        leaf_verts_list, leaf_faces_list, leaf_organ_list = [], [], []
+        for lf in self.leaflets:
+            if lf.vertices.shape[0] >= 3:
+                v = torch.from_numpy(lf.vertices).float().to(device)
+                f = torch.from_numpy(lf.faces).long().to(device) if lf.faces.shape[0] > 0 else torch.zeros((0, 3), dtype=torch.long, device=device)
+                o = torch.tensor(lf.organ, dtype=torch.long, device=device)
+                leaf_verts_list.append(v)
+                leaf_faces_list.append(f)
+                leaf_organ_list.append(o)
+
+        ell_center_list, ell_radius_list, ell_length_list, ell_organ_list = [], [], [], []
+        for ell in self.ellipsoids:
+            ell_center_list.append(torch.from_numpy(ell.center).float().to(device))
+            ell_radius_list.append(torch.tensor(ell.radius, dtype=torch.float32, device=device))
+            ell_length_list.append(torch.tensor(ell.length, dtype=torch.float32, device=device))
+            ell_organ_list.append(torch.tensor(ell.organ, dtype=torch.long, device=device))
+
+        if tube_verts_list:
+            tube_verts = torch.stack(tube_verts_list, dim=0).unsqueeze(0)
+            tube_radii = torch.stack(tube_radii_list, dim=0).unsqueeze(0)
+            tube_organs = torch.stack(tube_organ_list, dim=0).unsqueeze(0)
+        else:
+            tube_verts = torch.zeros((1, 0, 2, 3), device=device)
+            tube_radii = torch.zeros((1, 0, 2), device=device)
+            tube_organs = torch.zeros((1, 0), dtype=torch.long, device=device)
+
+        if leaf_verts_list:
+            max_v = max(v.shape[0] for v in leaf_verts_list)
+            padded = [torch.cat([v, torch.zeros((max_v - v.shape[0], 3), device=device)], dim=0) if v.shape[0] < max_v else v for v in leaf_verts_list]
+            leaf_verts = torch.stack(padded, dim=0).unsqueeze(0)
+            leaf_organs = torch.stack(leaf_organ_list, dim=0).unsqueeze(0)
+            leaf_faces = leaf_faces_list[0]
+        else:
+            leaf_verts = torch.zeros((1, 0, 4, 3), device=device)
+            leaf_organs = torch.zeros((1, 0), dtype=torch.long, device=device)
+            leaf_faces = torch.zeros((0, 3), dtype=torch.long, device=device)
+
+        if ell_center_list:
+            ell_centers = torch.stack(ell_center_list, dim=0).unsqueeze(0)
+            ell_radii = torch.stack(ell_radius_list, dim=0).unsqueeze(0)
+            ell_lengths = torch.stack(ell_length_list, dim=0).unsqueeze(0)
+            ell_organs = torch.stack(ell_organ_list, dim=0).unsqueeze(0)
+        else:
+            ell_centers = torch.zeros((1, 0, 3), device=device)
+            ell_radii = torch.zeros((1, 0), device=device)
+            ell_lengths = torch.zeros((1, 0), device=device)
+            ell_organs = torch.zeros((1, 0), dtype=torch.long, device=device)
+
+        return (
+            tube_verts, tube_radii, tube_organs,
+            leaf_verts, leaf_faces, leaf_organs,
+            ell_centers, ell_radii, ell_lengths, ell_organs,
+        )
+
     def to_point_cloud(
         self,
         n_circ: int = 8,
@@ -185,35 +266,102 @@ _ORGAN_COLORS = {
 }
 
 
-def _leaflet_local_mesh(leaf_scale: float, aspect: float = 0.7) -> Tuple[np.ndarray, np.ndarray]:
-    """Return a simple leaf prototype in its local frame.
+def _leaflet_local_mesh(
+    leaf_scale: float,
+    aspect: float = 0.7,
+    subdivisions: int = 8,
+    longitudinal_curvature: float = 0.0,
+    lateral_curvature: float = 0.0,
+    midrib_fold_fraction: float = 0.0,
+    petiole_roll: float = 0.0,
+    leaf_buckle_angle: float = 0.0,
+    leaf_buckle_length: float = 1.0,
+    wave_period: float = 0.0,
+    wave_amplitude: float = 0.0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Return a Helios GenericLeafPrototype-style mesh in its local frame.
 
-    Local frame matches Helios GenericLeafPrototype:
-        +x = along midrib (length), from base to tip
-        +y = across width
-        +z = normal / curvature direction
-    Returns a dense grid of vertices and triangle faces.
+    Local frame:
+        +x = along midrib (length), 0 at petiole base, 1 at tip
+        +y = across width, centered on midrib
+        +z = normal / curvature direction (positive = upward)
+
+    Matches the procedural builder in
+    Digital-Crops/libs/Helios/plugins/plantarchitecture/src/Assets.cpp:21-178.
     """
     L = max(leaf_scale, 1e-6)
     W = L * aspect
-    Nx = 8
-    Ny = 6
-    dx = 1.0 / Nx
-    dy = W / Ny
 
-    verts = []
+    # Grid dimensions: match C++ (Nx longitudinal, Ny lateral, forced even)
+    Nx = max(1, subdivisions)
+    Ny = max(1, int(math.ceil(aspect * Nx)))
+    if Ny % 2 != 0:
+        Ny += 1
+
+    dx = 1.0 / float(Nx)
+    dy = aspect / float(Ny)
+
+    verts = np.zeros((Ny + 1, Nx + 1, 3), dtype=np.float64)
+
     for j in range(Ny + 1):
-        y = j * dy - 0.5 * W
+        dtheta = 0.0
         for i in range(Nx + 1):
-            x = i * dx
-            # elliptical taper in y: widest near middle of length
-            taper = math.sin(math.pi * x)
-            y_eff = y * taper
-            # slight longitudinal arch (concave/upward)
-            z_arch = 0.08 * L * math.sin(math.pi * x) * (1.0 - 4.0 * (y / max(W, 1e-6)) ** 2)
-            verts.append([x * L, y_eff, z_arch])
+            x = float(i) * dx
+            y = float(j) * dy - 0.5 * aspect
 
-    verts = np.array(verts, dtype=np.float64)
+            # Elliptical taper: leaf is narrow at base and tip, widest in the middle
+            taper = math.sin(math.pi * x)
+            y_tapered = y * taper
+
+            # Midrib fold
+            y_fold = math.cos(0.5 * midrib_fold_fraction * math.pi) * y_tapered
+            z_fold = math.sin(0.5 * midrib_fold_fraction * math.pi) * abs(y_tapered)
+
+            # Curvatures (positive = upward)
+            z_xcurve = longitudinal_curvature * (x ** 4)
+            z_ycurve = lateral_curvature * ((y_tapered / aspect) ** 4) if abs(aspect) > 1e-6 else 0.0
+
+            # Petiole roll
+            z_petiole = 0.0
+            if abs(petiole_roll) > 1e-10:
+                z_petiole = min(0.1, petiole_roll * ((7.0 * y_tapered / aspect) ** 4) * math.exp(-70.0 * x)) - 0.01 * (petiole_roll / abs(petiole_roll))
+
+            # Start with folded/cambered position
+            verts[j, i] = np.array([x, y_fold, z_fold + z_ycurve + z_petiole])
+
+            # Longitudinal incremental rotation about local y
+            rot_angle = 0.0
+            if abs(longitudinal_curvature) > 1e-10 and i > 0:
+                dtheta -= math.atan(4.0 * longitudinal_curvature * (x ** 3) * dx)
+                verts[j, i] = _np_rodrigues(verts[j, i], np.array([0.0, 1.0, 0.0]), dtheta)
+                rot_angle += dtheta
+
+            # Leaf buckle (distal portion rotated downward about line parallel to y)
+            if leaf_buckle_angle > 0.0:
+                xf = leaf_buckle_length
+                x_next = x + dx
+                if x <= xf < x_next:
+                    ang = 0.5 * math.radians(leaf_buckle_angle)
+                    verts[j, i] = _np_rodrigues(verts[j, i] - np.array([xf, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]), ang) + np.array([xf, 0.0, 0.0])
+                    rot_angle += ang
+                elif x > xf:
+                    ang = math.radians(leaf_buckle_angle)
+                    verts[j, i] = _np_rodrigues(verts[j, i] - np.array([xf, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]), ang) + np.array([xf, 0.0, 0.0])
+                    rot_angle += ang
+
+            # Wave displacement along rotated local normal
+            if wave_period > 0.0 and wave_amplitude > 0.0:
+                wave_phase = (x + wave_period * float(j >= 0.5 * Ny)) * math.pi / wave_period
+                z_wave = 2.0 * abs(y_tapered) * wave_amplitude * math.sin(wave_phase)
+                verts[j, i, 0] += z_wave * math.sin(rot_angle)
+                verts[j, i, 2] += z_wave * math.cos(rot_angle)
+
+    # Scale to leaf length and flatten to (V, 3)
+    verts_flat = verts.reshape(-1, 3).copy()
+    verts_flat[:, 0] *= L
+    verts_flat[:, 1] *= L
+    verts_flat[:, 2] *= L
+
     faces = []
     for j in range(Ny):
         for i in range(Nx):
@@ -224,7 +372,7 @@ def _leaflet_local_mesh(leaf_scale: float, aspect: float = 0.7) -> Tuple[np.ndar
             faces.append([v0, v1, v2])
             faces.append([v0, v2, v3])
     faces = np.array(faces, dtype=np.int32)
-    return verts, faces
+    return verts_flat, faces
 
 
 def _leaflet_from_node(node: OrganNode3D) -> HeliosLeaflet:
@@ -295,425 +443,38 @@ def build_helios_geometry_from_nodes(nodes: List[OrganNode3D]) -> HeliosPlantGeo
         elif node.organ_type == OrganNode3D.LEAF:
             geom.leaflets.append(_leaflet_from_node(node))
 
-        elif node.organ_type == OrganNode3D.FLORAL_BUD:
+        elif node.organ_type in (OrganNode3D.FLORAL_BUD, OrganNode3D.FLOWER, OrganNode3D.POD):
             if node.length > 1e-6:
                 axis = _np_normalize(node.direction)
                 tip = node.tip_position if np.linalg.norm(node.tip_position) > 1e-12 else node.position + axis * node.length
                 geom.tubes.append(HeliosTube(
                     vertices=np.array([node.position, tip], dtype=np.float32),
                     radii=np.array([node.radius, node.radius * 0.5], dtype=np.float32),
-                    organ=OrganNode3D.FLORAL_BUD,
+                    organ=node.organ_type,
                 ))
+            geom.ellipsoids.append(HeliosEllipsoid(
+                center=node.position.astype(np.float32),
+                radius=float(node.radius),
+                length=float(node.length),
+                organ=node.organ_type,
+            ))
 
     return geom
 
 
-def build_helios_geometry_from_xml(xml_path: str) -> HeliosPlantGeometry:
-    """Reconstruct explicit 3D geometry from a Helios XML file.
+def _ghost_petiole_axis(parent_internode_axis: np.ndarray, cumulative_rotation: float) -> np.ndarray:
+    """Create a ghost petiole reference vector for phytomers without explicit petioles.
 
-    This follows PlantArchitecture.cpp as closely as possible using the raw
-    parameters stored in the XML.
+    Matches PlantArchitecture.cpp (L1078-1088): ghost = cross(internode, z), with
+    cumulative rotation about the internode axis by parent_node_index * phyllotactic_angle.
     """
-    parser = HeliosXMLParser(xml_path)
-    parser.parse()
-
-    geom = HeliosPlantGeometry()
-
-    # We will re-run the forward kinematics from the raw phytomer parameters.
-    # The parser already has helper data structures in self.shoots.
-    root = parser.root
-    plant_elem = root.find(".//plant_instance")
-    if plant_elem is None:
-        return geom
-
-    base_position = parser.base_position.copy()
-    shoots_data: Dict[int, ShootData] = {}
-
-    # First pass: parse all shoots
-    for shoot_elem in plant_elem.findall("shoot"):
-        sd = parser._parse_shoot_element(shoot_elem)
-        shoots_data[sd.shoot_id] = sd
-
-    # Compute parent axis info and 3D geometry (leaves, tubes, floral bud head_pos)
-    for sd in sorted(shoots_data.values(), key=lambda s: s.shoot_id):
-        _reconstruct_shoot_geometry_exact(sd, shoots_data, base_position)
-
-    # Build geometry objects
-    for sd in sorted(shoots_data.values(), key=lambda s: s.shoot_id):
-        for phyt in sd.phytomers:
-            # Internode tube
-            if phyt.internode_vertices:
-                geom.tubes.append(HeliosTube(
-                    vertices=np.array(phyt.internode_vertices, dtype=np.float32),
-                    radii=np.array(phyt.internode_radii, dtype=np.float32),
-                    organ=OrganNode3D.INTERNODE,
-                ))
-
-            for pet in phyt.petioles:
-                # Petiole tube
-                if pet.get("vertices"):
-                    geom.tubes.append(HeliosTube(
-                        vertices=np.array(pet["vertices"], dtype=np.float32),
-                        radii=_petiole_radii(pet, phyt, sd),
-                        organ=OrganNode3D.PETIOLE,
-                    ))
-
-                # Leaflets
-                for leaf in pet.get("leaves", []):
-                    if "mesh_verts" in leaf:
-                        geom.leaflets.append(HeliosLeaflet(
-                            vertices=leaf["mesh_verts"].astype(np.float32),
-                            faces=leaf.get("mesh_faces", _leaflet_local_mesh(1.0)[1]),
-                            organ=OrganNode3D.LEAF,
-                        ))
-
-                # Floral buds / Flowers / Pods
-                for fbud in pet.get("floral_buds", []):
-                    state = fbud.get("bud_state", 0)
-                    if state not in [2, 3, 4]:
-                        continue  # 0: DORMANT, 1: ACTIVE (unexpanded bud), 5: DEAD -> Skip (matches C++ Helios GT)
-
-                    base_pos = fbud.get("base_pos", pet.get("tip_pos", phyt.internode_tip))
-
-                    if state in [2, 3]:
-                        # BUD_FLOWER_CLOSED / OPEN: Flower blossom on extended peduncle stalk
-                        organ = OrganNode3D.FLOWER
-                        head_r = 0.015  # 1.5cm flower blossom (yellow)
-                        head_pos = fbud.get("head_pos", base_pos)
-                        if np.linalg.norm(head_pos - base_pos) > 0.003:
-                            ped_r = fbud.get("peduncle_radius", 0.0022)
-                            geom.tubes.append(HeliosTube(
-                                vertices=np.array([base_pos, head_pos], dtype=np.float32),
-                                radii=np.array([ped_r, ped_r], dtype=np.float32),
-                                organ=OrganNode3D.PETIOLE,
-                            ))
-                        geom.ellipsoids.append(HeliosEllipsoid(
-                            center=np.asarray(head_pos, dtype=np.float64).copy(),
-                            radius=head_r,
-                            length=head_r,
-                            organ=organ,
-                        ))
-                    elif state == 4:
-                        # BUD_FRUITING: Pod / Fruit on extended peduncle stalk
-                        # Render extended 18cm long hanging pod tube downward from head_pos
-                        head_pos = fbud.get("head_pos", base_pos)
-                        if np.linalg.norm(head_pos - base_pos) > 0.003:
-                            ped_r = fbud.get("peduncle_radius", 0.0022)
-                            geom.tubes.append(HeliosTube(
-                                vertices=np.array([base_pos, head_pos], dtype=np.float32),
-                                radii=np.array([ped_r, ped_r], dtype=np.float32),
-                                organ=OrganNode3D.PETIOLE,
-                            ))
-                        # 18cm hanging pod tube extending downward (gravity direction)
-                        pod_tail = head_pos + np.array([0.0, 0.0, -0.18], dtype=np.float32)
-                        pod_mid = head_pos + np.array([0.01, 0.01, -0.09], dtype=np.float32)
-                        geom.tubes.append(HeliosTube(
-                            vertices=np.array([head_pos, pod_mid, pod_tail], dtype=np.float32),
-                            radii=np.array([0.006, 0.008, 0.004], dtype=np.float32),
-                            organ=OrganNode3D.POD,
-                        ))
-
-
-
-
-    return geom
-
-
-def _petiole_radii(pet: Dict, phyt: Phytomer3D, sd: ShootData) -> np.ndarray:
-    """Build per-vertex petiole radii with taper, matching Helios."""
-    verts = pet.get("vertices", [])
-    n = len(verts)
-    if n == 0:
-        return np.zeros(0, dtype=np.float32)
-    base_r = pet.get("radius", 0.0)
-    taper = pet.get("taper", 0.25)
-    radii = np.zeros(n, dtype=np.float64)
-    for j in range(n):
-        radii[j] = base_r * (1.0 - taper / max(n - 1, 1) * j)
-    return radii.astype(np.float32)
-
-
-def _reconstruct_shoot_geometry_exact(
-    sd: ShootData,
-    all_shoots: Dict[int, ShootData],
-    base_position: np.ndarray,
-):
-    """Recompute exact 3D geometry for one shoot from raw phytomer parameters.
-
-    Mirrors PlantArchitecture.cpp Phytomer constructor.
-    """
-    sd.internode_vertices = []
-    sd.internode_radii = []
-
-    for phyt_idx, phyt in enumerate(sd.phytomers):
-        # --- determine parent axes ---
-        parent_internode_axis = np.array([0.0, 0.0, 1.0])
-        parent_petiole_axis = np.array([0.0, -1.0, 0.0])
-
-        if phyt_idx > 0:
-            prev = sd.phytomers[phyt_idx - 1]
-            parent_internode_axis = _np_normalize(prev.internode_dir)
-            if prev.petioles and "axis" in prev.petioles[0]:
-                parent_petiole_axis = _np_normalize(prev.petioles[0]["axis"])
-            else:
-                parent_petiole_axis = _get_perp(parent_internode_axis)
-        elif sd.parent_shoot_id >= 0:
-            parent_sd = all_shoots.get(sd.parent_shoot_id)
-            if parent_sd and sd.parent_node_index < len(parent_sd.phytomers):
-                parent_phyt = parent_sd.phytomers[sd.parent_node_index]
-                parent_internode_axis = _np_normalize(parent_phyt.internode_dir)
-                pet_idx = min(sd.parent_petiole_index, max(0, len(parent_phyt.petioles) - 1))
-                if parent_phyt.petioles and "axis" in parent_phyt.petioles[pet_idx]:
-                    parent_petiole_axis = _np_normalize(parent_phyt.petioles[pet_idx]["axis"])
-                else:
-                    parent_petiole_axis = _get_perp(parent_internode_axis)
-
-        petiole_rotation_axis = np.cross(parent_internode_axis, parent_petiole_axis)
-        if np.linalg.norm(petiole_rotation_axis) < 1e-6:
-            petiole_rotation_axis = np.array([1.0, 0.0, 0.0])
-        else:
-            petiole_rotation_axis = _np_normalize(petiole_rotation_axis)
-
-        internode_axis = parent_internode_axis.copy()
-
-        # --- base rotation for first phytomer ---
-        if phyt_idx == 0:
-            pitch_rad = math.radians(phyt.internode_pitch)
-            if abs(pitch_rad) > 1e-10:
-                internode_axis = _np_rodrigues(internode_axis, petiole_rotation_axis, 0.5 * pitch_rad)
-
-            base_rot = np.radians(sd.base_rotation)
-            if abs(base_rot[2]) > 1e-10:
-                petiole_rotation_axis = _np_rodrigues(petiole_rotation_axis, parent_internode_axis, base_rot[2])
-                internode_axis = _np_rodrigues(internode_axis, parent_internode_axis, base_rot[2])
-
-            if abs(base_rot[0]) > 1e-10:
-                base_pitch_axis = -np.cross(parent_internode_axis, parent_petiole_axis)
-                if np.linalg.norm(base_pitch_axis) > 1e-10:
-                    base_pitch_axis = _np_normalize(base_pitch_axis)
-                    petiole_rotation_axis = _np_rodrigues(petiole_rotation_axis, base_pitch_axis, -base_rot[0])
-                    internode_axis = _np_rodrigues(internode_axis, base_pitch_axis, -base_rot[0])
-
-            if abs(base_rot[1]) > 1e-10:
-                petiole_rotation_axis = _np_rodrigues(petiole_rotation_axis, parent_internode_axis, base_rot[1])
-                internode_axis = _np_rodrigues(internode_axis, parent_internode_axis, base_rot[1])
-        else:
-            pitch_rad = math.radians(phyt.internode_pitch)
-            if abs(pitch_rad) > 1e-10:
-                internode_axis = _np_rodrigues(internode_axis, petiole_rotation_axis, -1.25 * pitch_rad)
-
-        shoot_bending_axis = np.cross(internode_axis, np.array([0.0, 0.0, 1.0]))
-        if np.linalg.norm(shoot_bending_axis) < 1e-6:
-            shoot_bending_axis = np.array([0.0, 1.0, 0.0])
-        else:
-            shoot_bending_axis = _np_normalize(shoot_bending_axis)
-
-        internode_axis = _np_normalize(internode_axis)
-
-        # --- internode base ---
-        if phyt_idx == 0:
-            if sd.parent_shoot_id < 0:
-                internode_base = base_position.copy()
-            else:
-                parent_sd = all_shoots.get(sd.parent_shoot_id)
-                if parent_sd and sd.parent_node_index < len(parent_sd.internode_vertices):
-                    internode_base = parent_sd.internode_vertices[sd.parent_node_index][-1].copy()
-                else:
-                    internode_base = base_position.copy()
-        else:
-            internode_base = sd.internode_vertices[phyt_idx - 1][-1].copy()
-
-        # --- internode segments with curvature/yaw perturbations ---
-        n_seg = max(1, getattr(phyt, "_internode_length_segments", 2))
-        dr = phyt.internode_length / float(n_seg)
-        curv_pert = getattr(phyt, "_curvature_perturbations", [])
-        yaw_pert = getattr(phyt, "_yaw_perturbations", [])
-
-        vertices = [internode_base.copy()]
-        radii = [phyt.internode_radius]
-        axis = internode_axis.copy()
-
-        for seg in range(1, n_seg + 1):
-            if curv_pert:
-                idx = seg - 1
-                if idx < len(curv_pert):
-                    ang = math.radians(curv_pert[idx])
-                    if abs(ang) > 1e-10:
-                        axis = _np_rodrigues(axis, shoot_bending_axis, ang)
-            if yaw_pert:
-                idx = seg - 1
-                if idx < len(yaw_pert):
-                    ang = math.radians(yaw_pert[idx])
-                    if abs(ang) > 1e-10:
-                        axis = _np_rodrigues(axis, np.array([0.0, 0.0, 1.0]), ang)
-            vertices.append(vertices[-1] + dr * _np_normalize(axis))
-            radii.append(phyt.internode_radius)
-
-        phyt.internode_vertices = [v.copy() for v in vertices]
-        phyt.internode_radii = [r for r in radii]
-
-        sd.internode_vertices.append(np.array(vertices, dtype=np.float64))
-        sd.internode_radii.append(np.array(radii, dtype=np.float64))
-
-        phyt.internode_pos = vertices[0].copy()
-        phyt.internode_tip = vertices[-1].copy()
-        phyt.internode_dir = _np_normalize(axis)
-
-        # --- petioles ---
-        for pet_idx, pet in enumerate(phyt.petioles):
-            petiole_axis = internode_axis.copy()
-            pet_pitch = math.radians(pet.get("pitch", 5.0))
-            if abs(pet_pitch) > 1e-10:
-                petiole_axis = _np_rodrigues(petiole_axis, petiole_rotation_axis, abs(pet_pitch))
-
-            phyllo_rad = math.radians(phyt.internode_phyllotactic_angle)
-            if phyt_idx != 0 and abs(phyllo_rad) > 1e-10:
-                petiole_axis = _np_rodrigues(petiole_axis, internode_axis, phyllo_rad)
-                petiole_rotation_axis = _np_rodrigues(petiole_rotation_axis, internode_axis, phyllo_rad)
-
-            n_petioles = len(phyt.petioles)
-            pet_rot_axis = petiole_rotation_axis.copy()
-            if pet_idx > 0 and n_petioles > 1:
-                budrot = float(pet_idx) * 2.0 * math.pi / float(n_petioles)
-                petiole_axis = _np_rodrigues(petiole_axis, internode_axis, budrot)
-                pet_rot_axis = _np_rodrigues(pet_rot_axis, internode_axis, budrot)
-
-            n_pet_seg = max(1, pet.get("length_segments", 5))
-            pet_len = pet.get("length", 0.0)
-            dr_pet = pet_len / float(n_pet_seg)
-            curvature = pet.get("curvature", 0.0)
-
-            pet_vertices = [phyt.internode_tip.copy()]
-            pet_axis = _np_normalize(petiole_axis)
-            for j in range(1, n_pet_seg + 1):
-                if abs(curvature) > 1e-10:
-                    ang = math.radians(curvature * dr_pet)
-                    pet_axis = _np_rodrigues(pet_axis, pet_rot_axis, -ang)
-                pet_vertices.append(pet_vertices[-1] + dr_pet * _np_normalize(pet_axis))
-
-            pet["base_pos"] = pet_vertices[0].copy()
-            pet["tip_pos"] = pet_vertices[-1].copy()
-            pet["axis"] = _np_normalize(pet_axis)
-            pet["vertices"] = pet_vertices
-
-            # --- leaflets ---
-            leaves = pet.get("leaves", [])
-            leaves_per_petiole = len(leaves)
-            leaflet_offset = pet.get("leaflet_offset", 0.0)
-            petiole_tip_axis = _np_normalize(pet_axis)
-
-            for leaf_idx, leaf in enumerate(leaves):
-                ind_from_tip = float(leaf_idx) - float(leaves_per_petiole - 1) / 2.0
-
-                # leaflet base along petiole
-                if leaves_per_petiole > 1 and leaflet_offset > 0 and ind_from_tip != 0:
-                    offset = (abs(ind_from_tip) - 0.5) * leaflet_offset * pet_len
-                    frac = max(0.0, 1.0 - offset / max(pet_len, 1e-6))
-                    leaf_base = _interpolate_tube(pet_vertices, frac)
-                else:
-                    leaf_base = pet_vertices[-1].copy()
-
-                # compound rotation
-                compound_rotation = 0.0
-                if leaves_per_petiole > 1:
-                    if leaflet_offset == 0:
-                        dphi = math.pi / (math.floor(0.5 * (leaves_per_petiole - 1)) + 1)
-                        compound_rotation = -math.pi + dphi * (leaf_idx + 0.5)
-                    else:
-                        if leaf_idx == (leaves_per_petiole - 1) / 2.0:
-                            compound_rotation = 0.0
-                        elif leaf_idx < (leaves_per_petiole - 1) / 2.0:
-                            compound_rotation = -0.5 * math.pi
-                        else:
-                            compound_rotation = 0.5 * math.pi
-
-                # Build local rotation matrix matching PlantArchitecture.cpp
-                leaf_scale = leaf.get("scale", 0.0)
-                leaf_pitch = math.radians(leaf.get("pitch", 0.0))
-                leaf_yaw = math.radians(leaf.get("yaw", 0.0))
-                leaf_roll = math.radians(leaf.get("roll", 0.0))
-
-                # 1. roll about local x (matches C++ rotateObject "x")
-                roll_rot = 0.0
-                if leaves_per_petiole == 1:
-                    sign = 1 if (phyt_idx % 2 == 0) else -1
-                    roll_rot = -leaf_roll * sign
-                elif ind_from_tip != 0:
-                    sign = 1.0 if compound_rotation > 0 else -1.0
-                    roll_rot = (math.asin(_as_safe(petiole_tip_axis[2])) + leaf_roll) * sign
-
-                # 2. pitch about local y (matches C++ rotateObject "y")
-                pitch_rot = leaf_pitch
-                if ind_from_tip == 0:
-                    pitch_rot += math.asin(_as_safe(petiole_tip_axis[2]))
-
-                # 3. yaw about local z for lateral leaflets
-                yaw_rot = 0.0
-                if ind_from_tip != 0:
-                    sign = -compound_rotation / abs(compound_rotation)
-                    yaw_rot = sign * leaf_yaw
-
-                # 4. rotate to petiole azimuth + compound rotation about world z
-                azimuth_rot = -math.atan2(petiole_tip_axis[1], petiole_tip_axis[0]) + compound_rotation
-
-                # Local prototype mesh
-                proto_verts, proto_faces = _leaflet_local_mesh(leaf_scale, aspect=0.7)
-                verts = proto_verts.copy()
-
-                # Apply roll about local x
-                if abs(roll_rot) > 1e-10:
-                    verts = np.array([_np_rodrigues(v, np.array([1.0, 0.0, 0.0]), roll_rot) for v in verts])
-
-                # Apply pitch about local y (negative to match C++ convention)
-                if abs(pitch_rot) > 1e-10:
-                    verts = np.array([_np_rodrigues(v, np.array([0.0, 1.0, 0.0]), -pitch_rot) for v in verts])
-
-                # Apply yaw about local z
-                if abs(yaw_rot) > 1e-10:
-                    verts = np.array([_np_rodrigues(v, np.array([0.0, 0.0, 1.0]), yaw_rot) for v in verts])
-
-                # Apply azimuth + compound rotation about world z
-                if abs(azimuth_rot) > 1e-10:
-                    verts = np.array([_np_rodrigues(v, np.array([0.0, 0.0, 1.0]), azimuth_rot) for v in verts])
-
-                # Blade-up correction for single leaves (simplified)
-                if leaves_per_petiole == 1:
-                    r_h = math.sqrt(petiole_tip_axis[0] ** 2 + petiole_tip_axis[1] ** 2)
-                    if r_h > 1e-4:
-                        blade_correction = math.atan2(petiole_tip_axis[2] * r_h, r_h * r_h)
-                        length_ratio = min(pet_len / max(leaf_scale, 1e-6), 1.0)
-                        blade_correction *= length_ratio
-                        blade_correction = _clamp(blade_correction, -0.5 * math.pi + math.radians(1.0), 0.5 * math.pi - math.radians(1.0))
-                        sign = 1 if (phyt_idx % 2 == 0) else -1
-                        if abs(blade_correction) > 1e-10:
-                            verts = np.array([_np_rodrigues(v, petiole_tip_axis, blade_correction * sign) for v in verts])
-
-                # Translate to leaf base
-                verts = verts + leaf_base
-
-                leaf["base_pos"] = leaf_base.copy()
-                leaf["mesh_verts"] = verts
-                leaf["mesh_faces"] = proto_faces
-
-        # --- floral buds ---
-        for fbud in pet.get("floral_buds", []):
-            fbud["base_pos"] = pet_vertices[0].copy()
-            ped_len = fbud.get("peduncle_length", 0.0)
-            ped_pitch = math.radians(fbud.get("peduncle_pitch", 0.0))
-            ped_curv = math.radians(fbud.get("peduncle_curvature", 0.0))
-
-            # Peduncle grows from petiole base on main stem
-            bud_axis = internode_axis.copy()
-            if abs(ped_pitch) > 1e-10:
-                bud_axis = _np_rodrigues(bud_axis, pet_rot_axis, abs(ped_pitch))
-            if abs(ped_curv) > 1e-10:
-                bud_axis = _np_rodrigues(bud_axis, internode_axis, ped_curv)
-
-            if ped_len > 0:
-                fbud["head_pos"] = fbud["base_pos"] + ped_len * _np_normalize(bud_axis)
-            else:
-                fbud["head_pos"] = fbud["base_pos"].copy()
-
+    ghost = np.cross(parent_internode_axis, np.array([0.0, 0.0, 1.0]))
+    if np.linalg.norm(ghost) < 0.01:
+        ghost = np.array([0.0, 1.0, 0.0])
+    ghost = _np_normalize(ghost)
+    if abs(cumulative_rotation) > 1e-10:
+        ghost = _np_rodrigues(ghost, parent_internode_axis, cumulative_rotation)
+    return ghost
 
 
 def _get_perp(v: np.ndarray) -> np.ndarray:
@@ -894,34 +655,122 @@ def _direction_from_angles(pitches: torch.Tensor, yaws: torch.Tensor) -> torch.T
     return torch.stack([dx, dy, dz], dim=-1)
 
 
-def _leaflet_local_mesh_torch(device: Optional[torch.device] = None) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Return a simple leaf prototype in its local frame as torch Tensors.
+def _leaflet_local_mesh_torch(
+    device: Optional[torch.device] = None,
+    subdivisions: int = 8,
+    aspect: float = 0.7,
+    longitudinal_curvature: float = 0.0,
+    lateral_curvature: float = 0.0,
+    midrib_fold_fraction: float = 0.0,
+    petiole_roll: float = 0.0,
+    leaf_buckle_angle: float = 0.0,
+    leaf_buckle_length: float = 1.0,
+    wave_period: float = 0.0,
+    wave_amplitude: float = 0.0,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Return a Helios GenericLeafPrototype-style mesh in its local frame (torch).
 
-    Uses pure torch ops for vertex grid creation.  Scale is fixed to 1.0;
-    callers should multiply by the desired leaf length.
+    This is the differentiable torch counterpart of ``_leaflet_local_mesh``.
+    Local frame convention:
+      +x = along midrib (length), from base to tip
+      +y = across width, centered on midrib
+      +z = normal / upward curvature
+
+    Scale is fixed to 1.0; callers should multiply by the desired leaf length.
     """
     L = 1.0
-    aspect = 0.7
     W = L * aspect
-    Nx = 8
-    Ny = 6
+    Nx = max(1, subdivisions)
+    Ny = max(1, int(math.ceil(aspect * Nx)))
+    if Ny % 2 != 0:
+        Ny += 1
+
+    dx = 1.0 / float(Nx)
+    dy = aspect / float(Ny)
 
     j = torch.arange(Ny + 1, dtype=torch.float32, device=device)
     i = torch.arange(Nx + 1, dtype=torch.float32, device=device)
-    yy = j * (W / Ny) - 0.5 * W          # (Ny+1,)
-    xx = i * (1.0 / Nx)                   # (Nx+1,)
+    y_grid = j * dy - 0.5 * aspect
+    x_grid = i * dx
+    y_grid, x_grid = torch.meshgrid(y_grid, x_grid, indexing="ij")  # (Ny+1, Nx+1)
 
-    y_grid, x_grid = torch.meshgrid(yy, xx, indexing="ij")  # (Ny+1, Nx+1)
-
+    # Elliptical taper: leaf is narrow at base and tip, widest in the middle
     taper = torch.sin(math.pi * x_grid)
-    y_eff = y_grid * taper
-    z_arch = (
-        0.08 * L
-        * torch.sin(math.pi * x_grid)
-        * (1.0 - 4.0 * (y_grid / max(W, 1e-6)) ** 2)
-    )
+    y_tapered = y_grid * taper
 
-    verts = torch.stack([x_grid * L, y_eff, z_arch], dim=-1).reshape(-1, 3)
+    # Midrib fold
+    fold_scalar = torch.tensor(0.5 * midrib_fold_fraction * math.pi, device=device)
+    y_fold = torch.cos(fold_scalar) * y_tapered
+    z_fold = torch.sin(fold_scalar) * torch.abs(y_tapered)
+
+    # Curvatures (positive = upward)
+    z_xcurve = longitudinal_curvature * (x_grid ** 4)
+    z_ycurve = lateral_curvature * ((y_tapered / max(aspect, 1e-6)) ** 4)
+
+    # Petiole roll
+    z_petiole = torch.zeros_like(x_grid)
+    if abs(petiole_roll) > 1e-10:
+        z_petiole = (
+            torch.clamp(petiole_roll * ((7.0 * y_tapered / max(aspect, 1e-6)) ** 4) * torch.exp(-70.0 * x_grid), max=0.1)
+            - 0.01 * torch.sign(torch.tensor(petiole_roll, device=device))
+        )
+
+    verts = torch.stack([x_grid, y_fold, z_fold + z_ycurve + z_petiole], dim=-1).clone()
+
+    # Longitudinal incremental rotation about local y
+    dtheta = torch.zeros_like(x_grid)
+    rot_angle = torch.zeros_like(x_grid)
+    if abs(longitudinal_curvature) > 1e-10:
+        for col in range(1, Nx + 1):
+            x_val = x_grid[:, col]
+            dtheta[:, col] = dtheta[:, col - 1] - math.atan(4.0 * longitudinal_curvature * (x_val ** 3) * dx)
+            rot_angle[:, col] = rot_angle[:, col - 1] + dtheta[:, col]
+
+    # Apply longitudinal rotation around local y axis
+    if abs(longitudinal_curvature) > 1e-10:
+        cos_dt = torch.cos(dtheta)
+        sin_dt = torch.sin(dtheta)
+        # Rotate each column around y-axis by cumulative dtheta
+        x_rot = verts[:, :, 0] * cos_dt - verts[:, :, 2] * sin_dt
+        z_rot = verts[:, :, 0] * sin_dt + verts[:, :, 2] * cos_dt
+        verts = torch.stack([x_rot, verts[:, :, 1], z_rot], dim=-1)
+
+    # Leaf buckle (distal portion rotated downward about line parallel to y)
+    if leaf_buckle_angle > 0.0:
+        xf = leaf_buckle_length
+        x_next = x_grid + dx
+        mask_before = (x_grid <= xf) & (xf < x_next)
+        mask_after = x_grid > xf
+        ang_half = 0.5 * math.radians(leaf_buckle_angle)
+        ang_full = math.radians(leaf_buckle_angle)
+
+        cos_half = math.cos(ang_half)
+        sin_half = math.sin(ang_half)
+        cos_full = math.cos(ang_full)
+        sin_full = math.sin(ang_full)
+
+        x_rel = verts[:, :, 0] - xf
+        # before buckle: half angle
+        x_rot_b = x_rel * cos_half - verts[:, :, 2] * sin_half + xf
+        z_rot_b = x_rel * sin_half + verts[:, :, 2] * cos_half
+        # after buckle: full angle
+        x_rot_a = x_rel * cos_full - verts[:, :, 2] * sin_full + xf
+        z_rot_a = x_rel * sin_full + verts[:, :, 2] * cos_full
+
+        x_new = torch.where(mask_before, x_rot_b, torch.where(mask_after, x_rot_a, verts[:, :, 0]))
+        z_new = torch.where(mask_before, z_rot_b, torch.where(mask_after, z_rot_a, verts[:, :, 2]))
+        verts = torch.stack([x_new, verts[:, :, 1], z_new], dim=-1)
+
+    # Wave displacement along rotated local normal
+    if wave_period > 0.0 and wave_amplitude > 0.0:
+        half_ny = 0.5 * Ny
+        wave_phase = (x_grid + wave_period * (j >= half_ny).float().unsqueeze(1)) * math.pi / wave_period
+        z_wave = 2.0 * torch.abs(y_tapered) * wave_amplitude * torch.sin(wave_phase)
+        verts[:, :, 0] += z_wave * torch.sin(rot_angle)
+        verts[:, :, 2] += z_wave * torch.cos(rot_angle)
+
+    # Scale to leaf length and flatten to (V, 3)
+    verts = verts.reshape(-1, 3) * L
 
     faces = []
     for jj in range(Ny):
@@ -936,64 +785,229 @@ def _leaflet_local_mesh_torch(device: Optional[torch.device] = None) -> Tuple[to
     return verts, faces_t
 
 
+def _build_leaflet_rotation_matrix(
+    directions: torch.Tensor,
+    rolls: torch.Tensor,
+) -> torch.Tensor:
+    """Build a (B, N, 3, 3) rotation matrix that maps local leaflet frame to world.
+
+    Local frame convention (matches Helios GenericLeafPrototype):
+      +x = along midrib (length), from base to tip
+      +y = across width
+      +z = normal / upward curvature
+
+    The world-space midrib is given by ``directions`` (already unit vectors) and
+    ``rolls`` is a rotation about the midrib in degrees.
+    """
+    B, N, _ = directions.shape
+    device = directions.device
+
+    x_axis = F.normalize(directions, dim=-1)
+    world_up = torch.tensor([0.0, 0.0, 1.0], device=device).expand_as(x_axis)
+    alt_up = torch.tensor([0.0, 1.0, 0.0], device=device).expand_as(x_axis)
+    up = torch.where(x_axis[..., 2:3].abs() < 0.9, world_up, alt_up)
+
+    y_axis = F.normalize(torch.cross(up, x_axis, dim=-1), dim=-1)
+    z_axis = F.normalize(torch.cross(x_axis, y_axis, dim=-1), dim=-1)
+
+    # Columns of R are the local axes expressed in world coordinates.
+    R = torch.stack([x_axis, y_axis, z_axis], dim=-1)  # (B, N, 3, 3)
+
+    # Apply roll about the midrib (local x-axis).
+    cr = torch.cos(rolls * math.pi / 180.0)
+    sr = torch.sin(rolls * math.pi / 180.0)
+    Rr = torch.zeros(B, N, 3, 3, device=device)
+    Rr[..., 0, 0] = 1.0
+    Rr[..., 1, 1] = cr
+    Rr[..., 1, 2] = -sr
+    Rr[..., 2, 1] = sr
+    Rr[..., 2, 2] = cr
+
+    return R @ Rr
+
+
+def _expand_trifoliate_leaflets(
+    local_verts: torch.Tensor,
+    leaf_lengths: torch.Tensor,
+    R_total: torch.Tensor,
+    positions: torch.Tensor,
+    is_leaf: torch.Tensor,
+    exist_mask: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Expand each leaf node into 3 trifoliate leaflets (Center, Left, Right).
+
+    Returns leaf_verts (B, 3*N, V, 3) and a leaf existence/organ mask (B, 3*N).
+    This is intended for legacy 15D/18D node arrays where one node represents
+    one compound leaf rather than an individual leaflet.
+    """
+    B, N, _ = positions.shape
+    device = positions.device
+    V = local_verts.shape[0]
+
+    leaflet_angles = [0.0, -math.pi / 2.0, math.pi / 2.0]
+    leaflet_scale_factors = [1.0, 0.85, 0.85]
+    all_leaflet_verts = []
+
+    for rot_angle, scale_fac in zip(leaflet_angles, leaflet_scale_factors):
+        local_scaled = local_verts.view(1, 1, V, 3) * (leaf_lengths * scale_fac).view(B, N, 1, 1)
+
+        if abs(rot_angle) > 1e-5:
+            ca = math.cos(rot_angle)
+            sa = math.sin(rot_angle)
+            R_rot = torch.zeros(B, N, 3, 3, device=device)
+            R_rot[..., 0, 0] = ca
+            R_rot[..., 0, 1] = -sa
+            R_rot[..., 1, 0] = sa
+            R_rot[..., 1, 1] = ca
+            R_rot[..., 2, 2] = 1.0
+            R_compound = R_total @ R_rot
+        else:
+            R_compound = R_total
+
+        world_v = torch.einsum("bnij,bnvj->bniv", R_compound, local_scaled)
+        world_v = torch.movedim(world_v, -2, -1) + positions.unsqueeze(2)
+        all_leaflet_verts.append(world_v)
+
+    world_verts = torch.cat(all_leaflet_verts, dim=1)  # (B, 3N, V, 3)
+
+    is_leaf_expanded = is_leaf.repeat(1, 3)
+    exist_expanded = exist_mask.repeat(1, 3)
+    pos_expanded = positions.repeat(1, 3, 1)
+
+    leaf_verts = torch.where(
+        (is_leaf_expanded * exist_expanded).view(B, 3 * N, 1, 1) > 0,
+        world_verts,
+        pos_expanded.unsqueeze(2),
+    )
+    return leaf_verts, is_leaf_expanded
+
+
+def _render_single_leaflets(
+    local_verts: torch.Tensor,
+    leaf_lengths: torch.Tensor,
+    R_total: torch.Tensor,
+    positions: torch.Tensor,
+    is_leaf: torch.Tensor,
+    exist_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Render one leaflet per leaf node (for 22D arrays already expanded by the parser)."""
+    B, N, _ = positions.shape
+    V = local_verts.shape[0]
+
+    local_scaled = local_verts.view(1, 1, V, 3) * leaf_lengths.view(B, N, 1, 1)
+    world_v = torch.einsum("bnij,bnvj->bniv", R_total, local_scaled)
+    world_v = torch.movedim(world_v, -2, -1) + positions.unsqueeze(2)  # (B, N, V, 3)
+
+    leaf_verts = torch.where(
+        (is_leaf * exist_mask).view(B, N, 1, 1) > 0,
+        world_v,
+        positions.unsqueeze(2),
+    )
+    return leaf_verts
+
+
 def nodes_to_geometry_torch(
     nodes: torch.Tensor,
     parent_indices: Optional[torch.Tensor] = None,
+    use_absolute_positions: bool = True,
+    expand_trifoliate: Optional[bool] = None,
 ) -> Tuple[
     torch.Tensor, torch.Tensor, torch.Tensor,
     torch.Tensor, torch.Tensor, torch.Tensor,
     torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
 ]:
-    """Convert a batch of 15D organ-graph nodes to explicit Helios geometry (torch).
+    """Convert a batch of organ-graph nodes to explicit Helios geometry (torch).
 
-    All returned tensors preserve the node dimension ``N`` so the forward pass
-    stays fully differentiable.  Non-matching organ types produce degenerate
-    geometry that is masked out in the rasterizer.
+    Supports 25D (current), 22D, 19D, 18D, and legacy 15D layouts. For 25D node
+    arrays produced by ``HeliosXMLParser.get_all_organ_nodes()``, each LEAF node
+    stores a full 3x3 local-to-world orientation matrix, which is used directly
+    for leaflet rendering. For older 15D/18D/22D node arrays, the function falls
+    back to direction+roll reconstruction.
+
+    25D Layout:
+      [0:3]   xyz          - base position (m)
+      [3]     length       - organ length (m)
+      [4]     radius       - organ radius (m)
+      [5:14]  R_flat       - 3x3 orientation matrix (row-major), local frame
+                             to world. For non-leaf organs the first column is
+                             the direction vector and the rest are zero-padded.
+      [14:20] organ_onehot - 6-channel one-hot
+      [20]    shoot_id
+      [21]    phytomer_idx
+      [22]    existence    - confidence [0, 1]
+      [23]    head_radius  - flower/pod head radius (m); 0 for non-floral
+      [24]    parent_idx   - global parent node index (-1 = root)
+
+    22D Legacy Layout (kept for backward compatibility):
+      [5:8]   dir_xyz, [8] pitch, [9] yaw, [10] roll, [11:17] organ_onehot, etc.
 
     Returns:
         tube_verts:   (B, N, 2, 3)
         tube_radii:   (B, N, 2)
         tube_organs:  (B, N)
-        leaf_verts:   (B, N, V, 3)   world-space
+        leaf_verts:   (B, N_leaflets, V, 3)   world-space
         leaf_faces:   (F, 3)
-        leaf_organs:  (B, N)
+        leaf_organs:  (B, N_leaflets)
         bud_centers:  (B, N, 3)
         bud_radii:    (B, N)
         bud_lengths:  (B, N)
         bud_organs:   (B, N)
     """
-    B, N, _ = nodes.shape
+    B, N, D = nodes.shape
     device = nodes.device
 
     positions = nodes[..., :3]
     lengths = nodes[..., 3].clamp(min=1e-6)
     radii = nodes[..., 4].clamp(min=1e-6)
-    # Support 18D (6-ch one-hot at 8:14) and legacy 16D (4-ch one-hot at 8:12)
-    if nodes.shape[-1] >= 18:
-        # New 18D layout: [xyz(3), len, rad, dir(3), onehot(6), shoot_id, phytomer, exist, head_r]
+
+    has_R_matrix = D >= 25
+    if has_R_matrix:
+        R_flat = nodes[..., 5:14].reshape(B, N, 3, 3)
+        organ_logits = nodes[..., 14:20]
+        existence = nodes[..., 22]
+        flower_head_radius = nodes[..., 23].clamp(min=0.0)
+        if parent_indices is None:
+            parent_indices = nodes[..., 24].long()
+        # direction for tubes / buds is the first column of R
+        dir_raw = R_flat[..., :, 0]
+        pitches = torch.zeros_like(dir_raw[..., 0])
+        yaws = torch.zeros_like(pitches)
+        rolls = torch.zeros_like(pitches)
+        if expand_trifoliate is None:
+            expand_trifoliate = False
+    elif D >= 22:
+        dir_raw = nodes[..., 5:8]
+        pitches = nodes[..., 8]
+        yaws = nodes[..., 9]
+        rolls = nodes[..., 10]
+        organ_logits = nodes[..., 11:17]
+        existence = nodes[..., 19]
+        flower_head_radius = nodes[..., 20].clamp(min=0.0)
+        if parent_indices is None:
+            parent_indices = nodes[..., 21].long()
+        if expand_trifoliate is None:
+            expand_trifoliate = False
+    else:
         dir_raw = nodes[..., 5:8]
         organ_logits = nodes[..., 8:14]   # 6-channel
-        existence = nodes[..., 16]
-        flower_head_radius = nodes[..., 17].clamp(min=0.0)
-    else:
-        # Legacy 16D layout: [xyz(3), len, rad, pitch, yaw, roll, onehot(4), shoot_id, phytomer, exist, head_r]
-        dir_raw = nodes[..., 5:8]
-        organ_logits = nodes[..., 8:12]   # 4-channel (pad to 6 for unified path)
-        pad = torch.zeros(*organ_logits.shape[:-1], 2, device=nodes.device, dtype=nodes.dtype)
-        organ_logits = torch.cat([organ_logits, pad], dim=-1)  # → 6-channel
-        existence = nodes[..., 14]
-        flower_head_radius = nodes[..., 15].clamp(min=0.0) if nodes.shape[-1] >= 16 else torch.zeros_like(existence)
+        existence = nodes[..., 16] if D >= 17 else torch.ones_like(lengths)
+        flower_head_radius = nodes[..., 17].clamp(min=0.0) if D >= 18 else torch.zeros_like(existence)
+        if parent_indices is None and D >= 19:
+            parent_indices = nodes[..., 18].long()
+        pitches = dir_raw[..., 0]
+        yaws = dir_raw[..., 1]
+        rolls = torch.zeros_like(pitches)
+        if expand_trifoliate is None:
+            expand_trifoliate = True
 
     norm_567 = torch.linalg.norm(dir_raw, dim=-1, keepdim=True)
     is_dir_vec = (torch.abs(norm_567 - 1.0) < 0.2).float()
     unit_dirs = dir_raw / (norm_567 + 1e-8)
-    pitches = dir_raw[..., 0]; yaws = dir_raw[..., 1]  # angle fallback
     angle_dirs = _direction_from_angles(pitches, yaws)
     directions = is_dir_vec * unit_dirs + (1.0 - is_dir_vec) * angle_dirs  # (B, N, 3)
     organ = organ_logits.argmax(dim=-1)                 # (B, N)
 
-    # Existence mask: nodes with existence<=0.5 (e.g. dormant floral buds) are
-    # not rendered. Applied consistently to tubes, leaves and buds below.
+    # Existence mask: nodes with existence<=0.5 are not rendered.
     exist_mask = (existence > 0.5).float()
 
     # ------------------------------------------------------------------
@@ -1004,11 +1018,10 @@ def nodes_to_geometry_torch(
     is_petiole = (organ_type == OrganNode3D.PETIOLE).float()
     is_leaf = (organ_type == OrganNode3D.LEAF).float()
 
-    # True 15D lengths from nodes (without DAP 50 artificial 0.15m override)
     scaled_lengths = torch.clamp(lengths, min=1e-4)
     tube_lengths = scaled_lengths * (is_internode + is_petiole) * exist_mask
 
-    if parent_indices is not None:
+    if parent_indices is not None and not use_absolute_positions:
         tips = positions.clone()
         updated_positions = positions.clone()
         for i in range(N):
@@ -1034,100 +1047,50 @@ def nodes_to_geometry_torch(
     tube_organs = organ                                         # (B, N)
 
     # ------------------------------------------------------------------
-    # Trifoliate Compound Leaves (3 leaflets per leaf node: Center 0°, Left -90°, Right +90°)
+    # Leaflets
     # ------------------------------------------------------------------
-    local_verts, leaf_faces = _leaflet_local_mesh_torch(device=device)
-    V = local_verts.shape[0]
+    leaf_subdivisions = 4 if getattr(nodes_to_geometry_torch, "_fast_render_mode", False) else 8
+    local_verts, leaf_faces = _leaflet_local_mesh_torch(device=device, subdivisions=leaf_subdivisions, aspect=0.7)
 
-    is_leaf = (organ == OrganNode3D.LEAF).float()
     leaf_lengths = scaled_lengths * is_leaf * exist_mask                  # (B, N)
+    if has_R_matrix:
+        R_total = R_flat
+        # Orthonormalize predicted rotation matrices via Gram-Schmidt to prevent
+        # drift from noisy diffusion predictions.
+        r1 = F.normalize(R_total[..., 0, :], dim=-1)
+        r2 = R_total[..., 1, :] - (R_total[..., 1, :] * r1).sum(dim=-1, keepdim=True) * r1
+        r2 = F.normalize(r2, dim=-1)
+        r3 = torch.cross(r1, r2, dim=-1)
+        R_total = torch.stack([r1, r2, r3], dim=-2)
+    else:
+        R_total = _build_leaflet_rotation_matrix(directions, rolls)
 
-    x_axis = directions
-    tmp = torch.where(
-        x_axis[..., 2:3].abs() < 0.9,
-        torch.tensor([0.0, 0.0, 1.0], device=device),
-        torch.tensor([0.0, 1.0, 0.0], device=device),
-    )
-    y_axis = torch.cross(tmp.expand_as(x_axis), x_axis, dim=-1)
-    y_axis = F.normalize(y_axis, dim=-1)
-    z_axis = torch.cross(x_axis, y_axis, dim=-1)
-
-    R = torch.stack([x_axis, y_axis, z_axis], dim=-1)             # (B, N, 3, 3) columns
-
-    cr = torch.cos(rolls * math.pi / 180.0)
-    sr = torch.sin(rolls * math.pi / 180.0)
-
-    Rr = torch.zeros(B, N, 3, 3, device=device)
-    Rr[..., 0, 0] = 1.0
-    Rr[..., 1, 1] = cr
-    Rr[..., 1, 2] = -sr
-    Rr[..., 2, 1] = sr
-    Rr[..., 2, 2] = cr
-
-    R_total = R @ Rr                                               # (B, N, 3, 3)
-
-    # Emit 3 trifoliate leaflets per leaf node matching build_helios_geometry_from_xml
-    leaflet_angles = [0.0, -math.pi / 2.0, math.pi / 2.0]
-    leaflet_scale_factors = [1.0, 0.85, 0.85]
-    all_leaflet_verts = []
-
-    for rot_angle, scale_fac in zip(leaflet_angles, leaflet_scale_factors):
-        local_scaled = local_verts.view(1, 1, V, 3) * (leaf_lengths * scale_fac).view(B, N, 1, 1)
-        
-        if abs(rot_angle) > 1e-5:
-            ca = math.cos(rot_angle)
-            sa = math.sin(rot_angle)
-            R_rot = torch.zeros(B, N, 3, 3, device=device)
-            R_rot[..., 0, 0] = ca
-            R_rot[..., 0, 1] = -sa
-            R_rot[..., 1, 0] = sa
-            R_rot[..., 1, 1] = ca
-            R_rot[..., 2, 2] = 1.0
-            R_compound = R_total @ R_rot
-        else:
-            R_compound = R_total
-
-        world_v = torch.einsum("bnij,bnvj->bniv", R_compound, local_scaled)
-        world_v = torch.movedim(world_v, -2, -1) + positions.unsqueeze(2)
-        all_leaflet_verts.append(world_v)
-
-    world_verts = torch.cat(all_leaflet_verts, dim=1)
-
-    is_leaf_expanded = is_leaf.repeat(1, 3)
-    exist_expanded = exist_mask.repeat(1, 3)
-    pos_expanded = positions.repeat(1, 3, 1)
-
-    leaf_verts = torch.where(
-        (is_leaf_expanded * exist_expanded).view(B, 3 * N, 1, 1) > 0,
-        world_verts,
-        pos_expanded.unsqueeze(2),
-    )
-    leaf_organs = organ.repeat(1, 3)
+    if expand_trifoliate:
+        leaf_verts, leaf_organs = _expand_trifoliate_leaflets(
+            local_verts, leaf_lengths, R_total, positions, is_leaf, exist_mask
+        )
+    else:
+        leaf_verts = _render_single_leaflets(
+            local_verts, leaf_lengths, R_total, positions, is_leaf, exist_mask
+        )
+        leaf_organs = organ  # (B, N)
 
     # ------------------------------------------------------------------
-    # Buds
+    # Buds / Flowers / Pods
     # ------------------------------------------------------------------
     is_bud = (
         (organ == OrganNode3D.FLORAL_BUD) |
         (organ == OrganNode3D.FLOWER) |
         (organ == OrganNode3D.POD)
     ).float()
-    bud_organs = organ                                          # (B, N) actual organ types
 
-    # Visible flower/fruit head sits at the tip of the peduncle, rendered as a
-    # sphere with radius = flower_head_radius (channel 17 in 18D) when a flower exists.
-    # Interior/stem part is the peduncle tube already handled above (tube branch).
-    has_head = (flower_head_radius > 1e-4).float()
-    head_radius = flower_head_radius * has_head * exist_mask     # (B, N)
-    # For 18D nodes use flower_head_radius; for legacy 16D use organ radius as fallback
-    if nodes.shape[-1] >= 18:
-        bud_radii = head_radius
-    else:
-        bud_radii = head_radius + radii * is_bud * exist_mask * (1.0 - has_head)
+    flower_head_radius_clamped = flower_head_radius.clamp(min=0.0, max=0.015)
+    has_head = (flower_head_radius_clamped > 1e-4).float()
+    head_radius = flower_head_radius_clamped * has_head * exist_mask * is_bud     # (B, N)
+    bud_radii = head_radius
     bud_centers = positions + directions * lengths.unsqueeze(-1)  # peduncle tip (B, N, 3)
     bud_lengths = bud_radii
     bud_organs = organ
-
 
     return (
         tube_verts, tube_radii, tube_organs,
@@ -1140,7 +1103,7 @@ def nodes_to_geometry(
     nodes: torch.Tensor,
     parent_indices: Optional[torch.Tensor] = None,
 ) -> Tuple[List[List[HeliosTube]], List[List[HeliosLeaflet]], List[List[HeliosEllipsoid]]]:
-    """Convert a batch of 15D organ-graph nodes to explicit Helios geometry.
+    """Convert a batch of 19D organ-graph nodes to explicit Helios geometry.
 
     Returns per-batch lists of tubes, leaflets, and ellipsoids. The conversion is
     not fully differentiable (numpy output), so use this only for rendering.
@@ -1148,9 +1111,11 @@ def nodes_to_geometry(
     nodes_np = nodes.detach().cpu().numpy()
     B, N, _ = nodes_np.shape
 
-    organ_labels = nodes_np[..., 8:12].argmax(axis=-1)
+    organ_labels = nodes_np[..., 8:14].argmax(axis=-1)
     if parent_indices is not None:
         parents = parent_indices.detach().cpu().numpy()
+    elif nodes_np.shape[-1] >= 19:
+        parents = nodes_np[..., 18].astype(np.int64)
     else:
         parents = np.full((B, N), -1, dtype=np.int64)
 
@@ -1166,7 +1131,7 @@ def nodes_to_geometry(
         ).numpy()
         lengths = nodes_np[b, :, 3]
         radii = nodes_np[b, :, 4]
-        existence = nodes_np[b, :, 14]
+        existence = nodes_np[b, :, 16] if nodes_np.shape[-1] >= 17 else nodes_np[b, :, 14]
         organ = organ_labels[b]
 
         for i in range(N):
@@ -1429,79 +1394,6 @@ class HeliosPlantGeometryTorch(nn.Module):
         self.tube_existence = nn.Parameter(tube_existence)
         self.bud_existence = nn.Parameter(bud_existence)
 
-    @classmethod
-    def from_xml_obj(cls, geom_xml: HeliosPlantGeometry, device: torch.device = torch.device("cpu")) -> "HeliosPlantGeometryTorch":
-        """Convert a pre-built HeliosPlantGeometry object into HeliosPlantGeometryTorch."""
-        tubes_verts_list, tubes_radii_list, tubes_organ_list = [], [], []
-        for tube in geom_xml.tubes:
-            if tube.vertices.shape[0] >= 2:
-                v = torch.tensor(tube.vertices, dtype=torch.float32, device=device)
-                r = torch.tensor(tube.radii, dtype=torch.float32, device=device)
-                o = torch.tensor(tube.organ, dtype=torch.long, device=device)
-                for seg in range(v.shape[0] - 1):
-                    tubes_verts_list.append(torch.stack([v[seg], v[seg + 1]], dim=0))
-                    tubes_radii_list.append(torch.stack([r[seg], r[seg + 1]], dim=0))
-                    tubes_organ_list.append(o)
-
-        if tubes_verts_list:
-            tube_verts = torch.stack(tubes_verts_list, dim=0)
-            tube_radii = torch.stack(tubes_radii_list, dim=0)
-            tube_organs = torch.stack(tubes_organ_list, dim=0)
-        else:
-            tube_verts = torch.zeros((0, 2, 3), device=device)
-            tube_radii = torch.zeros((0, 2), device=device)
-            tube_organs = torch.zeros((0,), dtype=torch.long, device=device)
-
-        leaf_verts_list, leaf_faces_list, leaf_organ_list = [], [], []
-        for lf in geom_xml.leaflets:
-            if lf.vertices.shape[0] >= 3:
-                v = torch.tensor(lf.vertices, dtype=torch.float32, device=device)
-                f = torch.tensor(lf.faces, dtype=torch.long, device=device) if lf.faces.shape[0] > 0 else torch.zeros((0, 3), dtype=torch.long, device=device)
-                o = torch.tensor(lf.organ, dtype=torch.long, device=device)
-                leaf_verts_list.append(v)
-                leaf_faces_list.append(f)
-                leaf_organ_list.append(o)
-
-        if leaf_verts_list:
-            max_v = max(v.shape[0] for v in leaf_verts_list)
-            padded_verts = [torch.cat([v, torch.zeros((max_v - v.shape[0], 3), device=device)], dim=0) if v.shape[0] < max_v else v for v in leaf_verts_list]
-            leaf_verts = torch.stack(padded_verts, dim=0)
-            leaf_organs = torch.stack(leaf_organ_list, dim=0)
-            leaf_faces = leaf_faces_list[0] if leaf_faces_list else torch.zeros((0, 3), dtype=torch.long, device=device)
-        else:
-            leaf_verts = torch.zeros((0, 4, 3), device=device)
-            leaf_organs = torch.zeros((0,), dtype=torch.long, device=device)
-            leaf_faces = torch.zeros((0, 3), dtype=torch.long, device=device)
-
-        ell_center_list, ell_radius_list, ell_length_list, ell_organ_list = [], [], [], []
-        for ell in geom_xml.ellipsoids:
-            ell_center_list.append(torch.tensor(ell.center, dtype=torch.float32, device=device))
-            ell_radius_list.append(torch.tensor(ell.radius, dtype=torch.float32, device=device))
-            ell_length_list.append(torch.tensor(ell.length, dtype=torch.float32, device=device))
-            ell_organ_list.append(torch.tensor(ell.organ, dtype=torch.long, device=device))
-
-        if ell_center_list:
-            ell_centers = torch.stack(ell_center_list, dim=0)
-            ell_radii = torch.stack(ell_radius_list, dim=0)
-            ell_lengths = torch.stack(ell_length_list, dim=0)
-            ell_organs = torch.stack(ell_organ_list, dim=0)
-        else:
-            ell_centers = torch.zeros((0, 3), device=device)
-            ell_radii = torch.zeros((0,), device=device)
-            ell_lengths = torch.zeros((0,), device=device)
-            ell_organs = torch.zeros((0,), dtype=torch.long, device=device)
-
-        return cls(
-            tube_verts=tube_verts, tube_radii=tube_radii, tube_organs=tube_organs,
-            leaf_verts=leaf_verts, leaf_faces=leaf_faces, leaf_organs=leaf_organs,
-            ell_centers=ell_centers, ell_radii=ell_radii, ell_lengths=ell_lengths, ell_organs=ell_organs,
-        )
-
-    @classmethod
-    def from_xml(cls, xml_path: str, device: torch.device = torch.device("cpu")) -> "HeliosPlantGeometryTorch":
-        """Load Helios XML and return a PyTorch HeliosPlantGeometryTorch model."""
-        geom_xml = build_helios_geometry_from_xml(xml_path)
-        return cls.from_xml_obj(geom_xml, device=device)
 
     def get_geometry_tensors(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Compute current 3D geometry tensors with autograd scaling and existence applied."""
@@ -1547,8 +1439,4 @@ class HeliosPlantGeometryTorch(nn.Module):
         )
 
 
-def DifferentiableHeliosXMLRenderer(*args, **kwargs):
-    """Lazy factory function returning HeliosGeometryRasterizer for backward compatibility."""
-    from diffusion_based.models.helios_rasterizer_3d import HeliosGeometryRasterizer
-    return HeliosGeometryRasterizer(*args, **kwargs)
 

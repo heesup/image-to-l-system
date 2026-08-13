@@ -17,9 +17,9 @@ if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
 from diffusion_based.models.helios_xml_parser import HeliosXMLParser
-from diffusion_based.models.helios_geometry import nodes_to_geometry_torch, build_helios_geometry_from_xml
-from diffusion_based.models.helios_rasterizer_3d import HeliosGeometryRasterizer
-from diffusion_based.models.differentiable_pipeline import DifferentiableHeliosRenderer
+from diffusion_based.models.legacy.helios_geometry_track_a import nodes_to_geometry_torch, build_helios_geometry_from_xml
+from diffusion_based.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
+from diffusion_based.models.legacy.differentiable_pipeline_track_a import DifferentiableHeliosRenderer
 
 # ---------------------------------------------------------------------------
 # Timing results collected from the C++ main binary (--renderer vis / radiation)

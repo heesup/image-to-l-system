@@ -1,11 +1,15 @@
-"""Training script for 3D Plant Graph Diffusion with 3D point-cloud supervision (15D).
+"""Training script for 3D Plant Graph Diffusion with 25D organ nodes.
 
 Trains PlantGraphDiffuser3D with:
 - Helios dataset (image + XML pairs)
-- 15D organ-typed node representation
+- 25D organ-typed node representation (position, length, radius, 3x3 R matrix,
+  6-class organ one-hot, shoot_id, phytomer_idx, existence, head_radius, parent_idx)
 - Multi-view camera conditioning
-- Optional 2D differentiable renderer loss (legacy)
+- Optional 2D differentiable renderer loss using DifferentiableHeliosRenderer
 - Optional 3D point-cloud Chamfer loss against a target PLY
+
+The 15D legacy mode is still available via ``--node-dim 15`` for backward
+compatibility, but defaults to 25D.
 """
 
 import os
@@ -20,9 +24,11 @@ from typing import Optional, Dict, Tuple
 # Add project root to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from diffusion_based.models.graph_diffuser_3d import PlantGraphDiffuser3D
-from diffusion_based.models.helios_rasterizer_3d import HeliosGeometryRasterizer
-from diffusion_based.models.pointcloud_loss_3d import PlantPointCloudChamferLoss, load_ply_to_tensor
+from diffusion_based.models.legacy.graph_diffuser_3d_track_a import PlantGraphDiffuser3D
+from diffusion_based.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
+from diffusion_based.models.legacy.differentiable_pipeline_track_a import DifferentiableHeliosRenderer
+from diffusion_based.models.legacy.pointcloud_loss_3d_track_a import PlantPointCloudChamferLoss, load_ply_to_tensor
+from diffusion_based.models import helios_geometry
 from dataset.helios_dataset import HeliosPlantDataset
 
 
@@ -66,8 +72,9 @@ def compute_losses(
     gt_parents: torch.Tensor,
     gt_adj: torch.Tensor,
     noisy_nodes: torch.Tensor,
+    node_dim: int = 25,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
-    """Compute multi-objective training losses for 15D organ-typed graph diffusion."""
+    """Compute multi-objective training losses for 25D/15D organ graph diffusion."""
 
     pred_x0 = outputs["pred_x0"]
     pred_existence_logits = outputs["pred_existence_logits"]
@@ -76,31 +83,32 @@ def compute_losses(
     pred_organ_type_logits = outputs.get("pred_organ_type_logits", None)
     pred_node_noise = outputs["pred_node_noise"]
 
-    # 1. Node coordinate MSE (3D position accuracy)
-    loss_coord = F.mse_loss(pred_x0[:, :, :3], gt_nodes[:, :, :3])
+    B, N, D = pred_x0.shape
+    device = pred_x0.device
 
-    # 2. Full 15D node attribute MSE
-    loss_x0 = F.mse_loss(pred_x0, gt_nodes)
+    # Existence-aware mask: focus loss on real nodes
+    existence_mask = (gt_existence > 0).float()  # (B, N)
+
+    # 1. Node coordinate MSE (3D position accuracy) — masked
+    loss_coord = _masked_mse(pred_x0[:, :, :3], gt_nodes[:, :, :3], existence_mask)
+
+    # 2. Full node attribute MSE — masked
+    loss_x0 = _masked_mse(pred_x0, gt_nodes, existence_mask)
 
     # 3. Existence confidence BCE
-    existence_target = (gt_existence > 0).float()
-    pos_weight = torch.tensor([5.0], device=gt_nodes.device)
+    existence_target = existence_mask
+    pos_weight = torch.tensor([5.0], device=device)
     loss_existence = F.binary_cross_entropy_with_logits(
         pred_existence_logits, existence_target, pos_weight=pos_weight
     )
 
     # 4. Parent cross-entropy over sparse k-NN candidates
-    B, N = gt_parents.shape
     k = pred_parent_candidates.shape[-1]
-
-    # Build mask: which candidates match the true parent
     parent_candidates = pred_parent_candidates  # (B, N, k)
     gt_parents_exp = gt_parents.unsqueeze(-1).expand(-1, -1, k)
     candidate_match = (parent_candidates == gt_parents_exp)  # (B, N, k)
-
-    # For cross-entropy over k candidates, target is the index within candidates
     target_idx = torch.argmax(candidate_match.float(), dim=-1)  # (B, N)
-    valid = candidate_match.any(dim=-1)  # (B, N)
+    valid = candidate_match.any(dim=-1) & (existence_mask > 0.5)  # (B, N)
 
     if valid.sum() > 0:
         loss_parent_all = F.cross_entropy(
@@ -110,35 +118,54 @@ def compute_losses(
         )
         loss_parent = (loss_parent_all * valid.view(-1).float()).sum() / (valid.sum().float() + 1e-8)
     else:
-        loss_parent = torch.tensor(0.0, device=gt_nodes.device)
+        loss_parent = torch.tensor(0.0, device=device)
 
-    # 5. Joint Snap Loss (tip-to-base connection in 3D)
+    # 5. Joint Snap Loss (parent-to-child position agreement) — masked
+    # The diffusion model outputs base positions; the child base should be near
+    # the parent base plus an organ direction scaled by length. For 25D we use
+    # the predicted R matrix midrib axis (column 0) as the direction for all organ
+    # types. For 15D we fall back to pitch/yaw reconstruction.
     base = pred_x0[:, :, :3]
-    pitch_rad = pred_x0[:, :, 5] * math.pi / 180.0
-    yaw_rad = pred_x0[:, :, 6] * math.pi / 180.0
     length = pred_x0[:, :, 3]
-    dir_x = torch.cos(pitch_rad) * torch.cos(yaw_rad)
-    dir_y = torch.cos(pitch_rad) * torch.sin(yaw_rad)
-    dir_z = torch.sin(pitch_rad)
-    tip = base + length.unsqueeze(-1) * torch.stack([dir_x, dir_y, dir_z], dim=-1)
+    if node_dim >= 25:
+        R = pred_x0[:, :, 5:14].reshape(B, N, 3, 3)
+        direction = R[:, :, :, 0]  # (B, N, 3)
+    else:
+        pitch_rad = pred_x0[:, :, 5] * math.pi / 180.0
+        yaw_rad = pred_x0[:, :, 6] * math.pi / 180.0
+        dir_x = torch.cos(pitch_rad) * torch.cos(yaw_rad)
+        dir_y = torch.cos(pitch_rad) * torch.sin(yaw_rad)
+        dir_z = torch.sin(pitch_rad)
+        direction = torch.stack([dir_x, dir_y, dir_z], dim=-1)
 
-    diff = tip.unsqueeze(2) - base.unsqueeze(1)
+    tip = base + length.unsqueeze(-1) * direction
+    diff = tip.unsqueeze(2) - base.unsqueeze(1)  # (B, N, N, 3)
     dist_sq = (diff ** 2).sum(dim=-1)
     loss_snap = (dist_sq * gt_adj).sum() / (gt_adj.sum() + 1e-5)
 
     # 6. Organ type classification (optional)
-    loss_organ_type = torch.tensor(0.0, device=gt_nodes.device)
+    loss_organ_type = torch.tensor(0.0, device=device)
     if pred_organ_type_logits is not None:
-        organ_target = torch.argmax(gt_nodes[:, :, 8:12], dim=-1)
+        organ_onehot_start = 14 if node_dim >= 25 else 8
+        organ_onehot_end = 20 if node_dim >= 25 else 12
+        organ_target = torch.argmax(gt_nodes[:, :, organ_onehot_start:organ_onehot_end], dim=-1)
         loss_organ_type = F.cross_entropy(
-            pred_organ_type_logits.view(-1, 4),
+            pred_organ_type_logits.view(-1, 6),
             organ_target.view(-1),
             reduction='mean'
         )
 
-    # 7. Noise prediction loss (for DDPM training)
+    # 7. Rotation-matrix loss for 25D nodes
+    loss_rot = torch.tensor(0.0, device=device)
+    if node_dim >= 25:
+        R_pred = pred_x0[:, :, 5:14].reshape(B, N, 3, 3)
+        R_gt = gt_nodes[:, :, 5:14].reshape(B, N, 3, 3)
+        # Element-wise MSE on the flattened rotation matrix, masked by existence
+        loss_rot = _masked_mse(R_pred.reshape(B, N, 9), R_gt.reshape(B, N, 9), existence_mask)
+
+    # 8. Noise prediction loss (for DDPM training) — masked
     gt_noise = noisy_nodes - gt_nodes
-    loss_noise = F.mse_loss(pred_node_noise, gt_noise)
+    loss_noise = _masked_mse(pred_node_noise, gt_noise, existence_mask)
 
     # Combined weighted loss
     loss = (
@@ -150,6 +177,8 @@ def compute_losses(
         0.2 * loss_organ_type +
         loss_noise
     )
+    if node_dim >= 25:
+        loss = loss + loss_rot
 
     metrics = {
         "coord": loss_coord.item(),
@@ -160,32 +189,47 @@ def compute_losses(
         "organ": loss_organ_type.item(),
         "noise": loss_noise.item(),
     }
+    if node_dim >= 25:
+        metrics["rot"] = loss_rot.item()
 
     return loss, metrics
+
+
+def _masked_mse(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """MSE loss over the last dim, averaged only over active nodes (mask > 0.5)."""
+    sq = ((pred - target) ** 2).mean(dim=-1)  # (B, N)
+    active = (mask > 0.5).float()
+    if active.sum() > 0:
+        return (sq * active).sum() / active.sum()
+    return sq.mean()
 
 
 def train_3d_diffusion(
     data_dir: str = "Digital-Crops/projects/syntheticdata_generation/build/output",
     num_epochs: int = 500,
-    batch_size: int = 4,
+    batch_size: int = 1,
     lr: float = 3e-4,
-    save_path: str = "diffusion_based/checkpoints/diffusion_3d_15d.pt",
+    save_path: str = "diffusion_based/checkpoints/diffusion_3d_25d.pt",
+    node_dim: int = 25,
+    max_nodes: int = 2048,
     render_loss_weight: float = 0.0,  # Set > 0 to enable 2D render-in-the-loop
+    render_fast_mode: bool = True,     # Lower leaf subdivisions for tractable render loss
     pc_loss_weight: float = 0.0,       # Set > 0 to enable 3D point-cloud loss
     target_ply: Optional[str] = None,  # Path to target PLY for 3D supervision
     pc_samples: int = 1024,            # Number of target points to use per batch
 ):
     device = get_device()
-    print(f"Training 15D 3D Plant Diffusion on device: {device}")
+    print(f"Training {node_dim}D 3D Plant Diffusion on device: {device}")
 
-    max_nodes = 256
-    node_dim = 15
+    if node_dim not in (15, 25):
+        raise ValueError(f"--node-dim must be 15 or 25, got {node_dim}")
 
     # Dataset
     dataset = HeliosPlantDataset(
         data_root=data_dir,
         image_size=256,
         max_nodes=max_nodes,
+        node_dim=node_dim,
     )
 
     if len(dataset) == 0:
@@ -196,7 +240,7 @@ def train_3d_diffusion(
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0)
     print(f"Dataset size: {len(dataset)} samples")
 
-    # Model (15D)
+    # Model
     model = PlantGraphDiffuser3D(
         max_nodes=max_nodes,
         node_dim=node_dim,
@@ -205,15 +249,18 @@ def train_3d_diffusion(
         k_nearest=16,
     ).to(device)
 
-    # Differentiable renderer (single geometry pipeline)
+    # Differentiable renderer (Track B pipeline)
     renderer = None
     if render_loss_weight > 0:
-        renderer = HeliosGeometryRasterizer(image_size=256).to(device)
-        print(f"2D render-in-the-loop enabled (weight={render_loss_weight})")
+        rasterizer = HeliosGeometryRasterizer(image_size=256).to(device)
+        renderer = DifferentiableHeliosRenderer(rasterizer).to(device)
+        # Enable fast leaf rendering to keep full-plant render loss tractable
+        if render_fast_mode:
+            helios_geometry.nodes_to_geometry_torch._fast_render_mode = True
+        print(f"2D render-in-the-loop enabled (weight={render_loss_weight}, fast_mode={render_fast_mode})")
 
     # 3D point-cloud loss
     pc_loss_fn = None
-    target_pc = None
     if pc_loss_weight > 0:
         if target_ply is None or not os.path.exists(target_ply):
             print(f"ERROR: target_ply required for 3D loss, got: {target_ply}")
@@ -251,12 +298,13 @@ def train_3d_diffusion(
             gt_adj = batch["adj_matrix"].to(device)
             gt_parents = batch["parent_indices"].to(device)
             cam_az_norm = batch["camera_pose"][:, 0].to(device)
-            # Dataset does not store sun angles; supply defaults for legacy renderer
-            sun_elev = torch.full((B,), 0.5, device=device)  # 0.5 -> 45 deg
-            sun_az = torch.full((B,), 0.5, device=device)    # 0.5 -> 180 deg
             dap = batch["dap"].to(device)
 
-            B = gt_nodes.shape[0]
+            xyz_min = batch.get("xyz_min")
+            xyz_scale = batch.get("xyz_scale")
+            if xyz_min is not None:
+                xyz_min = xyz_min.to(device)
+                xyz_scale = xyz_scale.to(device)
 
             # Sample timesteps and add noise
             timesteps = scheduler.sample_timesteps(B, device)
@@ -279,32 +327,38 @@ def train_3d_diffusion(
             # Compute losses
             loss, metrics = compute_losses(
                 outputs, gt_nodes, gt_existence, gt_parents, gt_adj,
-                noisy_nodes
+                noisy_nodes, node_dim=node_dim,
             )
 
-            # Optional 2D render loss (single geometry pipeline)
+            # Optional 2D render loss (Track B differentiable renderer)
             if renderer is not None and render_loss_weight > 0:
                 pred_nodes = outputs["pred_x0"]
+                pred_existence = torch.sigmoid(outputs["pred_existence_logits"])
 
-                # Build explicit geometry from predicted 15D nodes
-                from diffusion_based.models.helios_geometry import nodes_to_geometry
-                batch_tubes, batch_leaflets, batch_ellipsoids = nodes_to_geometry(pred_nodes, gt_parents)
+                # Denormalize positions/scale/radius for rendering if needed
+                render_nodes = pred_nodes.clone()
+                if node_dim >= 25 and xyz_min is not None and xyz_scale is not None:
+                    render_nodes[:, :, :3] = render_nodes[:, :, :3] * xyz_scale.unsqueeze(1) + xyz_min.unsqueeze(1)
+                    render_nodes[:, :, 3] = render_nodes[:, :, 3] * 1.0
+                    render_nodes[:, :, 4] = render_nodes[:, :, 4] * 0.1
 
-                # Camera azimuth in degrees for renderer
                 cam_az_deg = (cam_az_norm + 1.0) * 180.0
+                sun_dir = torch.tensor([[0.0, 0.0, 1.0]], device=device)
 
                 rendered_list = []
                 for b in range(B):
-                    rimg = renderer.render_numpy_geometry(
-                        batch_tubes[b], batch_leaflets[b], batch_ellipsoids[b],
+                    # Optionally mask inactive nodes by setting existence to 0
+                    rimg_t = renderer(
+                        render_nodes[b:b+1],
                         camera_height=1.0,
                         distance_from_center=0.0,
                         azimuth_deg=cam_az_deg[b].item(),
                         focus_plant=True,
-                        sun_dir=torch.tensor([0.0, 0.0, 1.0], device=device),
+                        sun_dir=sun_dir,
                     )
-                    rendered_list.append(torch.from_numpy(rimg).permute(2, 0, 1))
+                    rendered_list.append(rimg_t[0])
                 rendered = torch.stack(rendered_list, dim=0).to(device)
+                rendered = rendered[:, :3, :, :]  # drop alpha channel
 
                 # Denormalize target image back to [0, 1]
                 mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
@@ -350,6 +404,8 @@ def train_3d_diffusion(
                        f"Exist={metrics['existence']:.4f} Parent={metrics['parent']:.4f} "
                        f"Snap={metrics['snap']:.4f} Organ={metrics['organ']:.4f} "
                        f"Noise={metrics['noise']:.4f}")
+            if "rot" in metrics:
+                log_msg += f" Rot={metrics['rot']:.4f}"
             if "render" in metrics:
                 log_msg += f" Render={metrics['render']:.4f}"
             if "pc" in metrics:
@@ -381,12 +437,21 @@ if __name__ == "__main__":
     parser.add_argument("--data-dir", type=str,
                         default="Digital-Crops/projects/syntheticdata_generation/build/output")
     parser.add_argument("--epochs", type=int, default=500)
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--save-path", type=str,
-                        default="diffusion_based/checkpoints/diffusion_3d_15d.pt")
+                        default="diffusion_based/checkpoints/diffusion_3d_25d.pt")
+    parser.add_argument("--node-dim", type=int, default=25,
+                        choices=[15, 25],
+                        help="Node feature dimension: 15 (legacy) or 25 (full R-matrix)")
+    parser.add_argument("--max-nodes", type=int, default=2048,
+                        help="Maximum number of nodes per plant")
     parser.add_argument("--render-loss", type=float, default=0.0,
                         help="Enable 2D render-in-the-loop loss weight")
+    parser.add_argument("--render-fast-mode", action="store_true", default=True,
+                        help="Use lower leaf subdivisions for tractable render loss")
+    parser.add_argument("--no-render-fast-mode", dest="render_fast_mode", action="store_false",
+                        help="Disable fast render mode (slower, higher quality)")
     parser.add_argument("--pc-loss", type=float, default=0.0,
                         help="Enable 3D point-cloud Chamfer loss weight")
     parser.add_argument("--target-ply", type=str, default=None,
@@ -401,7 +466,10 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         lr=args.lr,
         save_path=args.save_path,
+        node_dim=args.node_dim,
+        max_nodes=args.max_nodes,
         render_loss_weight=args.render_loss,
+        render_fast_mode=args.render_fast_mode,
         pc_loss_weight=args.pc_loss,
         target_ply=args.target_ply,
         pc_samples=args.pc_samples,

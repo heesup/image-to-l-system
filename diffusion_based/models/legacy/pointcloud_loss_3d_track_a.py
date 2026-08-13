@@ -15,7 +15,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from diffusion_based.models.helios_geometry import DifferentiablePlantPointCloud
+from diffusion_based.models.legacy.helios_geometry_track_a import DifferentiablePlantPointCloud
 
 
 class PlantPointCloudChamferLoss(nn.Module):

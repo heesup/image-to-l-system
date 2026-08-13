@@ -15,9 +15,9 @@ if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
 from diffusion_based.models.helios_xml_parser import HeliosXMLParser
-from diffusion_based.models.helios_geometry import build_helios_geometry_from_xml, HeliosPlantGeometryTorch, DifferentiableHeliosXMLRenderer
-from diffusion_based.models.helios_rasterizer_3d import HeliosGeometryRasterizer
-from diffusion_based.models.differentiable_pipeline import DifferentiableHeliosRenderer
+from diffusion_based.models.legacy.helios_geometry_track_a import build_helios_geometry_from_xml, HeliosPlantGeometryTorch, DifferentiableHeliosXMLRenderer
+from diffusion_based.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
+from diffusion_based.models.legacy.differentiable_pipeline_track_a import DifferentiableHeliosRenderer
 from notebooks.run_differentiable_renderer_stability_test import (
     setup_display_env,
     compute_ssim_numpy,
@@ -99,36 +99,33 @@ def verify_seed(seed: int, output_dir: str, device: torch.device, rasterizer: He
     cpp_pil = Image.open(cpp_img_path).convert("RGB").resize((256, 256), Image.LANCZOS)
     cpp_np = np.array(cpp_pil, dtype=np.float32) / 255.0
     
-    # 2 & 3. HeliosPlantGeometryTorch & DifferentiableHeliosXMLRenderer (on BLACK background)
+    # 2. HeliosPlantGeometryTorch & Direct PyTorch Differentiable Rasterizer (on BLACK background)
     geom_torch = HeliosPlantGeometryTorch.from_xml(xml_path, device=device)
-    xml_renderer = DifferentiableHeliosXMLRenderer(rasterizer).to(device)
     with torch.no_grad():
-        torch_15d_rgba = xml_renderer(
+        torch_15d_rgba = rasterizer(
             geom_torch,
             focus_plant=True,
             background="black",
         )
-    py_xml_rgba = torch_15d_rgba[0].permute(1, 2, 0).cpu().numpy().clip(0, 1)
-    py_xml_np = py_xml_rgba[..., :3]
-    torch_15d_np = py_xml_np
+    torch_15d_np = torch_15d_rgba[0, :3].permute(1, 2, 0).cpu().numpy().clip(0, 1)
     
-    # 4. Metrics & Direct XML vs 15D PyTorch Comparison on Black Background
-    mask_py = py_xml_rgba[..., 3] > 0.05
+    # 3. Metrics & Direct C++ Helios vs PyTorch Diff Comparison on Black Background
+    mask_cpp = np.linalg.norm(cpp_np - np.array([0.61, 0.58, 0.55]), axis=-1) > 0.1
     mask_15d = torch_15d_rgba[0, 3].cpu().numpy() > 0.05
     
-    diff_map = np.abs(py_xml_np - torch_15d_np)
+    diff_map = np.abs(cpp_np - torch_15d_np)
     mae_diff = float(np.mean(diff_map))
-    ssim_diff = compute_ssim_numpy(py_xml_np, torch_15d_np)
+    ssim_diff = compute_ssim_numpy(cpp_np, torch_15d_np)
     
-    intersection = np.logical_and(mask_py, mask_15d).sum()
-    union = np.logical_or(mask_py, mask_15d).sum()
+    intersection = np.logical_and(mask_cpp, mask_15d).sum()
+    union = np.logical_or(mask_cpp, mask_15d).sum()
     iou_diff = float(intersection / max(union, 1))
 
     print(f"Seed {seed:04d} Results (Black Background):")
-    print(f"  XML vs PyTorch Diff: SSIM={ssim_diff:.4f}, IoU={iou_diff:.4f}, MAE={mae_diff:.4f}")
+    print(f"  C++ Helios vs PyTorch Diff: SSIM={ssim_diff:.4f}, IoU={iou_diff:.4f}, MAE={mae_diff:.4f}")
 
-    # Generate 4-panel comparison figure: GT Reference | XML Renderer (Black) | PyTorch Diff Renderer (Black) | Pixel Diff Map
-    fig, axes = plt.subplots(1, 4, figsize=(20, 5), facecolor="black")
+    # Generate 3-panel comparison figure: 1. GT Reference | 2. PyTorch Diff Renderer | 3. Pixel Diff Map
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5), facecolor="black")
     for ax in axes:
         ax.set_facecolor("black")
         
@@ -136,18 +133,14 @@ def verify_seed(seed: int, output_dir: str, device: torch.device, rasterizer: He
     axes[0].set_title(f"1. C++ Helios Reference GT\n(Seed={seed})", fontsize=11, fontweight="bold", color="white")
     axes[0].axis("off")
     
-    axes[1].imshow(py_xml_np)
-    axes[1].set_title(f"2. Python XML Renderer\n(Black Background)", fontsize=11, fontweight="bold", color="springgreen")
+    axes[1].imshow(torch_15d_np)
+    axes[1].set_title(f"2. PyTorch Diff Renderer\nSSIM={ssim_diff:.3f} | IoU={iou_diff:.3f}", fontsize=11, fontweight="bold", color="cyan")
     axes[1].axis("off")
     
-    axes[2].imshow(torch_15d_np)
-    axes[2].set_title(f"3. PyTorch Diff Renderer\nSSIM={ssim_diff:.3f} | IoU={iou_diff:.3f}", fontsize=11, fontweight="bold", color="cyan")
+    im = axes[2].imshow(diff_map.mean(axis=-1), cmap="inferno", vmin=0.0, vmax=0.3)
+    axes[2].set_title(f"3. C++ vs PyTorch Diff Map\nMAE={mae_diff:.4f}", fontsize=11, fontweight="bold", color="crimson")
     axes[2].axis("off")
-    
-    im = axes[3].imshow(diff_map.mean(axis=-1), cmap="inferno", vmin=0.0, vmax=0.3)
-    axes[3].set_title(f"4. XML vs PyTorch Diff Map\nMAE={mae_diff:.4f}", fontsize=11, fontweight="bold", color="crimson")
-    axes[3].axis("off")
-    plt.colorbar(im, ax=axes[3], fraction=0.046, pad=0.04)
+    plt.colorbar(im, ax=axes[2], fraction=0.046, pad=0.04)
     
     plt.tight_layout()
     comp_fig_path = os.path.join(output_dir, f"dap30_3way_comparison_seed{seed}.png")

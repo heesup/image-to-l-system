@@ -10,9 +10,9 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from diffusion_based.models.helios_xml_parser import HeliosXMLParser
-from diffusion_based.models.helios_xml_writer import write_organ_nodes_to_xml
-from diffusion_based.models.helios_geometry import build_helios_geometry_from_nodes
-from diffusion_based.models.helios_rasterizer_3d import HeliosGeometryRasterizer
+from diffusion_based.models.legacy.helios_xml_writer_track_a import write_organ_nodes_to_xml
+from diffusion_based.models.legacy.helios_geometry_track_a import build_helios_geometry_from_nodes
+from diffusion_based.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
 
 
 def render_nodes(nodes, image_size=256):

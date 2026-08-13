@@ -9,7 +9,7 @@ from typing import Optional, Dict, Any
 
 from dataset.plant3d_dataset import Plant3DDataset
 from dataset.helios_dataset import HeliosPlantDataset
-from diffusion_based.models.graph_diffuser_3d import PlantGraphDiffuser3D
+from diffusion_based.models.legacy.graph_diffuser_3d_track_a import PlantGraphDiffuser3D
 from diffusion_based.training.train_diffusion import DDPMScheduler, get_device
 
 

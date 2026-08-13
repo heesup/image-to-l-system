@@ -18,9 +18,9 @@ repo_root = "/home/lion397/codes/image-to-l-system"
 sys.path.insert(0, repo_root)
 
 from diffusion_based.models.helios_xml_parser import HeliosXMLParser, OrganNode3D
-from diffusion_based.models.helios_xml_writer import write_organ_nodes_to_xml
-from diffusion_based.models.helios_rasterizer_3d import HeliosGeometryRasterizer
-from diffusion_based.models.differentiable_pipeline import DifferentiableHeliosRenderer
+from diffusion_based.models.legacy.helios_xml_writer_track_a import write_organ_nodes_to_xml
+from diffusion_based.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
+from diffusion_based.models.legacy.differentiable_pipeline_track_a import DifferentiableHeliosRenderer
 
 # ── Config ────────────────────────────────────────────────────────
 xml_path = os.path.join(repo_root, "notebooks", "output_dap30_verification",
