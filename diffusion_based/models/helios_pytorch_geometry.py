@@ -182,10 +182,26 @@ def get_rotation_matrix_between_vectors(v0: torch.Tensor, v1: torch.Tensor) -> t
 
 
 def rotate_vector_about_axis(vec: torch.Tensor, axis: torch.Tensor, angle_rad: torch.Tensor) -> torch.Tensor:
-    """Rodrigues rotation formula: rotates 3D vector 'vec' about unit vector 'axis' by 'angle_rad'."""
-    axis = axis / (torch.linalg.norm(axis) + 1e-8)
-    cos_a = torch.cos(angle_rad)
-    sin_a = torch.sin(angle_rad)
+    """Rodrigues rotation formula: rotates 3D vector 'vec' about unit vector 'axis' by 'angle_rad'.
+
+    Numerically safe: if the axis is near-zero or the angle is near-zero, avoid
+    operations whose gradients explode (division by zero, 0*inf forms).
+    """
+    axis_norm = torch.linalg.norm(axis)
+    if axis_norm < 1e-4:
+        # Zero-length axis: no rotation, return vec unchanged with stable gradient
+        return vec.clone()
+    axis = axis / axis_norm
+
+    # Clamp angle magnitude to avoid the unstable 1-cos(a) near 2*pi multiple,
+    # and wrap via angle sign so sin/cos are always finite.
+    angle_safe = angle_rad
+    if torch.abs(angle_rad) < 1e-6:
+        # Tiny angle: first-order expansion, no singular 1-cos term
+        return vec + torch.linalg.cross(axis, vec) * angle_rad
+
+    cos_a = torch.cos(angle_safe)
+    sin_a = torch.sin(angle_safe)
     return vec * cos_a + torch.linalg.cross(axis, vec) * sin_a + axis * torch.dot(axis, vec) * (1.0 - cos_a)
 
 
@@ -379,13 +395,15 @@ class HeliosPlantGeometryBuilder:
         self,
         organ_array: PlantOrganArray,
         device: torch.device = torch.device('cpu'),
-        max_leaves: Optional[int] = None
+        max_leaves: Optional[int] = None,
+        existence_threshold: float = 0.5,
     ) -> Dict[str, torch.Tensor]:
         """
         Processes PlantOrganArray Tensor (N, 93) with sequential shoot forward kinematics.
         Renders each shoot individually and connects child shoots to parent petiole/node attachments.
         """
         t = organ_array.tensor.to(device)
+        existence = organ_array.existence.to(device).clamp(0.0, 1.0)
         N = t.shape[0]
 
         if N == 0:
@@ -409,23 +427,97 @@ class HeliosPlantGeometryBuilder:
             shoots_dict[sid].append(i)
 
         sorted_shoot_ids = sorted(shoots_dict.keys())
+        shoot_id_to_sorted_idx = {sid: i for i, sid in enumerate(sorted_shoot_ids)}
         node_output_info: Dict[Tuple[int, int], Dict[str, Any]] = {}
 
-        deg2rad = torch.tensor(math.pi / 180.0, dtype=torch.float32, device=device)
-        init_leaf_dir = torch.tensor([1.0, 0.0, 0.0], dtype=torch.float32, device=device)
-        rendered_leaf_groups = 0
+        # Tensor-based node outputs for soft parent aggregation.
+        # We pad arrays to N, storing per-node outputs. Missing entries are zeros.
+        node_tip_positions = torch.zeros((N, 3), dtype=torch.float32, device=device)
+        node_internode_axes = torch.zeros((N, 3), dtype=torch.float32, device=device)
+        node_petiole_axes = torch.zeros((N, 2, 3), dtype=torch.float32, device=device)
+        node_has_petiole = torch.zeros((N, 2), dtype=torch.float32, device=device)
 
-        for sid in sorted_shoot_ids:
-            node_indices = shoots_dict[sid]
-            first_row = t[node_indices[0]]
+        # Soft parent representation
+        use_soft_parent = (
+            organ_array.parent_logits is not None
+            and organ_array.parent_candidates is not None
+        )
+        if use_soft_parent:
+            parent_logits = organ_array.parent_logits.to(device)
+            parent_candidates = organ_array.parent_candidates.to(device)
+            num_shoots_k = parent_logits.shape[0]
+            if num_shoots_k != len(sorted_shoot_ids):
+                raise ValueError(
+                    f"parent_logits has {num_shoots_k} shoots but organ_array has {len(sorted_shoot_ids)} shoots"
+                )
+
+        def compute_shoot_base(sid: int, first_row: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            """Compute shoot base position, internode axis, and petiole axis.
+
+            Uses soft parent aggregation when parent_logits/parent_candidates are provided,
+            otherwise falls back to the hard parent columns in the tensor.
+            """
+            if use_soft_parent:
+                s_idx = shoot_id_to_sorted_idx[sid]
+                cand = parent_candidates[s_idx]  # (K, 3)
+                cand_shoot = cand[:, 0]
+                cand_node = cand[:, 1]
+                cand_pet = cand[:, 2]
+
+                # Validity mask: candidate node index must be non-negative and parent shoot must be valid
+                valid_mask = (cand_node >= 0).float() * (cand_shoot >= 0).float()
+
+                # Existence mask for candidate parent nodes
+                cand_exist = existence[cand_node.clamp(min=0)]
+                active_mask = valid_mask * (cand_exist > 0.5).float()
+
+                logits = parent_logits[s_idx]
+                # Numerically stable softmax with active mask. Candidates with zero active mask are given a very negative logit.
+                masked_logits = torch.where(active_mask > 0.5, logits, torch.full_like(logits, -1e9))
+                weights = torch.softmax(masked_logits, dim=0)
+                # If all candidates are inactive (e.g. root shoot with negative shoot id), fall back to one-hot on the first candidate.
+                if weights.sum() < 1e-8 or weights.isnan().any():
+                    weights = torch.zeros_like(weights)
+                    weights[0] = 1.0
+
+                # Candidate shoot IDs may be arbitrary. Build a mapping from (shoot_id, node_idx) -> node tensor index.
+                # We precomputed node_tip_positions etc. by loop order, keyed by linear node index n_idx.
+                # Detach candidate geometric features so gradient only flows through the selection weights,
+                # making soft-parent topology optimization stable. The candidate anchors are fixed per step.
+                cand_tip = node_tip_positions[cand_node].detach()          # (K, 3)
+                cand_axis = node_internode_axes[cand_node].detach()      # (K, 3)
+
+                # Petiole axis: requested petiole index may not exist on the candidate node.
+                # Fall back to petiole 0 axis if the requested petiole is unavailable, matching hard-parent behavior.
+                cand_pet_clamped = cand_pet.clamp(0, 1)
+                cand_pet_axis = node_petiole_axes[cand_node, cand_pet_clamped].detach()  # (K, 3)
+                cand_has_pet = node_has_petiole[cand_node, cand_pet_clamped]    # (K,)
+                has_pet0 = node_has_petiole[cand_node, 0]
+                cand_pet_axis = torch.where(
+                    (cand_has_pet > 0.5).unsqueeze(-1),
+                    cand_pet_axis,
+                    node_petiole_axes[cand_node, 0].detach(),
+                )
+                cand_has_pet = torch.where(cand_has_pet > 0.5, cand_has_pet, has_pet0)
+
+                shoot_base_pos = (weights.unsqueeze(-1) * cand_tip).sum(dim=0)
+                # Use weighted axis directly; downstream rotate_vector_about_axis normalizes internally.
+                parent_internode_axis = (weights.unsqueeze(-1) * cand_axis).sum(dim=0)
+                parent_petiole_axis = (weights.unsqueeze(-1) * cand_pet_axis).sum(dim=0)
+                # If no candidate has a valid petiole axis, fall back to default
+                valid_pet = (weights * cand_has_pet).sum()
+                if valid_pet < 1e-8:
+                    parent_petiole_axis = torch.tensor([0.0, -1.0, 0.0], device=device)
+
+                # Negative candidate shoot_id means root (same as hard logic)
+                if cand_shoot[weights.argmax()].item() < 0:
+                    shoot_base_pos = torch.tensor([0.0, 0.0, 0.0], device=device)
+                    parent_internode_axis = torch.tensor([0.0, 0.0, 1.0], device=device)
+                    parent_petiole_axis = torch.tensor([0.0, -1.0, 0.0], device=device)
+                return shoot_base_pos, parent_internode_axis, parent_petiole_axis
 
             parent_sid = int(first_row[COL_PARENT_SHOOT_ID].item())
             parent_node_idx = int(first_row[COL_PARENT_NODE_IDX].item())
-
-            base_pitch_rad = first_row[COL_SHOOT_ROT_PITCH] * deg2rad
-            base_yaw_rad = first_row[COL_SHOOT_ROT_YAW] * deg2rad
-            base_roll_rad = first_row[COL_SHOOT_ROT_ROLL] * deg2rad
-
             parent_petiole_index = int(first_row[COL_PARENT_PETIOLE_IDX].item())
 
             if parent_sid < 0 or (parent_sid, parent_node_idx) not in node_output_info:
@@ -443,6 +535,21 @@ class HeliosPlantGeometryBuilder:
                 # Reconstruction (InputOutput.cpp:1457): the first internode of a child shoot
                 # starts at the parent internode tip (no 0.9*radius petiole offset).
                 shoot_base_pos = p_info['tip']
+            return shoot_base_pos, parent_internode_axis, parent_petiole_axis
+
+        deg2rad = torch.tensor(math.pi / 180.0, dtype=torch.float32, device=device)
+        init_leaf_dir = torch.tensor([1.0, 0.0, 0.0], dtype=torch.float32, device=device)
+        rendered_leaf_groups = 0
+
+        for sid in sorted_shoot_ids:
+            node_indices = shoots_dict[sid]
+            first_row = t[node_indices[0]]
+
+            base_pitch_rad = first_row[COL_SHOOT_ROT_PITCH] * deg2rad
+            base_yaw_rad = first_row[COL_SHOOT_ROT_YAW] * deg2rad
+            base_roll_rad = first_row[COL_SHOOT_ROT_ROLL] * deg2rad
+
+            shoot_base_pos, parent_internode_axis, parent_petiole_axis = compute_shoot_base(sid, first_row)
 
             curr_pos = shoot_base_pos.clone()
             prev_internode_axis = parent_internode_axis
@@ -456,6 +563,7 @@ class HeliosPlantGeometryBuilder:
             for p_idx_in_shoot, n_idx in enumerate(node_indices):
                 row = t[n_idx]
                 p_idx = int(row[COL_PHYTOMER_IDX].item())
+                node_exist = existence[n_idx]
 
                 # ---- Internode orientation vectors (matches InputOutput.cpp recomputeInternodeOrientationVectors_local) ----
                 petiole_rot_axis = torch.linalg.cross(prev_internode_axis, prev_petiole_axis)
@@ -487,18 +595,19 @@ class HeliosPlantGeometryBuilder:
                     if inode_pitch_rad != 0.0:
                         i_axis = rotate_vector_about_axis(i_axis, petiole_rot_axis, -1.25 * inode_pitch_rad)
 
-                i_axis = i_axis / (torch.linalg.norm(i_axis) + 1e-12)
+                i_axis = i_axis / (torch.linalg.norm(i_axis) + 1e-6)
 
                 # shoot_bending_axis: cross(internode_axis, z), fallback to (0,1,0) if parallel to z
                 shoot_bending_axis = torch.linalg.cross(i_axis, z_axis)
-                if torch.linalg.norm(shoot_bending_axis) < 1e-8:
+                shoot_bending_norm = torch.linalg.norm(shoot_bending_axis)
+                if shoot_bending_norm < 1e-6:
                     shoot_bending_axis = torch.tensor([0.0, 1.0, 0.0], device=device)
                 else:
-                    shoot_bending_axis = shoot_bending_axis / torch.linalg.norm(shoot_bending_axis)
+                    shoot_bending_axis = shoot_bending_axis / shoot_bending_norm
 
                 # ---- Internode tube (matches InputOutput.cpp:1483-1510) ----
-                inode_len = torch.clamp(row[COL_INODE_LEN], min=1e-4)
-                inode_rad = torch.clamp(row[COL_INODE_RAD], min=1e-4)
+                inode_len = torch.clamp(row[COL_INODE_LEN], min=1e-4) * node_exist
+                inode_rad = torch.clamp(row[COL_INODE_RAD], min=1e-4) * node_exist
                 seg_cnt = max(1, int(row[COL_INODE_LEN_SEGS].item()))
                 seg_len = inode_len / seg_cnt
                 seg_len_max = torch.clamp(row[COL_INODE_LEN_MAX], min=1e-4) / seg_cnt
@@ -539,8 +648,11 @@ class HeliosPlantGeometryBuilder:
                     all_organs.append(torch.zeros(v_tub.shape[0], dtype=torch.int64, device=device)) # Organ 0 = Stem
                     vert_offset += v_tub.shape[0]
 
+                # Apply continuous existence scale to petiole length and radii
+                # (node_exist is in [0,1] from organ_array.existence)
+
                 curr_pos = inode_line[-1]
-                inode_tip_axis = step_dir / (torch.linalg.norm(step_dir) + 1e-12)
+                inode_tip_axis = step_dir / (torch.linalg.norm(step_dir) + 1e-6)
 
                 if os.environ.get("HELIOS_DUMP_GEOM"):
                     tp = curr_pos.detach().cpu().numpy()
@@ -553,8 +665,19 @@ class HeliosPlantGeometryBuilder:
                     'internode_axis': inode_tip_axis,
                     'radius': inode_rad,
                 }
+                node_tip_positions[n_idx] = curr_pos
+                node_internode_axes[n_idx] = inode_tip_axis
+                if 0 in pet_axes_stored:
+                    node_petiole_axes[n_idx, 0] = pet_axes_stored[0]
+                    node_has_petiole[n_idx, 0] = 1.0
+                if 1 in pet_axes_stored:
+                    node_petiole_axes[n_idx, 1] = pet_axes_stored[1]
+                    node_has_petiole[n_idx, 1] = 1.0
 
-                def process_petiole(p_len, p_rad, p_pitch_deg, p_curv_deg, p_cls, p_taper, p_seg_cnt,
+                # Save node_info into dict as well for hard-parent fallback equivalence
+                node_output_info[(sid, p_idx)] = node_info
+
+                def process_petiole(p_len_raw, p_rad_raw, p_pitch_deg, p_curv_deg, p_cls, p_taper, p_seg_cnt,
                                     num_leaves, leaf_cols, lflt_scale, lflt_offset, petiole_index):
                     nonlocal rendered_leaf_groups, vert_offset
                     pet_pitch_rad = p_pitch_deg * deg2rad
@@ -571,6 +694,9 @@ class HeliosPlantGeometryBuilder:
                     pet_axis = pet_axis / (torch.linalg.norm(pet_axis) + 1e-12)
                     pet_axes_stored[petiole_index] = pet_axis.clone()
 
+                    # Scale petiole geometry by node existence (continuous 0..1)
+                    p_len = p_len_raw * node_exist
+                    p_rad = p_rad_raw * node_exist
                     if p_len <= 0 or p_rad <= 0:
                         return
 
@@ -648,7 +774,8 @@ class HeliosPlantGeometryBuilder:
 
                             # XML <leaf_scale> stores the final leaf_scale (meters); the OBJ prototype
                             # spans ~1 unit, so a scale factor of 1.0 maps it directly.
-                            tot_scale = l_scale * self.leaf_scale_factor
+                            # Scale by node existence so absent organs contribute no visible geometry.
+                            tot_scale = l_scale * self.leaf_scale_factor * node_exist
 
                             if self.use_generic_leaves:
                                 v_lf_b, f_lf_b = generate_generic_leaf_mesh_torch(scale=tot_scale, aspect_ratio=0.65, Nx=8, Ny=8, device=device)
@@ -692,7 +819,7 @@ class HeliosPlantGeometryBuilder:
                             if ind_from_tip != 0:
                                 yaw_rot = l_yaw
 
-                            azimuth_rot = -torch.atan2(pet_tip_axis[1], pet_tip_axis[0]) + compound_rotation
+                            azimuth_rot = -torch.atan2(pet_tip_axis[1], pet_tip_axis[0] + 1e-8) + compound_rotation
 
                             R_leaf = (
                                 rotr_z(azimuth_rot, device) @
@@ -709,7 +836,8 @@ class HeliosPlantGeometryBuilder:
                                 offset = (abs(ind_from_tip) - 0.5) * lflt_offset * p_len
                                 frac = 1.0 - offset / torch.clamp(p_len, min=1e-6)
                                 frac = torch.clamp(frac, 0.0, 1.0)
-                                leaf_base = interpolate_tube_torch(pet_line, frac.item())
+                                if not (torch.isnan(frac) or torch.isinf(frac)):
+                                    leaf_base = interpolate_tube_torch(pet_line, float(frac.clamp(0.0, 1.0).item()))
 
                             v_lf = v_lf_rot + leaf_base
 
@@ -752,8 +880,6 @@ class HeliosPlantGeometryBuilder:
                 node_info['petiole_axes'] = pet_axes_stored
                 if 0 in pet_axes_stored:
                     node_info['petiole_axis'] = pet_axes_stored[0].clone()
-                node_output_info[(sid, p_idx)] = node_info
-
                 # Update parent context for the next phytomer on this shoot
                 prev_internode_axis = inode_tip_axis
                 if 0 in pet_axes_stored:

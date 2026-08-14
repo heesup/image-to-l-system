@@ -440,9 +440,12 @@ class HeliosPyTorchRenderer(nn.Module):
         background: str = "ground",
         device: torch.device = torch.device('cpu'),
         differentiable: bool = False,
-        focus_plant: bool = True
+        focus_plant: bool = True,
+        existence_threshold: float = 0.5,
     ) -> torch.Tensor:
-        mesh_dict = self.geo_builder.build_mesh_from_organ_array(organ_array, device=device)
+        mesh_dict = self.geo_builder.build_mesh_from_organ_array(
+            organ_array, device=device, existence_threshold=existence_threshold
+        )
         return self.forward(
             mesh_dict,
             azimuth_deg=azimuth_deg,

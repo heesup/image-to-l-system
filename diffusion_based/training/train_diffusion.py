@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 from typing import Optional, Dict, Tuple
 
 from diffusion_based.dataset.graph_dataset import PlantGraphDataset
-from diffusion_based.models.graph_diffuser import PlantGraphDiffuser
+from legacy.graph_diffuser import PlantGraphDiffuser
 
 def get_device() -> torch.device:
     if torch.backends.mps.is_available():
@@ -37,7 +37,7 @@ class DDPMScheduler:
         noisy_nodes = sqrt_alphas_cumprod * original_nodes + sqrt_one_minus_alphas_cumprod * noise
         return noisy_nodes, noise
 
-from diffusion_based.models.differentiable_renderer import DifferentiableLineRenderer
+from legacy.differentiable_renderer import DifferentiableLineRenderer
 
 def train_diffusion(num_samples: int = 100, num_samples_to_fit: int = 4, epochs: int = 500, lr: float = 3e-4, save_path: str = "diffusion_based/checkpoints/diffusion_model.pt"):
     device = get_device()

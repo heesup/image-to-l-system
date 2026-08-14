@@ -7,7 +7,7 @@ from PIL import Image
 from typing import Optional, Dict, Any
 
 from diffusion_based.dataset.graph_dataset import PlantGraphDataset
-from diffusion_based.models.graph_diffuser import PlantGraphDiffuser
+from legacy.graph_diffuser import PlantGraphDiffuser
 from diffusion_based.training.train_diffusion import DDPMScheduler, get_device
 
 @torch.no_grad()
@@ -192,10 +192,12 @@ def main():
     dataset = PlantGraphDataset(num_synthetic_samples=10)
     
     model = PlantGraphDiffuser(max_nodes=64).to(device)
-    checkpoint_path = "diffusion_based/checkpoints/diffusion_model.pt"
+    checkpoint_path = "diffusion_based/checkpoints/diffusion_model_3d.pt"
 
     if os.path.exists(checkpoint_path):
-        model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+        state_dict = checkpoint.get("model_state_dict", checkpoint)
+        model.load_state_dict(state_dict)
         print(f"Loaded model weights from '{checkpoint_path}'")
     else:
         print("Warning: No checkpoint found, using initial model weights.")
