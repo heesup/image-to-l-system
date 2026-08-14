@@ -1,9 +1,9 @@
 """
-Training script for 94D PlantOrganArray Image-to-Graph Diffusion.
+Training script for 40D typed PlantOrganArray Image-to-Graph Diffusion.
 
 Combines:
-  - DDPM-style denoising MSE on the normalized 94D organ array tensor
-  - Existence BCE on channel 93
+  - DDPM-style denoising MSE on the normalized 40D typed organ array tensor
+  - Existence BCE on channel 39
   - Optional render reconstruction loss via HeliosPyTorchRenderer
 """
 
@@ -54,13 +54,16 @@ def get_device() -> torch.device:
 
 
 def prediction_to_organ_array(pred_x0: torch.Tensor, dataset: OrganArrayDataset) -> PlantOrganArray:
-    """Denormalize model prediction (B, N, 94) and build PlantOrganArray. B must be 1."""
+    """Denormalize model prediction and build PlantOrganArray. B must be 1."""
     assert pred_x0.shape[0] == 1, "rendering helper supports batch_size=1"
     denorm = dataset.denormalize(pred_x0[0])
+    existence_col = dataset.existence_col
     # existence channel is the last column
-    denorm[:, -1] = torch.sigmoid(denorm[:, -1])
+    denorm[:, existence_col] = torch.sigmoid(denorm[:, existence_col])
     # Clamp physical parameters to sensible non-negative ranges to avoid rendering failures
-    denorm[:, :93] = torch.clamp(denorm[:, :93], min=0.0)
+    denorm[:, dataset.continuous_cols] = torch.clamp(denorm[:, dataset.continuous_cols], min=0.0)
+    # Round the categorical organ_type column (11) to the nearest valid class.
+    denorm[:, 11] = torch.round(denorm[:, 11]).clamp(0, 7)
     return PlantOrganArray(tensor=denorm.cpu())
 
 
@@ -115,13 +118,18 @@ def train_epoch(
     total_loss = 0.0
     total_mse = 0.0
     total_exist = 0.0
+    total_organ_type = 0.0
     total_render = 0.0
     count = 0
 
     for batch in dataloader:
         images = batch["image"].to(device)
-        nodes = batch["nodes"].to(device)  # (B, N, 94), normalized
+        nodes = batch["nodes"].to(device)  # (B, N, node_dim), normalized
         existence_gt = batch["existence_mask"].to(device)  # (B, N)
+        dataset = dataloader.dataset
+        node_dim = dataset.node_dim
+        existence_col = dataset.existence_col
+        continuous_cols = dataset.continuous_cols
 
         B = images.shape[0]
         N = nodes.shape[1]
@@ -134,20 +142,33 @@ def train_epoch(
 
         outputs = model(noisy_nodes, t, images)
         pred_x0 = outputs["pred_x0"]
+        organ_type_logits = outputs["organ_type_logits"]
 
-        # Masked continuous channels MSE: only active nodes contribute
+        # Masked continuous channels MSE: only active nodes contribute.
+        # Excludes the categorical organ_type column (11) and existence from MSE.
         active_mask = existence_gt.unsqueeze(-1)  # (B, N, 1)
-        continuous_diff = pred_x0[:, :, :93] - nodes[:, :, :93]
+        continuous_diff = pred_x0[:, :, continuous_cols] - nodes[:, :, continuous_cols]
         mse_loss = (continuous_diff ** 2 * active_mask).sum() / max(active_mask.sum(), 1.0)
 
-        # Existence BCE (channel 93) with positive weighting because positives are sparse
-        pred_existence_logit = pred_x0[:, :, 93]
+        # Existence BCE (last column) with positive weighting because positives are sparse
+        pred_existence_logit = pred_x0[:, :, existence_col]
         pos_weight = torch.tensor(10.0, device=device)
         existence_loss = F.binary_cross_entropy_with_logits(
             pred_existence_logit, existence_gt, pos_weight=pos_weight
         )
 
-        loss = mse_loss + existence_loss
+        # Categorical CE for organ_type (column 11) on active nodes
+        organ_type_gt = nodes[:, :, 11].long().clamp(0, model.num_organ_types - 1)
+        organ_type_loss = F.cross_entropy(
+            organ_type_logits.reshape(-1, model.num_organ_types),
+            organ_type_gt.reshape(-1),
+            reduction="none",
+        )
+        organ_type_loss = (organ_type_loss.view_as(existence_gt) * existence_gt).sum() / max(
+            existence_gt.sum(), 1.0
+        )
+
+        loss = mse_loss + existence_loss + organ_type_loss
 
         render_rec_loss = torch.tensor(0.0, device=device)
         if use_render_loss:
@@ -162,6 +183,7 @@ def train_epoch(
         total_loss += loss.item() * B
         total_mse += mse_loss.item() * B
         total_exist += existence_loss.item() * B
+        total_organ_type += organ_type_loss.item() * B
         if use_render_loss:
             total_render += render_rec_loss.item() * B
         count += B
@@ -170,6 +192,7 @@ def train_epoch(
         "loss": total_loss / max(count, 1),
         "mse": total_mse / max(count, 1),
         "exist": total_exist / max(count, 1),
+        "organ_type": total_organ_type / max(count, 1),
         "render": total_render / max(count, 1),
     }
 
@@ -179,7 +202,7 @@ def main():
     parser.add_argument("--data_root", type=str, default="dataset/helios_data")
     parser.add_argument("--single_xml", type=str, default=None,
                         help="Train on one XML only for fast sanity check")
-    parser.add_argument("--max_nodes", type=int, default=64)
+    parser.add_argument("--max_nodes", type=int, default=256)
     parser.add_argument("--image_size", type=int, default=256)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--epochs", type=int, default=200)
@@ -214,9 +237,10 @@ def main():
 
     model = PlantOrganArrayDiffuser(
         max_nodes=args.max_nodes,
-        node_dim=94,
+        node_dim=40,
         embed_dim=256,
         num_layers=4,
+        num_organ_types=8,
     ).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-5)
@@ -234,7 +258,7 @@ def main():
         print(
             f"Epoch {epoch:03d} | loss={metrics['loss']:.4f} "
             f"mse={metrics['mse']:.4f} exist={metrics['exist']:.4f} "
-            f"render={metrics['render']:.4f}"
+            f"organ_type={metrics['organ_type']:.4f} render={metrics['render']:.4f}"
         )
 
         if epoch % args.save_every == 0 or epoch == args.epochs:

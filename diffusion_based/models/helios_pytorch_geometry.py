@@ -402,6 +402,16 @@ class HeliosPlantGeometryBuilder:
         Processes PlantOrganArray Tensor (N, 93) with sequential shoot forward kinematics.
         Renders each shoot individually and connects child shoots to parent petiole/node attachments.
         """
+        # If the input uses the typed (N, 40) layout, convert it to the legacy
+        # (N, 94) phytomer-slot layout so the existing geometry builder can
+        # consume it unchanged. This keeps rendering pixel-identical while
+        # downstream code migrates to the typed representation. Use the
+        # differentiable conversion so image-loss gradients can flow all the
+        # way back to the typed tensor.
+        if organ_array.is_typed:
+            legacy_tensor = organ_array.to_legacy_tensor_diff()
+            organ_array = PlantOrganArray(legacy_tensor, raw_metadata=[])
+
         t = organ_array.tensor.to(device)
         existence = organ_array.existence.to(device).clamp(0.0, 1.0)
         N = t.shape[0]

@@ -3,7 +3,8 @@ Unit test: Image-loss backpropagation through the PlantOrganArray renderer.
 
 Renders a PlantOrganArray through the PyTorch differentiable renderer,
 computes a simple image MSE loss against a target, and checks that gradients
-flow back to the organ-array tensor.
+flow back to the organ-array tensor. Runs for both the legacy (N, 94) and
+typed (N, 40) layouts.
 """
 
 import os
@@ -18,12 +19,18 @@ from diffusion_based.models.plant_organ_array import PlantOrganArray
 from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 
 
-def run_image_backprop_test(xml_path: str, image_size: int = 128, max_steps: int = 20):
+def run_image_backprop_test(xml_path: str, image_size: int = 128, max_steps: int = 20,
+                            use_typed_layout: bool = False):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    layout_name = "typed (N, 40)" if use_typed_layout else "legacy (N, 94)"
     print(f"Device: {device}")
+    print(f"Layout: {layout_name}")
 
     print(f"Loading PlantOrganArray from {xml_path}...")
-    organ_array = PlantOrganArray.from_xml_file(xml_path)
+    if use_typed_layout:
+        organ_array = PlantOrganArray.from_xml_file_typed(xml_path)
+    else:
+        organ_array = PlantOrganArray.from_xml_file(xml_path)
     organ_array.tensor = organ_array.tensor.to(device).clone().detach().requires_grad_(True)
 
     renderer = HeliosPyTorchRenderer(image_size=image_size)
@@ -70,6 +77,7 @@ def run_image_backprop_test(xml_path: str, image_size: int = 128, max_steps: int
     assert grad.abs().max() > 0, "All gradients are zero"
 
     print("\nSUCCESS: image-loss gradients flow back to PlantOrganArray.tensor")
+    print(f"  layout            : {layout_name}")
     print(f"  final loss        : {loss.item():.6f}")
     print(f"  grad norm         : {grad.norm().item():.6f}")
     print(f"  non-zero gradients: {(grad != 0.0).sum().item()}/{grad.numel()}")
@@ -85,4 +93,7 @@ if __name__ == "__main__":
         "output",
         "cowpea_dap005_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml",
     )
+    print("=== Legacy layout ===")
     run_image_backprop_test(default_xml)
+    print("\n=== Typed layout ===")
+    run_image_backprop_test(default_xml, use_typed_layout=True)

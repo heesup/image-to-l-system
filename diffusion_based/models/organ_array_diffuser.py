@@ -1,8 +1,9 @@
 """
-94D PlantOrganArray Image-to-Graph Diffusion Model.
+40D PlantOrganArray Image-to-Graph Diffusion Model.
 
-Conditioned on a single 2D rendered image, denoises a (N, 94) PlantOrganArray tensor
-representing the full plant architecture. The existence channel is the last column.
+Conditioned on a single 2D rendered image, denoises a (N, 40) typed PlantOrganArray tensor
+representing the full plant architecture. The existence channel is the last column and
+organ_type is a categorical variable at column 11.
 """
 
 import math
@@ -88,14 +89,16 @@ class PlantOrganArrayDiffuser(nn.Module):
     def __init__(
         self,
         max_nodes: int = 64,
-        node_dim: int = 94,
+        node_dim: int = 40,
         embed_dim: int = 256,
         num_layers: int = 4,
+        num_organ_types: int = 8,
     ):
         super().__init__()
         self.max_nodes = max_nodes
         self.node_dim = node_dim
         self.embed_dim = embed_dim
+        self.num_organ_types = num_organ_types
 
         self.image_encoder = MultiScaleImageEncoder(out_dim=embed_dim, output_tokens=16)
 
@@ -106,7 +109,11 @@ class PlantOrganArrayDiffuser(nn.Module):
             nn.Linear(embed_dim, embed_dim),
         )
 
-        # Project noisy node features + noisy existence into embedding space.
+        # Treat organ_type (column 11) as a categorical variable with its own
+        # embedding, consistent with how other ID-like fields are handled.
+        self.organ_type_emb = nn.Embedding(num_organ_types, embed_dim)
+
+        # Project the remaining continuous/typed node features into embedding space.
         self.node_proj = nn.Linear(node_dim, embed_dim)
         self.node_pos_emb = nn.Embedding(max_nodes, embed_dim)
 
@@ -120,12 +127,19 @@ class PlantOrganArrayDiffuser(nn.Module):
             for _ in range(num_layers)
         ])
 
-        # Predict the denoised (clean) 94D organ array.
-        # Channels 0..92 are normalized continuous features; channel 93 is existence logit.
+        # Predict the denoised (clean) 40D typed organ array.
+        # Channels 0..38 are normalized continuous features; channel 39 is existence.
         self.node_pred_head = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
             nn.GELU(),
             nn.Linear(embed_dim, node_dim),
+        )
+
+        # Categorical head for organ_type (column 11).
+        self.organ_type_head = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim),
+            nn.GELU(),
+            nn.Linear(embed_dim, num_organ_types),
         )
 
     def forward(
@@ -136,15 +150,17 @@ class PlantOrganArrayDiffuser(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         """
         Args:
-            noisy_nodes: (B, N, 94) noisy organ array tensor.
-                Channels 0..92 are normalized continuous features.
-                Channel 93 is the continuous existence signal (modeled in [0,1]).
+            noisy_nodes: (B, N, 40) noisy typed organ array tensor.
+                Channels 0..38 are normalized continuous features.
+                Channel 39 is the continuous existence signal (modeled in [0,1]).
+                Column 11 is the categorical organ_type.
             timesteps: (B,) diffusion timestep.
             images: (B, 3, H, W) condition image.
 
         Returns:
             Dict with keys:
-                - "pred_x0": (B, N, 94) predicted clean organ array
+                - "pred_x0": (B, N, 40) predicted clean typed organ array
+                - "organ_type_logits": (B, N, num_organ_types) categorical logits
         """
         B, N, _ = noisy_nodes.shape
         device = noisy_nodes.device
@@ -155,8 +171,9 @@ class PlantOrganArrayDiffuser(nn.Module):
         # Time embedding broadcast: (B, embed_dim) -> (B, 1, embed_dim)
         t_emb = self.time_emb(timesteps).unsqueeze(1)
 
-        # Node embeddings
-        node_emb = self.node_proj(noisy_nodes)
+        # Node embeddings: continuous projection + categorical organ_type embedding.
+        organ_types = noisy_nodes[:, :, 11].long().clamp(0, self.num_organ_types - 1)
+        node_emb = self.node_proj(noisy_nodes) + self.organ_type_emb(organ_types)
         positions = torch.arange(N, device=device).unsqueeze(0).expand(B, -1)
         node_emb = node_emb + self.node_pos_emb(positions)
         node_emb = node_emb + t_emb
@@ -166,7 +183,9 @@ class PlantOrganArrayDiffuser(nn.Module):
             node_emb = layer(node_emb, image_tokens)
 
         pred_x0 = self.node_pred_head(node_emb)
+        organ_type_logits = self.organ_type_head(node_emb)
 
         return {
             "pred_x0": pred_x0,
+            "organ_type_logits": organ_type_logits,
         }
