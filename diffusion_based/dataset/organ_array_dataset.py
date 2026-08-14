@@ -1,5 +1,12 @@
 """
-Dataset for paired (rendered image, normalized 94D PlantOrganArray tensor) samples.
+Dataset for paired (rendered image, normalized 40D typed PlantOrganArray tensor) samples.
+
+Provides:
+  - 40D typed organ-array tensors padded/truncated to max_nodes
+  - per-organ-type column relevance mask (row_relevance) for masked MSE
+  - dataset-wide robust (percentile-clipped) min/max normalization stats
+  - optional image-space augmentation (photometric jitter + gaussian noise +
+    blur + random erasing); never geometric flips (breaks 3D chirality)
 """
 
 import os
@@ -9,9 +16,13 @@ from typing import Dict, Any, List, Tuple
 import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
+from torchvision.transforms import InterpolationMode
 from PIL import Image
 
-from diffusion_based.models.plant_organ_array import PlantOrganArray
+from diffusion_based.models.plant_organ_array import (
+    PlantOrganArray,
+    ORGAN_COLUMN_MASK,
+)
 
 
 class OrganArrayDataset(Dataset):
@@ -29,8 +40,15 @@ class OrganArrayDataset(Dataset):
         max_nodes: pad/truncate organ arrays to this length
         image_size: resize input image to (image_size, image_size)
         single_xml_path: if provided, only load this one XML (for overfit tests)
+        device: torch device for the on-the-fly render fallback
         use_typed_layout: if True (default), parse XML into the (N, 40) typed
             organ-row layout; if False, keep the legacy (N, 94) layout.
+        augment: if True, apply stochastic image-space augmentation.
+        percentile: clip normalization stats to [percentile, 100-percentile].
+        exclude_globs: list of basename glob patterns to EXCLUDE (for
+            train/val splitting, e.g. ['*seed02*']).
+        include_globs: list of basename glob patterns to INCLUDE (keeps only
+            matching samples; mutually exclusive with exclude_globs).
     """
 
     def __init__(
@@ -41,37 +59,76 @@ class OrganArrayDataset(Dataset):
         single_xml_path: str = None,
         device: torch.device = None,
         use_typed_layout: bool = True,
+        augment: bool = False,
+        percentile: float = 1.0,
+        exclude_globs: List[str] = None,
+        include_globs: List[str] = None,
     ):
         self.data_root = os.path.abspath(data_root)
         self.max_nodes = max_nodes
         self.image_size = image_size
         self.use_typed_layout = use_typed_layout
+        self.augment = augment
+        self.percentile = percentile
         self.node_dim = 40 if use_typed_layout else 94
         self.existence_col = 39 if use_typed_layout else 93
         self.categorical_col = 11 if use_typed_layout else None
         self.continuous_cols = [c for c in range(self.node_dim - 1) if c != self.categorical_col]
         self.device = device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.transform = transforms.Compose([
+        base_transform = [
             transforms.Resize((image_size, image_size)),
             transforms.ToTensor(),
             transforms.Normalize(
                 mean=[0.485, 0.456, 0.406],
                 std=[0.229, 0.224, 0.225],
             ),
-        ])
-        self._transform_tensor = transforms.Compose([
-            transforms.Resize((image_size, image_size)),
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225],
-            ),
-        ])
+        ]
+        if self.augment:
+            # Photometric / noise augmentation only. No geometric flips: a
+            # horizontal flip mirrors the 3D plant and would not match the
+            # organ-array tensor when re-rendered.
+            aug_transform = [
+                transforms.RandomApply([transforms.ColorJitter(
+                    brightness=0.2, contrast=0.2, saturation=0.2, hue=0.02)], p=0.8),
+                transforms.RandomApply([transforms.GaussianBlur(
+                    kernel_size=(3, 3), sigma=(0.1, 1.5))], p=0.3),
+                transforms.RandomPosterize(bits=4, p=0.15),
+            ]
+            self.transform = transforms.Compose(aug_transform + base_transform)
+            self._transform_tensor = transforms.Compose([
+                transforms.Resize((image_size, image_size)),
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225],
+                ),
+            ])
+        else:
+            self.transform = transforms.Compose(base_transform)
+            self._transform_tensor = transforms.Compose([
+                transforms.Resize((image_size, image_size)),
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225],
+                ),
+            ])
+
+        import fnmatch as _fnmatch
 
         if single_xml_path is not None:
             self.samples = [self._resolve_pair(single_xml_path)]
         else:
             xml_paths = sorted(glob.glob(os.path.join(self.data_root, "*_plant_*.xml")))
+            if include_globs:
+                xml_paths = [
+                    p for p in xml_paths
+                    if any(_fnmatch.fnmatch(os.path.basename(p), pat) for pat in include_globs)
+                ]
+            elif exclude_globs:
+                xml_paths = [
+                    p for p in xml_paths
+                    if not any(_fnmatch.fnmatch(os.path.basename(p), pat) for pat in exclude_globs)
+                ]
             self.samples = [self._resolve_pair(p) for p in xml_paths]
 
         # Compute dataset-wide min/max bounds from ALL available XML files,
@@ -93,13 +150,13 @@ class OrganArrayDataset(Dataset):
         """Compute per-channel min/max over every available *_plant_*.xml file.
 
         The categorical organ_type column (11) and existence column are
-        excluded from the continuous min/max statistics.
+        excluded from the continuous min/max statistics. Percentile clipping
+        makes the stats robust to outliers (e.g. tiny radii, 0-360 angles).
         """
         xml_paths = sorted(glob.glob(os.path.join(self.data_root, "*_plant_*.xml")))
         n_cont = len(self.continuous_cols)
-        mins = torch.full((n_cont,), float("inf"), dtype=torch.float32)
-        maxs = torch.full((n_cont,), float("-inf"), dtype=torch.float32)
 
+        all_values: List[torch.Tensor] = []
         for xml_path in xml_paths:
             try:
                 if self.use_typed_layout:
@@ -109,12 +166,19 @@ class OrganArrayDataset(Dataset):
                 tensor = organ_array.tensor[:, self.continuous_cols]  # continuous channels only
                 if tensor.shape[0] == 0:
                     continue
-                local_min = tensor.min(dim=0).values
-                local_max = tensor.max(dim=0).values
-                mins = torch.minimum(mins, local_min)
-                maxs = torch.maximum(maxs, local_max)
+                all_values.append(tensor)
             except Exception:
                 continue
+
+        if len(all_values) == 0:
+            mins = torch.zeros((n_cont,), dtype=torch.float32)
+            return mins, torch.ones((n_cont,), dtype=torch.float32)
+
+        stacked = torch.cat(all_values, dim=0)  # (total_rows, n_cont)
+        lo = self.percentile
+        hi = 100.0 - self.percentile
+        mins = torch.quantile(stacked, lo / 100.0, dim=0)
+        maxs = torch.quantile(stacked, hi / 100.0, dim=0)
 
         # Avoid zero range
         range_vals = torch.where((maxs - mins) < 1e-6, torch.ones_like(maxs), maxs - mins)
@@ -188,12 +252,19 @@ class OrganArrayDataset(Dataset):
 
         nodes = self.normalize(nodes)
 
+        # Per-node column relevance mask for the continuous MSE: which columns
+        # carry real signal for each node's organ_type.
+        organ_types = nodes[:, self.categorical_col].long().clamp(0, ORGAN_COLUMN_MASK.shape[0] - 1)
+        row_relevance = ORGAN_COLUMN_MASK[organ_types].clone()  # (max_nodes, node_dim)
+        row_relevance[N:] = False  # padded rows contribute nothing
+
         num_nodes = torch.tensor(N, dtype=torch.long)
 
         return {
             "image": image_tensor,
             "nodes": nodes,
             "existence_mask": existence_mask,
+            "row_relevance": row_relevance,
             "num_nodes": num_nodes,
             "xml_path": sample["xml"],
             "jpeg_path": sample["jpeg"],

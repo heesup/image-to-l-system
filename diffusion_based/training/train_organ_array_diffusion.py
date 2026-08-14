@@ -2,17 +2,23 @@
 Training script for 40D typed PlantOrganArray Image-to-Graph Diffusion.
 
 Combines:
-  - DDPM-style denoising MSE on the normalized 40D typed organ array tensor
+  - Organ-type masked continuous MSE on the normalized 40D typed organ array
+    tensor (only columns relevant to each row's organ_type contribute)
   - Existence BCE on channel 39
-  - Optional render reconstruction loss via HeliosPyTorchRenderer
+  - Categorical CE on organ_type (channel 11)
+  - Optional periodic render reconstruction loss via HeliosPyTorchRenderer
+  - Optional image-space augmentation (photometric jitter only)
+  - Train/val split over the samples in data_root
 """
 
 import os
 import sys
 import math
 import argparse
+import random
 from typing import Dict, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -51,6 +57,13 @@ def get_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda")
     return torch.device("cpu")
+
+
+def set_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 def prediction_to_organ_array(pred_x0: torch.Tensor, dataset: OrganArrayDataset) -> PlantOrganArray:
@@ -111,8 +124,14 @@ def train_epoch(
     scheduler: DDPMScheduler,
     renderer: HeliosPyTorchRenderer,
     device: torch.device,
-    render_weight: float,
-    use_render_loss: bool,
+    lambda_continuous: float = 1.0,
+    lambda_exist: float = 1.0,
+    lambda_organ_type: float = 0.5,
+    exist_pos_weight: float = 10.0,
+    channel_weights: torch.Tensor = None,
+    render_weight: float = 1.0,
+    render_every: int = 25,
+    global_step: int = 0,
 ) -> Dict[str, float]:
     model.train()
     total_loss = 0.0
@@ -126,8 +145,8 @@ def train_epoch(
         images = batch["image"].to(device)
         nodes = batch["nodes"].to(device)  # (B, N, node_dim), normalized
         existence_gt = batch["existence_mask"].to(device)  # (B, N)
+        row_relevance = batch["row_relevance"].to(device)  # (B, N, node_dim)
         dataset = dataloader.dataset
-        node_dim = dataset.node_dim
         existence_col = dataset.existence_col
         continuous_cols = dataset.continuous_cols
 
@@ -144,15 +163,23 @@ def train_epoch(
         pred_x0 = outputs["pred_x0"]
         organ_type_logits = outputs["organ_type_logits"]
 
-        # Masked continuous channels MSE: only active nodes contribute.
-        # Excludes the categorical organ_type column (11) and existence from MSE.
-        active_mask = existence_gt.unsqueeze(-1)  # (B, N, 1)
+        # Masked continuous channels MSE: only active nodes AND only columns
+        # that are relevant to each row's organ_type contribute. Optional
+        # per-channel weighting boosts structural vs. perturbation channels.
+        active_mask = existence_gt.unsqueeze(-1).float()  # (B, N, 1)
+        relevance = row_relevance[:, :, continuous_cols].float()  # (B, N, n_cont)
+        weight_map = relevance * active_mask  # (B, N, n_cont)
         continuous_diff = pred_x0[:, :, continuous_cols] - nodes[:, :, continuous_cols]
-        mse_loss = (continuous_diff ** 2 * active_mask).sum() / max(active_mask.sum(), 1.0)
+        if channel_weights is not None:
+            channel_weights = channel_weights.to(device).view(1, 1, -1)
+            weighted_diff = (continuous_diff ** 2) * weight_map * channel_weights
+        else:
+            weighted_diff = (continuous_diff ** 2) * weight_map
+        mse_loss = weighted_diff.sum() / max(weight_map.sum(), 1.0)
 
         # Existence BCE (last column) with positive weighting because positives are sparse
         pred_existence_logit = pred_x0[:, :, existence_col]
-        pos_weight = torch.tensor(10.0, device=device)
+        pos_weight = torch.tensor(exist_pos_weight, device=device)
         existence_loss = F.binary_cross_entropy_with_logits(
             pred_existence_logit, existence_gt, pos_weight=pos_weight
         )
@@ -168,10 +195,14 @@ def train_epoch(
             existence_gt.sum(), 1.0
         )
 
-        loss = mse_loss + existence_loss + organ_type_loss
+        loss = (
+            lambda_continuous * mse_loss
+            + lambda_exist * existence_loss
+            + lambda_organ_type * organ_type_loss
+        )
 
         render_rec_loss = torch.tensor(0.0, device=device)
-        if use_render_loss:
+        if render_every > 0 and global_step % render_every == 0:
             render_rec_loss, _ = render_loss(pred_x0, images, dataloader.dataset, renderer, device)
             loss = loss + render_weight * render_rec_loss
 
@@ -179,12 +210,13 @@ def train_epoch(
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
+        global_step += 1
 
         total_loss += loss.item() * B
         total_mse += mse_loss.item() * B
         total_exist += existence_loss.item() * B
         total_organ_type += organ_type_loss.item() * B
-        if use_render_loss:
+        if render_every > 0:
             total_render += render_rec_loss.item() * B
         count += B
 
@@ -194,6 +226,90 @@ def train_epoch(
         "exist": total_exist / max(count, 1),
         "organ_type": total_organ_type / max(count, 1),
         "render": total_render / max(count, 1),
+    }
+
+
+@torch.no_grad()
+def validate(
+    model: nn.Module,
+    val_loader: DataLoader,
+    scheduler: DDPMScheduler,
+    device: torch.device,
+    lambda_continuous: float = 1.0,
+    lambda_exist: float = 1.0,
+    lambda_organ_type: float = 0.5,
+    exist_pos_weight: float = 10.0,
+    channel_weights: torch.Tensor = None,
+) -> Dict[str, float]:
+    """Evaluate the same loss terms (minus render) on the held-out set."""
+    model.eval()
+    total_loss = 0.0
+    total_mse = 0.0
+    total_exist = 0.0
+    total_organ_type = 0.0
+    count = 0
+
+    for batch in val_loader:
+        images = batch["image"].to(device)
+        nodes = batch["nodes"].to(device)
+        existence_gt = batch["existence_mask"].to(device)
+        row_relevance = batch["row_relevance"].to(device)
+        dataset = val_loader.dataset
+        existence_col = dataset.existence_col
+        continuous_cols = dataset.continuous_cols
+
+        B = images.shape[0]
+        t = torch.randint(0, scheduler.timesteps, (B,), device=device).long()
+        noise = torch.randn_like(nodes)
+        noisy_nodes = scheduler.add_noise(nodes, t, noise)
+        outputs = model(noisy_nodes, t, images)
+        pred_x0 = outputs["pred_x0"]
+        organ_type_logits = outputs["organ_type_logits"]
+
+        active_mask = existence_gt.unsqueeze(-1).float()
+        relevance = row_relevance[:, :, continuous_cols].float()
+        weight_map = relevance * active_mask
+        continuous_diff = pred_x0[:, :, continuous_cols] - nodes[:, :, continuous_cols]
+        if channel_weights is not None:
+            channel_weights = channel_weights.to(device).view(1, 1, -1)
+            weighted_diff = (continuous_diff ** 2) * weight_map * channel_weights
+        else:
+            weighted_diff = (continuous_diff ** 2) * weight_map
+        mse_loss = weighted_diff.sum() / max(weight_map.sum(), 1.0)
+
+        pos_weight = torch.tensor(exist_pos_weight, device=device)
+        existence_loss = F.binary_cross_entropy_with_logits(
+            pred_x0[:, :, existence_col], existence_gt, pos_weight=pos_weight
+        )
+
+        organ_type_gt = nodes[:, :, 11].long().clamp(0, model.num_organ_types - 1)
+        organ_type_loss = F.cross_entropy(
+            organ_type_logits.reshape(-1, model.num_organ_types),
+            organ_type_gt.reshape(-1),
+            reduction="none",
+        )
+        organ_type_loss = (organ_type_loss.view_as(existence_gt) * existence_gt).sum() / max(
+            existence_gt.sum(), 1.0
+        )
+
+        loss = (
+            lambda_continuous * mse_loss
+            + lambda_exist * existence_loss
+            + lambda_organ_type * organ_type_loss
+        )
+
+        total_loss += loss.item() * B
+        total_mse += mse_loss.item() * B
+        total_exist += existence_loss.item() * B
+        total_organ_type += organ_type_loss.item() * B
+        count += B
+
+    model.train()
+    return {
+        "loss": total_loss / max(count, 1),
+        "mse": total_mse / max(count, 1),
+        "exist": total_exist / max(count, 1),
+        "organ_type": total_organ_type / max(count, 1),
     }
 
 
@@ -208,22 +324,64 @@ def main():
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--timesteps", type=int, default=1000)
-    parser.add_argument("--use_render_loss", action="store_true")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--augment", action="store_true",
+                        help="Enable image-space photometric augmentation")
+    parser.add_argument("--percentile", type=float, default=1.0,
+                        help="Percentile clip for normalization stats (0 disables)")
+    parser.add_argument("--lambda_continuous", type=float, default=1.0)
+    parser.add_argument("--lambda_exist", type=float, default=1.0)
+    parser.add_argument("--lambda_organ_type", type=float, default=0.5)
+    parser.add_argument("--exist_pos_weight", type=float, default=10.0)
+    parser.add_argument("--channel_weights", type=str, default=None,
+                        help="Comma-separated per-channel weights for continuous MSE")
+    parser.add_argument("--render_every", type=int, default=25,
+                        help="Run render loss every N steps (0 disables)")
     parser.add_argument("--render_weight", type=float, default=1.0)
     parser.add_argument("--save_every", type=int, default=50)
     parser.add_argument("--checkpoint_dir", type=str, default="diffusion_based/checkpoints")
+    parser.add_argument("--val_pattern", type=str, default=None,
+                        help="Comma-separated basename globs held out for validation, e.g. '*seed02*'")
     args = parser.parse_args()
 
+    set_seed(args.seed)
     device = get_device()
     print(f"Using device: {device}")
 
-    dataset = OrganArrayDataset(
-        data_root=args.data_root,
-        max_nodes=args.max_nodes,
-        image_size=args.image_size,
-        single_xml_path=args.single_xml,
-    )
-    print(f"Dataset size: {len(dataset)}")
+    val_globs = [g.strip() for g in args.val_pattern.split(",")] if args.val_pattern else []
+    if args.single_xml is not None:
+        dataset = OrganArrayDataset(
+            data_root=args.data_root,
+            max_nodes=args.max_nodes,
+            image_size=args.image_size,
+            single_xml_path=args.single_xml,
+            augment=args.augment,
+            percentile=args.percentile,
+        )
+        val_dataset = None
+        print(f"Dataset size: {len(dataset)}")
+    else:
+        dataset = OrganArrayDataset(
+            data_root=args.data_root,
+            max_nodes=args.max_nodes,
+            image_size=args.image_size,
+            augment=args.augment,
+            percentile=args.percentile,
+            exclude_globs=val_globs,
+        )
+        val_dataset = None
+        if val_globs:
+            val_dataset = OrganArrayDataset(
+                data_root=args.data_root,
+                max_nodes=args.max_nodes,
+                image_size=args.image_size,
+                augment=False,
+                percentile=args.percentile,
+                include_globs=val_globs,
+            )
+        print(f"Train dataset size: {len(dataset)}")
+        if val_dataset is not None:
+            print(f"Val dataset size: {len(val_dataset)}")
     print(f"Channel min range: [{dataset.min_vals.min():.3f}, {dataset.min_vals.max():.3f}]")
     print(f"Channel range range: [{dataset.max_vals.min():.3f}, {dataset.max_vals.max():.3f}]")
 
@@ -234,6 +392,15 @@ def main():
         num_workers=0,
         pin_memory=False,
     )
+    val_loader = None
+    if val_dataset is not None:
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=0,
+            pin_memory=False,
+        )
 
     model = PlantOrganArrayDiffuser(
         max_nodes=args.max_nodes,
@@ -247,19 +414,50 @@ def main():
     scheduler = DDPMScheduler(timesteps=args.timesteps)
     renderer = HeliosPyTorchRenderer(image_size=args.image_size).to(device)
 
+    channel_weights = None
+    if args.channel_weights:
+        vals = [float(v) for v in args.channel_weights.split(",")]
+        assert len(vals) == len(dataset.continuous_cols), \
+            f"channel_weights length {len(vals)} != continuous cols {len(dataset.continuous_cols)}"
+        channel_weights = torch.tensor(vals, dtype=torch.float32)
+        print("Per-channel continuous weights:", channel_weights.tolist())
+
     os.makedirs(args.checkpoint_dir, exist_ok=True)
 
+    global_step = 0
     for epoch in range(1, args.epochs + 1):
         metrics = train_epoch(
             model, dataloader, optimizer, scheduler, renderer, device,
+            lambda_continuous=args.lambda_continuous,
+            lambda_exist=args.lambda_exist,
+            lambda_organ_type=args.lambda_organ_type,
+            exist_pos_weight=args.exist_pos_weight,
+            channel_weights=channel_weights,
             render_weight=args.render_weight,
-            use_render_loss=args.use_render_loss,
+            render_every=args.render_every,
+            global_step=global_step,
         )
+        global_step += len(dataset)
         print(
             f"Epoch {epoch:03d} | loss={metrics['loss']:.4f} "
             f"mse={metrics['mse']:.4f} exist={metrics['exist']:.4f} "
             f"organ_type={metrics['organ_type']:.4f} render={metrics['render']:.4f}"
         )
+
+        if val_loader is not None:
+            val_metrics = validate(
+                model, val_loader, scheduler, device,
+                lambda_continuous=args.lambda_continuous,
+                lambda_exist=args.lambda_exist,
+                lambda_organ_type=args.lambda_organ_type,
+                exist_pos_weight=args.exist_pos_weight,
+                channel_weights=channel_weights,
+            )
+            print(
+                f"           VAL  | loss={val_metrics['loss']:.4f} "
+                f"mse={val_metrics['mse']:.4f} exist={val_metrics['exist']:.4f} "
+                f"organ_type={val_metrics['organ_type']:.4f}"
+            )
 
         if epoch % args.save_every == 0 or epoch == args.epochs:
             ckpt_path = os.path.join(args.checkpoint_dir, f"organ_array_diffuser_norm_epoch{epoch}.pt")

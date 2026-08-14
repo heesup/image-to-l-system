@@ -65,6 +65,15 @@ def compute_ssim_numpy(img1, img2):
         return float(max(0.0, 1.0 - 5.0 * mse))
 
 
+def compute_iou_numpy(img1, img2, threshold=0.05):
+    """IoU of foreground masks (luminance > threshold)."""
+    m1 = (img1.mean(axis=-1) > threshold)
+    m2 = (img2.mean(axis=-1) > threshold)
+    inter = float(np.logical_and(m1, m2).sum())
+    union = float(np.logical_or(m1, m2).sum())
+    return inter / union if union > 0 else (1.0 if inter > 0 else 0.0)
+
+
 def denormalize_image(image_tensor: torch.Tensor) -> torch.Tensor:
     mean = torch.tensor([0.485, 0.456, 0.406], device=image_tensor.device).view(3, 1, 1)
     std = torch.tensor([0.229, 0.224, 0.225], device=image_tensor.device).view(3, 1, 1)
@@ -92,14 +101,24 @@ def _extract_dap_and_name(xml_path: str) -> Tuple[str, int]:
     return name, dap
 
 
-def postprocess_prediction(pred_x0: torch.Tensor, dataset: OrganArrayDataset, top_k_active: int = 24) -> PlantOrganArray:
+def postprocess_prediction(
+    pred_x0: torch.Tensor,
+    dataset: OrganArrayDataset,
+    top_k_active: int = 24,
+    organ_type_logits: torch.Tensor = None,
+) -> PlantOrganArray:
     """Convert a single denoised prediction (N, 40) into a valid typed PlantOrganArray."""
     N = pred_x0.shape[0]
     denorm = dataset.denormalize(pred_x0)
     denorm[:, dataset.continuous_cols] = torch.clamp(denorm[:, dataset.continuous_cols], min=0.0)
     denorm[:, dataset.existence_col] = torch.clamp(denorm[:, dataset.existence_col], 0.0, 1.0)
-    # Round the categorical organ_type column to a valid class index.
-    denorm[:, T_COL_ORGAN_TYPE] = torch.clamp(torch.round(denorm[:, T_COL_ORGAN_TYPE]), 0, 7)
+    # Prefer the classifier head's argmax for the categorical organ_type column;
+    # fall back to rounding the continuous prediction when logits are unavailable.
+    if organ_type_logits is not None:
+        ot_pred = organ_type_logits.argmax(dim=-1).float()
+        denorm[:, T_COL_ORGAN_TYPE] = ot_pred
+    else:
+        denorm[:, T_COL_ORGAN_TYPE] = torch.clamp(torch.round(denorm[:, T_COL_ORGAN_TYPE]), 0, 7)
 
     exist = torch.clamp(denorm[:, T_COL_EXISTENCE], 0.0, 1.0)
     active = exist > 0.5
@@ -146,10 +165,14 @@ def sample_organ_array_with_snapshots(
     with torch.no_grad():
         for idx, t in enumerate(step_indices):
             t_batch = torch.tensor([t], device=device).long()
-            pred_x0 = model(x_t, t_batch, image.unsqueeze(0))["pred_x0"]
+            outputs = model(x_t, t_batch, image.unsqueeze(0))
+            pred_x0 = outputs["pred_x0"]
+            organ_type_logits = outputs["organ_type_logits"]
 
             if idx in snapshot_steps:
-                snapshots[idx] = postprocess_prediction(pred_x0[0], dataset, top_k_active)
+                snapshots[idx] = postprocess_prediction(
+                    pred_x0[0], dataset, top_k_active, organ_type_logits=organ_type_logits[0]
+                )
                 print(f"  Snapshot step {idx:02d} (t={t.item():.0f}): {int((snapshots[idx].tensor[:, -1] > 0.5).sum().item())} active nodes")
 
             alpha_t = scheduler.alphas_cumprod[t].clamp(min=1e-6)
@@ -170,7 +193,9 @@ def sample_organ_array_with_snapshots(
             else:
                 x_t = pred_x0
 
-    final = postprocess_prediction(x_t[0], dataset, top_k_active)
+    final = postprocess_prediction(
+        x_t[0], dataset, top_k_active, organ_type_logits=organ_type_logits[0]
+    )
     print(f"  Final step {steps - 1}: {int((final.tensor[:, -1] > 0.5).sum().item())} active nodes")
     return final, snapshots
 
@@ -295,6 +320,74 @@ def plot_problem(
     print(f"Saved {problem} figure to {output_path}")
 
 
+def run_single_xml(
+    model: PlantOrganArrayDiffuser,
+    scheduler: DDPMScheduler,
+    renderer: HeliosPyTorchRenderer,
+    dataset: OrganArrayDataset,
+    device: torch.device,
+    xml_path: str,
+    output_dir: str,
+    steps: int,
+    snapshot_steps: List[int],
+    dap: int,
+    problem: str = "easy",
+) -> Dict[str, Any]:
+    """Run generation on one XML and return per-problem metrics + saved outputs."""
+    xml_name = os.path.basename(xml_path).replace(".xml", "")
+
+    gt_organ_array = PlantOrganArray.from_xml_file_typed(xml_path)
+    target_rgb = render_organ_array(gt_organ_array, renderer, device)
+    target_rgb_np = target_rgb.permute(1, 2, 0).cpu().numpy().clip(0, 1)
+
+    try:
+        gt_image = dataset[0]["image"].to(device)
+    except (FileNotFoundError, IndexError):
+        gt_image = normalize_image_tensor(target_rgb, dataset.image_size).to(device)
+
+    captions = {
+        "easy": f"DIFFUSION DAP{dap} - EASY: GT image as condition. Full 40D typed PlantOrganArray generation.",
+        "medium": f"DIFFUSION DAP{dap} - MEDIUM: Occluded + noisy image as condition.",
+        "hard": f"DIFFUSION DAP{dap} - HARD: Heavily corrupted low-res image as condition.",
+    }
+
+    problem_inputs = make_problem_inputs(gt_image)
+    input_img = problem_inputs[problem]
+
+    final_array, snapshots = sample_organ_array_with_snapshots(
+        model, input_img, scheduler, dataset, steps=steps, snapshot_steps=snapshot_steps
+    )
+
+    history = {"snapshot_steps": snapshot_steps, "images": [], "loss": [], "ssim": []}
+    for step_num in snapshot_steps:
+        arr = snapshots[step_num]
+        rgb = render_organ_array(arr, renderer, device)
+        rgb_np = rgb.permute(1, 2, 0).cpu().numpy().clip(0, 1)
+        mae = float(np.mean(np.abs(rgb_np - target_rgb_np)))
+        ssim = compute_ssim_numpy(rgb_np, target_rgb_np)
+        history["images"].append((step_num, rgb_np, mae, ssim))
+        history["loss"].append(mae)
+        history["ssim"].append(ssim)
+
+    final_rgb = render_organ_array(final_array, renderer, device)
+    final_np = final_rgb.permute(1, 2, 0).cpu().numpy().clip(0, 1)
+    final_mae = float(np.mean(np.abs(final_np - target_rgb_np)))
+    final_ssim = compute_ssim_numpy(final_np, target_rgb_np)
+    final_iou = compute_iou_numpy(final_np, target_rgb_np)
+
+    metrics = {"mae": final_mae, "ssim": final_ssim, "iou": final_iou}
+    print(f"  Final MAE={final_mae:.6f} SSIM={final_ssim:.4f} IoU={final_iou:.4f}")
+
+    output_path = os.path.join(output_dir, f"{xml_name}_diffusion_problem_{problem}.png")
+    plot_problem(target_rgb_np, history, problem, captions[problem], output_path, dap=dap)
+
+    xml_path_out = os.path.join(output_dir, f"{xml_name}_diffusion_problem_{problem}_pred.xml")
+    final_array.write_xml(xml_path_out)
+    print(f"  Saved predicted XML to {xml_path_out}")
+
+    return metrics
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=str, default="diffusion_based/checkpoints/organ_array_diffuser_norm.pt")
@@ -306,27 +399,18 @@ def main():
     parser.add_argument("--image_size", type=int, default=128)
     parser.add_argument("--steps", type=int, default=50)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--val_pattern", type=str, default=None,
+                        help="Comma-separated basename globs. When set, run the EASY problem on every "
+                             "matching XML in data_root (holdout generation gate) and write a summary JSON.")
     args = parser.parse_args()
-
-    xml_name, dap = _extract_dap_and_name(args.single_xml)
-    if args.output_dir is None:
-        args.output_dir = os.path.join("diffusion_based", "eval", "output", f"{xml_name}_diffusion")
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
     device = get_device()
     print(f"Running diffusion problem suite on device: {device}")
-    print(f"Source XML: {args.single_xml} (DAP {dap})")
+    print(f"Checkpoint: {args.checkpoint}")
     print(f"Output dir: {args.output_dir}")
-
-    dataset = OrganArrayDataset(
-        data_root=args.data_root,
-        max_nodes=args.max_nodes,
-        image_size=args.image_size,
-        single_xml_path=args.single_xml,
-        device=device,
-    )
 
     model = PlantOrganArrayDiffuser(
         max_nodes=args.max_nodes,
@@ -340,67 +424,79 @@ def main():
     print(f"Loaded checkpoint from {args.checkpoint}")
 
     scheduler = DDPMScheduler(timesteps=1000)
-
-    # Use the Helios-rendered GT image as the easy input.
-    # If a matching *_vis.jpeg exists, dataset[0]["image"] is used; otherwise render directly.
-    gt_organ_array = PlantOrganArray.from_xml_file_typed(args.single_xml)
     renderer = HeliosPyTorchRenderer(image_size=args.image_size).to(device)
-    target_rgb = render_organ_array(gt_organ_array, renderer, device)
-    target_rgb_np = target_rgb.permute(1, 2, 0).cpu().numpy().clip(0, 1)
-
-    try:
-        gt_image = dataset[0]["image"].to(device)
-    except FileNotFoundError:
-        gt_image = normalize_image_tensor(target_rgb, args.image_size).to(device)
-
-    problem_inputs = make_problem_inputs(gt_image)
-
-    captions = {
-        "easy": f"DIFFUSION DAP{dap} - EASY: GT image as condition. Full 40D typed PlantOrganArray generation.",
-        "medium": f"DIFFUSION DAP{dap} - MEDIUM: Occluded + noisy image as condition.",
-        "hard": f"DIFFUSION DAP{dap} - HARD: Heavily corrupted low-res image as condition.",
-    }
-
     snapshot_steps = [0, max(1, args.steps // 4), args.steps // 2, 3 * args.steps // 4, args.steps - 1]
 
-    all_metrics = {}
+    if args.val_pattern:
+        import fnmatch
+        import glob
+        patterns = [p.strip() for p in args.val_pattern.split(",")]
+        xml_files = sorted(glob.glob(os.path.join(args.data_root, "*_plant_*.xml")))
+        xml_files = [p for p in xml_files
+                     if any(fnmatch.fnmatch(os.path.basename(p), pat) for pat in patterns)]
+        if not xml_files:
+            print(f"No XMLs matched val_pattern={patterns} in {args.data_root}")
+            return
+        print(f"Holdout generation gate over {len(xml_files)} XMLs")
+        if args.output_dir is None:
+            args.output_dir = os.path.join("diffusion_based", "eval", "output", "holdout_generation")
 
+        all_metrics = {}
+        for xml_path in xml_files:
+            xml_name = os.path.basename(xml_path).replace(".xml", "")
+            print(f"\n=== {xml_name} ===")
+            dataset = OrganArrayDataset(
+                data_root=args.data_root,
+                max_nodes=args.max_nodes,
+                image_size=args.image_size,
+                single_xml_path=xml_path,
+                device=device,
+            )
+            _, dap = _extract_dap_and_name(xml_path)
+            xml_out_dir = os.path.join(args.output_dir, f"{xml_name}_diffusion")
+            metrics = run_single_xml(
+                model, scheduler, renderer, dataset, device, xml_path,
+                xml_out_dir, args.steps, snapshot_steps, dap, problem="easy",
+            )
+            all_metrics[xml_name] = metrics
+
+        summary = {
+            "checkpoint": args.checkpoint,
+            "val_pattern": args.val_pattern,
+            "mean_mae": float(np.mean([m["mae"] for m in all_metrics.values()])),
+            "mean_ssim": float(np.mean([m["ssim"] for m in all_metrics.values()])),
+            "mean_iou": float(np.mean([m["iou"] for m in all_metrics.values()])),
+            "per_xml": all_metrics,
+        }
+        summary_path = os.path.join(args.output_dir, "holdout_generation_summary.json")
+        with open(summary_path, "w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2)
+        print(f"\nSummary saved to {summary_path}")
+        print(json.dumps(summary, indent=2))
+        return
+
+    xml_name, dap = _extract_dap_and_name(args.single_xml)
+    if args.output_dir is None:
+        args.output_dir = os.path.join("diffusion_based", "eval", "output", f"{xml_name}_diffusion")
+
+    print(f"Source XML: {args.single_xml} (DAP {dap})")
+
+    dataset = OrganArrayDataset(
+        data_root=args.data_root,
+        max_nodes=args.max_nodes,
+        image_size=args.image_size,
+        single_xml_path=args.single_xml,
+        device=device,
+    )
+
+    all_metrics = {}
     for problem in ["easy", "medium", "hard"]:
         print(f"\n=== PROBLEM {problem.upper()} ===")
-        input_img = problem_inputs[problem]
-
-        final_array, snapshots = sample_organ_array_with_snapshots(
-            model, input_img, scheduler, dataset, steps=args.steps, snapshot_steps=snapshot_steps
+        metrics = run_single_xml(
+            model, scheduler, renderer, dataset, device, args.single_xml,
+            args.output_dir, args.steps, snapshot_steps, dap, problem=problem,
         )
-
-        # Render snapshots and final, recording MAE/SSIM
-        history = {"snapshot_steps": snapshot_steps, "images": [], "loss": [], "ssim": []}
-        for step_num in snapshot_steps:
-            arr = snapshots[step_num]
-            rgb = render_organ_array(arr, renderer, device)
-            rgb_np = rgb.permute(1, 2, 0).cpu().numpy().clip(0, 1)
-            mae = float(np.mean(np.abs(rgb_np - target_rgb_np)))
-            ssim = compute_ssim_numpy(rgb_np, target_rgb_np)
-            history["images"].append((step_num, rgb_np, mae, ssim))
-            history["loss"].append(mae)
-            history["ssim"].append(ssim)
-
-        # Final
-        final_rgb = render_organ_array(final_array, renderer, device)
-        final_np = final_rgb.permute(1, 2, 0).cpu().numpy().clip(0, 1)
-        final_mae = float(np.mean(np.abs(final_np - target_rgb_np)))
-        final_ssim = compute_ssim_numpy(final_np, target_rgb_np)
-
-        metrics = {"mae": final_mae, "ssim": final_ssim}
         all_metrics[problem] = metrics
-        print(f"  Final MAE={final_mae:.6f} SSIM={final_ssim:.4f}")
-
-        output_path = os.path.join(args.output_dir, f"{xml_name}_diffusion_problem_{problem}.png")
-        plot_problem(target_rgb_np, history, problem, captions[problem], output_path, dap=dap)
-
-        xml_path = os.path.join(args.output_dir, f"{xml_name}_diffusion_problem_{problem}_pred.xml")
-        final_array.write_xml(xml_path)
-        print(f"  Saved predicted XML to {xml_path}")
 
     metrics_path = os.path.join(args.output_dir, f"{xml_name}_diffusion_problem_suite_metrics.json")
     with open(metrics_path, "w", encoding="utf-8") as f:

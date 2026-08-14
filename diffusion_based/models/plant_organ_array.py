@@ -218,6 +218,51 @@ NUM_ORGAN_TYPES = 8
 
 
 # =============================================================================
+# PER-ORGAN-TYPE COLUMN RELEVANCE MASK
+# =============================================================================
+# For each organ type, marks which typed columns carry real signal. Used to
+# mask the continuous MSE so the model does not waste capacity predicting
+# columns that are always zero for a given organ type (e.g. leaf scale on an
+# internode row). Based on the "Used by" column of the 40D layout plan doc.
+
+_TYPED_ALL_COLS = {
+    T_COL_PLANT_ID, T_COL_PLANT_AGE, T_COL_SHOOT_ID,
+    T_COL_PARENT_SHOOT_ID, T_COL_PARENT_NODE_IDX, T_COL_PARENT_PETIOLE_IDX,
+    T_COL_PHYTOMER_IDX, T_COL_CHILD_INDEX, T_COL_PITCH, T_COL_YAW, T_COL_ROLL,
+    T_COL_EXISTENCE, T_COL_ORGAN_TYPE,
+}
+
+_TYPED_COLUMNS_BY_ORGAN_TYPE = {
+    ORGAN_ROOT_META: _TYPED_ALL_COLS | {T_COL_BASE_X, T_COL_BASE_Y, T_COL_BASE_Z},
+    ORGAN_SHOOT_META: _TYPED_ALL_COLS | {T_COL_SHOOT_TYPE},
+    ORGAN_INTERNODE: _TYPED_ALL_COLS | {
+        T_COL_LENGTH, T_COL_RADIUS, T_COL_PHYLLOTACTIC_ANGLE,
+        T_COL_LENGTH_MAX, T_COL_LENGTH_SEGMENTS,
+        T_COL_CURV_PERT_0, T_COL_CURV_PERT_1, T_COL_YAW_PERT_0, T_COL_YAW_PERT_1,
+    },
+    ORGAN_PETIOLE: _TYPED_ALL_COLS | {
+        T_COL_LENGTH, T_COL_RADIUS, T_COL_CURVATURE, T_COL_LENGTH_SEGMENTS,
+        T_COL_CURRENT_LEAF_SCALE_FACTOR, T_COL_TAPER, T_COL_RADIAL_SUBDIVISIONS,
+        T_COL_LEAFLET_SCALE, T_COL_LEAFLET_OFFSET,
+    },
+    ORGAN_LEAF: _TYPED_ALL_COLS | {T_COL_SCALE},
+    ORGAN_BUD: _TYPED_ALL_COLS | {
+        T_COL_BUD_STATE, T_COL_BUD_PARENT_INDEX, T_COL_BUD_IS_TERMINAL,
+        T_COL_FRUIT_SCALE,
+    },
+    ORGAN_PEDUNCLE: _TYPED_ALL_COLS | {T_COL_LENGTH, T_COL_RADIUS, T_COL_CURVATURE},
+    ORGAN_FLOWER: _TYPED_ALL_COLS | {
+        T_COL_SCALE, T_COL_FRUIT_SCALE, T_COL_FLOWER_AZIMUTH, T_COL_FLOWER_OFFSET,
+    },
+}
+
+ORGAN_COLUMN_MASK = torch.zeros((NUM_ORGAN_TYPES, NUM_FEATURES_TYPED), dtype=torch.bool)
+for _ot, _cols in _TYPED_COLUMNS_BY_ORGAN_TYPE.items():
+    for _c in _cols:
+        ORGAN_COLUMN_MASK[_ot, _c] = True
+
+
+# =============================================================================
 # SMALL HELPERS
 # =============================================================================
 
