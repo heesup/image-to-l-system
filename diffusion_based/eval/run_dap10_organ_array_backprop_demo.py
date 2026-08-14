@@ -22,17 +22,17 @@ if repo_root not in sys.path:
 
 from diffusion_based.models.plant_organ_array import (
     PlantOrganArray,
-    COL_INODE_LEN,
-    COL_INODE_RAD,
-    COL_PET0_LEN,
-    COL_PET0_RAD,
-    COL_PET0_PITCH,
-    COL_PET0_CURV,
-    COL_PET0_LEAF_SCALE,
-    COL_PET0_L0_SCALE,
-    COL_PET0_L1_SCALE,
-    COL_PET0_L2_SCALE,
-    COL_EXISTENCE,
+    T_COL_LENGTH,
+    T_COL_RADIUS,
+    T_COL_SCALE,
+    T_COL_PITCH,
+    T_COL_CURVATURE,
+    T_COL_CURRENT_LEAF_SCALE_FACTOR,
+    T_COL_ORGAN_TYPE,
+    T_COL_EXISTENCE,
+    ORGAN_INTERNODE,
+    ORGAN_PETIOLE,
+    ORGAN_LEAF,
 )
 from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 
@@ -68,8 +68,8 @@ def main():
         torch.cuda.empty_cache()
     print(f"Running DAP 10 backpropagation-based inverse rendering on device: {device}")
 
-    # 1. Target OrganArray & Image from GT Helios XML
-    organ_array_gt = PlantOrganArray.from_xml_file(source_xml)
+    # 1. Target OrganArray & Image from GT Helios XML (typed 40D layout)
+    organ_array_gt = PlantOrganArray.from_xml_file_typed(source_xml)
     organ_array_gt.tensor = organ_array_gt.tensor.to(device)
 
     renderer = HeliosPyTorchRenderer(image_size=128)
@@ -89,27 +89,28 @@ def main():
 
     # 2. Small-plant initialization: all organs present but scaled down
     base_tensor = organ_array_gt.tensor.clone().detach()
+    organ_type = base_tensor[:, T_COL_ORGAN_TYPE].long()
+    is_internode = (organ_type == ORGAN_INTERNODE)
+    is_petiole = (organ_type == ORGAN_PETIOLE)
+    is_leaf = (organ_type == ORGAN_LEAF)
+
     init_tensor = base_tensor.clone()
-    init_tensor[:, COL_INODE_LEN] *= 0.45
-    init_tensor[:, COL_INODE_RAD] *= 0.45
-    init_tensor[:, COL_PET0_LEN] *= 0.40
-    init_tensor[:, COL_PET0_RAD] *= 0.40
-    init_tensor[:, COL_PET0_PITCH] *= 0.80
-    init_tensor[:, COL_PET0_CURV] *= 0.40
-    init_tensor[:, COL_PET0_LEAF_SCALE] *= 0.40
-    init_tensor[:, COL_PET0_L0_SCALE] *= 0.40
-    init_tensor[:, COL_PET0_L1_SCALE] *= 0.40
-    init_tensor[:, COL_PET0_L2_SCALE] *= 0.40
+    init_tensor[is_internode, T_COL_LENGTH] *= 0.45
+    init_tensor[is_internode, T_COL_RADIUS] *= 0.45
+    init_tensor[is_petiole, T_COL_LENGTH] *= 0.40
+    init_tensor[is_petiole, T_COL_RADIUS] *= 0.40
+    init_tensor[is_petiole, T_COL_PITCH] *= 0.80
+    init_tensor[is_petiole, T_COL_CURVATURE] *= 0.40
+    init_tensor[is_petiole, T_COL_CURRENT_LEAF_SCALE_FACTOR] *= 0.40
+    init_tensor[is_leaf, T_COL_SCALE] *= 0.40
     # Existence: all present, with slight uncertainty
-    init_tensor[:, COL_EXISTENCE] = 1.0
+    init_tensor[:, T_COL_EXISTENCE] = 1.0
 
     # Optimizable parameters
     leaf_logit = torch.tensor(np.log(0.45 / (1.5 - 0.45)), device=device, requires_grad=True, dtype=torch.float32)
     stem_logit = torch.tensor(np.log(0.45 / (1.5 - 0.45)), device=device, requires_grad=True, dtype=torch.float32)
     petiole_logit = torch.tensor(np.log(0.40 / (1.5 - 0.40)), device=device, requires_grad=True, dtype=torch.float32)
-    opt_existence = init_tensor[:, COL_EXISTENCE].clone().detach().requires_grad_(True)
-
-    base_metadata = organ_array_gt.raw_metadata
+    opt_existence = init_tensor[:, T_COL_EXISTENCE].clone().detach().requires_grad_(True)
 
     optimizer = optim.Adam([leaf_logit, stem_logit, petiole_logit, opt_existence], lr=0.03)
 
@@ -134,19 +135,17 @@ def main():
         leaf_scale, stem_scale, petiole_scale = get_scales()
 
         opt_tensor = base_tensor.clone()
-        opt_tensor[:, COL_INODE_LEN] *= stem_scale
-        opt_tensor[:, COL_INODE_RAD] *= stem_scale
-        opt_tensor[:, COL_PET0_LEN] *= petiole_scale
-        opt_tensor[:, COL_PET0_RAD] *= petiole_scale
-        opt_tensor[:, COL_PET0_PITCH] *= (petiole_scale * 0.5 + 0.5)
-        opt_tensor[:, COL_PET0_CURV] *= petiole_scale
-        opt_tensor[:, COL_PET0_LEAF_SCALE] *= leaf_scale
-        opt_tensor[:, COL_PET0_L0_SCALE] *= leaf_scale
-        opt_tensor[:, COL_PET0_L1_SCALE] *= leaf_scale
-        opt_tensor[:, COL_PET0_L2_SCALE] *= leaf_scale
-        opt_tensor[:, COL_EXISTENCE] = torch.sigmoid(opt_existence)
+        opt_tensor[is_internode, T_COL_LENGTH] *= stem_scale
+        opt_tensor[is_internode, T_COL_RADIUS] *= stem_scale
+        opt_tensor[is_petiole, T_COL_LENGTH] *= petiole_scale
+        opt_tensor[is_petiole, T_COL_RADIUS] *= petiole_scale
+        opt_tensor[is_petiole, T_COL_PITCH] *= (petiole_scale * 0.5 + 0.5)
+        opt_tensor[is_petiole, T_COL_CURVATURE] *= petiole_scale
+        opt_tensor[is_petiole, T_COL_CURRENT_LEAF_SCALE_FACTOR] *= leaf_scale
+        opt_tensor[is_leaf, T_COL_SCALE] *= leaf_scale
+        opt_tensor[:, T_COL_EXISTENCE] = torch.sigmoid(opt_existence)
 
-        return PlantOrganArray(opt_tensor, raw_metadata=base_metadata)
+        return PlantOrganArray(opt_tensor, raw_metadata=[])
 
     t0 = time.time()
     for step in range(num_steps + 1):

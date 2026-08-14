@@ -18,7 +18,15 @@ if repo_root not in sys.path:
 
 from diffusion_based.models.plant_organ_array import (
     PlantOrganArray,
-    COL_EXISTENCE,
+    T_COL_LENGTH,
+    T_COL_RADIUS,
+    T_COL_SCALE,
+    T_COL_CURRENT_LEAF_SCALE_FACTOR,
+    T_COL_ORGAN_TYPE,
+    T_COL_EXISTENCE,
+    ORGAN_INTERNODE,
+    ORGAN_PETIOLE,
+    ORGAN_LEAF,
 )
 from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 
@@ -42,18 +50,23 @@ def make_random_topology(target_array, seed=42):
 
     existence = (torch.rand(N, generator=cpu_rng) < 0.5).float()
     existence = existence * (0.6 + 0.4 * torch.rand(N, generator=cpu_rng))
-    tensor[:, COL_EXISTENCE] = existence.to(tensor.device)
+    tensor[:, T_COL_EXISTENCE] = existence.to(tensor.device)
 
-    scale_cols = [11, 12, 21, 22, 25, 32, 36, 40]
-    for c in scale_cols:
-        tensor[:, c] *= 0.4
+    # Shrink continuous geometry of all organ rows by 40% (typed layout).
+    geom_cols = [T_COL_LENGTH, T_COL_RADIUS, T_COL_SCALE, T_COL_CURRENT_LEAF_SCALE_FACTOR]
+    tensor[:, geom_cols] *= 0.4
     return PlantOrganArray(tensor, raw_metadata=target_array.raw_metadata)
 
 
 def optimize_hard(target_rgb, init_array, renderer, device, num_steps=500, lr=0.03,
                   phase1_steps=200):
     base_tensor = init_array.tensor.clone().detach().to(device)
-    fixed_existence = torch.sigmoid(base_tensor[:, COL_EXISTENCE]).detach()
+    fixed_existence = torch.sigmoid(base_tensor[:, T_COL_EXISTENCE]).detach()
+
+    organ_type = base_tensor[:, T_COL_ORGAN_TYPE].long()
+    is_internode = (organ_type == ORGAN_INTERNODE)
+    is_petiole = (organ_type == ORGAN_PETIOLE)
+    is_leaf = (organ_type == ORGAN_LEAF)
 
     leaf_logit = torch.tensor(np.log(1.0 / 0.5), device=device, requires_grad=True, dtype=torch.float32)
     stem_logit = torch.tensor(np.log(1.0 / 0.5), device=device, requires_grad=True, dtype=torch.float32)
@@ -89,17 +102,13 @@ def optimize_hard(target_rgb, init_array, renderer, device, num_steps=500, lr=0.
     def build_array():
         leaf_scale, stem_scale, petiole_scale, node_leaf, node_stem, node_pet = get_scales()
         tensor = base_tensor.clone()
-        tensor[:, 11] *= stem_scale * node_stem
-        tensor[:, 12] *= stem_scale * node_stem
-        tensor[:, 21] *= petiole_scale * node_pet
-        tensor[:, 22] *= petiole_scale * node_pet
-        tensor[:, 23] *= ((petiole_scale * node_pet) * 0.5 + 0.5)
-        tensor[:, 24] *= petiole_scale * node_pet
-        tensor[:, 25] *= leaf_scale * node_leaf
-        tensor[:, 32] *= leaf_scale * node_leaf
-        tensor[:, 36] *= leaf_scale * node_leaf
-        tensor[:, 40] *= leaf_scale * node_leaf
-        tensor[:, COL_EXISTENCE] = fixed_existence
+        tensor[is_internode, T_COL_LENGTH] *= stem_scale * node_stem[is_internode]
+        tensor[is_internode, T_COL_RADIUS] *= stem_scale * node_stem[is_internode]
+        tensor[is_petiole, T_COL_LENGTH] *= petiole_scale * node_pet[is_petiole]
+        tensor[is_petiole, T_COL_RADIUS] *= petiole_scale * node_pet[is_petiole]
+        tensor[is_petiole, T_COL_CURRENT_LEAF_SCALE_FACTOR] *= leaf_scale * node_leaf[is_petiole]
+        tensor[is_leaf, T_COL_SCALE] *= leaf_scale * node_leaf[is_leaf]
+        tensor[:, T_COL_EXISTENCE] = fixed_existence
         return PlantOrganArray(
             tensor,
             raw_metadata=init_array.raw_metadata,
@@ -225,7 +234,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Running hard standalone on device: {device}")
 
-    organ_array_gt = PlantOrganArray.from_xml_file(source_xml)
+    organ_array_gt = PlantOrganArray.from_xml_file_typed(source_xml)
     organ_array_gt.tensor = organ_array_gt.tensor.to(device)
 
     renderer = HeliosPyTorchRenderer(image_size=128)

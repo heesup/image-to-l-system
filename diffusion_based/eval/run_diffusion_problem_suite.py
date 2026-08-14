@@ -33,7 +33,11 @@ if repo_root not in sys.path:
 from diffusion_based.models.organ_array_diffuser import PlantOrganArrayDiffuser
 from diffusion_based.dataset.organ_array_dataset import OrganArrayDataset
 from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
-from diffusion_based.models.plant_organ_array import PlantOrganArray
+from diffusion_based.models.plant_organ_array import (
+    PlantOrganArray,
+    T_COL_ORGAN_TYPE,
+    T_COL_EXISTENCE,
+)
 
 
 class DDPMScheduler:
@@ -89,29 +93,23 @@ def _extract_dap_and_name(xml_path: str) -> Tuple[str, int]:
 
 
 def postprocess_prediction(pred_x0: torch.Tensor, dataset: OrganArrayDataset, top_k_active: int = 24) -> PlantOrganArray:
-    """Convert a single denoised prediction (N, 94) into a valid PlantOrganArray."""
+    """Convert a single denoised prediction (N, 40) into a valid typed PlantOrganArray."""
     N = pred_x0.shape[0]
     denorm = dataset.denormalize(pred_x0)
-    denorm[:, :93] = torch.clamp(denorm[:, :93], min=0.0)
+    denorm[:, dataset.continuous_cols] = torch.clamp(denorm[:, dataset.continuous_cols], min=0.0)
+    denorm[:, dataset.existence_col] = torch.clamp(denorm[:, dataset.existence_col], 0.0, 1.0)
+    # Round the categorical organ_type column to a valid class index.
+    denorm[:, T_COL_ORGAN_TYPE] = torch.clamp(torch.round(denorm[:, T_COL_ORGAN_TYPE]), 0, 7)
 
-    # Clamp discrete / count-like channels to valid integer ranges
-    denorm[:, 16] = torch.clamp(torch.round(denorm[:, 16]), 1, 20)
-    denorm[:, 31] = torch.clamp(torch.round(denorm[:, 31]), 0, 3)
-    denorm[:, 44] = torch.clamp(torch.round(denorm[:, 44]), 0, 1)
-    denorm[:, 51] = torch.clamp(torch.round(denorm[:, 51]), 1, 20)
-    denorm[:, 55] = torch.clamp(torch.round(denorm[:, 55]), 0, 3)
-    denorm[:, 60] = torch.clamp(torch.round(denorm[:, 60]), 0, 1)
-    denorm[:, 71] = torch.clamp(torch.round(denorm[:, 71]), 0, 4)
-
-    exist = torch.clamp(denorm[:, -1], 0.0, 1.0)
+    exist = torch.clamp(denorm[:, T_COL_EXISTENCE], 0.0, 1.0)
     active = exist > 0.5
     num_active = int(active.sum().item())
     if num_active == 0:
         _, topk_idx = torch.topk(exist, k=min(top_k_active, N))
-        denorm[topk_idx, -1] = 1.0
+        denorm[topk_idx, T_COL_EXISTENCE] = 1.0
         num_active = min(top_k_active, N)
     else:
-        denorm[:, -1] = active.float()
+        denorm[:, T_COL_EXISTENCE] = active.float()
     return PlantOrganArray(tensor=denorm.cpu())
 
 
@@ -140,7 +138,7 @@ def sample_organ_array_with_snapshots(
         snapshot_steps = [0, max(1, steps // 4), steps // 2, 3 * steps // 4, steps - 1]
     snapshot_steps = sorted(set(int(s) for s in snapshot_steps if 0 <= s < steps))
 
-    x_t = torch.randn(B, N, 94, device=device)
+    x_t = torch.randn(B, N, dataset.node_dim, device=device)
     step_indices = torch.linspace(scheduler.timesteps - 1, 0, steps, device=device).long()
 
     snapshots: Dict[int, PlantOrganArray] = {}
@@ -304,7 +302,7 @@ def main():
     parser.add_argument("--data_root", type=str, default="dataset/helios_data")
     parser.add_argument("--output_dir", type=str, default=None,
                         help="Directory to save outputs. Default is diffusion_based/eval/output/<xml_name>_diffusion")
-    parser.add_argument("--max_nodes", type=int, default=64)
+    parser.add_argument("--max_nodes", type=int, default=256)
     parser.add_argument("--image_size", type=int, default=128)
     parser.add_argument("--steps", type=int, default=50)
     parser.add_argument("--seed", type=int, default=42)
@@ -332,9 +330,10 @@ def main():
 
     model = PlantOrganArrayDiffuser(
         max_nodes=args.max_nodes,
-        node_dim=94,
+        node_dim=40,
         embed_dim=256,
         num_layers=4,
+        num_organ_types=8,
     ).to(device)
     checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=True)
     model.load_state_dict(checkpoint["model_state_dict"])
@@ -344,7 +343,7 @@ def main():
 
     # Use the Helios-rendered GT image as the easy input.
     # If a matching *_vis.jpeg exists, dataset[0]["image"] is used; otherwise render directly.
-    gt_organ_array = PlantOrganArray.from_xml_file(args.single_xml)
+    gt_organ_array = PlantOrganArray.from_xml_file_typed(args.single_xml)
     renderer = HeliosPyTorchRenderer(image_size=args.image_size).to(device)
     target_rgb = render_organ_array(gt_organ_array, renderer, device)
     target_rgb_np = target_rgb.permute(1, 2, 0).cpu().numpy().clip(0, 1)
@@ -357,7 +356,7 @@ def main():
     problem_inputs = make_problem_inputs(gt_image)
 
     captions = {
-        "easy": f"DIFFUSION DAP{dap} - EASY: GT image as condition. Full 94D PlantOrganArray generation.",
+        "easy": f"DIFFUSION DAP{dap} - EASY: GT image as condition. Full 40D typed PlantOrganArray generation.",
         "medium": f"DIFFUSION DAP{dap} - MEDIUM: Occluded + noisy image as condition.",
         "hard": f"DIFFUSION DAP{dap} - HARD: Heavily corrupted low-res image as condition.",
     }
