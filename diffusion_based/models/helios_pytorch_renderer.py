@@ -72,13 +72,21 @@ def compute_focus_plant_camera(
 
     dist = camera_height / max(math.sin(el_rad), 1e-3)
 
+    # Helios C++ positions the camera relative to the PLOT CENTER (field layout),
+    # not the plant bounding box. For the standard single-plot dataset the plot
+    # center is the origin. The plant bbox is used only for the FOV auto-fit above.
+    if focus_plant:
+        cam_center = torch.zeros(3, device=device, dtype=torch.float32)
+    else:
+        cam_center = canopy_center
+
     # Helios C++ camera position: (center_x + dist*sin(az), center_y - dist*cos(az), cam_z)
-    cam_x = canopy_center[0] + dist * math.cos(el_rad) * math.sin(az_rad)
-    cam_y = canopy_center[1] - dist * math.cos(el_rad) * math.cos(az_rad)
-    cam_z = canopy_center[2] + dist * math.sin(el_rad)
+    cam_x = cam_center[0] + dist * math.cos(el_rad) * math.sin(az_rad)
+    cam_y = cam_center[1] - dist * math.cos(el_rad) * math.cos(az_rad)
+    cam_z = cam_center[2] + dist * math.sin(el_rad)
 
     eye = torch.tensor([cam_x, cam_y, cam_z], device=device, dtype=torch.float32)
-    target = torch.tensor([canopy_center[0], canopy_center[1], 0.0], device=device, dtype=torch.float32)
+    target = torch.tensor([cam_center[0], cam_center[1], 0.0], device=device, dtype=torch.float32)
 
     # Camera Up Vector matching Helios Top View vs Angled View
     if abs(elevation_deg - 90.0) < 1e-2:
