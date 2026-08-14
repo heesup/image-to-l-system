@@ -90,7 +90,7 @@ def compute_focus_plant_camera(
 
     # Camera Up Vector matching Helios Top View vs Angled View
     if abs(elevation_deg - 90.0) < 1e-2:
-        up = torch.tensor([0.0, 1.0, 0.0], device=device, dtype=torch.float32) # Top View UP is +Y
+        up = torch.tensor([-math.sin(az_rad), math.cos(az_rad), 0.0], device=device, dtype=torch.float32)
     else:
         up = torch.tensor([0.0, 0.0, 1.0], device=device, dtype=torch.float32)
 

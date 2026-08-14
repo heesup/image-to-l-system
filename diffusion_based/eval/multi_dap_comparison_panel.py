@@ -24,30 +24,34 @@ from diffusion_based.eval.test_helios_coco_mask_comparison import (
 )
 
 
-def time_helios_render(base_dir: str, seed: int, params_file: str = "../params.json") -> float:
-    """Time a single Helios C++ radiation render for the given seed."""
+def time_helios_render(base_dir: str, seed: int, dap: int = 30, repeats: int = 3, params_file: str = "../params.json") -> float:
+    """Time Helios C++ radiation renders for the given seed/dap, returning the median of `repeats` runs."""
     build_dir = "/home/lion397/codes/image-to-l-system/Digital-Crops/projects/syntheticdata_generation/build"
     cmd = [
         "/usr/bin/time", "-f", "%e",
         os.path.join(build_dir, "./main"),
         "--renderer", "radiation",
         "-f", params_file,
-        "--dap", "30",
+        "--dap", str(dap),
         "--focus-plant",
         "--seed", str(seed),
         "--output", "output_rad_dap30",
         "-n", f"seed{seed}_time",
     ]
-    try:
-        result = subprocess.run(cmd, cwd=build_dir, capture_output=True, text=True, timeout=600)
-        stderr = result.stderr
-        # last line from /usr/bin/time -f %e
-        lines = [line.strip() for line in stderr.strip().splitlines() if line.strip()]
-        if lines:
-            return float(lines[-1])
-    except Exception as e:
-        print(f"Helios timing failed for seed {seed}: {e}")
-    return -1.0
+    timings = []
+    for _ in range(repeats):
+        try:
+            result = subprocess.run(cmd, cwd=build_dir, capture_output=True, text=True, timeout=600)
+            stderr = result.stderr
+            # last line from /usr/bin/time -f %e
+            lines = [line.strip() for line in stderr.strip().splitlines() if line.strip()]
+            if lines:
+                timings.append(float(lines[-1]))
+        except Exception as e:
+            print(f"Helios timing failed for seed {seed} dap {dap}: {e}")
+    if not timings:
+        return -1.0
+    return float(np.median(timings))
 
 
 def compute_iou_dice(mask1: np.ndarray, mask2: np.ndarray):
@@ -122,7 +126,7 @@ def process_seed(
     # Time Helios C++ render once if requested
     helios_time = -1.0
     if time_helios:
-        helios_time = time_helios_render(base_dir, seed)
+        helios_time = time_helios_render(base_dir, seed, dap=int(os.path.basename(base_dir).replace("output_rad_dap", "")))
 
     return {
         'rad_rgb': rad_rgb,

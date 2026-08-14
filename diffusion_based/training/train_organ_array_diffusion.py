@@ -30,11 +30,10 @@ if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
 from diffusion_based.models.organ_array_diffuser import PlantOrganArrayDiffuser
+from diffusion_based.models.vit_image_to_organ_array import ViTOrganArrayDiffuser
 from diffusion_based.dataset.organ_array_dataset import OrganArrayDataset
 from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 from diffusion_based.models.plant_organ_array import PlantOrganArray
-
-
 class DDPMScheduler:
     """Simple DDPM noise schedule."""
 
@@ -66,13 +65,17 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def prediction_to_organ_array(pred_x0: torch.Tensor, dataset: OrganArrayDataset) -> PlantOrganArray:
+def prediction_to_organ_array(pred_x0: torch.Tensor, dataset: OrganArrayDataset,
+                              existence_logits: torch.Tensor = None) -> PlantOrganArray:
     """Denormalize model prediction and build PlantOrganArray. B must be 1."""
     assert pred_x0.shape[0] == 1, "rendering helper supports batch_size=1"
     denorm = dataset.denormalize(pred_x0[0])
     existence_col = dataset.existence_col
     # existence channel is the last column
-    denorm[:, existence_col] = torch.sigmoid(denorm[:, existence_col])
+    if existence_logits is not None:
+        denorm[:, existence_col] = torch.sigmoid(existence_logits[0])
+    else:
+        denorm[:, existence_col] = torch.sigmoid(denorm[:, existence_col])
     # Clamp physical parameters to sensible non-negative ranges to avoid rendering failures
     denorm[:, dataset.continuous_cols] = torch.clamp(denorm[:, dataset.continuous_cols], min=0.0)
     # Round the categorical organ_type column (11) to the nearest valid class.
@@ -340,6 +343,10 @@ def main():
     parser.add_argument("--render_weight", type=float, default=1.0)
     parser.add_argument("--save_every", type=int, default=50)
     parser.add_argument("--checkpoint_dir", type=str, default="diffusion_based/checkpoints")
+    parser.add_argument("--model", type=str, default="resnet", choices=["resnet", "vit"],
+                        help="backbone: resnet (PlantOrganArrayDiffuser) or vit (ViTOrganArrayDiffuser)")
+    parser.add_argument("--patch_size", type=int, default=8)
+    parser.add_argument("--encoder_layers", type=int, default=6)
     parser.add_argument("--val_pattern", type=str, default=None,
                         help="Comma-separated basename globs held out for validation, e.g. '*seed02*'")
     args = parser.parse_args()
@@ -402,13 +409,26 @@ def main():
             pin_memory=False,
         )
 
-    model = PlantOrganArrayDiffuser(
-        max_nodes=args.max_nodes,
-        node_dim=40,
-        embed_dim=256,
-        num_layers=4,
-        num_organ_types=8,
-    ).to(device)
+    if args.model == "vit":
+        model = ViTOrganArrayDiffuser(
+            max_nodes=args.max_nodes,
+            node_dim=40,
+            image_size=args.image_size,
+            patch_size=args.patch_size,
+            embed_dim=256,
+            encoder_layers=args.encoder_layers,
+            decoder_layers=4,
+            num_heads=8,
+            num_organ_types=8,
+        ).to(device)
+    else:
+        model = PlantOrganArrayDiffuser(
+            max_nodes=args.max_nodes,
+            node_dim=40,
+            embed_dim=256,
+            num_layers=4,
+            num_organ_types=8,
+        ).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-5)
     scheduler = DDPMScheduler(timesteps=args.timesteps)

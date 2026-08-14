@@ -35,3 +35,4 @@ train_*.pid
 generate_dataset.log
 dataset/helios_data/
 notebooks/output*
+diffusion_based/eval/output/*

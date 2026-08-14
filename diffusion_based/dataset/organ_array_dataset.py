@@ -138,10 +138,16 @@ class OrganArrayDataset(Dataset):
     def _resolve_pair(self, xml_path: str) -> Dict[str, str]:
         prefix = os.path.basename(xml_path).split("_plant_")[0]
         xml_dir = os.path.dirname(os.path.abspath(xml_path))
-        jpeg_path = os.path.join(xml_dir, f"{prefix}_vis.jpeg")
-        if not os.path.exists(jpeg_path):
-            # Look for any *_vis.jpeg in the same directory as fallback
-            candidates = sorted(glob.glob(os.path.join(xml_dir, "*_vis.jpeg")))
+        jpeg_path = ""
+        for suffix in ("_vis.jpeg", "_rad.jpeg"):
+            candidate = os.path.join(xml_dir, f"{prefix}{suffix}")
+            if os.path.exists(candidate):
+                jpeg_path = candidate
+                break
+        if not jpeg_path:
+            # Look for any *_vis.jpeg / *_rad.jpeg in the same directory as fallback
+            candidates = sorted(glob.glob(os.path.join(xml_dir, "*_vis.jpeg")) +
+                                glob.glob(os.path.join(xml_dir, "*_rad.jpeg")))
             if candidates:
                 jpeg_path = candidates[0]
         return {"xml": xml_path, "jpeg": jpeg_path, "prefix": prefix}
