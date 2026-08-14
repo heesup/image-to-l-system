@@ -30,31 +30,31 @@ if repo_root not in sys.path:
 
 from diffusion_based.models.plant_organ_array import (
     PlantOrganArray,
-    COL_PLANT_ID,
-    COL_PLANT_AGE,
-    COL_SHOOT_ID,
-    COL_SHOOT_TYPE,
-    COL_PARENT_SHOOT_ID,
-    COL_PARENT_NODE_IDX,
-    COL_PARENT_PETIOLE_IDX,
-    COL_SHOOT_ROT_PITCH,
-    COL_SHOOT_ROT_YAW,
-    COL_SHOOT_ROT_ROLL,
-    COL_PHYTOMER_IDX,
-    COL_INODE_LEN,
-    COL_INODE_RAD,
-    COL_INODE_PITCH,
-    COL_PET0_LEN,
-    COL_PET0_RAD,
-    COL_PET0_PITCH,
-    COL_PET0_CURV,
-    COL_PET0_LEAF_SCALE,
-    COL_PET0_L0_SCALE,
-    COL_PET0_L1_SCALE,
-    COL_PET0_L2_SCALE,
-    COL_EXISTENCE,
+    T_COL_LENGTH,
+    T_COL_RADIUS,
+    T_COL_SCALE,
+    T_COL_PITCH,
+    T_COL_CURVATURE,
+    T_COL_CURRENT_LEAF_SCALE_FACTOR,
+    T_COL_ORGAN_TYPE,
+    T_COL_EXISTENCE,
+    T_COL_PARENT_SHOOT_ID,
+    T_COL_PARENT_NODE_IDX,
+    ORGAN_INTERNODE,
+    ORGAN_PETIOLE,
+    ORGAN_LEAF,
 )
 from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+
+
+def organ_type_masks(tensor: torch.Tensor):
+    """Return boolean masks over rows by organ_type for typed 40D layout."""
+    ot = tensor[:, T_COL_ORGAN_TYPE].long()
+    return (
+        ot == ORGAN_INTERNODE,
+        ot == ORGAN_PETIOLE,
+        ot == ORGAN_LEAF,
+    )
 
 
 def render_organ_array_with_sanity(organ_array, renderer, target_rgb, device, label=""):
@@ -116,18 +116,17 @@ def make_seed_plant(target_array, seed=42):
     tensor = target_array.tensor.clone()
     existence = torch.zeros(N, device=tensor.device)
     existence[:2] = 1.0
-    tensor[:, COL_EXISTENCE] = existence
+    tensor[:, T_COL_EXISTENCE] = existence
 
-    scale_cols = [
-        COL_INODE_LEN, COL_INODE_RAD,
-        COL_PET0_LEN, COL_PET0_RAD,
-        COL_PET0_LEAF_SCALE,
-        COL_PET0_L0_SCALE, COL_PET0_L1_SCALE, COL_PET0_L2_SCALE,
-    ]
-    for c in scale_cols:
-        tensor[:, c] *= 0.15
-    tensor[:, COL_PET0_PITCH] *= 0.5
-    tensor[:, COL_PET0_CURV] *= 0.3
+    is_internode, is_petiole, is_leaf = organ_type_masks(tensor)
+    tensor[is_internode, T_COL_LENGTH] *= 0.15
+    tensor[is_internode, T_COL_RADIUS] *= 0.15
+    tensor[is_petiole, T_COL_LENGTH] *= 0.15
+    tensor[is_petiole, T_COL_RADIUS] *= 0.15
+    tensor[is_petiole, T_COL_CURRENT_LEAF_SCALE_FACTOR] *= 0.15
+    tensor[is_leaf, T_COL_SCALE] *= 0.15
+    tensor[is_petiole, T_COL_PITCH] *= 0.5
+    tensor[is_petiole, T_COL_CURVATURE] *= 0.3
     return PlantOrganArray(tensor, raw_metadata=target_array.raw_metadata)
 
 
@@ -143,18 +142,21 @@ def make_random_topology(target_array, seed=42):
 
     existence = (torch.rand(N, generator=cpu_rng) < 0.5).float()
     existence = existence * (0.6 + 0.4 * torch.rand(N, generator=cpu_rng))
-    tensor[:, COL_EXISTENCE] = existence.to(tensor.device)
+    tensor[:, T_COL_EXISTENCE] = existence.to(tensor.device)
 
     for i in range(N):
         if torch.rand(1, generator=cpu_rng).item() < 0.3:
-            tensor[i, COL_PARENT_NODE_IDX] = float(torch.randint(0, max(1, i), (1,), generator=cpu_rng).item())
+            tensor[i, T_COL_PARENT_NODE_IDX] = float(torch.randint(0, max(1, i), (1,), generator=cpu_rng).item())
         if torch.rand(1, generator=cpu_rng).item() < 0.2:
-            tensor[i, COL_PARENT_SHOOT_ID] = float(torch.randint(0, 3, (1,), generator=cpu_rng).item())
+            tensor[i, T_COL_PARENT_SHOOT_ID] = float(torch.randint(0, 3, (1,), generator=cpu_rng).item())
 
-    scale_cols = [COL_INODE_LEN, COL_INODE_RAD, COL_PET0_LEN, COL_PET0_RAD,
-                  COL_PET0_LEAF_SCALE, COL_PET0_L0_SCALE, COL_PET0_L1_SCALE, COL_PET0_L2_SCALE]
-    for c in scale_cols:
-        tensor[:, c] *= 0.4
+    is_internode, is_petiole, is_leaf = organ_type_masks(tensor)
+    tensor[is_internode, T_COL_LENGTH] *= 0.4
+    tensor[is_internode, T_COL_RADIUS] *= 0.4
+    tensor[is_petiole, T_COL_LENGTH] *= 0.4
+    tensor[is_petiole, T_COL_RADIUS] *= 0.4
+    tensor[is_petiole, T_COL_CURRENT_LEAF_SCALE_FACTOR] *= 0.4
+    tensor[is_leaf, T_COL_SCALE] *= 0.4
 
     # Final guard against any NaN/Inf
     tensor = torch.nan_to_num(tensor, nan=0.0, posinf=1.0, neginf=-1.0)
@@ -187,8 +189,8 @@ def optimize_backprop(
     are not optimized (useful for hard topology experiments).
     """
     base_tensor = init_array.tensor.clone().detach().to(device)
-    fixed_existence = torch.sigmoid(base_tensor[:, COL_EXISTENCE]).detach()
-    opt_existence = base_tensor[:, COL_EXISTENCE].clone().detach().requires_grad_(not fix_existence)
+    fixed_existence = torch.sigmoid(base_tensor[:, T_COL_EXISTENCE]).detach()
+    opt_existence = base_tensor[:, T_COL_EXISTENCE].clone().detach().requires_grad_(not fix_existence)
 
     # Global scale multipliers (constrained to [0, 1.5])
     leaf_logit = torch.tensor(np.log(1.0 / 0.5), device=device, requires_grad=True, dtype=torch.float32)
@@ -252,20 +254,19 @@ def optimize_backprop(
         else:
             tensor = base_tensor.clone()
 
-        tensor[:, COL_INODE_LEN] *= stem_scale * node_stem
-        tensor[:, COL_INODE_RAD] *= stem_scale * node_stem
-        tensor[:, COL_PET0_LEN] *= petiole_scale * node_pet
-        tensor[:, COL_PET0_RAD] *= petiole_scale * node_pet
-        tensor[:, COL_PET0_PITCH] *= ((petiole_scale * node_pet) * 0.5 + 0.5)
-        tensor[:, COL_PET0_CURV] *= petiole_scale * node_pet
-        tensor[:, COL_PET0_LEAF_SCALE] *= leaf_scale * node_leaf
-        tensor[:, COL_PET0_L0_SCALE] *= leaf_scale * node_leaf
-        tensor[:, COL_PET0_L1_SCALE] *= leaf_scale * node_leaf
-        tensor[:, COL_PET0_L2_SCALE] *= leaf_scale * node_leaf
+        is_internode, is_petiole, is_leaf = organ_type_masks(tensor)
+        tensor[is_internode, T_COL_LENGTH] *= stem_scale * node_stem[is_internode]
+        tensor[is_internode, T_COL_RADIUS] *= stem_scale * node_stem[is_internode]
+        tensor[is_petiole, T_COL_LENGTH] *= petiole_scale * node_pet[is_petiole]
+        tensor[is_petiole, T_COL_RADIUS] *= petiole_scale * node_pet[is_petiole]
+        tensor[is_petiole, T_COL_PITCH] *= ((petiole_scale * node_pet[is_petiole]) * 0.5 + 0.5)
+        tensor[is_petiole, T_COL_CURVATURE] *= petiole_scale * node_pet[is_petiole]
+        tensor[is_petiole, T_COL_CURRENT_LEAF_SCALE_FACTOR] *= leaf_scale * node_leaf[is_petiole]
+        tensor[is_leaf, T_COL_SCALE] *= leaf_scale * node_leaf[is_leaf]
         if fix_existence:
-            tensor[:, COL_EXISTENCE] = fixed_existence
+            tensor[:, T_COL_EXISTENCE] = fixed_existence
         else:
-            tensor[:, COL_EXISTENCE] = torch.sigmoid(opt_existence)
+            tensor[:, T_COL_EXISTENCE] = torch.sigmoid(opt_existence)
         if opt_parent_logits is not None:
             return PlantOrganArray(
                 tensor,
@@ -424,7 +425,7 @@ def main():
     print(f"Source XML: {args.source_xml} (DAP {dap})")
     print(f"Output dir: {args.output_dir}")
 
-    organ_array_gt = PlantOrganArray.from_xml_file(source_xml)
+    organ_array_gt = PlantOrganArray.from_xml_file_typed(source_xml)
     organ_array_gt.tensor = organ_array_gt.tensor.to(device)
 
     renderer = HeliosPyTorchRenderer(image_size=128)
@@ -438,17 +439,16 @@ def main():
     init_easy = make_seed_plant(organ_array_gt, seed=42)
     # Reset geometry to GT template scaled by 0.25, existence to 0.3 (small / sparse start)
     init_easy.tensor = organ_array_gt.tensor.clone()
-    init_easy.tensor[:, COL_INODE_LEN] *= 0.25
-    init_easy.tensor[:, COL_INODE_RAD] *= 0.25
-    init_easy.tensor[:, COL_PET0_LEN] *= 0.25
-    init_easy.tensor[:, COL_PET0_RAD] *= 0.25
-    init_easy.tensor[:, COL_PET0_LEAF_SCALE] *= 0.25
-    init_easy.tensor[:, COL_PET0_L0_SCALE] *= 0.25
-    init_easy.tensor[:, COL_PET0_L1_SCALE] *= 0.25
-    init_easy.tensor[:, COL_PET0_L2_SCALE] *= 0.25
-    init_easy.tensor[:, COL_PET0_PITCH] *= 0.7
-    init_easy.tensor[:, COL_PET0_CURV] *= 0.5
-    init_easy.tensor[:, COL_EXISTENCE] = 0.3
+    is_internode, is_petiole, is_leaf = organ_type_masks(init_easy.tensor)
+    init_easy.tensor[is_internode, T_COL_LENGTH] *= 0.25
+    init_easy.tensor[is_internode, T_COL_RADIUS] *= 0.25
+    init_easy.tensor[is_petiole, T_COL_LENGTH] *= 0.25
+    init_easy.tensor[is_petiole, T_COL_RADIUS] *= 0.25
+    init_easy.tensor[is_petiole, T_COL_CURRENT_LEAF_SCALE_FACTOR] *= 0.25
+    init_easy.tensor[is_leaf, T_COL_SCALE] *= 0.25
+    init_easy.tensor[is_petiole, T_COL_PITCH] *= 0.7
+    init_easy.tensor[is_petiole, T_COL_CURVATURE] *= 0.5
+    init_easy.tensor[:, T_COL_EXISTENCE] = 0.3
     hist_easy = optimize_backprop(target_rgb, init_easy, renderer, device, num_steps=1000, lr=0.03,
                                    optimize_geometry=False, optimize_topology=False,
                                    snapshot_steps=[0, 50, 100, 200, 350, 500, 750, 1000],
