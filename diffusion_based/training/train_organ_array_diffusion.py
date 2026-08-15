@@ -57,13 +57,25 @@ class DDPMScheduler:
         return sqrt_alpha * original_samples + sqrt_one_minus_alpha * noise
 
 
-def prediction_to_organ_array(pred_x0: torch.Tensor, dataset: OrganArrayDataset) -> PlantOrganArray:
-    """Convert a single normalized prediction (1, N, 40) into a PlantOrganArray on CPU."""
+def prediction_to_organ_array(pred_x0: torch.Tensor, dataset: OrganArrayDataset, device: torch.device) -> PlantOrganArray:
+    """Convert a single normalized prediction (1, N, 40) into a PlantOrganArray on device out-of-place."""
     denorm = dataset.denormalize(pred_x0[0])
-    denorm[:, dataset.existence_col] = torch.clamp(denorm[:, dataset.existence_col], 0.0, 1.0)
-    denorm[:, dataset.continuous_cols] = torch.clamp(denorm[:, dataset.continuous_cols], min=0.0)
-    denorm[:, 11] = torch.round(denorm[:, 11]).clamp(0, 7)
-    return PlantOrganArray(tensor=denorm.cpu())
+    cont_cols = dataset.continuous_cols
+    exist_col = dataset.existence_col
+
+    col_list = []
+    for c in range(denorm.shape[1]):
+        if c == exist_col:
+            col_list.append(torch.clamp(denorm[:, c:c+1], 0.0, 1.0))
+        elif c in cont_cols:
+            col_list.append(torch.clamp(denorm[:, c:c+1], min=0.0))
+        elif c == 11:
+            col_list.append(torch.round(denorm[:, c:c+1]).clamp(0, 7))
+        else:
+            col_list.append(denorm[:, c:c+1])
+
+    safe_tensor = torch.cat(col_list, dim=1).to(device)
+    return PlantOrganArray(tensor=safe_tensor)
 
 
 def render_loss(
@@ -90,7 +102,7 @@ def render_loss(
 
     n_render = min(B, 2)
     for b in range(n_render):
-        organ_array = prediction_to_organ_array(pred_x0[b:b + 1], dataset)
+        organ_array = prediction_to_organ_array(pred_x0[b:b + 1], dataset, device)
         try:
             rendered = renderer.render_organ_array(
                 organ_array,

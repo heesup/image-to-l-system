@@ -51,7 +51,11 @@ from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 from diffusion_based.models.perceptual_loss import VGGPerceptualLoss
 from diffusion_based.models.vit_image_to_organ_array import ViTOrganArrayDiffuser
 from diffusion_based.dataset.organ_array_dataset import OrganArrayDataset
-from diffusion_based.training.train_organ_array_diffusion import DDPMScheduler, train_epoch
+from diffusion_based.training.train_organ_array_diffusion import (
+    DDPMScheduler,
+    train_epoch,
+    prediction_to_organ_array,
+)
 
 
 def organ_type_masks(tensor: torch.Tensor):
@@ -647,13 +651,7 @@ def solve_problem_diffusion(
             pred_x0 = outputs["pred_x0"]
             organ_type_logits = outputs["organ_type_logits"]
 
-        denorm = dataset.denormalize(pred_x0[0])
-        denorm[:, dataset.existence_col] = torch.clamp(denorm[:, dataset.existence_col], 0.0, 1.0)
-        denorm[:, dataset.continuous_cols] = torch.clamp(denorm[:, dataset.continuous_cols], min=0.0)
-        if organ_type_logits is not None:
-            denorm[:, 11] = organ_type_logits[0].argmax(dim=-1).float()
-
-        cand_array = PlantOrganArray(tensor=denorm)
+        cand_array = prediction_to_organ_array(pred_x0[:1], dataset, device)
         try:
             rendered_rgb = renderer.render_organ_array(
                 cand_array, azimuth_deg=0.0, elevation_deg=90.0, camera_height=1.0,
@@ -722,7 +720,7 @@ def main():
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Path to pre-trained checkpoint (skips fresh training if provided)")
     parser.add_argument("--steps", type=int, default=50, help="Number of reverse DDIM or optimization steps")
-    parser.add_argument("--method", type=str, default="diffusion", choices=["diffusion", "backprop", "both"],
+    parser.add_argument("--method", type=str, default="both", choices=["diffusion", "backprop", "both"],
                         help="Solver method: diffusion (trains fresh diffusion + Guided DDIM) or backprop")
     parser.add_argument("--guidance_scale", type=float, default=2.0, help="CFG guidance scale (default: 2.0)")
     parser.add_argument("--guidance_weight", type=float, default=0.5, help="Test-time image/perceptual loss guidance weight")
