@@ -201,21 +201,40 @@ class OrganArrayDataset(Dataset):
         device = nodes.device
         min_vals = self.min_vals.to(device)
         range_vals = self.max_vals.to(device)
-        out = nodes.clone()
-        out[:, self.continuous_cols] = (out[:, self.continuous_cols] - min_vals) / range_vals
-        out[:, self.continuous_cols] = torch.clamp(out[:, self.continuous_cols], 0.0, 1.0)
-        out[:, self.existence_col] = torch.clamp(out[:, self.existence_col], 0.0, 1.0)
-        return out
+        norm_cont = torch.clamp((nodes[:, self.continuous_cols] - min_vals) / range_vals, 0.0, 1.0)
+        norm_exist = torch.clamp(nodes[:, self.existence_col:self.existence_col + 1], 0.0, 1.0)
+
+        col_list = []
+        cont_idx = 0
+        for c in range(nodes.shape[1]):
+            if c == self.existence_col:
+                col_list.append(norm_exist)
+            elif c in self.continuous_cols:
+                col_list.append(norm_cont[:, cont_idx:cont_idx + 1])
+                cont_idx += 1
+            else:
+                col_list.append(nodes[:, c:c + 1])
+        return torch.cat(col_list, dim=1)
 
     def denormalize(self, nodes: torch.Tensor) -> torch.Tensor:
         """Undo min-max normalization for continuous channels."""
         device = nodes.device
         min_vals = self.min_vals.to(device)
         range_vals = self.max_vals.to(device)
-        out = nodes.clone()
-        out[:, self.continuous_cols] = out[:, self.continuous_cols] * range_vals + min_vals
-        out[:, self.existence_col] = torch.clamp(out[:, self.existence_col], 0.0, 1.0)
-        return out
+        denorm_cont = nodes[:, self.continuous_cols] * range_vals + min_vals
+        denorm_exist = torch.clamp(nodes[:, self.existence_col:self.existence_col + 1], 0.0, 1.0)
+
+        col_list = []
+        cont_idx = 0
+        for c in range(nodes.shape[1]):
+            if c == self.existence_col:
+                col_list.append(denorm_exist)
+            elif c in self.continuous_cols:
+                col_list.append(denorm_cont[:, cont_idx:cont_idx + 1])
+                cont_idx += 1
+            else:
+                col_list.append(nodes[:, c:c + 1])
+        return torch.cat(col_list, dim=1)
 
     def __len__(self) -> int:
         return len(self.samples)

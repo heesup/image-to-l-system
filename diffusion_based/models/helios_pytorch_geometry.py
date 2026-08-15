@@ -227,7 +227,7 @@ def get_rotation_matrix_between_vectors(v0: torch.Tensor, v1: torch.Tensor) -> t
 
     axis = torch.linalg.cross(v0_norm, v1_norm)
     axis = axis / (torch.linalg.norm(axis) + 1e-8)
-    sin_theta = torch.sqrt((1.0 - cos_theta**2).clamp(min=0.0))
+    sin_theta = torch.sqrt((1.0 - cos_theta**2).clamp(min=1e-10))
 
     zero = torch.tensor(0.0, dtype=torch.float32, device=device)
     K = torch.stack([
@@ -248,7 +248,7 @@ def rotate_vector_about_axis(vec: torch.Tensor, axis: torch.Tensor, angle_rad: t
     if axis_sq < 1e-8:
         return vec
     if abs(axis_sq.item() - 1.0) > 1e-4:
-        axis = axis / torch.sqrt(axis_sq)
+        axis = axis / torch.sqrt(axis_sq.clamp(min=1e-10))
 
     cos_a = torch.cos(angle_rad)
     sin_a = torch.sin(angle_rad)
@@ -455,7 +455,7 @@ def generate_cone_tube_mesh_torch(
     seg_axis = axis_norm[seg_idx]                         # (V, 3)
 
     ax, ay, az = seg_axis[:, 0], seg_axis[:, 1], seg_axis[:, 2]
-    xy_norm = torch.sqrt(ax * ax + ay * ay).clamp(min=1e-6)
+    xy_norm = torch.sqrt((ax * ax + ay * ay).clamp(min=1e-10))
     ux = torch.where(xy_norm > 1e-3, -ay / xy_norm, torch.ones_like(ax))
     uy = torch.where(xy_norm > 1e-3, ax / xy_norm, torch.zeros_like(ay))
     uz = torch.zeros_like(az)
