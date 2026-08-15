@@ -7,6 +7,32 @@ This report presents the rigorous empirical validation of the **15 Loss-Reductio
 
 ---
 
+## 🖼️ Visual Diagnostic Gallery
+
+### Figure 1: Paradigm 1 — Single-Image Direct Optimization Across Growth Stages
+* **Description**: Comparison of Ground Truth Target vs. Initial Template vs. **A2 (Multi-Scale Perceptual Matching)** vs. **A5 (Gumbel Top-K Existence Pruning)** across early (DAP 10), mid (DAP 50), and late (DAP 90) growth stages.
+![Figure 1: Direct Optimization Multi-DAP](assets/fig1_direct_opt_multi_dap.png)
+
+---
+
+### Figure 2: Paradigm 2 — ViT + Decoder Test-Time Adaptation (B5) Breakthrough
+* **Description**: Zero-shot feedforward prediction ($40\text{ ms}$) provides global tree topology, while **Strategy B5 (30-step Test-Time Adaptation)** refines leaf angles and petioles, yielding a **+151% SSIM jump and 45% loss reduction** on complex DAP 50 canopies.
+![Figure 2: ViT Decoder TTA Breakthrough](assets/fig2_vit_decoder_tta_breakthrough.png)
+
+---
+
+### Figure 3: Paradigm 3 — ViT + Diffusion Generative Denoising & SDEdit Inversion
+* **Description**: Comparison of Ground Truth Target vs. **C1 (Tweedie DPS Manifold Image Guidance)** vs. **C5 (SDEdit Latent Inversion in $340\text{ ms}$)** across DAP 10, 50, 90.
+![Figure 3: ViT Diffusion Generative](assets/fig3_vit_diffusion_generative.png)
+
+---
+
+### Figure 4: Quantitative Loss & SSIM Convergence Analysis
+* **Description**: (Left) SSIM across botanical growth stages comparing the 4 primary approaches. (Right) Loss convergence curves over 1,000 full dataset samples for ViT+Decoder and ViT+Diffusion.
+![Figure 4: Loss Convergence Analysis](assets/fig4_loss_convergence_trajectories.png)
+
+---
+
 ## 🏆 Master Multi-DAP Benchmark Performance Table
 
 ### 1. Paradigm 1: Single-Image Direct Optimization (A1 – A5)
@@ -103,5 +129,9 @@ This report presents the rigorous empirical validation of the **15 Loss-Reductio
 To re-run the complete benchmark and training session across all 15 strategies:
 ```bash
 python diffusion_based/eval/run_deep_15_benchmark.py --epochs_decoder 5 --epochs_diffusion 10 --batch_size 16
+```
+To re-generate the visual comparison figures:
+```bash
+python diffusion_based/eval/generate_report_visualizations.py
 ```
 Structured results are saved in [`diffusion_based/eval/output/deep_benchmark/benchmark_results.json`](file:///home/lion397/codes/image-to-l-system/diffusion_based/eval/output/deep_benchmark/benchmark_results.json).
