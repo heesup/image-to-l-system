@@ -680,9 +680,12 @@ def solve_problem_diffusion(
                 guide_loss = pix_loss
 
             if guidance_weight > 0:
-                guide_grad = torch.autograd.grad(guide_loss, pred_x0_guided)[0]
-                guide_grad = torch.nan_to_num(guide_grad, nan=0.0).clamp(-1.0, 1.0)
-                pred_x0_final = pred_x0 - guidance_weight * guide_grad
+                guide_grad = torch.autograd.grad(guide_loss, pred_x0_guided, allow_unused=True)[0]
+                if guide_grad is not None:
+                    guide_grad = torch.nan_to_num(guide_grad, nan=0.0).clamp(-1.0, 1.0)
+                    pred_x0_final = pred_x0 - guidance_weight * guide_grad
+                else:
+                    pred_x0_final = pred_x0
             else:
                 pred_x0_final = pred_x0
         except Exception:

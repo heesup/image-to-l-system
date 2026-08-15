@@ -68,7 +68,7 @@ def prediction_to_organ_array(
     cont_cols = dataset.continuous_cols
     exist_col = dataset.existence_col
 
-    exist_prob = torch.sigmoid(pred_x0[0, :, exist_col:exist_col + 1])
+    exist_prob = torch.clamp(denorm[:, exist_col:exist_col + 1], 0.0, 1.0)
     if organ_type_logits is not None:
         ot_discrete = organ_type_logits[0].argmax(dim=-1, keepdim=True).float()
     else:
