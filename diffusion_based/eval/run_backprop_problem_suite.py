@@ -718,19 +718,25 @@ def main():
     parser.add_argument("--alt_source_xml", type=str, default=None,
                         help="Path to independent non-relevant XML plant for initial source (prevents info leak)")
     parser.add_argument("--output_dir", type=str, default=None,
-                        help="Directory to save outputs. Default is diffusion_based/eval/output/<xml_name>_backprop")
+                        help="Directory to save outputs. Default is diffusion_based/eval/output/<xml_name>_problem_suite")
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="Path to pre-trained checkpoint (skips fresh training if provided)")
     parser.add_argument("--steps", type=int, default=50, help="Number of reverse DDIM or optimization steps")
     parser.add_argument("--method", type=str, default="diffusion", choices=["diffusion", "backprop", "both"],
                         help="Solver method: diffusion (trains fresh diffusion + Guided DDIM) or backprop")
+    parser.add_argument("--guidance_scale", type=float, default=2.0, help="CFG guidance scale (default: 2.0)")
+    parser.add_argument("--guidance_weight", type=float, default=0.5, help="Test-time image/perceptual loss guidance weight")
     parser.add_argument("--diffusion_epochs", type=int, default=15, help="Epochs to train fresh diffusion model")
     parser.add_argument("--data_root", type=str, default="dataset/helios_data")
     parser.add_argument("--max_nodes", type=int, default=2048)
     parser.add_argument("--no_flow", action="store_true", help="Disable optical flow warping loss")
+    parser.add_argument("--val_pattern", type=str, default=None,
+                        help="Comma-separated basename globs for batch holdout evaluation")
     args = parser.parse_args()
 
     xml_name, dap = _extract_dap_and_name(args.source_xml)
     if args.output_dir is None:
-        args.output_dir = os.path.join("diffusion_based", "eval", "output", f"{xml_name}_backprop")
+        args.output_dir = os.path.join("diffusion_based", "eval", "output", f"{xml_name}_problem_suite")
 
     output_dir = os.path.join(repo_root, args.output_dir)
     os.makedirs(output_dir, exist_ok=True)
@@ -739,7 +745,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    print(f"Running problem suite ({args.method.upper()}) on device: {device}")
+    print(f"Running Unified Problem Suite ({args.method.upper()}) on device: {device}")
     print(f"Source XML: {args.source_xml} (DAP {dap})")
     print(f"Output dir: {args.output_dir}")
 
@@ -752,22 +758,51 @@ def main():
 
     perceptual_loss_fn = VGGPerceptualLoss().to(device)
 
-    # If diffusion method selected, train fresh diffusion model with Image & Perceptual loss
+    # If diffusion method selected: load checkpoint OR train fresh diffusion model
     diff_model, diff_scheduler, diff_dataset = None, None, None
     if args.method in ("diffusion", "both"):
-        diff_model, diff_scheduler, diff_dataset = train_diffusion_fresh(
+        diff_dataset = OrganArrayDataset(
             data_root=args.data_root,
-            device=device,
-            epochs=args.diffusion_epochs,
-            batch_size=16,
-            lr=1e-4,
             max_nodes=args.max_nodes,
-            render_every=10,
-            perceptual_weight=0.5,
+            image_size=128,
+            use_gt_renderer_image=True,
+            device=device,
         )
+        diff_scheduler = DDPMScheduler(timesteps=1000)
+
+        if args.checkpoint is not None and os.path.exists(args.checkpoint):
+            print(f"Loading diffusion model from checkpoint: {args.checkpoint}")
+            diff_model = ViTOrganArrayDiffuser(
+                max_nodes=args.max_nodes,
+                node_dim=40,
+                image_size=128,
+                patch_size=8,
+                embed_dim=256,
+                encoder_layers=6,
+                decoder_layers=4,
+                num_heads=8,
+                num_organ_types=8,
+            ).to(device)
+            ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+            if "ema_model_state_dict" in ckpt:
+                diff_model.load_state_dict({k.replace("module.", ""): v for k, v in ckpt["ema_model_state_dict"].items()})
+            elif "model_state_dict" in ckpt:
+                diff_model.load_state_dict(ckpt["model_state_dict"])
+            print("Checkpoint loaded successfully!")
+        else:
+            diff_model, diff_scheduler, diff_dataset = train_diffusion_fresh(
+                data_root=args.data_root,
+                device=device,
+                epochs=args.diffusion_epochs,
+                batch_size=16,
+                lr=1e-4,
+                max_nodes=args.max_nodes,
+                render_every=25,
+                perceptual_weight=0.5,
+            )
 
     all_metrics = {}
-    snapshot_steps = [0, 20, 40, 60, 80, args.steps] if args.steps >= 100 else [0, args.steps // 4, args.steps // 2, 3 * args.steps // 4, args.steps]
+    snapshot_steps = [0, 20, 40, 60, 80, args.steps] if args.steps >= 100 else [0, max(1, args.steps // 4), args.steps // 2, 3 * args.steps // 4, args.steps - 1]
     binary_step = int(args.steps * 0.6)
 
     # Problem 1: Non-relevant source start
