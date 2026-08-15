@@ -713,7 +713,7 @@ def solve_problem_diffusion(
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source_xml", type=str, default="diffusion_based/eval/output/dap10_gt_0000_plant_0000.xml",
+    parser.add_argument("--source_xml", type=str, default="dataset/helios_data/cowpea_dap010_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml",
                         help="Path to the source Helios XML plant to use as GT target")
     parser.add_argument("--alt_source_xml", type=str, default=None,
                         help="Path to independent non-relevant XML plant for initial source (prevents info leak)")
