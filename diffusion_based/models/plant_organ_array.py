@@ -285,6 +285,127 @@ def _to_float(x) -> float:
     return float(x)
 
 
+def sort_typed_organ_array_canonical(tensor: torch.Tensor) -> torch.Tensor:
+    """
+    Sorts an (N, 40) Typed PlantOrganArray tensor into a canonical hierarchical botanical DFS order:
+    1. ROOT_META
+    2. Main Shoot (sid=0) SHOOT_META
+       └─ Phytomer 0 (p_idx=0)
+           ├─ INTERNODE
+           ├─ PETIOLE 0 ── LEAF (0, 1, 2) ── BUD ── PEDUNCLE ── FLOWER (0..N)
+           ├─ PETIOLE 1 ── LEAF ...
+           └─ [Secondary Shoots branching from Phytomer 0] ── SHOOT_META ── Phytomers DFS...
+       └─ Phytomer 1 (p_idx=1)
+           ...
+    """
+    device = tensor.device
+    N = tensor.shape[0]
+    if N == 0:
+        return tensor.clone()
+
+    root_rows: List[torch.Tensor] = []
+    shoot_meta_rows: Dict[int, torch.Tensor] = {}
+    phytomers: Dict[Tuple[int, int], Dict] = {}
+    branching_shoots: Dict[Tuple[int, int], List[int]] = {}
+
+    for idx in range(N):
+        row = tensor[idx]
+        if row[T_COL_EXISTENCE].item() < 0.5:
+            continue
+
+        ot = int(row[T_COL_ORGAN_TYPE].item())
+        sid = int(row[T_COL_SHOOT_ID].item())
+        pidx = int(row[T_COL_PHYTOMER_IDX].item())
+
+        if ot == ORGAN_ROOT_META:
+            root_rows.append(row)
+        elif ot == ORGAN_SHOOT_META:
+            shoot_meta_rows[sid] = row
+            parent_sid = int(row[T_COL_PARENT_SHOOT_ID].item())
+            parent_node_xml = int(row[T_COL_PARENT_NODE_IDX].item())
+            parent_p_idx = max(0, parent_node_xml - 1)
+            if parent_sid >= 0:
+                branching_shoots.setdefault((parent_sid, parent_p_idx), []).append(sid)
+        else:
+            key = (sid, pidx)
+            if key not in phytomers:
+                phytomers[key] = {
+                    'internode': None,
+                    'petioles': {},
+                }
+
+            if ot == ORGAN_INTERNODE:
+                phytomers[key]['internode'] = row
+            else:
+                pet_i = int(row[T_COL_PARENT_PETIOLE_IDX].item())
+                pet_dict = phytomers[key]['petioles'].setdefault(pet_i, {
+                    'petiole': None,
+                    'leaves': [],
+                    'bud': None,
+                    'peduncle': None,
+                    'flowers': [],
+                })
+                if ot == ORGAN_PETIOLE:
+                    pet_dict['petiole'] = row
+                elif ot == ORGAN_LEAF:
+                    pet_dict['leaves'].append(row)
+                elif ot == ORGAN_BUD:
+                    pet_dict['bud'] = row
+                elif ot == ORGAN_PEDUNCLE:
+                    pet_dict['peduncle'] = row
+                elif ot == ORGAN_FLOWER:
+                    pet_dict['flowers'].append(row)
+
+    ordered_rows: List[torch.Tensor] = []
+    ordered_rows.extend(root_rows)
+
+    def _traverse_shoot(sid: int):
+        if sid in shoot_meta_rows:
+            ordered_rows.append(shoot_meta_rows[sid])
+
+        shoot_phyt_keys = sorted([k for k in phytomers.keys() if k[0] == sid], key=lambda x: x[1])
+
+        for (cur_sid, pidx) in shoot_phyt_keys:
+            p_data = phytomers[(cur_sid, pidx)]
+
+            if p_data['internode'] is not None:
+                ordered_rows.append(p_data['internode'])
+
+            for pet_i in sorted(p_data['petioles'].keys()):
+                pet_info = p_data['petioles'][pet_i]
+                if pet_info['petiole'] is not None:
+                    ordered_rows.append(pet_info['petiole'])
+
+                sorted_leaves = sorted(pet_info['leaves'], key=lambda r: int(r[T_COL_CHILD_INDEX].item()))
+                ordered_rows.extend(sorted_leaves)
+
+                if pet_info['bud'] is not None:
+                    ordered_rows.append(pet_info['bud'])
+                if pet_info['peduncle'] is not None:
+                    ordered_rows.append(pet_info['peduncle'])
+                sorted_flowers = sorted(pet_info['flowers'], key=lambda r: int(r[T_COL_CHILD_INDEX].item()))
+                ordered_rows.extend(sorted_flowers)
+
+            child_shoots = sorted(branching_shoots.get((cur_sid, pidx), []))
+            for child_sid in child_shoots:
+                _traverse_shoot(child_sid)
+
+    main_shoots = [s for s, r in shoot_meta_rows.items() if int(r[T_COL_PARENT_SHOOT_ID].item()) < 0]
+    if not main_shoots and 0 in shoot_meta_rows:
+        main_shoots = [0]
+
+    for ms in sorted(main_shoots):
+        _traverse_shoot(ms)
+
+    num_valid = len(ordered_rows)
+    sorted_tensor = torch.zeros((N, NUM_FEATURES_TYPED), dtype=tensor.dtype, device=device)
+    if num_valid > 0:
+        valid_block = torch.stack(ordered_rows[:N], dim=0)
+        sorted_tensor[:min(num_valid, N)] = valid_block
+
+    return sorted_tensor
+
+
 # =============================================================================
 # PLANT ORGAN ARRAY CLASS
 # =============================================================================
@@ -1309,7 +1430,8 @@ class PlantOrganArray:
                                         rows.append(fl_row)
 
         tensor = torch.tensor(rows, dtype=torch.float32)
-        return cls(tensor=tensor, raw_metadata=[])
+        sorted_tensor = sort_typed_organ_array_canonical(tensor)
+        return cls(tensor=sorted_tensor, raw_metadata=[])
 
     # -------------------------------------------------------------------------
     # CONVERSIONS BETWEEN LEGACY AND TYPED

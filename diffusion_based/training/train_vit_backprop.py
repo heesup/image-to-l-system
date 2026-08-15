@@ -226,7 +226,7 @@ def validate(model, val_loader, device, lambda_continuous=1.0, lambda_exist=1.0,
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_root", type=str, default="dataset/helios_data")
-    parser.add_argument("--max_nodes", type=int, default=256)
+    parser.add_argument("--max_nodes", type=int, default=2048)
     parser.add_argument("--image_size", type=int, default=128)
     parser.add_argument("--patch_size", type=int, default=8)
     parser.add_argument("--embed_dim", type=int, default=256)
@@ -242,6 +242,8 @@ def main():
     parser.add_argument("--render-weight", type=float, default=1.0)
     parser.add_argument("--save_every", type=int, default=50)
     parser.add_argument("--checkpoint_dir", type=str, default="diffusion_based/checkpoints")
+    parser.add_argument("--use-gt-renderer-image", action="store_true", default=True,
+                        help="Render GT directly via PyTorch renderer for training input")
     parser.add_argument("--val_pattern", type=str, default=None,
                         help="Comma-separated basename globs held out for validation, e.g. '*seed09*'")
     parser.add_argument("--checkpoint", type=str, default=None, help="Resume training from a checkpoint")
@@ -256,6 +258,8 @@ def main():
         data_root=args.data_root,
         max_nodes=args.max_nodes,
         image_size=args.image_size,
+        use_gt_renderer_image=args.use_gt_renderer_image,
+        device=device,
         exclude_globs=val_globs if val_globs else None,
     )
     print(f"Train samples: {len(dataset)}")
@@ -263,6 +267,8 @@ def main():
     if val_globs:
         val_dataset = OrganArrayDataset(
             data_root=args.data_root, max_nodes=args.max_nodes, image_size=args.image_size,
+            use_gt_renderer_image=args.use_gt_renderer_image,
+            device=device,
             include_globs=val_globs,
         )
         print(f"Val samples: {len(val_dataset)}")

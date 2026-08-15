@@ -16,13 +16,14 @@ import sys
 import math
 import argparse
 import random
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 
 # Make repo root importable
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -34,6 +35,9 @@ from diffusion_based.models.vit_image_to_organ_array import ViTOrganArrayDiffuse
 from diffusion_based.dataset.organ_array_dataset import OrganArrayDataset
 from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 from diffusion_based.models.plant_organ_array import PlantOrganArray
+from diffusion_based.models.perceptual_loss import VGGPerceptualLoss
+
+
 class DDPMScheduler:
     """Simple DDPM noise schedule."""
 
@@ -42,43 +46,22 @@ class DDPMScheduler:
         self.betas = torch.linspace(beta_start, beta_end, timesteps)
         self.alphas = 1.0 - self.betas
         self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
-        self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod)
-        self.sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - self.alphas_cumprod)
 
-    def add_noise(self, x0: torch.Tensor, t: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
-        acp = self.alphas_cumprod.to(x0.device)[t].view(-1, 1, 1)
-        sqrt_acp = torch.sqrt(acp)
-        sqrt_omc = torch.sqrt(1.0 - acp)
-        return sqrt_acp * x0 + sqrt_omc * noise
-
-
-def get_device() -> torch.device:
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    return torch.device("cpu")
+    def add_noise(
+        self, original_samples: torch.Tensor, timesteps: torch.Tensor, noise: torch.Tensor
+    ) -> torch.Tensor:
+        device = original_samples.device
+        alphas_cumprod = self.alphas_cumprod.to(device)
+        sqrt_alpha = torch.sqrt(alphas_cumprod[timesteps]).view(-1, 1, 1)
+        sqrt_one_minus_alpha = torch.sqrt(1.0 - alphas_cumprod[timesteps]).view(-1, 1, 1)
+        return sqrt_alpha * original_samples + sqrt_one_minus_alpha * noise
 
 
-def set_seed(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-
-def prediction_to_organ_array(pred_x0: torch.Tensor, dataset: OrganArrayDataset,
-                              existence_logits: torch.Tensor = None) -> PlantOrganArray:
-    """Denormalize model prediction and build PlantOrganArray. B must be 1."""
-    assert pred_x0.shape[0] == 1, "rendering helper supports batch_size=1"
+def prediction_to_organ_array(pred_x0: torch.Tensor, dataset: OrganArrayDataset) -> PlantOrganArray:
+    """Convert a single normalized prediction (1, N, 40) into a PlantOrganArray on CPU."""
     denorm = dataset.denormalize(pred_x0[0])
-    existence_col = dataset.existence_col
-    # existence channel is the last column
-    if existence_logits is not None:
-        denorm[:, existence_col] = torch.sigmoid(existence_logits[0])
-    else:
-        denorm[:, existence_col] = torch.sigmoid(denorm[:, existence_col])
-    # Clamp physical parameters to sensible non-negative ranges to avoid rendering failures
+    denorm[:, dataset.existence_col] = torch.clamp(denorm[:, dataset.existence_col], 0.0, 1.0)
     denorm[:, dataset.continuous_cols] = torch.clamp(denorm[:, dataset.continuous_cols], min=0.0)
-    # Round the categorical organ_type column (11) to the nearest valid class.
     denorm[:, 11] = torch.round(denorm[:, 11]).clamp(0, 7)
     return PlantOrganArray(tensor=denorm.cpu())
 
@@ -88,14 +71,25 @@ def render_loss(
     target_image: torch.Tensor,
     dataset: OrganArrayDataset,
     renderer: HeliosPyTorchRenderer,
+    perceptual_loss_fn: Optional[nn.Module],
     device: torch.device,
+    perceptual_weight: float = 0.5,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Render predicted organ arrays and compute MSE against target image."""
+    """Render predicted organ arrays and compute L1 pixel + VGG perceptual loss against target image."""
     B = pred_x0.shape[0]
     losses = []
     rendered_images = []
 
-    for b in range(B):
+    # Denormalize target image if normalized
+    if target_image.min() < 0:
+        mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
+        tgt_rgb = (target_image * std + mean).clamp(0.0, 1.0)
+    else:
+        tgt_rgb = target_image
+
+    n_render = min(B, 2)
+    for b in range(n_render):
         organ_array = prediction_to_organ_array(pred_x0[b:b + 1], dataset)
         try:
             rendered = renderer.render_organ_array(
@@ -103,16 +97,23 @@ def render_loss(
                 azimuth_deg=0.0,
                 elevation_deg=90.0,
                 camera_height=1.0,
-                background="ground",
+                background="black",
                 device=device,
                 differentiable=True,
                 focus_plant=True,
-                existence_threshold=0.5,
+                existence_threshold=0.1,
             )
         except Exception:
-            rendered = torch.zeros_like(target_image[b])
+            rendered = torch.zeros_like(tgt_rgb[b])
 
-        losses.append(F.mse_loss(rendered, target_image[b]))
+        pixel_l = F.l1_loss(rendered, tgt_rgb[b])
+        if perceptual_loss_fn is not None:
+            perc_l = perceptual_loss_fn(rendered.unsqueeze(0), tgt_rgb[b:b + 1])
+            tot_l = pixel_l + perceptual_weight * perc_l
+        else:
+            tot_l = pixel_l
+
+        losses.append(tot_l)
         rendered_images.append(rendered)
 
     loss = torch.stack(losses).mean()
@@ -126,6 +127,7 @@ def train_epoch(
     optimizer: torch.optim.Optimizer,
     scheduler: DDPMScheduler,
     renderer: HeliosPyTorchRenderer,
+    perceptual_loss_fn: Optional[nn.Module],
     device: torch.device,
     lambda_continuous: float = 1.0,
     lambda_exist: float = 1.0,
@@ -133,8 +135,11 @@ def train_epoch(
     exist_pos_weight: float = 10.0,
     channel_weights: torch.Tensor = None,
     render_weight: float = 1.0,
+    perceptual_weight: float = 0.5,
     render_every: int = 25,
     global_step: int = 0,
+    p_uncond: float = 0.1,
+    ema_model: Optional[AveragedModel] = None,
 ) -> Dict[str, float]:
     model.train()
     total_loss = 0.0
@@ -162,7 +167,14 @@ def train_epoch(
         noise = torch.randn_like(nodes)
         noisy_nodes = scheduler.add_noise(nodes, t, noise)
 
-        outputs = model(noisy_nodes, t, images)
+        # CFG Condition Dropout (p=0.1)
+        if p_uncond > 0.0:
+            uncond_mask = (torch.rand(B, 1, 1, 1, device=device) < p_uncond).float()
+            cond_images = images * (1.0 - uncond_mask)
+        else:
+            cond_images = images
+
+        outputs = model(noisy_nodes, t, cond_images)
         pred_x0 = outputs["pred_x0"]
         organ_type_logits = outputs["organ_type_logits"]
 
@@ -206,7 +218,9 @@ def train_epoch(
 
         render_rec_loss = torch.tensor(0.0, device=device)
         if render_every > 0 and global_step % render_every == 0:
-            render_rec_loss, _ = render_loss(pred_x0, images, dataloader.dataset, renderer, device)
+            render_rec_loss, _ = render_loss(
+                pred_x0, images, dataloader.dataset, renderer, perceptual_loss_fn, device, perceptual_weight=perceptual_weight
+            )
             loss = loss + render_weight * render_rec_loss
 
         optimizer.zero_grad()
@@ -214,6 +228,9 @@ def train_epoch(
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         global_step += 1
+
+        if ema_model is not None:
+            ema_model.update_parameters(model)
 
         total_loss += loss.item() * B
         total_mse += mse_loss.item() * B
@@ -229,6 +246,7 @@ def train_epoch(
         "exist": total_exist / max(count, 1),
         "organ_type": total_organ_type / max(count, 1),
         "render": total_render / max(count, 1),
+        "global_step": global_step,
     }
 
 
@@ -321,10 +339,10 @@ def main():
     parser.add_argument("--data_root", type=str, default="dataset/helios_data")
     parser.add_argument("--single_xml", type=str, default=None,
                         help="Train on one XML only for fast sanity check")
-    parser.add_argument("--max_nodes", type=int, default=256)
-    parser.add_argument("--image_size", type=int, default=256)
-    parser.add_argument("--batch_size", type=int, default=1)
-    parser.add_argument("--epochs", type=int, default=200)
+    parser.add_argument("--max_nodes", type=int, default=2048)
+    parser.add_argument("--image_size", type=int, default=128)
+    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--timesteps", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=42)
@@ -338,15 +356,19 @@ def main():
     parser.add_argument("--exist_pos_weight", type=float, default=10.0)
     parser.add_argument("--channel_weights", type=str, default=None,
                         help="Comma-separated per-channel weights for continuous MSE")
-    parser.add_argument("--render_every", type=int, default=25,
+    parser.add_argument("--render_every", type=int, default=0,
                         help="Run render loss every N steps (0 disables)")
     parser.add_argument("--render_weight", type=float, default=1.0)
-    parser.add_argument("--save_every", type=int, default=50)
+    parser.add_argument("--perceptual_weight", type=float, default=0.5,
+                        help="Weight for VGG perceptual loss")
+    parser.add_argument("--save_every", type=int, default=10)
     parser.add_argument("--checkpoint_dir", type=str, default="diffusion_based/checkpoints")
-    parser.add_argument("--model", type=str, default="resnet", choices=["resnet", "vit"],
+    parser.add_argument("--model", type=str, default="vit", choices=["resnet", "vit"],
                         help="backbone: resnet (PlantOrganArrayDiffuser) or vit (ViTOrganArrayDiffuser)")
     parser.add_argument("--patch_size", type=int, default=8)
     parser.add_argument("--encoder_layers", type=int, default=6)
+    parser.add_argument("--use-gt-renderer-image", action="store_true", default=True,
+                        help="Render GT directly via PyTorch renderer for input")
     parser.add_argument("--val_pattern", type=str, default=None,
                         help="Comma-separated basename globs held out for validation, e.g. '*seed02*'")
     args = parser.parse_args()
@@ -362,16 +384,20 @@ def main():
             max_nodes=args.max_nodes,
             image_size=args.image_size,
             single_xml_path=args.single_xml,
+            use_gt_renderer_image=args.use_gt_renderer_image,
+            device=device,
             augment=args.augment,
             percentile=args.percentile,
         )
         val_dataset = None
-        print(f"Dataset size: {len(dataset)}")
+        print(f"Single-XML mode: {args.single_xml}")
     else:
         dataset = OrganArrayDataset(
             data_root=args.data_root,
             max_nodes=args.max_nodes,
             image_size=args.image_size,
+            use_gt_renderer_image=args.use_gt_renderer_image,
+            device=device,
             augment=args.augment,
             percentile=args.percentile,
             exclude_globs=val_globs,
@@ -382,6 +408,8 @@ def main():
                 data_root=args.data_root,
                 max_nodes=args.max_nodes,
                 image_size=args.image_size,
+                use_gt_renderer_image=args.use_gt_renderer_image,
+                device=device,
                 augment=False,
                 percentile=args.percentile,
                 include_globs=val_globs,
@@ -430,9 +458,15 @@ def main():
             num_organ_types=8,
         ).to(device)
 
+    # EMA Model setup (decay = 0.9999)
+    ema_decay = 0.9999
+    ema_avg_fn = get_ema_multi_avg_fn(ema_decay)
+    ema_model = AveragedModel(model, multi_avg_fn=ema_avg_fn).to(device)
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-5)
     scheduler = DDPMScheduler(timesteps=args.timesteps)
     renderer = HeliosPyTorchRenderer(image_size=args.image_size).to(device)
+    perceptual_loss_fn = VGGPerceptualLoss().to(device) if (args.render_every > 0 and args.perceptual_weight > 0) else None
 
     channel_weights = None
     if args.channel_weights:
@@ -447,17 +481,19 @@ def main():
     global_step = 0
     for epoch in range(1, args.epochs + 1):
         metrics = train_epoch(
-            model, dataloader, optimizer, scheduler, renderer, device,
+            model, dataloader, optimizer, scheduler, renderer, perceptual_loss_fn, device,
             lambda_continuous=args.lambda_continuous,
             lambda_exist=args.lambda_exist,
             lambda_organ_type=args.lambda_organ_type,
             exist_pos_weight=args.exist_pos_weight,
             channel_weights=channel_weights,
             render_weight=args.render_weight,
+            perceptual_weight=args.perceptual_weight,
             render_every=args.render_every,
             global_step=global_step,
+            ema_model=ema_model,
         )
-        global_step += len(dataset)
+        global_step = metrics["global_step"]
         print(
             f"Epoch {epoch:03d} | loss={metrics['loss']:.4f} "
             f"mse={metrics['mse']:.4f} exist={metrics['exist']:.4f} "
@@ -466,7 +502,8 @@ def main():
 
         if val_loader is not None:
             val_metrics = validate(
-                model, val_loader, scheduler, device,
+                ema_model.module if hasattr(ema_model, "module") else ema_model,
+                val_loader, scheduler, device,
                 lambda_continuous=args.lambda_continuous,
                 lambda_exist=args.lambda_exist,
                 lambda_organ_type=args.lambda_organ_type,
@@ -474,7 +511,7 @@ def main():
                 channel_weights=channel_weights,
             )
             print(
-                f"           VAL  | loss={val_metrics['loss']:.4f} "
+                f"           VAL (EMA) | loss={val_metrics['loss']:.4f} "
                 f"mse={val_metrics['mse']:.4f} exist={val_metrics['exist']:.4f} "
                 f"organ_type={val_metrics['organ_type']:.4f}"
             )
@@ -484,6 +521,7 @@ def main():
             torch.save({
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
+                "ema_model_state_dict": ema_model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "args": vars(args),
             }, ckpt_path)
@@ -494,6 +532,7 @@ def main():
     torch.save({
         "epoch": args.epochs,
         "model_state_dict": model.state_dict(),
+        "ema_model_state_dict": ema_model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "args": vars(args),
     }, final_path)

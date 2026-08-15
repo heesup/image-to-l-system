@@ -179,9 +179,7 @@ class OrganArrayDecoder(nn.Module):
                 torch.arange(self.max_nodes, device=device).unsqueeze(0).expand(B, -1)
             )
         else:
-            queries = node_queries + self.pos_embed(
-                torch.arange(self.max_nodes, device=device).unsqueeze(0).expand(B, -1)
-            )
+            queries = node_queries
         if t_emb is not None and t_emb.numel() > 0:
             queries = queries + t_emb.unsqueeze(1)
 

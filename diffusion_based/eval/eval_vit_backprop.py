@@ -24,6 +24,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from torchvision import transforms
+from PIL import Image
 
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
@@ -62,18 +63,19 @@ def denormalize_image(tensor: torch.Tensor) -> np.ndarray:
 
 @torch.no_grad()
 def predict_organ_array(model, image: torch.Tensor, dataset: OrganArrayDataset):
-    """image: (3, H, W) normalized tensor. Returns PlantOrganArray.
-
-    Post-processing mirrors the training-time prediction_to_organ_array so
-    predictions stay renderable (round the organ_type column, sigmoid the
-    existence channel)."""
+    """image: (3, H, W) normalized tensor. Returns PlantOrganArray."""
     model.eval()
     outputs = model(image.unsqueeze(0))
     denorm = dataset.denormalize(outputs["pred_x0"][0])
     denorm[:, dataset.continuous_cols] = torch.clamp(denorm[:, dataset.continuous_cols], min=0.0)
-    denorm[:, T_COL_EXISTENCE] = torch.sigmoid(outputs["existence_logits"][0])
-    denorm[:, T_COL_ORGAN_TYPE] = torch.clamp(torch.round(denorm[:, T_COL_ORGAN_TYPE]), 0, 7)
-    denorm[:, T_COL_EXISTENCE] = (denorm[:, T_COL_EXISTENCE] > 0.5).float()
+    
+    if "organ_type_logits" in outputs:
+        denorm[:, T_COL_ORGAN_TYPE] = outputs["organ_type_logits"][0].argmax(dim=-1).float()
+    else:
+        denorm[:, T_COL_ORGAN_TYPE] = torch.clamp(torch.round(denorm[:, T_COL_ORGAN_TYPE]), 0, 7)
+
+    exist_prob = torch.sigmoid(outputs["existence_logits"][0])
+    denorm[:, T_COL_EXISTENCE] = exist_prob
     return PlantOrganArray(tensor=denorm.cpu())
 
 
@@ -84,6 +86,8 @@ def main():
     parser.add_argument("--data_root", type=str, default="dataset/helios_data")
     parser.add_argument("--pattern", type=str, default="*seed09*",
                         help="Glob pattern for the evaluation (holdout) samples")
+    parser.add_argument("--use-gt-renderer-image", action="store_true", default=True,
+                        help="Use GT PyTorch render as input image")
     parser.add_argument("--output_dir", type=str, default=None)
     parser.add_argument("--image_size", type=int, default=128)
     parser.add_argument("--max_nodes", type=int, default=256)
@@ -98,68 +102,90 @@ def main():
     embed_dim = ckpt_args.get("embed_dim", 256)
     encoder_layers = ckpt_args.get("encoder_layers", 6)
     decoder_layers = ckpt_args.get("decoder_layers", 4)
-    max_nodes = ckpt_args.get("max_nodes", args.max_nodes)
-    print(f"Using image_size={image_size}, patch={patch_size}, embed={embed_dim}")
-
-    model = ViTImageToOrganArray(
-        max_nodes=max_nodes, node_dim=40, image_size=image_size, patch_size=patch_size,
-        embed_dim=embed_dim, encoder_layers=encoder_layers, decoder_layers=decoder_layers,
-        num_heads=8, num_organ_types=8,
-    ).to(device)
-    model.load_state_dict(ckpt["model_state_dict"])
-    print(f"Loaded checkpoint from {args.checkpoint} (epoch {ckpt.get('epoch')})")
 
     dataset = OrganArrayDataset(
-        data_root=args.data_root, max_nodes=max_nodes, image_size=image_size,
-        include_globs=[args.pattern] if args.pattern else None,
+        data_root=args.data_root,
+        max_nodes=args.max_nodes,
+        image_size=image_size,
+        use_gt_renderer_image=args.use_gt_renderer_image,
+        device=device,
+        include_globs=[g.strip() for g in args.pattern.split(",")],
     )
-    if len(dataset) == 0:
-        print(f"No samples matched pattern={args.pattern} in {args.data_root}")
-        return
-    print(f"Evaluating {min(len(dataset), args.limit)} samples from {len(dataset)} matched")
 
-    renderer = HeliosPyTorchRenderer(image_size=image_size).to(device)
     if args.output_dir is None:
         args.output_dir = os.path.join("diffusion_based", "eval", "output", "vit_backprop_eval")
     os.makedirs(args.output_dir, exist_ok=True)
 
+    model = ViTImageToOrganArray(
+        max_nodes=args.max_nodes, node_dim=40,
+        image_size=image_size, patch_size=patch_size,
+        embed_dim=embed_dim, encoder_layers=encoder_layers,
+        decoder_layers=decoder_layers, num_heads=8, num_organ_types=8,
+    ).to(device)
+
+    model.load_state_dict(ckpt["model_state_dict"])
+    print(f"Loaded checkpoint from {args.checkpoint} (epoch {ckpt.get('epoch', '?')})")
+
+    renderer = HeliosPyTorchRenderer(image_size=image_size).to(device)
+
+    if args.limit and args.limit < len(dataset.samples):
+        indices = np.linspace(0, len(dataset.samples) - 1, args.limit, dtype=int)
+        samples_to_eval = [dataset.samples[i] for i in indices]
+    else:
+        samples_to_eval = dataset.samples[:args.limit]
+    print(f"Evaluating {len(samples_to_eval)} samples spanning DAPs from {len(dataset)} matched\n")
+
     all_metrics = {}
-    idxs = list(range(len(dataset)))[:args.limit]
-    for i in idxs:
-        item = dataset[i]
-        image_t = item["image"].to(device)
-        prefix = os.path.basename(item["xml_path"]).replace("_plant_0000.xml", "")
-        print(f"\n=== {prefix} ===")
 
-        pred_array = predict_organ_array(model, image_t, dataset)
+    for sample in samples_to_eval:
+        prefix = os.path.basename(sample["xml"]).split("_plant_")[0]
+        print(f"=== {prefix} ===")
 
-        gt_organ_array = PlantOrganArray.from_xml_file_typed(item["xml_path"])
-        gt_tensor = gt_organ_array.tensor
-        gt_tensor = torch.nan_to_num(gt_tensor, nan=0.0, posinf=1.0, neginf=-1.0)
-        gt_exist = (gt_tensor[:, T_COL_EXISTENCE] > 0.5)
-        pred_tensor = pred_array.tensor
-        pred_exist = (pred_tensor[:, T_COL_EXISTENCE] > 0.5)
-        n_gt = int(gt_exist.sum().item())
-        n_pred = int(pred_exist.sum().item())
+        # Load ground truth organ array
+        gt_organ_array = PlantOrganArray.from_xml_file_typed(sample["xml"])
+        gt_tensor = gt_organ_array.tensor.to(device)
+        n_gt = int((gt_organ_array.existence > 0.1).sum().item())
 
-        # Align lengths: GT may be shorter than max_nodes-padded predictions.
-        align = min(gt_tensor.shape[0], pred_tensor.shape[0])
-        gt_tensor = gt_tensor[:align]
-        pred_tensor = pred_tensor[:align]
-        gt_exist = gt_exist[:align]
-        pred_exist = pred_exist[:align]
+        # Render Ground Truth via differentiable PyTorch renderer
+        with torch.no_grad():
+            gt_rgb_t = renderer.render_organ_array(
+                gt_organ_array, azimuth_deg=0.0, elevation_deg=90.0, camera_height=1.0,
+                background="black", device=device, differentiable=False, focus_plant=True,
+                existence_threshold=0.1,
+            )
+        gt_np = gt_rgb_t.permute(1, 2, 0).cpu().numpy().clip(0, 1)
 
-        # Organ type accuracy over active rows (min of GT/pred rows compared by index)
-        n_cmp = min(n_gt, n_pred)
-        if n_cmp > 0:
-            gt_ot = gt_tensor[:n_cmp, T_COL_ORGAN_TYPE].long()
-            pred_ot = pred_tensor[:n_cmp, T_COL_ORGAN_TYPE].long()
-            type_acc = float((gt_ot == pred_ot).float().mean().item())
+        # Input image: use GT PyTorch render directly for clean domain matching
+        if args.use_gt_renderer_image:
+            image_t = dataset._transform_tensor(gt_rgb_t).to(device)
+            input_np = gt_np
         else:
-            type_acc = 0.0
+            image_path = sample["jpeg"]
+            raw_img = Image.open(image_path).convert("RGB")
+            image_t = dataset.transform(raw_img).to(device)
+            input_np = denormalize_image(image_t)
 
-        exist_iou = float((gt_exist & pred_exist).sum().item() /
-                          max(int((gt_exist | pred_exist).sum().item()), 1))
+        # Model prediction
+        pred_array = predict_organ_array(model, image_t, dataset)
+        pred_tensor = pred_array.tensor.to(device)
+        n_pred = int((pred_array.existence > 0.1).sum().item())
+
+        # Type accuracy on active GT rows
+        n_cmp = min(gt_tensor.shape[0], pred_tensor.shape[0])
+        gt_types = gt_tensor[:n_cmp, T_COL_ORGAN_TYPE].long()
+        pred_types = pred_tensor[:n_cmp, T_COL_ORGAN_TYPE].long()
+        gt_active = (gt_tensor[:n_cmp, T_COL_EXISTENCE] > 0.5)
+        if gt_active.sum() > 0:
+            type_acc = float((gt_types[gt_active] == pred_types[gt_active]).float().mean().item())
+        else:
+            type_acc = 1.0
+
+        # Existence IoU
+        pred_exist_mask = (pred_tensor[:n_cmp, T_COL_EXISTENCE] > 0.1)
+        gt_exist_mask = (gt_tensor[:n_cmp, T_COL_EXISTENCE] > 0.1)
+        inter = float((pred_exist_mask & gt_exist_mask).sum().item())
+        union = float((pred_exist_mask | gt_exist_mask).sum().item())
+        exist_iou = inter / union if union > 0 else 1.0
 
         # Continuous MAE on active rows
         if n_cmp > 0:
@@ -168,14 +194,12 @@ def main():
         else:
             mae = float("inf")
 
-        input_np = denormalize_image(image_t)
-
         # Render prediction and compare to target image
         try:
             pred_rgb_t = renderer.render_organ_array(
                 pred_array, azimuth_deg=0.0, elevation_deg=90.0, camera_height=1.0,
-                background="ground", device=device, differentiable=False, focus_plant=True,
-                existence_threshold=0.5,
+                background="black", device=device, differentiable=False, focus_plant=True,
+                existence_threshold=0.1,
             )
             pred_np = pred_rgb_t.permute(1, 2, 0).cpu().numpy().clip(0, 1)
             img_mae = float(np.mean(np.abs(pred_np - input_np)))
@@ -200,35 +224,38 @@ def main():
         print(f"  nodes GT={n_gt} pred={n_pred} | type_acc={type_acc:.3f} exist_iou={exist_iou:.3f} "
               f"cont_mae={mae:.4f}\n  image MAE={img_mae:.4f} SSIM={img_ssim:.4f} IoU={img_iou:.4f}")
 
-        # 4-panel figure: input | pred render | GT render | organ-type mask overlay
-        gt_rgb_t = renderer.render_organ_array(
-            gt_organ_array, azimuth_deg=0.0, elevation_deg=90.0, camera_height=1.0,
-            background="ground", device=device, differentiable=False, focus_plant=True,
-            existence_threshold=0.5,
-        )
-        gt_np = gt_rgb_t.permute(1, 2, 0).cpu().numpy().clip(0, 1)
-
-        fig, axes = plt.subplots(1, 4, figsize=(20, 5))
+        # 4-panel figure with spacious layout so top titles are never clipped
+        fig, axes = plt.subplots(1, 4, figsize=(22, 6))
+        
         axes[0].imshow(input_np)
-        axes[0].set_title("Input Image", fontsize=12, fontweight="bold")
+        axes[0].set_title(f"Input Image (GT PyTorch Render)\n{n_gt} nodes", fontsize=12, fontweight="bold", pad=12)
+        
         axes[1].imshow(pred_np)
-        axes[1].set_title(f"ViT Predicted Render\nMAE={img_mae:.4f} SSIM={img_ssim:.4f}",
-                          fontsize=11, fontweight="bold")
+        axes[1].set_title(f"ViT Predicted Render\nMAE={img_mae:.4f} | SSIM={img_ssim:.4f}",
+                          fontsize=12, fontweight="bold", pad=12)
+        
         axes[2].imshow(gt_np)
-        axes[2].set_title(f"GT Render\n{n_gt} nodes", fontsize=11, fontweight="bold")
+        axes[2].set_title(f"GT Render\n{n_gt} active nodes", fontsize=12, fontweight="bold", pad=12)
+        
         # organ-type mask of prediction
-        with torch.no_grad():
-            mask = renderer.render_organ_type_buffer(
-                renderer.geo_builder.build_mesh_from_organ_array(pred_array, device=device),
-                azimuth_deg=0.0, elevation_deg=90.0, camera_height=1.0, focus_plant=True,
-            ).cpu().numpy()
-        axes[3].imshow(mask, cmap="tab10", vmin=0, vmax=7)
-        axes[3].set_title(f"Pred Organ-Type Mask\n{n_pred} active", fontsize=11, fontweight="bold")
+        try:
+            with torch.no_grad():
+                mask = renderer.render_organ_type_buffer(
+                    renderer.geo_builder.build_mesh_from_organ_array(pred_array, device=device),
+                    azimuth_deg=0.0, elevation_deg=90.0, camera_height=1.0, focus_plant=True,
+                ).cpu().numpy()
+            axes[3].imshow(mask, cmap="tab10", vmin=0, vmax=7)
+            axes[3].set_title(f"Pred Organ-Type Mask\n{n_pred} active organs", fontsize=12, fontweight="bold", pad=12)
+        except Exception as e:
+            axes[3].text(0.5, 0.5, f"Render err:\n{e}", ha="center", va="center", color="red", fontsize=8)
+            axes[3].set_title(f"Pred Mask (Error)", fontsize=12, fontweight="bold", pad=12)
+            
         for ax in axes:
             ax.axis("off")
+            
+        plt.subplots_adjust(top=0.82, bottom=0.06, left=0.03, right=0.97, wspace=0.15)
         out_png = os.path.join(args.output_dir, f"{prefix}_vit_eval.png")
-        plt.tight_layout()
-        plt.savefig(out_png, dpi=150)
+        plt.savefig(out_png, dpi=150, bbox_inches="tight")
         plt.close()
         print(f"Saved {out_png}")
 

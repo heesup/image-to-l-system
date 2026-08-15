@@ -696,7 +696,7 @@ class HeliosPlantGeometryBuilder:
                     parent_petiole_axis = torch.tensor([0.0, -1.0, 0.0], device=device)
                 return shoot_base_pos, parent_internode_axis, parent_petiole_axis
 
-            meta_idx = shoot_meta_row[sid]
+            meta_idx = shoot_meta_row.get(sid, node_indices[0][1] if sid in internode_rows and len(internode_rows[sid]) > 0 else 0)
             parent_sid = int(t_cpu[meta_idx, T_COL_PARENT_SHOOT_ID])
             parent_node_idx = int(t_cpu[meta_idx, T_COL_PARENT_NODE_IDX])
             parent_petiole_index = int(t_cpu[meta_idx, T_COL_PARENT_PETIOLE_IDX])
@@ -739,7 +739,8 @@ class HeliosPlantGeometryBuilder:
         # ==================================================================
         for sid in sorted_shoot_ids:
             node_indices = internode_rows[sid]
-            meta_row = t[shoot_meta_row[sid]]
+            meta_idx = shoot_meta_row.get(sid, node_indices[0][1] if len(node_indices) > 0 else 0)
+            meta_row = t[meta_idx]
 
             base_pitch_rad = meta_row[T_COL_PITCH] * deg2rad
             base_yaw_rad = meta_row[T_COL_YAW] * deg2rad
@@ -1197,7 +1198,8 @@ class HeliosPlantGeometryBuilder:
                         else:
                             parent_internode_axis = torch.tensor([0.0, 0.0, 1.0], device=device)
                     else:
-                        pmeta = t[shoot_meta_row[sid]]
+                        meta_idx = shoot_meta_row.get(sid, 0)
+                        pmeta = t[meta_idx]
                         parent_sid = int(pmeta[T_COL_PARENT_SHOOT_ID].item())
                         if parent_sid >= 0:
                             parent_node_xml = int(pmeta[T_COL_PARENT_NODE_IDX].item())

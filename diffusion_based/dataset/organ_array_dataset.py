@@ -54,11 +54,12 @@ class OrganArrayDataset(Dataset):
     def __init__(
         self,
         data_root: str,
-        max_nodes: int = 256,
+        max_nodes: int = 2048,
         image_size: int = 256,
         single_xml_path: str = None,
         device: torch.device = None,
         use_typed_layout: bool = True,
+        use_gt_renderer_image: bool = False,
         augment: bool = False,
         percentile: float = 1.0,
         exclude_globs: List[str] = None,
@@ -68,6 +69,7 @@ class OrganArrayDataset(Dataset):
         self.max_nodes = max_nodes
         self.image_size = image_size
         self.use_typed_layout = use_typed_layout
+        self.use_gt_renderer_image = use_gt_renderer_image
         self.augment = augment
         self.percentile = percentile
         self.node_dim = 40 if use_typed_layout else 94
@@ -75,6 +77,9 @@ class OrganArrayDataset(Dataset):
         self.categorical_col = 11 if use_typed_layout else None
         self.continuous_cols = [c for c in range(self.node_dim - 1) if c != self.categorical_col]
         self.device = device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._cached_renderer = None
+        self._image_cache = {}
+        self._tensor_cache = {}
 
         base_transform = [
             transforms.Resize((image_size, image_size)),
@@ -218,53 +223,68 @@ class OrganArrayDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         sample = self.samples[idx]
 
-        if os.path.exists(sample["jpeg"]):
+        if self.use_gt_renderer_image or not os.path.exists(sample["jpeg"]):
+            cache_key = sample["xml"]
+            if cache_key in self._image_cache:
+                image_tensor = self._image_cache[cache_key]
+            else:
+                # Render the ground-truth XML directly through the differentiable PyTorch renderer
+                if self._cached_renderer is None:
+                    from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+                    self._cached_renderer = HeliosPyTorchRenderer(image_size=self.image_size).to(self.device)
+                
+                if self.use_typed_layout:
+                    gt_array = PlantOrganArray.from_xml_file_typed(sample["xml"])
+                else:
+                    gt_array = PlantOrganArray.from_xml_file(sample["xml"])
+                
+                with torch.no_grad():
+                    rgb = self._cached_renderer.render_organ_array(
+                        gt_array,
+                        azimuth_deg=0.0,
+                        elevation_deg=90.0,
+                        camera_height=1.0,
+                        background="black",
+                        device=self.device,
+                        differentiable=False,
+                        focus_plant=True,
+                        existence_threshold=0.1,
+                    )
+                image_tensor = self._transform_tensor(rgb).cpu()
+                self._image_cache[cache_key] = image_tensor
+        else:
             image = Image.open(sample["jpeg"]).convert("RGB")
             image_tensor = self.transform(image)
+
+        if cache_key in self._tensor_cache:
+            nodes, existence_mask, row_relevance, num_nodes = self._tensor_cache[cache_key]
         else:
-            # Fallback: render the XML directly through the PyTorch renderer.
-            # This requires a CUDA device because nvdiffrast does not support CPU.
-            from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
-            organ_array = PlantOrganArray.from_xml_file(sample["xml"])
-            renderer = HeliosPyTorchRenderer(image_size=self.image_size)
-            rgb = renderer.render_organ_array(
-                organ_array,
-                azimuth_deg=0.0,
-                elevation_deg=90.0,
-                camera_height=1.0,
-                background="black",
-                device=self.device,
-                differentiable=False,
-                focus_plant=True,
-                existence_threshold=0.5,
-            )
-            image_tensor = self._transform_tensor(rgb)
+            if self.use_typed_layout:
+                organ_array = PlantOrganArray.from_xml_file_typed(sample["xml"])
+            else:
+                organ_array = PlantOrganArray.from_xml_file(sample["xml"])
+            raw_tensor = organ_array.tensor  # (N, node_dim)
+            N = min(raw_tensor.shape[0], self.max_nodes)
 
-        if self.use_typed_layout:
-            organ_array = PlantOrganArray.from_xml_file_typed(sample["xml"])
-        else:
-            organ_array = PlantOrganArray.from_xml_file(sample["xml"])
-        raw_tensor = organ_array.tensor  # (N, node_dim)
-        N = min(raw_tensor.shape[0], self.max_nodes)
+            nodes = torch.zeros((self.max_nodes, self.node_dim), dtype=torch.float32)
+            nodes[:N] = raw_tensor[:N]
 
-        nodes = torch.zeros((self.max_nodes, self.node_dim), dtype=torch.float32)
-        nodes[:N] = raw_tensor[:N]
+            # Set existence for padded slots to 0
+            nodes[N:, self.existence_col] = 0.0
 
-        # Set existence for padded slots to 0
-        nodes[N:, self.existence_col] = 0.0
+            existence_mask = torch.zeros(self.max_nodes, dtype=torch.float32)
+            existence_mask[:N] = 1.0
 
-        existence_mask = torch.zeros(self.max_nodes, dtype=torch.float32)
-        existence_mask[:N] = 1.0
+            nodes = self.normalize(nodes)
 
-        nodes = self.normalize(nodes)
+            # Per-node column relevance mask for the continuous MSE: which columns
+            # carry real signal for each node's organ_type.
+            organ_types = nodes[:, self.categorical_col].long().clamp(0, ORGAN_COLUMN_MASK.shape[0] - 1)
+            row_relevance = ORGAN_COLUMN_MASK[organ_types].clone()  # (max_nodes, node_dim)
+            row_relevance[N:] = False  # padded rows contribute nothing
 
-        # Per-node column relevance mask for the continuous MSE: which columns
-        # carry real signal for each node's organ_type.
-        organ_types = nodes[:, self.categorical_col].long().clamp(0, ORGAN_COLUMN_MASK.shape[0] - 1)
-        row_relevance = ORGAN_COLUMN_MASK[organ_types].clone()  # (max_nodes, node_dim)
-        row_relevance[N:] = False  # padded rows contribute nothing
-
-        num_nodes = torch.tensor(N, dtype=torch.long)
+            num_nodes = torch.tensor(N, dtype=torch.long)
+            self._tensor_cache[cache_key] = (nodes, existence_mask, row_relevance, num_nodes)
 
         return {
             "image": image_tensor,

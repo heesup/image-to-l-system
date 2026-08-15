@@ -133,19 +133,27 @@ def postprocess_prediction(
 
 
 def sample_organ_array_with_snapshots(
-    model: PlantOrganArrayDiffuser,
+    model: nn.Module,
     image: torch.Tensor,
     scheduler: DDPMScheduler,
     dataset: OrganArrayDataset,
     steps: int = 50,
     snapshot_steps: List[int] = None,
     top_k_active: int = 24,
+    guidance_scale: float = 2.0,  # CFG scale (1.0 = no CFG, >1.0 = enhanced condition)
 ) -> Tuple[PlantOrganArray, Dict[int, PlantOrganArray]]:
     """
-    Deterministic DDIM reverse sampling with intermediate snapshots.
+    Deterministic DDIM reverse sampling with Classifier-Free Guidance (CFG) and snapshots.
 
-    Returns:
-        final PlantOrganArray and dict {step_index: PlantOrganArray}.
+    Args:
+        model: Trained Diffuser model
+        image: Condition 2D image (3, H, W)
+        scheduler: DDPMScheduler object
+        dataset: OrganArrayDataset object
+        steps: DDIM sampling steps (default 50)
+        snapshot_steps: list of step indices to record intermediate snapshots
+        top_k_active: fallback active node count if all existence < 0.5
+        guidance_scale: CFG scale factor s (default 2.0)
     """
     device = image.device
     model.eval()
@@ -160,14 +168,34 @@ def sample_organ_array_with_snapshots(
     x_t = torch.randn(B, N, dataset.node_dim, device=device)
     step_indices = torch.linspace(scheduler.timesteps - 1, 0, steps, device=device).long()
 
+    use_cfg = guidance_scale > 1.0
+    if use_cfg:
+        cond_image = image.unsqueeze(0)  # (1, 3, H, W)
+        uncond_image = torch.zeros_like(cond_image)  # (1, 3, H, W)
+        batched_images = torch.cat([cond_image, uncond_image], dim=0)  # (2, 3, H, W)
+    else:
+        batched_images = image.unsqueeze(0)  # (1, 3, H, W)
+
     snapshots: Dict[int, PlantOrganArray] = {}
 
     with torch.no_grad():
         for idx, t in enumerate(step_indices):
             t_batch = torch.tensor([t], device=device).long()
-            outputs = model(x_t, t_batch, image.unsqueeze(0))
-            pred_x0 = outputs["pred_x0"]
-            organ_type_logits = outputs["organ_type_logits"]
+
+            if use_cfg:
+                batched_x_t = torch.cat([x_t, x_t], dim=0)       # (2, N, 40)
+                batched_t = torch.cat([t_batch, t_batch], dim=0) # (2,)
+
+                outputs = model(batched_x_t, batched_t, batched_images)
+                pred_x0_cond, pred_x0_uncond = outputs["pred_x0"].chunk(2, dim=0)
+                ot_logits_cond, ot_logits_uncond = outputs["organ_type_logits"].chunk(2, dim=0)
+
+                pred_x0 = pred_x0_uncond + guidance_scale * (pred_x0_cond - pred_x0_uncond)
+                organ_type_logits = ot_logits_uncond + guidance_scale * (ot_logits_cond - ot_logits_uncond)
+            else:
+                outputs = model(x_t, t_batch, batched_images)
+                pred_x0 = outputs["pred_x0"]
+                organ_type_logits = outputs["organ_type_logits"]
 
             if idx in snapshot_steps:
                 snapshots[idx] = postprocess_prediction(
@@ -179,7 +207,6 @@ def sample_organ_array_with_snapshots(
             sqrt_alpha_t = torch.sqrt(alpha_t)
             sqrt_one_minus_alpha_t = torch.sqrt((1.0 - alpha_t).clamp(min=1e-6))
 
-            # Convert x0-prediction to noise-prediction, then DDIM deterministic step.
             pred_noise = (x_t - sqrt_alpha_t * pred_x0) / sqrt_one_minus_alpha_t
             pred_noise = torch.nan_to_num(pred_noise, nan=0.0, posinf=10.0, neginf=-10.0).clamp(-10.0, 10.0)
 

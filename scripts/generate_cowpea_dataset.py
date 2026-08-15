@@ -39,15 +39,14 @@ def _complete(output_dir: str, name: str) -> bool:
 
 
 def render_one(args):
-    dap, seed, output_dir, params_file, job_id = args
+    dap, seed, output_dir, params_file, job_id, overwrite = args
     name = _sample_name(dap, seed)
-    if _complete(output_dir, name):
+    if not overwrite and _complete(output_dir, name):
         return {"dap": dap, "seed": seed, "status": "skip", "elapsed": 0.0}
 
-    # Each worker renders into its own temporary directory to avoid
-    # filename collisions (camera_RGB_00000.jpeg etc.) between concurrent
-    # subprocesses, then moves the completed artifacts into output_dir.
-    tmp_dir = os.path.join(output_dir, f"_tmp_{job_id}")
+    # Each worker renders into its own unique temporary directory to avoid
+    # filename collisions between concurrent multi-node subprocesses.
+    tmp_dir = os.path.join(output_dir, f"_tmp_{os.getpid()}_{dap}_{seed}")
     os.makedirs(tmp_dir, exist_ok=True)
 
     cmd = [
@@ -103,6 +102,7 @@ def main():
     parser.add_argument("--workers", type=int, default=2,
                         help="number of concurrent Helios subprocesses")
     parser.add_argument("--max-retries", type=int, default=2)
+    parser.add_argument("--overwrite", action="store_true", help="overwrite existing generated samples")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -117,7 +117,7 @@ def main():
     jobs = []
     for dap in range(args.dap_min, args.dap_max + 1):
         for seed in range(args.seeds):
-            jobs.append((dap, seed, args.output_dir, params_file, len(jobs)))
+            jobs.append((dap, seed, args.output_dir, params_file, len(jobs), args.overwrite))
 
     total = len(jobs)
     print(f"Total samples to generate: {total} ({args.dap_min}-{args.dap_max}, {args.seeds} seeds)")
@@ -164,7 +164,7 @@ def main():
         # Requeue failed jobs up to max_retries (check by file existence)
         new_pending = []
         for j in batch:
-            dap, seed, od, pf, jid = j
+            dap, seed, od, pf, jid, ow = j
             name = _sample_name(dap, seed)
             if not _complete(od, name):
                 retries_left[j] -= 1
