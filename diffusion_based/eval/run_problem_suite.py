@@ -584,6 +584,13 @@ def train_diffusion_fresh(
 
     print("Diffusion Model Training Complete (Using EMA weights for solving)!\n", flush=True)
     eval_model = ema_model.module if hasattr(ema_model, "module") else ema_model
+    save_path = os.path.join(repo_root, "diffusion_based", "checkpoints", "organ_array_diffuser_fresh.pt")
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    torch.save({
+        "model_state_dict": model.state_dict(),
+        "ema_model_state_dict": eval_model.state_dict(),
+    }, save_path)
+    print(f"Fresh model saved to {save_path}\n", flush=True)
     return eval_model, scheduler, dataset
 
 
@@ -712,14 +719,13 @@ def solve_problem_diffusion(
                 x_t = pred_x0_final
 
     if len(history["images"]) >= 2:
-        init_img = history["images"][0][1]
-        target_np = target_rgb.permute(1, 2, 0).cpu().numpy().clip(0, 1)
-        flow = compute_optical_flow_farneback(init_img, target_np)
-        history["initial_flow_hsv"] = flow_to_hsv(flow)
-        history["initial_warped_rgb"] = warp_image_torch(
-            torch.from_numpy(init_img).permute(2, 0, 1).to(device),
-            torch.from_numpy(flow).to(device)
-        ).permute(1, 2, 0).cpu().numpy().clip(0, 1)
+        init_img_tensor = torch.from_numpy(history["images"][0][1]).permute(2, 0, 1).to(device)
+        try:
+            _, _, _, _, flow_hsv_np, warped_np = apply_flow_warping_loss(init_img_tensor, target_rgb, device)
+            history["initial_flow_hsv"] = flow_hsv_np
+            history["initial_warped_rgb"] = warped_np
+        except Exception:
+            pass
 
     return history
 
