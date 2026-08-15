@@ -719,7 +719,7 @@ def main():
                         help="Path to independent non-relevant XML plant for initial source (prevents info leak)")
     parser.add_argument("--output_dir", type=str, default=None,
                         help="Directory to save outputs. Default is diffusion_based/eval/output/<xml_name>_backprop")
-    parser.add_argument("--steps", type=int, default=300, help="Number of optimization steps")
+    parser.add_argument("--steps", type=int, default=50, help="Number of reverse DDIM or optimization steps")
     parser.add_argument("--method", type=str, default="diffusion", choices=["diffusion", "backprop", "both"],
                         help="Solver method: diffusion (trains fresh diffusion + Guided DDIM) or backprop")
     parser.add_argument("--diffusion_epochs", type=int, default=15, help="Epochs to train fresh diffusion model")
