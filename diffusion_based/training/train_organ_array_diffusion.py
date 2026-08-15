@@ -57,22 +57,33 @@ class DDPMScheduler:
         return sqrt_alpha * original_samples + sqrt_one_minus_alpha * noise
 
 
-def prediction_to_organ_array(pred_x0: torch.Tensor, dataset: OrganArrayDataset, device: torch.device) -> PlantOrganArray:
+def prediction_to_organ_array(
+    pred_x0: torch.Tensor,
+    dataset: OrganArrayDataset,
+    device: torch.device,
+    organ_type_logits: Optional[torch.Tensor] = None,
+) -> PlantOrganArray:
     """Convert a single normalized prediction (1, N, 40) into a PlantOrganArray on device out-of-place."""
     denorm = dataset.denormalize(pred_x0[0])
     cont_cols = dataset.continuous_cols
     exist_col = dataset.existence_col
 
+    exist_prob = torch.sigmoid(pred_x0[0, :, exist_col:exist_col + 1])
+    if organ_type_logits is not None:
+        ot_discrete = organ_type_logits[0].argmax(dim=-1, keepdim=True).float()
+    else:
+        ot_discrete = torch.round(denorm[:, 11:12]).clamp(0, 7)
+
     col_list = []
     for c in range(denorm.shape[1]):
         if c == exist_col:
-            col_list.append(torch.clamp(denorm[:, c:c+1], 0.0, 1.0))
+            col_list.append(exist_prob)
         elif c in cont_cols:
-            col_list.append(torch.clamp(denorm[:, c:c+1], min=0.0))
+            col_list.append(torch.clamp(denorm[:, c:c + 1], min=0.0))
         elif c == 11:
-            col_list.append(torch.round(denorm[:, c:c+1]).clamp(0, 7))
+            col_list.append(ot_discrete)
         else:
-            col_list.append(denorm[:, c:c+1])
+            col_list.append(denorm[:, c:c + 1])
 
     safe_tensor = torch.cat(col_list, dim=1).to(device)
     return PlantOrganArray(tensor=safe_tensor)

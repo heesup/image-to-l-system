@@ -589,7 +589,7 @@ def train_diffusion_fresh(
 
 def solve_problem_diffusion(
     target_rgb: torch.Tensor,
-    init_array: PlantOrganArray,
+    init_array: Optional[PlantOrganArray],
     model: nn.Module,
     scheduler: DDPMScheduler,
     dataset: OrganArrayDataset,
@@ -599,15 +599,16 @@ def solve_problem_diffusion(
     steps: int = 50,
     guidance_scale: float = 2.0,
     guidance_weight: float = 0.5,
+    t_start_fraction: float = 1.0,
     snapshot_steps: list = None,
 ):
     """
-    Solves 3D plant recovery via Guided Reverse DDIM Sampling with Classifier-Free Guidance (CFG)
-    and Image & Perceptual Gradients.
+    Solves 3D plant recovery via Guided Reverse DDIM Sampling with Classifier-Free Guidance (CFG),
+    SDEdit initial noise level control, discrete organ type argmax, sigmoid existence, and DPS guidance.
     """
     model.eval()
     if snapshot_steps is None:
-        snapshot_steps = [0, 10, 25, 40, steps - 1]
+        snapshot_steps = [0, max(1, steps // 4), steps // 2, 3 * steps // 4, steps - 1]
 
     mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
     std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
@@ -622,36 +623,42 @@ def solve_problem_diffusion(
 
     N = model.max_nodes
     node_dim = 40
-    step_indices = torch.linspace(scheduler.timesteps - 1, 0, steps, device=device).long()
+    all_timesteps = torch.linspace(scheduler.timesteps - 1, 0, steps, device=device).long()
 
-    if init_array is not None:
+    if init_array is not None and t_start_fraction < 1.0:
+        # SDEdit: preserve initial plant structure with controlled noise level
+        start_idx = int((1.0 - t_start_fraction) * (steps - 1))
+        start_idx = max(0, min(start_idx, steps - 2))
+        t0 = all_timesteps[start_idx].unsqueeze(0)
         norm_init = dataset.normalize(init_array.tensor.clone().to(device)).unsqueeze(0)
-        t0 = step_indices[0].unsqueeze(0)
         x_t = scheduler.add_noise(norm_init, t0, torch.randn_like(norm_init))
+        step_indices = all_timesteps[start_idx:]
     else:
         x_t = torch.randn((1, N, node_dim), device=device)
+        step_indices = all_timesteps
 
     history = {"loss": [], "ssim": [], "existence_sum": [], "images": []}
 
     for idx, t in enumerate(step_indices):
         t_batch = torch.tensor([t], device=device).long()
 
-        x_t_in = x_t.detach().requires_grad_(True)
+        with torch.no_grad():
+            if use_cfg:
+                batched_x_t = torch.cat([x_t, x_t], dim=0)
+                batched_t = torch.cat([t_batch, t_batch], dim=0)
+                outputs = model(batched_x_t, batched_t, batched_images)
+                pred_x0_cond, pred_x0_uncond = outputs["pred_x0"].chunk(2, dim=0)
+                ot_logits_cond, ot_logits_uncond = outputs["organ_type_logits"].chunk(2, dim=0)
+                pred_x0 = pred_x0_uncond + guidance_scale * (pred_x0_cond - pred_x0_uncond)
+                organ_type_logits = ot_logits_uncond + guidance_scale * (ot_logits_cond - ot_logits_uncond)
+            else:
+                outputs = model(x_t, t_batch, batched_images)
+                pred_x0 = outputs["pred_x0"]
+                organ_type_logits = outputs["organ_type_logits"]
 
-        if use_cfg:
-            batched_x_t = torch.cat([x_t_in, x_t_in], dim=0)
-            batched_t = torch.cat([t_batch, t_batch], dim=0)
-            outputs = model(batched_x_t, batched_t, batched_images)
-            pred_x0_cond, pred_x0_uncond = outputs["pred_x0"].chunk(2, dim=0)
-            ot_logits_cond, ot_logits_uncond = outputs["organ_type_logits"].chunk(2, dim=0)
-            pred_x0 = pred_x0_uncond + guidance_scale * (pred_x0_cond - pred_x0_uncond)
-            organ_type_logits = ot_logits_uncond + guidance_scale * (ot_logits_cond - ot_logits_uncond)
-        else:
-            outputs = model(x_t_in, t_batch, batched_images)
-            pred_x0 = outputs["pred_x0"]
-            organ_type_logits = outputs["organ_type_logits"]
-
-        cand_array = prediction_to_organ_array(pred_x0[:1], dataset, device)
+        # DPS (Diffusion Posterior Sampling) Guidance on pred_x0
+        pred_x0_guided = pred_x0.clone().detach().requires_grad_(True)
+        cand_array = prediction_to_organ_array(pred_x0_guided[:1], dataset, device, organ_type_logits=organ_type_logits)
         try:
             rendered_rgb = renderer.render_organ_array(
                 cand_array, azimuth_deg=0.0, elevation_deg=90.0, camera_height=1.0,
@@ -659,23 +666,32 @@ def solve_problem_diffusion(
                 existence_threshold=0.1,
             )
             pix_loss = F.l1_loss(rendered_rgb, target_rgb)
-            perc_loss = perceptual_loss_fn(rendered_rgb.unsqueeze(0), target_rgb.unsqueeze(0))
-            guide_loss = pix_loss + 0.3 * perc_loss
-            guide_grad = torch.autograd.grad(guide_loss, x_t_in)[0]
-            guide_grad = torch.nan_to_num(guide_grad, nan=0.0).clamp(-1.0, 1.0)
+            if perceptual_loss_fn is not None:
+                perc_loss = perceptual_loss_fn(rendered_rgb.unsqueeze(0), target_rgb.unsqueeze(0))
+                guide_loss = pix_loss + 0.3 * perc_loss
+            else:
+                guide_loss = pix_loss
+
+            if guidance_weight > 0:
+                guide_grad = torch.autograd.grad(guide_loss, pred_x0_guided)[0]
+                guide_grad = torch.nan_to_num(guide_grad, nan=0.0).clamp(-1.0, 1.0)
+                pred_x0_final = pred_x0 - guidance_weight * guide_grad
+            else:
+                pred_x0_final = pred_x0
         except Exception:
             pix_loss = torch.tensor(1.0, device=device)
-            guide_grad = torch.zeros_like(x_t)
             rendered_rgb = torch.zeros_like(target_rgb)
+            pred_x0_final = pred_x0
 
         with torch.no_grad():
             cur_np = rendered_rgb.permute(1, 2, 0).cpu().numpy().clip(0, 1)
             target_np = target_rgb.permute(1, 2, 0).cpu().numpy().clip(0, 1)
             ssim_val = compute_ssim_numpy(cur_np, target_np)
 
+            exist_prob = torch.sigmoid(pred_x0_final[0, :, dataset.existence_col])
             history["loss"].append(float(pix_loss.item()))
             history["ssim"].append(ssim_val)
-            history["existence_sum"].append(float((denorm[:, dataset.existence_col] > 0.5).sum().item()))
+            history["existence_sum"].append(float((exist_prob > 0.5).sum().item()))
 
             if idx in snapshot_steps or idx == len(step_indices) - 1:
                 history["images"].append((idx, cur_np, float(pix_loss.item()), ssim_val))
@@ -684,17 +700,16 @@ def solve_problem_diffusion(
             sqrt_alpha_t = torch.sqrt(alpha_t)
             sqrt_one_minus_alpha_t = torch.sqrt(1.0 - alpha_t)
 
-            pred_noise = (x_t - sqrt_alpha_t * pred_x0) / sqrt_one_minus_alpha_t
-            pred_noise = pred_noise - guidance_weight * sqrt_one_minus_alpha_t * guide_grad
+            pred_noise = (x_t - sqrt_alpha_t * pred_x0_final) / sqrt_one_minus_alpha_t
 
             if idx < len(step_indices) - 1:
                 t_prev = step_indices[idx + 1]
                 alpha_prev = scheduler.alphas_cumprod[t_prev].clamp(min=1e-6)
                 sqrt_alpha_prev = torch.sqrt(alpha_prev)
                 sqrt_one_minus_alpha_prev = torch.sqrt(1.0 - alpha_prev)
-                x_t = sqrt_alpha_prev * pred_x0 + sqrt_one_minus_alpha_prev * pred_noise
+                x_t = sqrt_alpha_prev * pred_x0_final + sqrt_one_minus_alpha_prev * pred_noise
             else:
-                x_t = pred_x0
+                x_t = pred_x0_final
 
     if len(history["images"]) >= 2:
         init_img = history["images"][0][1]
@@ -709,6 +724,140 @@ def solve_problem_diffusion(
     return history
 
 
+def run_problem_suite_for_method(
+    method_name: str,
+    target_rgb: torch.Tensor,
+    target_rgb_np: np.ndarray,
+    organ_array_gt: PlantOrganArray,
+    output_dir: str,
+    xml_name: str,
+    dap: int,
+    device: torch.device,
+    renderer: HeliosPyTorchRenderer,
+    perceptual_loss_fn: nn.Module,
+    args: argparse.Namespace,
+    diff_model=None,
+    diff_scheduler=None,
+    diff_dataset=None,
+) -> Dict[str, Any]:
+    """Executes the 3-problem benchmark suite for a specific solver method."""
+    print(f"\n=======================================================")
+    print(f"=== RUNNING PROBLEM SUITE FOR METHOD: {method_name.upper()} ===")
+    print(f"=======================================================")
+
+    snapshot_steps = [0, 20, 40, 60, 80, args.steps] if args.steps >= 100 else [0, max(1, args.steps // 4), args.steps // 2, 3 * args.steps // 4, args.steps - 1]
+    binary_step = int(args.steps * 0.6)
+    method_metrics = {}
+
+    # Problem 1: Easy / Non-relevant source
+    print(f"\n=== [{method_name.upper()}] PROBLEM 1: EASY (Non-relevant source start) ===")
+    init_easy = make_non_relevant_source_plant(device, alt_xml_path=args.alt_source_xml)
+    if method_name == "diffusion":
+        hist_easy = solve_problem_diffusion(
+            target_rgb, init_easy, diff_model, diff_scheduler, diff_dataset,
+            renderer, perceptual_loss_fn, device, steps=args.steps,
+            guidance_scale=args.guidance_scale, guidance_weight=args.guidance_weight,
+            t_start_fraction=1.0,
+        )
+    else:
+        hist_easy = optimize_backprop(
+            target_rgb, init_easy, renderer, device,
+            num_steps=args.steps, lr=0.03,
+            optimize_geometry=False, optimize_topology=False,
+            snapshot_steps=snapshot_steps,
+            binary_threshold_step=binary_step,
+            grad_clip=1.0, existence_pull_weight=0.05,
+            use_flow_loss=not args.no_flow
+        )
+    plot_problem(
+        target_rgb_np, hist_easy, "easy",
+        f"PROBLEM 1 (EASY) - {method_name.upper()} GUIDED RECONSTRUCTION (DAP {dap})",
+        os.path.join(output_dir, f"{xml_name}_{method_name}_problem_easy.png"),
+        dap=dap,
+    )
+    method_metrics["easy"] = {
+        "initial_loss": hist_easy["loss"][0],
+        "final_loss": hist_easy["loss"][-1],
+        "initial_ssim": hist_easy["ssim"][0],
+        "final_ssim": hist_easy["ssim"][-1],
+    }
+
+    # Problem 2: Medium / Grow from tiny seed
+    print(f"\n=== [{method_name.upper()}] PROBLEM 2: MEDIUM (Grow from tiny seed) ===")
+    init_medium = make_seed_plant(organ_array_gt, seed=42)
+    if method_name == "diffusion":
+        hist_medium = solve_problem_diffusion(
+            target_rgb, init_medium, diff_model, diff_scheduler, diff_dataset,
+            renderer, perceptual_loss_fn, device, steps=args.steps,
+            guidance_scale=args.guidance_scale, guidance_weight=args.guidance_weight,
+            t_start_fraction=0.7,
+        )
+    else:
+        hist_medium = optimize_backprop(
+            target_rgb, init_medium, renderer, device,
+            num_steps=args.steps, lr=0.03,
+            optimize_geometry=False, optimize_topology=False,
+            snapshot_steps=snapshot_steps,
+            binary_threshold_step=binary_step,
+            use_flow_loss=not args.no_flow
+        )
+    plot_problem(
+        target_rgb_np, hist_medium, "medium",
+        f"PROBLEM 2 (MEDIUM) - {method_name.upper()} SEED EXPANSION (DAP {dap})",
+        os.path.join(output_dir, f"{xml_name}_{method_name}_problem_medium.png"),
+        dap=dap,
+    )
+    method_metrics["medium"] = {
+        "initial_loss": hist_medium["loss"][0],
+        "final_loss": hist_medium["loss"][-1],
+        "initial_ssim": hist_medium["ssim"][0],
+        "final_ssim": hist_medium["ssim"][-1],
+    }
+
+    # Problem 3: Hard / Random topology recovery
+    print(f"\n=== [{method_name.upper()}] PROBLEM 3: HARD (Random topology recovery) ===")
+    init_hard = make_random_topology(organ_array_gt, seed=42)
+    if method_name == "diffusion":
+        hist_hard = solve_problem_diffusion(
+            target_rgb, init_hard, diff_model, diff_scheduler, diff_dataset,
+            renderer, perceptual_loss_fn, device, steps=args.steps,
+            guidance_scale=args.guidance_scale, guidance_weight=args.guidance_weight,
+            t_start_fraction=0.5,
+        )
+    else:
+        parent_logits, parent_candidates = PlantOrganArray.build_parent_candidates_from_gt(
+            init_hard, num_candidates=8, seed=42
+        )
+        init_hard = init_hard.clone_with_parent_logits(parent_logits, parent_candidates)
+        hist_hard = optimize_backprop(
+            target_rgb, init_hard, renderer, device,
+            num_steps=args.steps, lr=0.03,
+            optimize_geometry=False, optimize_topology=True,
+            snapshot_steps=snapshot_steps,
+            binary_threshold_step=binary_step,
+            grad_clip=1.0, existence_pull_weight=0.05,
+            fix_existence=True, use_flow_loss=not args.no_flow
+        )
+    plot_problem(
+        target_rgb_np, hist_hard, "hard",
+        f"PROBLEM 3 (HARD) - {method_name.upper()} RANDOM TOPOLOGY RECOVERY (DAP {dap})",
+        os.path.join(output_dir, f"{xml_name}_{method_name}_problem_hard.png"),
+        dap=dap,
+    )
+    method_metrics["hard"] = {
+        "initial_loss": hist_hard["loss"][0],
+        "final_loss": hist_hard["loss"][-1],
+        "initial_ssim": hist_hard["ssim"][0],
+        "final_ssim": hist_hard["ssim"][-1],
+    }
+
+    metrics_file = os.path.join(output_dir, f"{xml_name}_{method_name}_metrics.json")
+    with open(metrics_file, "w", encoding="utf-8") as f:
+        json.dump(method_metrics, f, indent=2)
+    print(f"\nSaved {method_name.upper()} metrics to {metrics_file}:", method_metrics)
+    return method_metrics
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source_xml", type=str, default="dataset/helios_data/cowpea_dap010_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml",
@@ -721,7 +870,7 @@ def main():
                         help="Path to pre-trained checkpoint (skips fresh training if provided)")
     parser.add_argument("--steps", type=int, default=50, help="Number of reverse DDIM or optimization steps")
     parser.add_argument("--method", type=str, default="both", choices=["diffusion", "backprop", "both"],
-                        help="Solver method: diffusion (trains fresh diffusion + Guided DDIM) or backprop")
+                        help="Solver method: diffusion, backprop, or both (default: both)")
     parser.add_argument("--guidance_scale", type=float, default=2.0, help="CFG guidance scale (default: 2.0)")
     parser.add_argument("--guidance_weight", type=float, default=0.5, help="Test-time image/perceptual loss guidance weight")
     parser.add_argument("--diffusion_epochs", type=int, default=15, help="Epochs to train fresh diffusion model")
@@ -796,110 +945,43 @@ def main():
                 perceptual_weight=0.5,
             )
 
-    all_metrics = {}
-    snapshot_steps = [0, 20, 40, 60, 80, args.steps] if args.steps >= 100 else [0, max(1, args.steps // 4), args.steps // 2, 3 * args.steps // 4, args.steps - 1]
-    binary_step = int(args.steps * 0.6)
+    methods_to_run = ["diffusion", "backprop"] if args.method == "both" else [args.method]
+    summary_results = {}
 
-    # Problem 1: Non-relevant source start
-    print("\n=== PROBLEM 1: EASY / NON-RELEVANT SOURCE ===")
-    init_easy = make_non_relevant_source_plant(device, alt_xml_path=args.alt_source_xml)
-    if args.method == "diffusion":
-        hist_easy = solve_problem_diffusion(
-            target_rgb, init_easy, diff_model, diff_scheduler, diff_dataset,
-            renderer, perceptual_loss_fn, device, steps=50, guidance_weight=0.5,
+    for m in methods_to_run:
+        summary_results[m] = run_problem_suite_for_method(
+            method_name=m,
+            target_rgb=target_rgb,
+            target_rgb_np=target_rgb_np,
+            organ_array_gt=organ_array_gt,
+            output_dir=output_dir,
+            xml_name=xml_name,
+            dap=dap,
+            device=device,
+            renderer=renderer,
+            perceptual_loss_fn=perceptual_loss_fn,
+            args=args,
+            diff_model=diff_model,
+            diff_scheduler=diff_scheduler,
+            diff_dataset=diff_dataset,
         )
-    else:
-        hist_easy = optimize_backprop(
-            target_rgb, init_easy, renderer, device,
-            num_steps=args.steps, lr=0.03,
-            optimize_geometry=False, optimize_topology=False,
-            snapshot_steps=snapshot_steps,
-            binary_threshold_step=binary_step,
-            grad_clip=1.0, existence_pull_weight=0.05,
-            use_flow_loss=not args.no_flow
-        )
-    plot_problem(
-        target_rgb_np, hist_easy, "easy",
-        f"PROBLEM 1 (EASY) - {args.method.upper()} GUIDED RECONSTRUCTION (DAP {dap})",
-        os.path.join(output_dir, f"{xml_name}_problem_easy.png"),
-        dap=dap,
-    )
-    all_metrics["easy"] = {
-        "initial_loss": hist_easy["loss"][0],
-        "final_loss": hist_easy["loss"][-1],
-        "initial_ssim": hist_easy["ssim"][0],
-        "final_ssim": hist_easy["ssim"][-1],
-    }
 
-    # Problem 2: Medium (grow from seed)
-    print("\n=== PROBLEM 2: MEDIUM (grow from tiny seed) ===")
-    init_medium = make_seed_plant(organ_array_gt, seed=42)
-    if args.method == "diffusion":
-        hist_medium = solve_problem_diffusion(
-            target_rgb, init_medium, diff_model, diff_scheduler, diff_dataset,
-            renderer, perceptual_loss_fn, device, steps=50, guidance_weight=0.5,
-        )
-    else:
-        hist_medium = optimize_backprop(
-            target_rgb, init_medium, renderer, device,
-            num_steps=args.steps, lr=0.03,
-            optimize_geometry=False, optimize_topology=False,
-            snapshot_steps=snapshot_steps,
-            binary_threshold_step=binary_step,
-            use_flow_loss=not args.no_flow
-        )
-    plot_problem(
-        target_rgb_np, hist_medium, "medium",
-        f"PROBLEM 2 (MEDIUM) - {args.method.upper()} SEED EXPANSION (DAP {dap})",
-        os.path.join(output_dir, f"{xml_name}_problem_medium.png"),
-        dap=dap,
-    )
-    all_metrics["medium"] = {
-        "initial_loss": hist_medium["loss"][0],
-        "final_loss": hist_medium["loss"][-1],
-        "initial_ssim": hist_medium["ssim"][0],
-        "final_ssim": hist_medium["ssim"][-1],
-    }
+    if args.method == "both":
+        comparison_file = os.path.join(output_dir, f"{xml_name}_comparison_summary.json")
+        with open(comparison_file, "w", encoding="utf-8") as f:
+            json.dump(summary_results, f, indent=2)
 
-    # Problem 3: Hard (random topology)
-    print("\n=== PROBLEM 3: HARD (random topology) ===")
-    init_hard = make_random_topology(organ_array_gt, seed=42)
-    if args.method == "diffusion":
-        hist_hard = solve_problem_diffusion(
-            target_rgb, init_hard, diff_model, diff_scheduler, diff_dataset,
-            renderer, perceptual_loss_fn, device, steps=50, guidance_weight=0.5,
-        )
-    else:
-        parent_logits, parent_candidates = PlantOrganArray.build_parent_candidates_from_gt(
-            init_hard, num_candidates=8, seed=42
-        )
-        init_hard = init_hard.clone_with_parent_logits(parent_logits, parent_candidates)
-        hist_hard = optimize_backprop(
-            target_rgb, init_hard, renderer, device,
-            num_steps=args.steps, lr=0.03,
-            optimize_geometry=False, optimize_topology=True,
-            snapshot_steps=snapshot_steps,
-            binary_threshold_step=binary_step,
-            grad_clip=1.0, existence_pull_weight=0.05,
-            fix_existence=True, use_flow_loss=not args.no_flow
-        )
-    plot_problem(
-        target_rgb_np, hist_hard, "hard",
-        f"PROBLEM 3 (HARD) - {args.method.upper()} RANDOM TOPOLOGY RECOVERY (DAP {dap})",
-        os.path.join(output_dir, f"{xml_name}_problem_hard.png"),
-        dap=dap,
-    )
-    all_metrics["hard"] = {
-        "initial_loss": hist_hard["loss"][0],
-        "final_loss": hist_hard["loss"][-1],
-        "initial_ssim": hist_hard["ssim"][0],
-        "final_ssim": hist_hard["ssim"][-1],
-    }
-
-    metrics_file = os.path.join(output_dir, f"{xml_name}_problem_suite_metrics.json")
-    with open(metrics_file, "w", encoding="utf-8") as f:
-        json.dump(all_metrics, f, indent=2)
-    print(f"\nAll problem suite metrics saved to {metrics_file}:", all_metrics)
+        print("\n" + "=" * 80)
+        print("🏆 COMPARATIVE BENCHMARK SUMMARY (DIFFUSION vs BACKPROP)")
+        print("=" * 80)
+        print(f"{'Problem Tier':<20} | {'Method':<12} | {'Init Loss':<10} | {'Final Loss':<10} | {'Init SSIM':<10} | {'Final SSIM':<10}")
+        print("-" * 80)
+        for prob in ["easy", "medium", "hard"]:
+            for m in ["diffusion", "backprop"]:
+                res = summary_results[m][prob]
+                print(f"{prob.upper():<20} | {m.upper():<12} | {res['initial_loss']:<10.4f} | {res['final_loss']:<10.4f} | {res['initial_ssim']:<10.4f} | {res['final_ssim']:<10.4f}")
+            print("-" * 80)
+        print(f"Summary comparison saved to: {comparison_file}")
 
 
 if __name__ == "__main__":
