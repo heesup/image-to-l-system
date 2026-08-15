@@ -717,8 +717,8 @@ def main():
                         help="Path to the source Helios XML plant to use as GT target")
     parser.add_argument("--alt_source_xml", type=str, default=None,
                         help="Path to independent non-relevant XML plant for initial source (prevents info leak)")
-    parser.add_argument("--output_dir", type=str, default=None,
-                        help="Directory to save outputs. Default is diffusion_based/eval/output/<xml_name>_problem_suite")
+    parser.add_argument("--output_dir", type=str, default="diffusion_based/eval/output",
+                        help="Directory to save outputs. Default is diffusion_based/eval/output")
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Path to pre-trained checkpoint (skips fresh training if provided)")
     parser.add_argument("--steps", type=int, default=50, help="Number of reverse DDIM or optimization steps")
@@ -735,9 +735,6 @@ def main():
     args = parser.parse_args()
 
     xml_name, dap = _extract_dap_and_name(args.source_xml)
-    if args.output_dir is None:
-        args.output_dir = os.path.join("diffusion_based", "eval", "output", f"{xml_name}_problem_suite")
-
     output_dir = os.path.join(repo_root, args.output_dir)
     os.makedirs(output_dir, exist_ok=True)
     source_xml = os.path.join(repo_root, args.source_xml)
@@ -826,7 +823,7 @@ def main():
     plot_problem(
         target_rgb_np, hist_easy, "easy",
         f"PROBLEM 1 (EASY) - {args.method.upper()} GUIDED RECONSTRUCTION (DAP {dap})",
-        os.path.join(output_dir, f"{xml_name}_backprop_problem_easy.png"),
+        os.path.join(output_dir, f"{xml_name}_problem_easy.png"),
         dap=dap,
     )
     all_metrics["easy"] = {
@@ -856,7 +853,7 @@ def main():
     plot_problem(
         target_rgb_np, hist_medium, "medium",
         f"PROBLEM 2 (MEDIUM) - {args.method.upper()} SEED EXPANSION (DAP {dap})",
-        os.path.join(output_dir, f"{xml_name}_backprop_problem_medium.png"),
+        os.path.join(output_dir, f"{xml_name}_problem_medium.png"),
         dap=dap,
     )
     all_metrics["medium"] = {
@@ -891,7 +888,7 @@ def main():
     plot_problem(
         target_rgb_np, hist_hard, "hard",
         f"PROBLEM 3 (HARD) - {args.method.upper()} RANDOM TOPOLOGY RECOVERY (DAP {dap})",
-        os.path.join(output_dir, f"{xml_name}_backprop_problem_hard.png"),
+        os.path.join(output_dir, f"{xml_name}_problem_hard.png"),
         dap=dap,
     )
     all_metrics["hard"] = {
@@ -901,7 +898,7 @@ def main():
         "final_ssim": hist_hard["ssim"][-1],
     }
 
-    metrics_file = os.path.join(output_dir, f"{xml_name}_backprop_problem_suite_metrics.json")
+    metrics_file = os.path.join(output_dir, f"{xml_name}_problem_suite_metrics.json")
     with open(metrics_file, "w", encoding="utf-8") as f:
         json.dump(all_metrics, f, indent=2)
     print(f"\nAll problem suite metrics saved to {metrics_file}:", all_metrics)
