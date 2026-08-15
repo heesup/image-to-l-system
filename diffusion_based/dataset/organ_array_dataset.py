@@ -241,9 +241,9 @@ class OrganArrayDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         sample = self.samples[idx]
+        cache_key = sample["xml"]
 
         if self.use_gt_renderer_image or not os.path.exists(sample["jpeg"]):
-            cache_key = sample["xml"]
             if cache_key in self._image_cache:
                 image_tensor = self._image_cache[cache_key]
             else:
