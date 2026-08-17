@@ -331,14 +331,14 @@ def main():
         ff_np = init_np
         ff_ssim = compute_ssim_numpy(ff_np, tgt_np)
         axes[row, 1].imshow(ff_np)
-        axes[row, 1].set_title(f"Zero-Shot Feedforward (90°)\nSSIM: {ff_ssim:.3f} (40 ms)", fontsize=11, color="navy")
+        axes[row, 1].set_title(f"Zero-Shot Feedforward\nSSIM: {ff_ssim:.3f} (40 ms)", fontsize=11, color="navy")
         axes[row, 1].axis("off")
 
         tta_np = run_advanced_botanical_optimization(init_arr, tgt_rgb, renderer, perceptual_fn, device, mode="A2", steps=25)
         tta_ssim = compute_ssim_numpy(tta_np, tgt_np)
         tta_iou = compute_iou_numpy(tta_np, tgt_np)
         axes[row, 2].imshow(tta_np)
-        axes[row, 2].set_title(f"B5: TTA Refined (90°)\nSSIM: {tta_ssim:.3f} (+{((tta_ssim - ff_ssim)/max(ff_ssim,1e-3)*100):.1f}%)", fontsize=11, color="crimson", fontweight="bold")
+        axes[row, 2].set_title(f"B5: TTA Refined\nSSIM: {tta_ssim:.3f} (+{((tta_ssim - ff_ssim)/max(ff_ssim,1e-3)*100):.1f}%)", fontsize=11, color="crimson", fontweight="bold")
         axes[row, 2].axis("off")
 
         metrics_summary["b5_ssim"].append(tta_ssim)
@@ -352,7 +352,7 @@ def main():
     # --------------------------------------------------------------------------
     # FIGURE 3: ViT + DIFFUSION GENERATIVE DDIM TOP-VIEW
     # --------------------------------------------------------------------------
-    print("Generating Figure 3: ViT + Diffusion Generative Panel (Top View: 90°)...")
+    print("Generating Figure 3: ViT + Diffusion Generative Panel...")
     fig, axes = plt.subplots(3, 3, figsize=(13, 12))
     plt.subplots_adjust(wspace=0.15, hspace=0.25)
 
@@ -364,14 +364,14 @@ def main():
         dps_np = run_advanced_botanical_optimization(init_arr, tgt_rgb, renderer, perceptual_fn, device, mode="A2", steps=20)
         dps_ssim = compute_ssim_numpy(dps_np, tgt_np)
         axes[row, 1].imshow(dps_np)
-        axes[row, 1].set_title(f"C1: Tweedie DPS Guided (90°)\nSSIM: {dps_ssim:.3f}", fontsize=11, color="navy")
+        axes[row, 1].set_title(f"C1: Tweedie DPS Guided\nSSIM: {dps_ssim:.3f}", fontsize=11, color="navy")
         axes[row, 1].axis("off")
 
         sdedit_np = run_advanced_botanical_optimization(init_arr, tgt_rgb, renderer, perceptual_fn, device, mode="A5", steps=20)
         sdedit_ssim = compute_ssim_numpy(sdedit_np, tgt_np)
         sdedit_iou = compute_iou_numpy(sdedit_np, tgt_np)
         axes[row, 2].imshow(sdedit_np)
-        axes[row, 2].set_title(f"C5: SDEdit Latent Inversion (90°)\nSSIM: {sdedit_ssim:.3f} (340 ms)", fontsize=11, color="purple", fontweight="bold")
+        axes[row, 2].set_title(f"C5: SDEdit Latent Inversion\nSSIM: {sdedit_ssim:.3f} (340 ms)", fontsize=11, color="purple", fontweight="bold")
         axes[row, 2].axis("off")
 
         metrics_summary["c5_ssim"].append(sdedit_ssim)
