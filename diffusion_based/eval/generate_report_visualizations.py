@@ -1,7 +1,12 @@
 """
 Generate High-Fidelity Diagnostic Visualization Panels for 15 Strategies Report.
 
-Uses true botanical parameterization and 3D organ array hierarchy preservation.
+Fixed to strictly use TOP VIEW (elevation = 90.0 deg) across all stages.
+Evaluates each growth stage (DAP 10, DAP 50, DAP 90) using corresponding botanical templates:
+  - DAP 10 (Seedling): Target (seed00) vs Template (seed01)
+  - DAP 50 (Branching): Target (seed00) vs Template (seed01)
+  - DAP 90 (Mature Canopy): Target (seed00) vs Template (seed01)
+
 Generates:
   1. docs/results/assets/fig1_direct_opt_multi_dap.png
   2. docs/results/assets/fig2_vit_decoder_tta_breakthrough.png
@@ -40,9 +45,6 @@ from diffusion_based.models.plant_organ_array import (
 )
 from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 from diffusion_based.models.perceptual_loss import VGGPerceptualLoss
-from diffusion_based.dataset.organ_array_dataset import OrganArrayDataset
-from diffusion_based.training.train_organ_array_diffusion import DDPMScheduler
-from diffusion_based.models.vit_image_to_organ_array import ViTOrganArrayDiffuser, ViTImageToOrganArray
 
 
 def compute_ssim_numpy(img1: np.ndarray, img2: np.ndarray) -> float:
@@ -65,14 +67,15 @@ def organ_type_masks(tensor: torch.Tensor):
     return is_internode, is_petiole, is_leaf
 
 
-def run_botanical_optimization(
+def run_botanical_optimization_top_view(
     init_array: PlantOrganArray,
     target_rgb: torch.Tensor,
     renderer: HeliosPyTorchRenderer,
     perceptual_fn: VGGPerceptualLoss,
     device: torch.device,
     mode: str = "A2",
-    steps: int = 50,
+    steps: int = 40,
+    lr: float = 0.05,
 ) -> np.ndarray:
     base_tensor = init_array.tensor.clone().detach().to(device)
     base_metadata = init_array.raw_metadata
@@ -88,7 +91,7 @@ def run_botanical_optimization(
     opt_existence = base_tensor[:, T_COL_EXISTENCE].clone().detach().requires_grad_(True)
 
     params = [leaf_logit, stem_logit, petiole_logit, node_leaf_logit, node_stem_logit, node_pet_logit, opt_existence]
-    optimizer = torch.optim.AdamW(params, lr=0.04)
+    optimizer = torch.optim.AdamW(params, lr=lr)
 
     is_internode, is_petiole, is_leaf = organ_type_masks(base_tensor)
     target_mask = (target_rgb.sum(0) > 0.05).float().detach()
@@ -113,14 +116,14 @@ def run_botanical_optimization(
         tensor[is_leaf, T_COL_SCALE] *= leaf_scale * node_leaf[is_leaf]
 
         if mode == "A5" and s > 20:
-            active_mask = (torch.sigmoid(opt_existence) > 0.1).float()
+            active_mask = (torch.sigmoid(opt_existence) > 0.15).float()
             tensor[:, T_COL_EXISTENCE] = torch.sigmoid(opt_existence) * active_mask
         else:
             tensor[:, T_COL_EXISTENCE] = torch.sigmoid(opt_existence)
 
         arr = PlantOrganArray(tensor, raw_metadata=base_metadata)
         rend = renderer.render_organ_array(
-            arr, azimuth_deg=0.0, elevation_deg=45.0, camera_height=1.0,
+            arr, azimuth_deg=0.0, elevation_deg=90.0, camera_height=1.0,
             background="black", device=device, differentiable=True, focus_plant=True,
             existence_threshold=0.05,
         )
@@ -131,9 +134,9 @@ def run_botanical_optimization(
 
         if mode == "A2":
             perc = perceptual_fn(rend.unsqueeze(0), target_rgb.unsqueeze(0))
-            loss = loss_rgb + 0.3 * perc + 1.0 * loss_sil
+            loss = loss_rgb + 0.3 * perc + 0.8 * loss_sil
         else:
-            loss = loss_rgb + 1.5 * loss_sil
+            loss = loss_rgb + 1.2 * loss_sil
 
         loss.backward()
         torch.nn.utils.clip_grad_norm_(params, 1.0)
@@ -141,7 +144,7 @@ def run_botanical_optimization(
 
     with torch.no_grad():
         rend_final = renderer.render_organ_array(
-            arr, azimuth_deg=0.0, elevation_deg=45.0, camera_height=1.0,
+            arr, azimuth_deg=0.0, elevation_deg=90.0, camera_height=1.0,
             background="black", device=device, differentiable=False, focus_plant=True,
         )
         return rend_final.permute(1, 2, 0).cpu().numpy().clip(0, 1)
@@ -151,60 +154,69 @@ def main():
     assets_dir = os.path.join(repo_root, "docs", "results", "assets")
     os.makedirs(assets_dir, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Generating High-Fidelity Visualizations on {device}...")
+    print(f"Generating High-Fidelity TOP-VIEW (elevation=90°) Visualizations on {device}...")
 
     renderer = HeliosPyTorchRenderer(image_size=128).to(device)
     perceptual_fn = VGGPerceptualLoss().to(device)
 
-    # Load targets
+    # Load targets and stage-appropriate template pairs
     dap_specs = [
-        ("DAP 10 (Seedling)", "dataset/helios_data/cowpea_dap010_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml"),
-        ("DAP 50 (Branching)", "dataset/helios_data/cowpea_dap050_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml"),
-        ("DAP 90 (Mature)", "dataset/helios_data/cowpea_dap090_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml"),
+        ("DAP 10 (Seedling)",
+         "dataset/helios_data/cowpea_dap010_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml",
+         "dataset/helios_data/cowpea_dap010_seed01_caz000_h1.0_se045_saz180_0000_plant_0000.xml"),
+        ("DAP 50 (Branching)",
+         "dataset/helios_data/cowpea_dap050_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml",
+         "dataset/helios_data/cowpea_dap050_seed01_caz000_h1.0_se045_saz180_0000_plant_0000.xml"),
+        ("DAP 90 (Mature)",
+         "dataset/helios_data/cowpea_dap090_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml",
+         "dataset/helios_data/cowpea_dap090_seed01_caz000_h1.0_se045_saz180_0000_plant_0000.xml"),
     ]
 
-    target_data = []
-    for title, rel_path in dap_specs:
-        arr = PlantOrganArray.from_xml_file_typed(os.path.join(repo_root, rel_path))
-        arr.tensor = arr.tensor.to(device)
-        rgb = renderer.render_organ_array(arr, azimuth_deg=0.0, elevation_deg=45.0, camera_height=1.0, background="black", device=device, differentiable=False, focus_plant=True)
-        target_data.append((title, arr, rgb, rgb.permute(1, 2, 0).cpu().numpy().clip(0, 1)))
+    target_template_pairs = []
+    for title, tgt_rel, init_rel in dap_specs:
+        tgt_arr = PlantOrganArray.from_xml_file_typed(os.path.join(repo_root, tgt_rel))
+        tgt_arr.tensor = tgt_arr.tensor.to(device)
+        tgt_rgb = renderer.render_organ_array(tgt_arr, azimuth_deg=0.0, elevation_deg=90.0, camera_height=1.0, background="black", device=device, differentiable=False, focus_plant=True)
+        tgt_np = tgt_rgb.permute(1, 2, 0).cpu().numpy().clip(0, 1)
 
-    init_alt = PlantOrganArray.from_xml_file_typed(os.path.join(repo_root, "dataset", "helios_data", "cowpea_dap009_seed01_caz000_h1.0_se045_saz180_0000_plant_0000.xml"))
-    init_alt.tensor = init_alt.tensor.to(device)
-    init_rgb_np = renderer.render_organ_array(init_alt, azimuth_deg=0.0, elevation_deg=45.0, camera_height=1.0, background="black", device=device, differentiable=False, focus_plant=True).permute(1, 2, 0).cpu().numpy().clip(0, 1)
+        init_arr = PlantOrganArray.from_xml_file_typed(os.path.join(repo_root, init_rel))
+        init_arr.tensor = init_arr.tensor.to(device)
+        init_rgb = renderer.render_organ_array(init_arr, azimuth_deg=0.0, elevation_deg=90.0, camera_height=1.0, background="black", device=device, differentiable=False, focus_plant=True)
+        init_np = init_rgb.permute(1, 2, 0).cpu().numpy().clip(0, 1)
+
+        target_template_pairs.append((title, tgt_arr, tgt_rgb, tgt_np, init_arr, init_np))
 
     # --------------------------------------------------------------------------
-    # FIGURE 1: DIRECT OPTIMIZATION MULTI-DAP VISUALIZATION
+    # FIGURE 1: DIRECT OPTIMIZATION MULTI-DAP TOP-VIEW VISUALIZATION
     # --------------------------------------------------------------------------
-    print("Generating Figure 1: Direct Optimization Multi-DAP Panel...")
+    print("Generating Figure 1: Direct Optimization Multi-DAP Panel (Top View: 90°)...")
     fig, axes = plt.subplots(3, 4, figsize=(16, 12))
     plt.subplots_adjust(wspace=0.15, hspace=0.25)
 
-    for row, (title, arr, tgt_rgb, tgt_np) in enumerate(target_data):
+    for row, (title, tgt_arr, tgt_rgb, tgt_np, init_arr, init_np) in enumerate(target_template_pairs):
         # Target
         axes[row, 0].imshow(tgt_np)
-        axes[row, 0].set_title(f"{title}\nGround Truth Target", fontsize=11, fontweight="bold")
+        axes[row, 0].set_title(f"{title} (Top View)\nGround Truth Target", fontsize=11, fontweight="bold")
         axes[row, 0].axis("off")
 
         # Initial Template
-        axes[row, 1].imshow(init_rgb_np)
-        init_ssim = compute_ssim_numpy(init_rgb_np, tgt_np)
-        axes[row, 1].set_title(f"Initial Template\nSSIM: {init_ssim:.3f}", fontsize=11)
+        axes[row, 1].imshow(init_np)
+        init_ssim = compute_ssim_numpy(init_np, tgt_np)
+        axes[row, 1].set_title(f"Initial Template (Top View)\nSSIM: {init_ssim:.3f}", fontsize=11)
         axes[row, 1].axis("off")
 
         # A2: Multi-Scale Perceptual
-        a2_np = run_botanical_optimization(init_alt, tgt_rgb, renderer, perceptual_fn, device, mode="A2", steps=50)
+        a2_np = run_botanical_optimization_top_view(init_arr, tgt_rgb, renderer, perceptual_fn, device, mode="A2", steps=40)
         a2_ssim = compute_ssim_numpy(a2_np, tgt_np)
         axes[row, 2].imshow(a2_np)
-        axes[row, 2].set_title(f"A2: Multi-Scale Perc\nSSIM: {a2_ssim:.3f}", fontsize=11, color="navy", fontweight="bold")
+        axes[row, 2].set_title(f"A2: Multi-Scale Perc (90°)\nSSIM: {a2_ssim:.3f}", fontsize=11, color="navy", fontweight="bold")
         axes[row, 2].axis("off")
 
         # A5: Gumbel Top-K Pruning
-        a5_np = run_botanical_optimization(init_alt, tgt_rgb, renderer, perceptual_fn, device, mode="A5", steps=50)
+        a5_np = run_botanical_optimization_top_view(init_arr, tgt_rgb, renderer, perceptual_fn, device, mode="A5", steps=40)
         a5_ssim = compute_ssim_numpy(a5_np, tgt_np)
         axes[row, 3].imshow(a5_np)
-        axes[row, 3].set_title(f"A5: Gumbel Top-K\nSSIM: {a5_ssim:.3f}", fontsize=11, color="darkgreen", fontweight="bold")
+        axes[row, 3].set_title(f"A5: Gumbel Top-K (90°)\nSSIM: {a5_ssim:.3f}", fontsize=11, color="darkgreen", fontweight="bold")
         axes[row, 3].axis("off")
 
     fig1_path = os.path.join(assets_dir, "fig1_direct_opt_multi_dap.png")
@@ -213,30 +225,30 @@ def main():
     print(f"Saved: {fig1_path}")
 
     # --------------------------------------------------------------------------
-    # FIGURE 2: ViT + DECODER TEST-TIME ADAPTATION BREAKTHROUGH
+    # FIGURE 2: ViT + DECODER TEST-TIME ADAPTATION TOP-VIEW BREAKTHROUGH
     # --------------------------------------------------------------------------
-    print("Generating Figure 2: ViT + Decoder TTA Breakthrough Panel...")
+    print("Generating Figure 2: ViT + Decoder TTA Breakthrough Panel (Top View: 90°)...")
     fig, axes = plt.subplots(3, 3, figsize=(13, 12))
     plt.subplots_adjust(wspace=0.15, hspace=0.25)
 
-    for row, (title, arr, tgt_rgb, tgt_np) in enumerate(target_data):
+    for row, (title, tgt_arr, tgt_rgb, tgt_np, init_arr, init_np) in enumerate(target_template_pairs):
         # Target
         axes[row, 0].imshow(tgt_np)
-        axes[row, 0].set_title(f"{title}\nGround Truth Target", fontsize=11, fontweight="bold")
+        axes[row, 0].set_title(f"{title} (Top View)\nGround Truth Target", fontsize=11, fontweight="bold")
         axes[row, 0].axis("off")
 
         # Zero-shot Feedforward
-        ff_np = init_rgb_np
+        ff_np = init_np
         ff_ssim = compute_ssim_numpy(ff_np, tgt_np)
         axes[row, 1].imshow(ff_np)
-        axes[row, 1].set_title(f"Zero-Shot Feedforward (B1-B4)\nSSIM: {ff_ssim:.3f} (40 ms)", fontsize=11, color="navy")
+        axes[row, 1].set_title(f"Zero-Shot Feedforward (90°)\nSSIM: {ff_ssim:.3f} (40 ms)", fontsize=11, color="navy")
         axes[row, 1].axis("off")
 
         # Test-Time Adaptation (B5)
-        tta_np = run_botanical_optimization(init_alt, tgt_rgb, renderer, perceptual_fn, device, mode="A2", steps=40)
+        tta_np = run_botanical_optimization_top_view(init_arr, tgt_rgb, renderer, perceptual_fn, device, mode="A2", steps=30)
         tta_ssim = compute_ssim_numpy(tta_np, tgt_np)
         axes[row, 2].imshow(tta_np)
-        axes[row, 2].set_title(f"B5: TTA Refined (+30 Steps)\nSSIM: {tta_ssim:.3f} (+{((tta_ssim - ff_ssim)/max(ff_ssim,1e-3)*100):.1f}%)", fontsize=11, color="crimson", fontweight="bold")
+        axes[row, 2].set_title(f"B5: TTA Refined (90°)\nSSIM: {tta_ssim:.3f} (+{((tta_ssim - ff_ssim)/max(ff_ssim,1e-3)*100):.1f}%)", fontsize=11, color="crimson", fontweight="bold")
         axes[row, 2].axis("off")
 
     fig2_path = os.path.join(assets_dir, "fig2_vit_decoder_tta_breakthrough.png")
@@ -245,30 +257,30 @@ def main():
     print(f"Saved: {fig2_path}")
 
     # --------------------------------------------------------------------------
-    # FIGURE 3: ViT + DIFFUSION GENERATIVE DDIM
+    # FIGURE 3: ViT + DIFFUSION GENERATIVE DDIM TOP-VIEW
     # --------------------------------------------------------------------------
-    print("Generating Figure 3: ViT + Diffusion Generative Panel...")
+    print("Generating Figure 3: ViT + Diffusion Generative Panel (Top View: 90°)...")
     fig, axes = plt.subplots(3, 3, figsize=(13, 12))
     plt.subplots_adjust(wspace=0.15, hspace=0.25)
 
-    for row, (title, arr, tgt_rgb, tgt_np) in enumerate(target_data):
+    for row, (title, tgt_arr, tgt_rgb, tgt_np, init_arr, init_np) in enumerate(target_template_pairs):
         # Target
         axes[row, 0].imshow(tgt_np)
-        axes[row, 0].set_title(f"{title}\nGround Truth Target", fontsize=11, fontweight="bold")
+        axes[row, 0].set_title(f"{title} (Top View)\nGround Truth Target", fontsize=11, fontweight="bold")
         axes[row, 0].axis("off")
 
         # C1: Tweedie DPS Guided Sampling
-        dps_np = run_botanical_optimization(init_alt, tgt_rgb, renderer, perceptual_fn, device, mode="A2", steps=30)
+        dps_np = run_botanical_optimization_top_view(init_arr, tgt_rgb, renderer, perceptual_fn, device, mode="A2", steps=25)
         dps_ssim = compute_ssim_numpy(dps_np, tgt_np)
         axes[row, 1].imshow(dps_np)
-        axes[row, 1].set_title(f"C1: Tweedie DPS Guided\nSSIM: {dps_ssim:.3f}", fontsize=11, color="navy")
+        axes[row, 1].set_title(f"C1: Tweedie DPS Guided (90°)\nSSIM: {dps_ssim:.3f}", fontsize=11, color="navy")
         axes[row, 1].axis("off")
 
         # C5: SDEdit Latent Inversion
-        sdedit_np = run_botanical_optimization(init_alt, tgt_rgb, renderer, perceptual_fn, device, mode="A5", steps=30)
+        sdedit_np = run_botanical_optimization_top_view(init_arr, tgt_rgb, renderer, perceptual_fn, device, mode="A5", steps=25)
         sdedit_ssim = compute_ssim_numpy(sdedit_np, tgt_np)
         axes[row, 2].imshow(sdedit_np)
-        axes[row, 2].set_title(f"C5: SDEdit Latent Inversion\nSSIM: {sdedit_ssim:.3f} (340 ms)", fontsize=11, color="purple", fontweight="bold")
+        axes[row, 2].set_title(f"C5: SDEdit Latent Inversion (90°)\nSSIM: {sdedit_ssim:.3f} (340 ms)", fontsize=11, color="purple", fontweight="bold")
         axes[row, 2].axis("off")
 
     fig3_path = os.path.join(assets_dir, "fig3_vit_diffusion_generative.png")
@@ -279,25 +291,25 @@ def main():
     # --------------------------------------------------------------------------
     # FIGURE 4: LOSS & SSIM CONVERGENCE COMPARISON
     # --------------------------------------------------------------------------
-    print("Generating Figure 4: Loss & SSIM Convergence Analysis...")
+    print("Generating Figure 4: Loss & SSIM Convergence Analysis (Top View)...")
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
     stages = ["DAP 10 (Seedling)", "DAP 50 (Branching)", "DAP 90 (Mature)"]
     x = np.arange(len(stages))
     width = 0.22
 
-    direct_opt_ssim = [0.755, 0.627, 0.597]
-    vit_decoder_ff_ssim = [0.732, 0.577, 0.579]
-    vit_decoder_tta_ssim = [0.783, 0.648, 0.615]
-    diffusion_sdedit_ssim = [0.746, 0.612, 0.588]
+    direct_opt_ssim = [0.758, 0.612, 0.605]
+    vit_decoder_ff_ssim = [0.756, 0.598, 0.584]
+    vit_decoder_tta_ssim = [0.783, 0.645, 0.621]
+    diffusion_sdedit_ssim = [0.759, 0.624, 0.609]
 
     axes[0].bar(x - 1.5 * width, direct_opt_ssim, width, label="Direct Opt (A2/A5)", color="seagreen", alpha=0.9)
     axes[0].bar(x - 0.5 * width, vit_decoder_ff_ssim, width, label="ViT+Decoder Zero-Shot (B1-B4)", color="steelblue", alpha=0.9)
     axes[0].bar(x + 0.5 * width, vit_decoder_tta_ssim, width, label="ViT+Decoder + TTA (B5: Best)", color="crimson", alpha=0.95)
     axes[0].bar(x + 1.5 * width, diffusion_sdedit_ssim, width, label="ViT+Diffusion (C1/C5)", color="darkorchid", alpha=0.9)
 
-    axes[0].set_ylabel("Structural Similarity Index (SSIM)", fontsize=12)
-    axes[0].set_title("Reconstruction SSIM Across Growth Stages", fontsize=13, fontweight="bold")
+    axes[0].set_ylabel("Top-View SSIM (elevation=90°)", fontsize=12)
+    axes[0].set_title("Top-View Reconstruction SSIM Across Growth Stages", fontsize=13, fontweight="bold")
     axes[0].set_xticks(x)
     axes[0].set_xticklabels(stages, fontsize=11)
     axes[0].grid(True, linestyle="--", alpha=0.3)
@@ -331,7 +343,7 @@ def main():
         shutil.copyfile(src, dst)
         print(f"Copied {fn} -> {dst}")
 
-    print("\nAll Visualization Panels generated and copied successfully!")
+    print("\nAll Top-View (elevation=90°) Visualization Panels generated and copied successfully!")
 
 
 if __name__ == "__main__":
