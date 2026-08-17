@@ -42,15 +42,15 @@ def compute_focus_plant_camera(
         bb_min_z = float(verts[:, 2].min().item())
         bb_max_z = float(verts[:, 2].max().item())
 
-        canopy_center = torch.tensor([
-            (bb_min_x + bb_max_x) * 0.5,
-            (bb_min_y + bb_max_y) * 0.5,
-            (bb_min_z + bb_max_z) * 0.5
-        ], device=device, dtype=torch.float32)
-
-        span_x = (bb_max_x - bb_min_x) * 1.05
-        span_y = (bb_max_y - bb_min_y) * 1.05
-        max_span = max(span_x, span_y, 0.05)
+        # Compute maximum radial distance from origin (0,0) and bounding spans
+        max_rad_x = max(abs(bb_min_x), abs(bb_max_x))
+        max_rad_y = max(abs(bb_min_y), abs(bb_max_y))
+        max_radius = max(max_rad_x, max_rad_y)
+        
+        # 1.25x margin ensures full canopy visibility without clipping
+        span_x = (bb_max_x - bb_min_x) * 1.25
+        span_y = (bb_max_y - bb_min_y) * 1.25
+        max_span = max(max_radius * 2.3, span_x, span_y, 0.20)
     else:
         canopy_center = torch.tensor([0.0, 0.0, 0.0], device=device, dtype=torch.float32)
         max_span = 1.0
@@ -62,7 +62,7 @@ def compute_focus_plant_camera(
     if hfov_override_deg is not None:
         hfov_rad = math.radians(hfov_override_deg)
     elif focus_plant:
-        # Auto-fit FOV to plant bounding box + 5% margin matching Helios C++ calculateFOV(max_span, cam_h)
+        # Auto-fit FOV to plant bounding box + generous margin for camera_height = 5.0
         half_span = max_span * 0.5
         hfov_rad = 2.0 * math.atan(half_span / max(camera_height, 1e-3))
         hfov_rad = max(hfov_rad, math.radians(2.0))

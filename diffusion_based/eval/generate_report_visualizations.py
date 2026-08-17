@@ -204,7 +204,7 @@ def run_advanced_botanical_optimization(
 
         arr = PlantOrganArray(tensor, raw_metadata=base_metadata)
         rend = renderer.render_organ_array(
-            arr, azimuth_deg=0.0, elevation_deg=90.0, camera_height=1.0,
+            arr, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0,
             background="black", device=device, differentiable=True, focus_plant=True,
             existence_threshold=0.05,
         )
@@ -228,7 +228,7 @@ def run_advanced_botanical_optimization(
 
     with torch.no_grad():
         rend_final = renderer.render_organ_array(
-            arr, azimuth_deg=0.0, elevation_deg=90.0, camera_height=1.0,
+            arr, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0,
             background="black", device=device, differentiable=False, focus_plant=True,
         )
         return rend_final.permute(1, 2, 0).cpu().numpy().clip(0, 1)
@@ -260,12 +260,12 @@ def main():
     for title, tgt_rel, init_rel in dap_specs:
         tgt_arr = PlantOrganArray.from_xml_file_typed(os.path.join(repo_root, tgt_rel))
         tgt_arr.tensor = tgt_arr.tensor.to(device)
-        tgt_rgb = renderer.render_organ_array(tgt_arr, azimuth_deg=0.0, elevation_deg=90.0, camera_height=1.0, background="black", device=device, differentiable=False, focus_plant=True)
+        tgt_rgb = renderer.render_organ_array(tgt_arr, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, background="black", device=device, differentiable=False, focus_plant=True)
         tgt_np = tgt_rgb.permute(1, 2, 0).cpu().numpy().clip(0, 1)
 
         init_arr = PlantOrganArray.from_xml_file_typed(os.path.join(repo_root, init_rel))
         init_arr.tensor = init_arr.tensor.to(device)
-        init_rgb = renderer.render_organ_array(init_arr, azimuth_deg=0.0, elevation_deg=90.0, camera_height=1.0, background="black", device=device, differentiable=False, focus_plant=True)
+        init_rgb = renderer.render_organ_array(init_arr, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, background="black", device=device, differentiable=False, focus_plant=True)
         init_np = init_rgb.permute(1, 2, 0).cpu().numpy().clip(0, 1)
 
         target_template_pairs.append((title, tgt_arr, tgt_rgb, tgt_np, init_arr, init_np))
