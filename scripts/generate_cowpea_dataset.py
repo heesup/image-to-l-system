@@ -133,19 +133,28 @@ def main():
 
     pending = list(jobs)
     retries_left = {j: args.max_retries for j in jobs}
-    # Map job->worker assignment: keep it simple, submit in batches.
-    attempt = 0
-    while pending:
-        attempt += 1
-        batch = pending[:args.workers]
-        pending = pending[args.workers:]
+    active_futures = {}
 
-        with ProcessPoolExecutor(max_workers=args.workers) as ex:
-            futs = [ex.submit(render_one, j) for j in batch]
-            for fut in as_completed(futs):
+    with ProcessPoolExecutor(max_workers=args.workers) as ex:
+        # Initial submission of up to workers * 2 tasks to keep pipeline full
+        while pending and len(active_futures) < args.workers * 2:
+            job = pending.pop(0)
+            fut = ex.submit(render_one, job)
+            active_futures[fut] = job
+
+        while active_futures:
+            # Wait for at least one worker to finish
+            done_futs = []
+            for fut in as_completed(active_futures):
+                done_futs.append(fut)
+                break  # Process immediately as each finishes to refill worker queue
+
+            for fut in done_futs:
+                job = active_futures.pop(fut)
                 res = fut.result()
                 done += 1
                 stats[res["status"]] = stats.get(res["status"], 0) + 1
+
                 if res["status"] == "ok":
                     ok += 1
                     print(f"[{done}/{total}] dap{res['dap']:03d}_seed{res['seed']:02d} OK "
@@ -157,27 +166,31 @@ def main():
                     fail += 1
                     print(f"[{done}/{total}] dap{res['dap']:03d}_seed{res['seed']:02d} "
                           f"{res['status']}: {res.get('stderr', '')[-200:]}", flush=True)
+
+                    # Requeue if retries left
+                    dap, seed, od, pf, jid, ow = job
+                    name = _sample_name(dap, seed)
+                    if not _complete(od, name) and retries_left[job] > 0:
+                        retries_left[job] -= 1
+                        pending.append(job)
+
                 with open(log_path, "a") as f:
                     f.write(json.dumps({"dap": res["dap"], "seed": res["seed"],
                                         "status": res["status"], "elapsed": res["elapsed"]}) + "\n")
 
-        # Requeue failed jobs up to max_retries (check by file existence)
-        new_pending = []
-        for j in batch:
-            dap, seed, od, pf, jid, ow = j
-            name = _sample_name(dap, seed)
-            if not _complete(od, name):
-                retries_left[j] -= 1
-                if retries_left[j] >= 0:
-                    new_pending.append(j)
-        pending = new_pending + pending
+                # Refill worker pool immediately
+                while pending and len(active_futures) < args.workers * 2:
+                    next_job = pending.pop(0)
+                    new_fut = ex.submit(render_one, next_job)
+                    active_futures[new_fut] = next_job
 
-        elapsed = time.time() - t_start
-        rate = done / max(elapsed, 1e-6)
-        remaining = len(pending)
-        eta = remaining / max(rate, 1e-6)
-        print(f"  progress: {done}/{total} done, {stats['ok']} ok, {stats['skip']} skip, "
-              f"{fail} fail, ETA {eta/60:.1f} min", flush=True)
+                elapsed = time.time() - t_start
+                rate = done / max(elapsed, 1e-6)
+                remaining = len(pending) + len(active_futures)
+                eta = remaining / max(rate, 1e-6)
+                if done % 10 == 0 or not active_futures:
+                    print(f"  progress: {done}/{total} done, {stats['ok']} ok, {stats['skip']} skip, "
+                          f"{fail} fail, ETA {eta/60:.1f} min", flush=True)
 
     print("\n" + "=" * 60)
     print(f"DATASET GENERATION COMPLETE: {stats}")

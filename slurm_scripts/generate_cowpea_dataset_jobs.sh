@@ -104,8 +104,7 @@ for ((job_idx=0; job_idx<NUM_JOBS; job_idx++)); do
 
     JOB_NAME="cowpea_ds_${job_idx}_dap${JOB_DAP_START}-${JOB_DAP_END}"
     JOB_SCRIPT="${BATCH_LOG_DIR}/job_${job_idx}_dap${JOB_DAP_START}-${JOB_DAP_END}.sh"
-    JOB_OUT="${BATCH_LOG_DIR}/${JOB_NAME}_%j.out"
-    JOB_ERR="${BATCH_LOG_DIR}/${JOB_NAME}_%j.err"
+    JOB_LOG="${BATCH_LOG_DIR}/${JOB_NAME}_%j.log"
 
     cat > "$JOB_SCRIPT" << EOF
 #!/bin/bash
@@ -118,8 +117,8 @@ for ((job_idx=0; job_idx<NUM_JOBS; job_idx++)); do
 #SBATCH --gres=gpu:1
 #SBATCH --mem=${MEM_PER_JOB}
 #SBATCH --time=${TIME_LIMIT}
-#SBATCH --output=${JOB_OUT}
-#SBATCH --error=${JOB_ERR}
+#SBATCH --output=${JOB_LOG}
+#SBATCH --error=${JOB_LOG}
 
 echo "=============================================="
 echo "SLURM Job: \${SLURM_JOB_NAME} (ID: \${SLURM_JOB_ID})"
