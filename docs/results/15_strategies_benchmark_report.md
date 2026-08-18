@@ -65,6 +65,21 @@ $$\mathbf{p}_i = [\text{OrganType}_i, \mathbf{b}_i^{(x, y, z)}, \mathbf{r}_i^{(0
 
 ---
 
+### Figure 8: Multi-Modal render_multimodal() Output — RGB · Depth · Foreground Mask · Organ-Type Map
+
+* **Description**: Single-pass `render_multimodal()` output showing all 4 channels simultaneously across DAP 10, 50, 90.
+  - **Depth Map** (plasma colormap, closer = brighter): captures canopy layering and occlusion structure — key for Phase 2 DepthAnythingV2 supervision
+  - **Foreground Mask** (exact, from rasterization triangle coverage): directly drives background-free mSSIM and FG-IoU
+  - **Organ-Type Map**: per-organ-type color coded — enables organ-specific supervision signals
+
+![Figure 8: Multi-Modal Render Outputs](assets/fig8_multimodal_depth_mask.png)
+
+> [!NOTE]
+> Depth and mask are rendered in a **single nvdiffrast rasterization pass** alongside RGB — no extra render cost.
+> The Organ-Type Map clearly shows Root/Shoot/Internode (brown), Leaf (dark green), Petiole (olive), Flower (yellow) distribution.
+
+---
+
 ### Figure 2: Quantitative 14D Direct Rendering Identity Across Growth Stages
 
 > [!NOTE]
