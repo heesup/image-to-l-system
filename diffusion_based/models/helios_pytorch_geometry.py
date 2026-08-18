@@ -31,6 +31,7 @@ from diffusion_based.models.plant_organ_array import (
     COL_HAS_BUD, COL_BUD_STATE, COL_PED_LEN, COL_PED_RAD, COL_PED_PITCH, COL_PED_CURV, COL_PED_ROLL,
     COL_NUM_FLOWERS, COL_FLOWER_OFFSET, COL_FL0_PITCH, COL_FL0_YAW, COL_FL0_ROLL, COL_FL0_AZIMUTH, COL_FL0_BASE_SCALE,
     T_COL_PLANT_ID, T_COL_PLANT_AGE, T_COL_SHOOT_ID,
+    T_COL_BASE_X, T_COL_BASE_Y, T_COL_BASE_Z,
     T_COL_PARENT_SHOOT_ID, T_COL_PARENT_NODE_IDX, T_COL_PARENT_PETIOLE_IDX,
     T_COL_PHYTOMER_IDX, T_COL_CHILD_INDEX, T_COL_ORGAN_TYPE,
     T_COL_LENGTH, T_COL_RADIUS, T_COL_SCALE, T_COL_PITCH, T_COL_YAW, T_COL_ROLL,
@@ -42,6 +43,10 @@ from diffusion_based.models.plant_organ_array import (
     T_COL_FLOWER_AZIMUTH, T_COL_FLOWER_OFFSET, T_COL_EXISTENCE,
     ORGAN_ROOT_META, ORGAN_SHOOT_META, ORGAN_INTERNODE, ORGAN_PETIOLE, ORGAN_LEAF,
     ORGAN_BUD, ORGAN_PEDUNCLE, ORGAN_FLOWER,
+    P14_COL_ORGAN_TYPE, P14_COL_BASE_X, P14_COL_BASE_Y, P14_COL_BASE_Z,
+    P14_COL_ROT_0, P14_COL_ROT_1, P14_COL_ROT_2, P14_COL_ROT_3, P14_COL_ROT_4, P14_COL_ROT_5,
+    P14_COL_SCALE_X, P14_COL_SCALE_Y, P14_COL_SCALE_Z, P14_COL_EXISTENCE, NUM_FEATURES_14D,
+    rotation_matrix_to_6d, rotation_6d_to_matrix,
 )
 
 
@@ -566,7 +571,17 @@ class HeliosPlantGeometryBuilder:
             empty3 = torch.zeros((0, 3), dtype=torch.float32, device=device)
             empty_f = torch.zeros((0, 3), dtype=torch.int64, device=device)
             empty_o = torch.zeros((0,), dtype=torch.int64, device=device)
-            return {'vertices': empty3, 'faces': empty_f, 'normals': empty3, 'colors': empty3, 'organ_types': empty_o}
+            empty_p14 = torch.zeros((0, NUM_FEATURES_14D), dtype=torch.float32, device=device)
+            return {'vertices': empty3, 'faces': empty_f, 'normals': empty3, 'colors': empty3, 'organ_types': empty_o, 'part_transforms_14d': empty_p14}
+
+        part_transforms_14d = torch.zeros((N, NUM_FEATURES_14D), dtype=torch.float32, device=device)
+        part_transforms_14d[:, P14_COL_ORGAN_TYPE] = t[:, T_COL_ORGAN_TYPE]
+        part_transforms_14d[:, P14_COL_EXISTENCE] = existence
+        part_transforms_14d[:, P14_COL_SCALE_X] = 1.0
+        part_transforms_14d[:, P14_COL_SCALE_Y] = 1.0
+        part_transforms_14d[:, P14_COL_SCALE_Z] = 1.0
+        eye_6d = rotation_matrix_to_6d(torch.eye(3, device=device))
+        part_transforms_14d[:, P14_COL_ROT_0:P14_COL_ROT_5+1] = eye_6d
 
         # ------------------------------------------------------------------
         # Index maps over the typed per-organ rows
@@ -586,29 +601,49 @@ class HeliosPlantGeometryBuilder:
         parent_pets = t_cpu[:, T_COL_PARENT_PETIOLE_IDX].astype(int)
         child_idxs = t_cpu[:, T_COL_CHILD_INDEX].astype(int)
 
-        for idx in range(N):
+        for idx, ot in enumerate(otypes):
             sid = int(sids[idx])
             p_idx = int(p_idxs[idx])
-            otype = int(otypes[idx])
-            if otype == ORGAN_SHOOT_META:
+            otype = ot
+            if otype == ORGAN_ROOT_META:
+                part_transforms_14d[idx, P14_COL_EXISTENCE] = 1.0
+                part_transforms_14d[idx, P14_COL_BASE_X] = t[idx, T_COL_BASE_X]
+                part_transforms_14d[idx, P14_COL_BASE_Y] = t[idx, T_COL_BASE_Y]
+                part_transforms_14d[idx, P14_COL_BASE_Z] = t[idx, T_COL_BASE_Z]
+            elif otype == ORGAN_SHOOT_META:
                 shoot_meta_row[sid] = idx
             elif otype == ORGAN_INTERNODE:
                 internode_rows.setdefault(sid, []).append((p_idx, idx))
+                part_transforms_14d[idx, P14_COL_SCALE_X] = t[idx, T_COL_RADIUS]
+                part_transforms_14d[idx, P14_COL_SCALE_Y] = t[idx, T_COL_RADIUS]
+                part_transforms_14d[idx, P14_COL_SCALE_Z] = t[idx, T_COL_LENGTH]
             elif otype == ORGAN_PETIOLE:
                 pet_i = int(parent_pets[idx])
                 petiole_row[(sid, p_idx, pet_i)] = idx
+                part_transforms_14d[idx, P14_COL_SCALE_X] = t[idx, T_COL_RADIUS]
+                part_transforms_14d[idx, P14_COL_SCALE_Y] = t[idx, T_COL_RADIUS]
+                part_transforms_14d[idx, P14_COL_SCALE_Z] = t[idx, T_COL_LENGTH]
             elif otype == ORGAN_LEAF:
                 pet_i = int(parent_pets[idx])
                 lf_idx = int(child_idxs[idx])
                 leaf_rows.setdefault((sid, p_idx, pet_i), {})[lf_idx] = idx
+                part_transforms_14d[idx, P14_COL_SCALE_X] = t[idx, T_COL_SCALE]
+                part_transforms_14d[idx, P14_COL_SCALE_Y] = t[idx, T_COL_SCALE]
+                part_transforms_14d[idx, P14_COL_SCALE_Z] = t[idx, T_COL_SCALE]
             elif otype == ORGAN_BUD:
                 bud_idx = int(child_idxs[idx])
                 bud_rows.setdefault((sid, p_idx), []).append((bud_idx, idx))
             elif otype == ORGAN_PEDUNCLE:
                 peduncle_rows[(sid, p_idx)] = idx
+                part_transforms_14d[idx, P14_COL_SCALE_X] = t[idx, T_COL_RADIUS]
+                part_transforms_14d[idx, P14_COL_SCALE_Y] = t[idx, T_COL_RADIUS]
+                part_transforms_14d[idx, P14_COL_SCALE_Z] = t[idx, T_COL_LENGTH]
             elif otype == ORGAN_FLOWER:
                 fl_idx = int(child_idxs[idx])
                 flower_rows.setdefault((sid, p_idx), []).append((fl_idx, idx))
+                part_transforms_14d[idx, P14_COL_SCALE_X] = t[idx, T_COL_SCALE]
+                part_transforms_14d[idx, P14_COL_SCALE_Y] = t[idx, T_COL_SCALE]
+                part_transforms_14d[idx, P14_COL_SCALE_Z] = t[idx, T_COL_SCALE]
 
         for sid in internode_rows:
             internode_rows[sid].sort(key=lambda x: x[0])
@@ -747,6 +782,14 @@ class HeliosPlantGeometryBuilder:
             base_roll_rad = meta_row[T_COL_ROLL] * deg2rad
 
             shoot_base_pos, parent_internode_axis, parent_petiole_axis = compute_shoot_base(sid, meta_row)
+            part_transforms_14d[meta_idx, P14_COL_EXISTENCE] = 1.0
+            part_transforms_14d[meta_idx, P14_COL_BASE_X:P14_COL_BASE_Z+1] = shoot_base_pos
+            R_shoot = (
+                rotr_z(base_yaw_rad, device) @
+                rotr_y(-base_pitch_rad, device) @
+                rotr_x(base_roll_rad, device)
+            )
+            part_transforms_14d[meta_idx, P14_COL_ROT_0:P14_COL_ROT_5+1] = rotation_matrix_to_6d(R_shoot)
 
             curr_pos = shoot_base_pos.clone()
             prev_internode_axis = parent_internode_axis
@@ -844,6 +887,17 @@ class HeliosPlantGeometryBuilder:
                 inode_tip_axis = step_dir / (torch.linalg.norm(step_dir) + 1e-6)
                 node_internode_tip_axes[n_idx] = get_axis_vector_torch(inode_line, 1.0)
 
+                part_transforms_14d[n_idx, P14_COL_EXISTENCE] = 1.0
+                part_transforms_14d[n_idx, P14_COL_BASE_X:P14_COL_BASE_Z+1] = inode_line[0]
+                part_transforms_14d[n_idx, P14_COL_SCALE_X] = inode_rad
+                part_transforms_14d[n_idx, P14_COL_SCALE_Y] = inode_rad
+                part_transforms_14d[n_idx, P14_COL_SCALE_Z] = inode_len
+                R_inode = _get_rotation_matrix_between_vectors_batch(
+                    torch.tensor([0.0, 0.0, 1.0], device=device).unsqueeze(0),
+                    inode_tip_axis.unsqueeze(0)
+                ).squeeze(0)
+                part_transforms_14d[n_idx, P14_COL_ROT_0:P14_COL_ROT_5+1] = rotation_matrix_to_6d(R_inode)
+
                 if os.environ.get("HELIOS_DUMP_GEOM"):
                     tp = curr_pos.detach().cpu().numpy()
                     print(f"PTDEBUG I {sid} {p_idx} 1 {tp[0]:.6f} {tp[1]:.6f} {tp[2]:.6f}", file=sys.stderr)
@@ -936,6 +990,17 @@ class HeliosPlantGeometryBuilder:
                     pet_tip_axis = pet_line[-1] - pet_line[-2]
                     pet_tip_axis = pet_tip_axis / (torch.linalg.norm(pet_tip_axis) + 1e-8)
                     pet_line_stored[petiole_index] = pet_line.clone()
+
+                    part_transforms_14d[pet_row, P14_COL_EXISTENCE] = 1.0
+                    part_transforms_14d[pet_row, P14_COL_BASE_X:P14_COL_BASE_Z+1] = pet_base
+                    part_transforms_14d[pet_row, P14_COL_SCALE_X] = p_rad
+                    part_transforms_14d[pet_row, P14_COL_SCALE_Y] = p_rad
+                    part_transforms_14d[pet_row, P14_COL_SCALE_Z] = p_len
+                    R_pet = _get_rotation_matrix_between_vectors_batch(
+                        torch.tensor([0.0, 0.0, 1.0], device=device).unsqueeze(0),
+                        pet_tip_axis.unsqueeze(0)
+                    ).squeeze(0)
+                    part_transforms_14d[pet_row, P14_COL_ROT_0:P14_COL_ROT_5+1] = rotation_matrix_to_6d(R_pet)
 
                     if os.environ.get("HELIOS_DUMP_GEOM"):
                         iax = inode_tip_axis.detach().cpu().numpy()
@@ -1031,6 +1096,13 @@ class HeliosPlantGeometryBuilder:
                                 v_lf_rot = (R_leaf @ v_lf_b.T).T
                                 n_lf = (R_leaf @ n_lf_b.T).T
                                 v_lf = v_lf_rot + leaf_base
+
+                                part_transforms_14d[leaf_row_idx, P14_COL_EXISTENCE] = 1.0
+                                part_transforms_14d[leaf_row_idx, P14_COL_BASE_X:P14_COL_BASE_Z+1] = leaf_base
+                                part_transforms_14d[leaf_row_idx, P14_COL_SCALE_X] = l_scale
+                                part_transforms_14d[leaf_row_idx, P14_COL_SCALE_Y] = l_scale
+                                part_transforms_14d[leaf_row_idx, P14_COL_SCALE_Z] = l_scale
+                                part_transforms_14d[leaf_row_idx, P14_COL_ROT_0:P14_COL_ROT_5+1] = rotation_matrix_to_6d(R_leaf)
 
                                 if os.environ.get("HELIOS_DUMP_GEOM"):
                                     lb = leaf_base.detach().cpu().numpy()
@@ -1170,6 +1242,7 @@ class HeliosPlantGeometryBuilder:
                         base_pitch = bud_index * 0.1 * math.pi / float(Nbuds)
                         base_yaw = -0.25 * math.pi + bud_index * 0.5 * math.pi / float(Nbuds)
                     base_roll = 0.0
+                    part_transforms_14d[bud_row_idx, P14_COL_BASE_X:P14_COL_BASE_Z+1] = bud_base
 
                     # ---- Peduncle params ----
                     ped_row_idx = peduncle_rows.get((sid, p_idx))
@@ -1275,6 +1348,19 @@ class HeliosPlantGeometryBuilder:
                         all_organs.append(torch.full((v_ped.shape[0],), self.OT_PEDUNCLE, dtype=torch.int64, device=device))
                         vert_offset += v_ped.shape[0]
 
+                    part_transforms_14d[ped_row_idx, P14_COL_EXISTENCE] = 1.0
+                    part_transforms_14d[ped_row_idx, P14_COL_BASE_X:P14_COL_BASE_Z+1] = ped_line[0]
+                    part_transforms_14d[ped_row_idx, P14_COL_SCALE_X] = p_rad
+                    part_transforms_14d[ped_row_idx, P14_COL_SCALE_Y] = p_rad
+                    part_transforms_14d[ped_row_idx, P14_COL_SCALE_Z] = p_len
+                    ped_axis_dir = (ped_line[-1] - ped_line[0])
+                    ped_axis_dir = ped_axis_dir / (torch.linalg.norm(ped_axis_dir) + 1e-8)
+                    R_ped = _get_rotation_matrix_between_vectors_batch(
+                        torch.tensor([0.0, 0.0, 1.0], device=device).unsqueeze(0),
+                        ped_axis_dir.unsqueeze(0)
+                    ).squeeze(0)
+                    part_transforms_14d[ped_row_idx, P14_COL_ROT_0:P14_COL_ROT_5+1] = rotation_matrix_to_6d(R_ped)
+
                     if os.environ.get("HELIOS_DUMP_GEOM"):
                         btip = ped_line[-1].detach().cpu().numpy()
                         bbase = bud_base.detach().cpu().numpy()
@@ -1344,6 +1430,26 @@ class HeliosPlantGeometryBuilder:
                         v_rel = rotate_points_about_axis(v_rel, recalculated_peduncle_axis, saved_yaw)
                         v_obj = v_rel + flower_base
 
+                        part_transforms_14d[fl_row_idx, P14_COL_EXISTENCE] = 1.0
+                        part_transforms_14d[fl_row_idx, P14_COL_BASE_X:P14_COL_BASE_Z+1] = flower_base
+                        part_transforms_14d[fl_row_idx, P14_COL_SCALE_X] = fl_row[T_COL_SCALE]
+                        part_transforms_14d[fl_row_idx, P14_COL_SCALE_Y] = fl_row[T_COL_SCALE]
+                        part_transforms_14d[fl_row_idx, P14_COL_SCALE_Z] = fl_row[T_COL_SCALE]
+                        if state == 4:
+                            part_transforms_14d[fl_row_idx, P14_COL_ORGAN_TYPE] = 8
+                        elif state == 2:
+                            part_transforms_14d[fl_row_idx, P14_COL_ORGAN_TYPE] = 9
+                        else:
+                            part_transforms_14d[fl_row_idx, P14_COL_ORGAN_TYPE] = 7
+                        R_yaw = rodrigues_matrix_torch(recalculated_peduncle_axis, saved_yaw, device=device)
+                        R_obj_net = (
+                            R_yaw @
+                            rotr_z(saved_azimuth, device) @
+                            rotr_y(saved_pitch, device) @
+                            rotr_x(saved_roll, device)
+                        )
+                        part_transforms_14d[fl_row_idx, P14_COL_ROT_0:P14_COL_ROT_5+1] = rotation_matrix_to_6d(R_obj_net)
+
                         n_obj = compute_face_normals_torch(v_obj, f_asset)
                         c_obj = obj_color.to(device).unsqueeze(0).repeat(v_obj.shape[0], 1)
 
@@ -1362,12 +1468,231 @@ class HeliosPlantGeometryBuilder:
             empty3 = torch.zeros((0, 3), dtype=torch.float32, device=device)
             empty_f = torch.zeros((0, 3), dtype=torch.int64, device=device)
             empty_o = torch.zeros((0,), dtype=torch.int64, device=device)
-            return {'vertices': empty3, 'faces': empty_f, 'normals': empty3, 'colors': empty3, 'organ_types': empty_o}
+            return {
+                'vertices': empty3, 'faces': empty_f, 'normals': empty3, 'colors': empty3,
+                'organ_types': empty_o, 'part_transforms_14d': part_transforms_14d
+            }
 
         return {
             'vertices': torch.cat(all_verts, dim=0),
             'faces': torch.cat(all_faces, dim=0),
             'normals': torch.cat(all_normals, dim=0),
             'colors': torch.cat(all_colors, dim=0),
-            'organ_types': torch.cat(all_organs, dim=0)
+            'organ_types': torch.cat(all_organs, dim=0),
+            'part_transforms_14d': part_transforms_14d
+        }
+
+    def build_mesh_from_part_array_14d(
+        self,
+        part_tensor_14d: torch.Tensor,
+        device: torch.device = torch.device('cpu'),
+        existence_threshold: float = 0.5,
+        template_organ_array: Optional[PlantOrganArray] = None,
+        use_kinematics_tree: bool = False,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Builds a 3D mesh directly from the 14D part-centric tensor representation.
+        Each organ is placed in 3D space directly according to its (Base, 6D Rotation, Scale).
+        """
+        if use_kinematics_tree and template_organ_array is not None:
+            recon = PlantOrganArray.from_part_tensor_14d(part_tensor_14d, template_organ_array)
+            return self._build_mesh_typed(recon, device=device, existence_threshold=existence_threshold)
+
+        p = part_tensor_14d.to(device)
+        N = p.shape[0]
+        if N == 0:
+            empty3 = torch.zeros((0, 3), dtype=torch.float32, device=device)
+            empty_f = torch.zeros((0, 3), dtype=torch.int64, device=device)
+            empty_o = torch.zeros((0,), dtype=torch.int64, device=device)
+            return {'vertices': empty3, 'faces': empty_f, 'normals': empty3, 'colors': empty3, 'organ_types': empty_o, 'part_transforms_14d': p}
+
+        all_verts = []
+        all_faces = []
+        all_normals = []
+        all_colors = []
+        all_organs = []
+        vert_offset = 0
+
+        infl_assets = self._get_inflorescence_assets()
+
+        child_indices = None
+        leaf_pet_map = {}
+        petiole_leaf_count = {}
+        phytomer_bud_state = {}
+        fruit_scale_map = {}
+        if template_organ_array is not None:
+            t_temp = template_organ_array.tensor
+            if t_temp.shape[0] == N:
+                child_indices = t_temp[:, T_COL_CHILD_INDEX].long().cpu().numpy()
+                for i in range(N):
+                    ot_i = int(t_temp[i, T_COL_ORGAN_TYPE].item())
+                    sid = int(t_temp[i, T_COL_SHOOT_ID].item())
+                    p_idx = int(t_temp[i, T_COL_PHYTOMER_IDX].item())
+                    if ot_i == ORGAN_LEAF:
+                        pet_i = int(t_temp[i, T_COL_PARENT_PETIOLE_IDX].item())
+                        leaf_pet_map[i] = (sid, p_idx, pet_i)
+                        petiole_leaf_count[(sid, p_idx, pet_i)] = petiole_leaf_count.get((sid, p_idx, pet_i), 0) + 1
+                    elif ot_i == ORGAN_BUD:
+                        phytomer_bud_state[(sid, p_idx)] = int(t_temp[i, T_COL_BUD_STATE].item())
+                        fruit_scale_map[(sid, p_idx)] = float(t_temp[i, T_COL_FRUIT_SCALE].item())
+
+        for idx in range(N):
+            exist = p[idx, P14_COL_EXISTENCE].item()
+            if exist < existence_threshold:
+                continue
+
+            otype = int(p[idx, P14_COL_ORGAN_TYPE].item())
+            base = p[idx, P14_COL_BASE_X:P14_COL_BASE_Z+1]
+            r6 = p[idx, P14_COL_ROT_0:P14_COL_ROT_5+1]
+            R = rotation_6d_to_matrix(r6)
+            sx = p[idx, P14_COL_SCALE_X]
+            sy = p[idx, P14_COL_SCALE_Y]
+            sz = p[idx, P14_COL_SCALE_Z]
+
+            if otype == ORGAN_LEAF:
+                lf_scale = sx * self.leaf_scale_factor
+                child_idx = child_indices[idx] if child_indices is not None else 0
+                pet_key = leaf_pet_map.get(idx)
+                num_lf = petiole_leaf_count.get(pet_key, 1) if pet_key is not None else (1 if child_idx == 0 and child_indices is None else 3)
+                if num_lf == 1:
+                    obj_name = "CowpeaLeaf_unifoliate.obj"
+                else:
+                    if child_idx == 0:
+                        obj_name = "CowpeaLeaf_left_highres.obj"
+                    elif child_idx == 1:
+                        obj_name = "CowpeaLeaf_tip_highres.obj"
+                    else:
+                        obj_name = "CowpeaLeaf_right_highres.obj"
+
+                try:
+                    v_raw, f_lf_b, n_tmpl = self.asset_mgr.get_mesh_with_normals(obj_name, device)
+                except FileNotFoundError:
+                    try:
+                        v_raw, f_lf_b, n_tmpl = self.asset_mgr.get_mesh_with_normals("CowpeaLeaf_unifoliate.obj", device)
+                    except FileNotFoundError:
+                        continue
+
+                v_lf_b = v_raw * lf_scale
+                v_lf = (R @ v_lf_b.T).T + base
+                n_lf = (R @ n_tmpl.T).T
+                c_lf = self.COLOR_LEAF.to(device).unsqueeze(0).expand(v_lf.shape[0], 3)
+
+                all_verts.append(v_lf)
+                all_faces.append(f_lf_b + vert_offset)
+                all_normals.append(n_lf)
+                all_colors.append(c_lf)
+                all_organs.append(torch.full((v_lf.shape[0],), self.OT_LEAF, dtype=torch.int64, device=device))
+                vert_offset += v_lf.shape[0]
+
+            elif otype in (ORGAN_INTERNODE, ORGAN_PETIOLE, ORGAN_PEDUNCLE):
+                if otype == ORGAN_PEDUNCLE and template_organ_array is not None:
+                    sid = int(t_temp[idx, T_COL_SHOOT_ID].item())
+                    p_idx = int(t_temp[idx, T_COL_PHYTOMER_IDX].item())
+                    if phytomer_bud_state.get((sid, p_idx), 0) not in (2, 3, 4):
+                        continue
+
+                rad = sx
+                len_val = sz
+                if len_val <= 1e-6 or rad <= 1e-6:
+                    continue
+
+                if otype == ORGAN_INTERNODE:
+                    col = self.COLOR_STEM.to(device)
+                    ot_id = self.OT_STEM
+                elif otype == ORGAN_PETIOLE:
+                    col = self.COLOR_PETIOLE.to(device)
+                    ot_id = self.OT_PETIOLE
+                else:
+                    col = self.COLOR_PEDUNCLE.to(device)
+                    ot_id = self.OT_PEDUNCLE
+
+                p0 = base
+                p1 = base + R @ torch.tensor([0.0, 0.0, len_val], device=device)
+                line = torch.stack([p0, p1])
+                radii = torch.tensor([rad, rad], dtype=torch.float32, device=device)
+
+                v_tub, f_tub, n_tub, c_tub = generate_cone_tube_mesh_torch(
+                    line, radii, col, radial_subdivisions=self.tube_radial_subdivisions
+                )
+                if v_tub.shape[0] > 0:
+                    all_verts.append(v_tub)
+                    all_faces.append(f_tub + vert_offset)
+                    all_normals.append(n_tub)
+                    all_colors.append(c_tub)
+                    all_organs.append(torch.full((v_tub.shape[0],), ot_id, dtype=torch.int64, device=device))
+                    vert_offset += v_tub.shape[0]
+
+            elif otype in (ORGAN_FLOWER, 8, 9):
+                scale_factor = sx
+                if template_organ_array is not None:
+                    sid = int(t_temp[idx, T_COL_SHOOT_ID].item())
+                    p_idx = int(t_temp[idx, T_COL_PHYTOMER_IDX].item())
+                    st = phytomer_bud_state.get((sid, p_idx), 0)
+                    if st not in (2, 3, 4):
+                        continue
+                    if st == 4 or otype == 8:
+                        is_fruit = True
+                        is_open = False
+                    elif st == 2 or otype == 9:
+                        is_fruit = False
+                        is_open = False
+                    else:
+                        is_fruit = False
+                        is_open = True
+                else:
+                    if otype == 8:
+                        is_fruit = True
+                        is_open = False
+                    elif otype == 9:
+                        is_fruit = False
+                        is_open = False
+                    else:
+                        is_fruit = False
+                        is_open = True
+
+                if is_fruit:
+                    if template_organ_array is not None:
+                        f_scale = fruit_scale_map.get((sid, p_idx), 0.9)
+                        if f_scale > 0:
+                            scale_factor = sx * f_scale
+                    asset_name = 'fruit'
+                    obj_color = self.COLOR_FRUIT
+                    obj_ot = self.OT_FRUIT
+                elif is_open:
+                    asset_name = 'flower_open'
+                    obj_color = self.COLOR_FLOWER_OPEN
+                    obj_ot = self.OT_FLOWER
+                else:
+                    asset_name = 'flower_closed'
+                    obj_color = self.COLOR_FLOWER_CLOSED
+                    obj_ot = self.OT_FLOWER
+
+                v_asset, f_asset = infl_assets[asset_name]
+                v_asset = v_asset.to(device)
+                f_asset = f_asset.to(device)
+
+                v_obj = (R @ (v_asset * scale_factor).T).T + base
+                n_obj = compute_face_normals_torch(v_obj, f_asset)
+                c_obj = obj_color.to(device).unsqueeze(0).repeat(v_obj.shape[0], 1)
+
+                all_verts.append(v_obj)
+                all_faces.append(f_asset + vert_offset)
+                all_normals.append(n_obj)
+                all_colors.append(c_obj)
+                all_organs.append(torch.full((v_obj.shape[0],), obj_ot, dtype=torch.int64, device=device))
+                vert_offset += v_obj.shape[0]
+
+        if not all_verts:
+            empty3 = torch.zeros((0, 3), dtype=torch.float32, device=device)
+            empty_f = torch.zeros((0, 3), dtype=torch.int64, device=device)
+            empty_o = torch.zeros((0,), dtype=torch.int64, device=device)
+            return {'vertices': empty3, 'faces': empty_f, 'normals': empty3, 'colors': empty3, 'organ_types': empty_o, 'part_transforms_14d': p}
+
+        return {
+            'vertices': torch.cat(all_verts, dim=0),
+            'faces': torch.cat(all_faces, dim=0),
+            'normals': torch.cat(all_normals, dim=0),
+            'colors': torch.cat(all_colors, dim=0),
+            'organ_types': torch.cat(all_organs, dim=0),
+            'part_transforms_14d': p
         }

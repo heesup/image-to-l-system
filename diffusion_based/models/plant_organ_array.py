@@ -205,6 +205,25 @@ T_COL_RESERVED = 38
 T_COL_EXISTENCE = 39
 NUM_FEATURES_TYPED = 40
 
+# =============================================================================
+# PART-CENTRIC 14D COLUMN CONSTANTS
+# =============================================================================
+P14_COL_ORGAN_TYPE = 0
+P14_COL_BASE_X = 1
+P14_COL_BASE_Y = 2
+P14_COL_BASE_Z = 3
+P14_COL_ROT_0 = 4
+P14_COL_ROT_1 = 5
+P14_COL_ROT_2 = 6
+P14_COL_ROT_3 = 7
+P14_COL_ROT_4 = 8
+P14_COL_ROT_5 = 9
+P14_COL_SCALE_X = 10
+P14_COL_SCALE_Y = 11
+P14_COL_SCALE_Z = 12
+P14_COL_EXISTENCE = 13
+NUM_FEATURES_14D = 14
+
 # Categorical organ types
 ORGAN_ROOT_META = 0
 ORGAN_SHOOT_META = 1
@@ -214,7 +233,47 @@ ORGAN_LEAF = 4
 ORGAN_BUD = 5
 ORGAN_PEDUNCLE = 6
 ORGAN_FLOWER = 7
-NUM_ORGAN_TYPES = 8
+ORGAN_FLOWER_OPEN = 7
+ORGAN_FRUIT = 8
+ORGAN_FLOWER_CLOSED = 9
+NUM_ORGAN_TYPES = 10
+
+
+def rotation_matrix_to_6d(R: torch.Tensor) -> torch.Tensor:
+    """
+    Converts 3x3 rotation matrix (or (..., 3, 3)) to continuous 6D representation
+    by taking the first two column vectors.
+    """
+    if R.dim() == 2:
+        return torch.cat([R[:, 0], R[:, 1]], dim=0)
+    col1 = R[..., :, 0]
+    col2 = R[..., :, 1]
+    return torch.cat([col1, col2], dim=-1)
+
+
+def rotation_6d_to_matrix(r6: torch.Tensor) -> torch.Tensor:
+    """
+    Converts 6D continuous rotation representation (..., 6) to 3x3 rotation matrix (..., 3, 3)
+    using Gram-Schmidt orthogonalization (Zhou et al., CVPR 2019).
+    """
+    if r6.dim() == 1:
+        r6_b = r6.unsqueeze(0)
+    else:
+        r6_b = r6
+
+    a1 = r6_b[..., 0:3]
+    a2 = r6_b[..., 3:6]
+
+    b1 = torch.nn.functional.normalize(a1, dim=-1, eps=1e-8)
+    dot = torch.sum(b1 * a2, dim=-1, keepdim=True)
+    b2 = torch.nn.functional.normalize(a2 - dot * b1, dim=-1, eps=1e-8)
+    b3 = torch.cross(b1, b2, dim=-1)
+
+    R = torch.stack([b1, b2, b3], dim=-1)
+    if r6.dim() == 1:
+        return R.squeeze(0)
+    return R
+
 
 
 # =============================================================================
@@ -478,6 +537,86 @@ class PlantOrganArray:
             self.tensor[:, T_COL_EXISTENCE] = value
         else:
             self.tensor[:, COL_EXISTENCE] = value
+
+    # -------------------------------------------------------------------------
+    # 14D PART-CENTRIC REPRESENTATION DISPATCH
+    # -------------------------------------------------------------------------
+    def to_part_tensor_14d(self, device: Optional[torch.device] = None) -> torch.Tensor:
+        """Extracts the (N, 14) part-centric spatial tensor from typed 40D array using forward kinematics."""
+        if not self.is_typed:
+            raise ValueError("to_part_tensor_14d requires a Typed (N, 40) PlantOrganArray.")
+        if device is None:
+            device = self.tensor.device if self.tensor.is_cuda else torch.device("cpu")
+        from diffusion_based.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
+        builder = HeliosPlantGeometryBuilder()
+        mesh_dict = builder.build_mesh_from_organ_array(self, device=device)
+        return mesh_dict["part_transforms_14d"]
+
+    @classmethod
+    def from_part_tensor_14d(
+        cls,
+        part_tensor: torch.Tensor,
+        template_array: Optional["PlantOrganArray"] = None,
+        plant_id: int = 0,
+        plant_type: str = "cowpea",
+        existence_threshold: float = 0.5,
+    ) -> "PlantOrganArray":
+        """
+        Reconstructs a (N, 40) Typed PlantOrganArray from a (N, 14) part tensor.
+        By default (when template_array is None), performs fully Autonomous Spatial Assembly
+        and Inverse Kinematics reconstruction without requiring any XML template.
+        """
+        if template_array is None:
+            return cls.from_part_tensor_14d_autonomous(
+                part_tensor,
+                plant_id=plant_id,
+                plant_type=plant_type,
+                existence_threshold=existence_threshold,
+            )
+
+        t = template_array.tensor.clone().to(part_tensor.device)
+        N = min(t.shape[0], part_tensor.shape[0])
+
+        for idx in range(N):
+            ot = int(part_tensor[idx, P14_COL_ORGAN_TYPE].item())
+            exist = part_tensor[idx, P14_COL_EXISTENCE].item()
+            t[idx, T_COL_EXISTENCE] = exist
+
+            if ot == ORGAN_ROOT_META:
+                t[idx, T_COL_BASE_X] = part_tensor[idx, P14_COL_BASE_X]
+                t[idx, T_COL_BASE_Y] = part_tensor[idx, P14_COL_BASE_Y]
+                t[idx, T_COL_BASE_Z] = part_tensor[idx, P14_COL_BASE_Z]
+            elif ot == ORGAN_LEAF:
+                t[idx, T_COL_SCALE] = part_tensor[idx, P14_COL_SCALE_X]
+            elif ot in (ORGAN_INTERNODE, ORGAN_PETIOLE, ORGAN_PEDUNCLE):
+                t[idx, T_COL_RADIUS] = part_tensor[idx, P14_COL_SCALE_X]
+                t[idx, T_COL_LENGTH] = part_tensor[idx, P14_COL_SCALE_Z]
+            elif ot in (ORGAN_FLOWER, 8, 9):
+                t[idx, T_COL_SCALE] = part_tensor[idx, P14_COL_SCALE_X]
+
+        return cls(t, raw_metadata=template_array.raw_metadata)
+
+    @classmethod
+    def from_part_tensor_14d_autonomous(
+        cls,
+        part_tensor: torch.Tensor,
+        plant_id: int = 0,
+        plant_type: str = "cowpea",
+        existence_threshold: float = 0.5,
+    ) -> "PlantOrganArray":
+        """
+        Reconstructs a Typed (N, 40) PlantOrganArray completely autonomously from a pure
+        (N, 14) part tensor without requiring any reference or template XML document.
+        """
+        from diffusion_based.models.part_assembly_to_xml import PartAssemblyToXMLConverter
+        converter = PartAssemblyToXMLConverter()
+        xml_str = converter.convert_to_xml_string(
+            part_tensor,
+            plant_id=plant_id,
+            plant_type=plant_type,
+            existence_threshold=existence_threshold,
+        )
+        return cls.from_xml_string_typed(xml_str)
 
     # -------------------------------------------------------------------------
     # XML OUTPUT DISPATCH
