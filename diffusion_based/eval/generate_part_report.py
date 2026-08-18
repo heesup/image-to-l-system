@@ -84,7 +84,7 @@ def run_14d_direct_opt(
       "rgb_depth_chamfer": + optional Chamfer leaf-base loss
     Returns (rgb_np, depth_np, metrics).
     """
-    p14_init = init_array.to_part_tensor_14d(device=device)
+    p14_init = init_array.to_part_tensor(device=device)
     N = p14_init.shape[0]
 
     init_center = p14_init[:, 1:4].mean(dim=0, keepdim=True)
@@ -191,7 +191,7 @@ def run_14d_direct_opt(
 def _load_target_init_pair(renderer, device, tgt_rel, init_rel):
     tgt_arr = PlantOrganArray.from_xml_file_typed(os.path.join(repo_root, tgt_rel))
     tgt_arr.tensor = tgt_arr.tensor.to(device)
-    tgt_p14 = tgt_arr.to_part_tensor_14d(device=device)
+    tgt_p14 = tgt_arr.to_part_tensor(device=device)
 
     tgt_mesh = renderer.geo_builder.build_mesh_from_part_array_14d(
         tgt_p14, template_organ_array=tgt_arr, device=device, use_kinematics_tree=False
@@ -213,7 +213,7 @@ def _load_target_init_pair(renderer, device, tgt_rel, init_rel):
 
     init_arr = PlantOrganArray.from_xml_file_typed(os.path.join(repo_root, init_rel))
     init_arr.tensor = init_arr.tensor.to(device)
-    init_p14 = init_arr.to_part_tensor_14d(device=device)
+    init_p14 = init_arr.to_part_tensor(device=device)
     init_rgb = renderer.render_part_tensor_14d(
         init_p14, template_organ_array=init_arr, camera_height=5.0, elevation_deg=90.0,
         device=device, focus_plant=True, use_kinematics_tree=False, differentiable=False,
@@ -244,7 +244,7 @@ def figure_3_direct_opt_multi_dap(pairs, renderer, device, assets_dir, steps=35)
         init_iou = float(foreground_iou(_to_tensor(spec["init_np"], device), _to_tensor(spec["tgt_np"], device)).item())
 
         init_depth = renderer.render_part_tensor_14d_multimodal(
-            spec["init_arr"].to_part_tensor_14d(device=device), template_organ_array=spec["init_arr"],
+            spec["init_arr"].to_part_tensor(device=device), template_organ_array=spec["init_arr"],
             camera_height=5.0, elevation_deg=90.0, device=device, focus_plant=True, use_kinematics_tree=False,
             fixed_camera_bounds=spec["cam_bounds"], return_depth=True, return_mask=False,
             return_organ_masks=False,

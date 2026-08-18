@@ -1,7 +1,7 @@
 """
 Precompute and cache 14D part tensors for all XML samples to disk.
 
-The 14D part tensor is extracted via forward kinematics (to_part_tensor_14d),
+The 14D part tensor is extracted via forward kinematics (to_part_tensor),
 which currently builds the full mesh (tube meshes + leaf OBJ loading) — ~1-13s
 per sample. This script computes each tensor ONCE and caches it to a .pt file,
 so the training dataset can load them instantly.
@@ -60,7 +60,7 @@ def main():
             continue
         try:
             arr = PlantOrganArray.from_xml_file_typed(xml_path)
-            p14 = arr.to_part_tensor_14d(device=torch.device("cpu"))
+            p14 = arr.to_part_tensor(device=torch.device("cpu"))
             torch.save(p14, cache_path)
             # Render from the 14D tensor directly (fast: 0.1-0.8s) instead of
             # re-building the full mesh via render_organ_array (slow: 20-40s).

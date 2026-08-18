@@ -60,7 +60,7 @@ def load_plant(xml_path):
     if not os.path.exists(full):
         return None, None
     arr = PlantOrganArray.from_xml_file_typed(full)
-    p14 = arr.to_part_tensor_14d(device=DEVICE)
+    p14 = arr.to_part_tensor(device=DEVICE)
     return arr, p14
 
 def organ_type_colormap(organ_masks, H, W, device):

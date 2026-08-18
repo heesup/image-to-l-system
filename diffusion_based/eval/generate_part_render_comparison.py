@@ -80,7 +80,7 @@ def main():
 
         # 2. Pure 14D Direct Part Render
         array_14d = PlantOrganArray.from_xml_string_typed(xml_str)
-        part_tensor_14d = array_14d.to_part_tensor_14d(device=device)
+        part_tensor_14d = array_14d.to_part_tensor(device=device)
         rendered_14d = renderer.render_part_tensor_14d(
             part_tensor_14d,
             template_organ_array=array_14d,

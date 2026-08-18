@@ -108,7 +108,7 @@ def benchmark_accurate_dap(force_recompute=True):
         # 3. End-to-end XML -> 14D -> Image timing
         t0 = time.time()
         organ_array = PlantOrganArray.from_xml_file_typed(xml_path)
-        p14 = organ_array.to_part_tensor_14d(device=device)
+        p14 = organ_array.to_part_tensor(device=device)
         t_xml_to_14d = time.time() - t0
 
         t0 = time.time()

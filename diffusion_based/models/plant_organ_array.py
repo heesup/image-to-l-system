@@ -539,16 +539,16 @@ class PlantOrganArray:
             self.tensor[:, COL_EXISTENCE] = value
 
     # -------------------------------------------------------------------------
-    # 14D PART-CENTRIC REPRESENTATION DISPATCH
+    # PART-CENTRIC REPRESENTATION DISPATCH
     # -------------------------------------------------------------------------
-    def to_part_tensor_14d(self, device: Optional[torch.device] = None) -> torch.Tensor:
-        """Extracts the (N, 14) part-centric spatial tensor from typed 40D array using forward kinematics.
+    def to_part_tensor(self, device: Optional[torch.device] = None) -> torch.Tensor:
+        """Extracts the part-centric spatial tensor from typed 40D array using forward kinematics.
 
         Uses the lightweight path in the geometry builder that computes only the
-        14D transforms and skips full mesh generation, making extraction much faster.
+        part transforms and skips full mesh generation, making extraction much faster.
         """
         if not self.is_typed:
-            raise ValueError("to_part_tensor_14d requires a Typed (N, 40) PlantOrganArray.")
+            raise ValueError("to_part_tensor requires a Typed (N, 40) PlantOrganArray.")
         if device is None:
             device = self.tensor.device if self.tensor.is_cuda else torch.device("cpu")
         from diffusion_based.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder

@@ -70,7 +70,7 @@ def test_14d_representation(xml_dir: str):
         array_40d = PlantOrganArray.from_xml_string_typed(original_xml)
 
         # 2. 40D -> 14D Part-Centric Tensor (via Forward Kinematics extraction)
-        part_tensor_14d = array_40d.to_part_tensor_14d(device=device)
+        part_tensor_14d = array_40d.to_part_tensor(device=device)
         assert part_tensor_14d.shape[1] == 14, f"Expected 14 columns, got {part_tensor_14d.shape}"
 
         # 3. 14D -> 40D Typed PlantOrganArray (Inverse Kinematics / topology snip)

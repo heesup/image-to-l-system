@@ -1,7 +1,7 @@
 """
-Dataset for paired (rendered image, 14D part-centric PlantOrganArray tensor) samples.
+Dataset for paired (rendered image, part-centric PlantOrganArray tensor) samples.
 
-The 14D part tensor layout (per organ):
+The part tensor layout (per organ):
     [OrganType(0), Base(1..3), Rot6D(4..9), Scale(10..12), Existence(13)]
 
 Normalization (fixed, hand-tuned to unit-ish scale for flow matching):
@@ -105,7 +105,7 @@ class PartArrayDataset(Dataset):
         sample = self.samples[idx]
         cache_key = sample["xml"]
 
-        # Load (or compute) the 14D part tensor ONCE, then derive both the
+        # Load (or compute) the part tensor ONCE, then derive both the
         # rendered image and the padded/normalized training tensor from it.
         p14 = None
         if self.cache_dir is not None:
@@ -114,7 +114,7 @@ class PartArrayDataset(Dataset):
                 p14 = torch.load(cache_path, map_location="cpu")
         if p14 is None:
             gt_array = PlantOrganArray.from_xml_file_typed(sample["xml"])
-            p14 = gt_array.to_part_tensor_14d(device=torch.device("cpu"))
+            p14 = gt_array.to_part_tensor(device=torch.device("cpu"))
 
         # Image
         if cache_key in self._image_cache:
@@ -140,7 +140,7 @@ class PartArrayDataset(Dataset):
             image_tensor = self._transform_tensor(rgb).cpu()
             self._image_cache[cache_key] = image_tensor
 
-        # 14D part tensor (padded + normalized)
+        # Part tensor (padded + normalized)
         if cache_key in self._tensor_cache:
             nodes, existence_mask, num_nodes = self._tensor_cache[cache_key]
         else:

@@ -1,16 +1,18 @@
 """
-14D Part-Centric Flow-Matching Model.
+Part-centric Flow-Matching Model.
 
 ViT image encoder + transformer decoder that predicts a velocity field v_theta
-transporting a Gaussian prior to the 14D part tensor, conditioned on a rendered
+transporting a Gaussian prior to a plant organ array, conditioned on a rendered
 plant image.
 
-The 14D part tensor layout (per organ):
-    [OrganType(0), Base(1..3), Rot6D(4..9), Scale(10..12), Existence(13)]
+The target vector for each organ is an N-dimensional part descriptor whose layout
+is defined by the dataset / renderer (e.g. organ type, base position, continuous
+rotation, scale, existence). The exact dimension is configurable via node_dim so
+the architecture can accommodate future extensions such as curvature parameters.
 
-The model predicts the full 14D velocity (continuous). Organ type (col 0) and
-existence (col 13) are treated as continuous during flow matching and discretized
-at inference (round organ type, threshold existence).
+The model predicts the full part velocity (continuous). Organ type and existence
+are treated as continuous during flow matching and discretized at inference
+(round organ type, threshold existence).
 """
 
 import math
