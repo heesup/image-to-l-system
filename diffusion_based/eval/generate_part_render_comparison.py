@@ -1,11 +1,12 @@
 """
-Visual & Quantitative Comparison: Helios Ground Truth vs Pure 14D Direct Part Renderer.
+Visual & Quantitative Comparison: Helios Ground Truth vs Part-Centric Direct Renderer.
 
-Outputs a 2-column figure:
+Outputs a 3-column figure:
   1. Helios C++ Ground Truth Image
-  2. Pure 14D Direct Part PyTorch Differentiable Renderer
+  2. Part-Centric Direct Part PyTorch Differentiable Renderer
+  3. Difference map (5x amplified)
 
-The 40D hierarchical tree renderer has been removed from the active pipeline.
+The part tensor is produced directly from XML (no 40D typed-array intermediate).
 """
 
 import json
@@ -42,7 +43,7 @@ def compute_metrics(img1: np.ndarray, img2: np.ndarray):
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Running 14D vs Helios GT comparison on {device}...")
+    print(f"Running part-centric vs Helios GT comparison on {device}...")
 
     base_dir = "/home/lion397/codes/image-to-l-system/Digital-Crops/projects/syntheticdata_generation/build/output"
     samples = [
@@ -78,12 +79,11 @@ def main():
         gt_pil = Image.open(gt_img_path).convert("RGB").resize((512, 512))
         gt_np = np.array(gt_pil, dtype=np.float32) / 255.0
 
-        # 2. Pure 14D Direct Part Render
-        array_14d = PlantOrganArray.from_xml_string_typed(xml_str)
-        part_tensor_14d = array_14d.to_part_tensor(device=device)
-        rendered_14d = renderer.render_part_tensor_14d(
-            part_tensor_14d,
-            template_organ_array=array_14d,
+        # 2. Part-centric direct render (XML -> part tensor -> image)
+        array = PlantOrganArray.from_xml_string(xml_str)
+        part_tensor = array.to_part_tensor(device=device)
+        rendered = renderer.render_part_tensor_14d(
+            part_tensor,
             device=device,
             azimuth_deg=azimuth_deg,
             elevation_deg=90.0,
@@ -91,21 +91,21 @@ def main():
             focus_plant=focus_plant,
             use_kinematics_tree=False,
         )
-        img_14d = rendered_14d.detach().cpu().permute(1, 2, 0).numpy().clip(0.0, 1.0)
+        img_part = rendered.detach().cpu().permute(1, 2, 0).numpy().clip(0.0, 1.0)
 
-        # 3. Difference Map (14D vs Helios GT)
-        diff_14d_gt = np.abs(img_14d - gt_np)
-        diff_vis = diff_14d_gt * 5.0
+        # 3. Difference Map (part render vs Helios GT)
+        diff_gt = np.abs(img_part - gt_np)
+        diff_vis = diff_gt * 5.0
 
-        mae_14d_gt, mse_14d_gt, ssim_14d_gt = compute_metrics(img_14d, gt_np)
+        mae_gt, mse_gt, ssim_gt = compute_metrics(img_part, gt_np)
         metrics_summary.append({
             "name": sample["name"],
-            "N": part_tensor_14d.shape[0],
-            "mae_14d_vs_gt": mae_14d_gt,
-            "mse_14d_vs_gt": mse_14d_gt,
-            "ssim_14d_vs_gt": ssim_14d_gt,
+            "N": part_tensor.shape[0],
+            "mae_vs_gt": mae_gt,
+            "mse_vs_gt": mse_gt,
+            "ssim_vs_gt": ssim_gt,
         })
-        print(f"[{sample['name']}] N={part_tensor_14d.shape[0]} organs: 14D vs Helios GT  MAE={mae_14d_gt:.6f}, MSE={mse_14d_gt:.6e}, SSIM={ssim_14d_gt:.4f}")
+        print(f"[{sample['name']}] N={part_tensor.shape[0]} organs: part vs Helios GT  MAE={mae_gt:.6f}, MSE={mse_gt:.6e}, SSIM={ssim_gt:.4f}")
 
         ax0 = axes[row_i, 0]
         ax0.imshow(gt_np)
@@ -113,13 +113,13 @@ def main():
         ax0.axis("off")
 
         ax1 = axes[row_i, 1]
-        ax1.imshow(img_14d)
-        ax1.set_title(f"Pure 14D Direct Part Render\n(Direct Part Assembly, No Tree)", color="#00ff88", fontsize=11, fontweight="bold")
+        ax1.imshow(img_part)
+        ax1.set_title(f"Part-Centric Direct Render\n(XML -> part tensor -> image)", color="#00ff88", fontsize=11, fontweight="bold")
         ax1.axis("off")
 
         ax2 = axes[row_i, 2]
         ax2.imshow(diff_vis.clip(0.0, 1.0))
-        ax2.set_title(f"14D vs Helios GT Diff (5x amp)\nMAE: {mae_14d_gt:.4f} | SSIM: {ssim_14d_gt:.4f}", color="#ffaa00", fontsize=11, fontweight="bold")
+        ax2.set_title(f"Part vs Helios GT Diff (5x amp)\nMAE: {mae_gt:.4f} | SSIM: {ssim_gt:.4f}", color="#ffaa00", fontsize=11, fontweight="bold")
         ax2.axis("off")
 
     plt.tight_layout()
