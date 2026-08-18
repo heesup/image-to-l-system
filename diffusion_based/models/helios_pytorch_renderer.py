@@ -439,33 +439,6 @@ class HeliosPyTorchRenderer(nn.Module):
 
         return type_buffer.flip(0)  # match Helios row-0 = bottom
 
-    def render_organ_array(
-        self,
-        organ_array,
-        azimuth_deg: float = 0.0,
-        elevation_deg: float = 90.0,
-        camera_height: float = 5.0,
-        background: str = "ground",
-        device: torch.device = torch.device('cpu'),
-        differentiable: bool = False,
-        focus_plant: bool = True,
-        existence_threshold: float = 0.5,
-        fixed_camera_bounds: Optional[Tuple[torch.Tensor, float]] = None,
-    ) -> torch.Tensor:
-        mesh_dict = self.geo_builder.build_mesh_from_organ_array(
-            organ_array, device=device, existence_threshold=existence_threshold
-        )
-        return self.forward(
-            mesh_dict,
-            azimuth_deg=azimuth_deg,
-            elevation_deg=elevation_deg,
-            camera_height=camera_height,
-            background=background,
-            differentiable=differentiable,
-            focus_plant=focus_plant,
-            fixed_camera_bounds=fixed_camera_bounds,
-        )
-
     def render_part_tensor_14d(
         self,
         part_tensor_14d: torch.Tensor,
