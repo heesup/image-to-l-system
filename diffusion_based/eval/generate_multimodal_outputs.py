@@ -118,7 +118,7 @@ for row, (label, xml_path) in enumerate(PLANTS):
         continue
 
     # Render multimodal
-    out = renderer.render_part_tensor_14d_multimodal(
+    out = renderer.render_part_tensor_multimodal(
         p14,
         template_organ_array=arr,
         azimuth_deg=0.0,

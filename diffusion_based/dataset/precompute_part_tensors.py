@@ -65,7 +65,7 @@ def main():
             # Render from the 14D tensor directly (fast: 0.1-0.8s) instead of
             # re-building the full mesh (slow: 20-40s).
             with torch.no_grad():
-                rgb = renderer.render_part_tensor_14d(
+                rgb = renderer.render_part_tensor(
                     p14.to(device), template_organ_array=arr, camera_height=1.0,
                     elevation_deg=90.0, device=device, focus_plant=True,
                     use_kinematics_tree=False, differentiable=False,

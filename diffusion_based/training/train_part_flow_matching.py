@@ -132,7 +132,7 @@ def main():
 
     model = PartFlowMatchingModel(
         max_nodes=args.max_nodes,
-        node_dim=14,
+        node_dim=dataset.node_dim,
         image_size=args.image_size,
         patch_size=args.patch_size,
         embed_dim=args.embed_dim,

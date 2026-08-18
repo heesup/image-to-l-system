@@ -2,7 +2,8 @@
 Dataset for paired (rendered image, part-centric PlantOrganArray tensor) samples.
 
 The part tensor layout (per organ):
-    [OrganType(0), Base(1..3), Rot6D(4..9), Scale(10..12), Existence(13)]
+    [OrganType(0), Base(1..3), Rot6D(4..9), Scale(10..12), Existence(13),
+     BudState(14), Curvature(15), PhyllotacticAngle(16)]
 
 Normalization (fixed, hand-tuned to unit-ish scale for flow matching):
     - organ type (col 0):  / 9.0  -> [0, 1]  (categorical, rounded at inference)
@@ -10,6 +11,9 @@ Normalization (fixed, hand-tuned to unit-ish scale for flow matching):
     - rot6d (cols 4..9):   unchanged (already [-1, 1])
     - scale (cols 10..12): unchanged (already [0, 1])
     - existence (col 13):  unchanged (already [0, 1])
+    - bud_state (col 14):  / 5.0   -> [0, 1]
+    - curvature (col 15):  / 100.0 -> ~[-1, 1] (degrees)
+    - phyllotactic (col 16): / 180.0 -> ~[0, 1] (degrees)
 """
 
 import os
@@ -23,20 +27,26 @@ from PIL import Image
 
 from diffusion_based.models.plant_organ_array import (
     PlantOrganArray,
-    P14_COL_ORGAN_TYPE,
-    P14_COL_BASE_X,
-    P14_COL_BASE_Z,
-    P14_COL_EXISTENCE,
-    NUM_FEATURES_14D,
+    P_COL_ORGAN_TYPE,
+    P_COL_BASE_X,
+    P_COL_BASE_Z,
+    P_COL_EXISTENCE,
+    P_COL_BUD_STATE,
+    P_COL_CURVATURE,
+    P_COL_PHYLLOTACTIC_ANGLE,
+    NUM_FEATURES,
 )
 
 # Fixed normalization constants (see module docstring)
 ORGAN_TYPE_SCALE = 9.0
 BASE_SCALE = 100.0
+BUD_STATE_SCALE = 5.0
+CURVATURE_SCALE = 100.0
+PHYLLOTACTIC_SCALE = 180.0
 
 
 class PartArrayDataset(Dataset):
-    """Loads Helios XML -> 14D part tensor + rendered image."""
+    """Loads Helios XML -> part tensor + rendered image."""
 
     def __init__(
         self,
@@ -53,7 +63,7 @@ class PartArrayDataset(Dataset):
         self.max_nodes = max_nodes
         self.image_size = image_size
         self.use_gt_renderer_image = use_gt_renderer_image
-        self.node_dim = NUM_FEATURES_14D
+        self.node_dim = NUM_FEATURES
         self.device = device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.cache_dir = cache_dir
         self._cached_renderer = None
@@ -85,17 +95,23 @@ class PartArrayDataset(Dataset):
         return {"xml": xml_path, "jpeg": jpeg_path, "prefix": prefix}
 
     def normalize(self, p14: torch.Tensor) -> torch.Tensor:
-        """Normalize a (N, 14) part tensor to unit-ish scale."""
+        """Normalize a (N, D) part tensor to unit-ish scale."""
         out = p14.clone()
-        out[:, P14_COL_ORGAN_TYPE] = out[:, P14_COL_ORGAN_TYPE] / ORGAN_TYPE_SCALE
-        out[:, P14_COL_BASE_X:P14_COL_BASE_Z + 1] = out[:, P14_COL_BASE_X:P14_COL_BASE_Z + 1] * BASE_SCALE
+        out[:, P_COL_ORGAN_TYPE] = out[:, P_COL_ORGAN_TYPE] / ORGAN_TYPE_SCALE
+        out[:, P_COL_BASE_X:P_COL_BASE_Z + 1] = out[:, P_COL_BASE_X:P_COL_BASE_Z + 1] * BASE_SCALE
+        out[:, P_COL_BUD_STATE] = out[:, P_COL_BUD_STATE] / BUD_STATE_SCALE
+        out[:, P_COL_CURVATURE] = out[:, P_COL_CURVATURE] / CURVATURE_SCALE
+        out[:, P_COL_PHYLLOTACTIC_ANGLE] = out[:, P_COL_PHYLLOTACTIC_ANGLE] / PHYLLOTACTIC_SCALE
         return out
 
     def denormalize(self, p14: torch.Tensor) -> torch.Tensor:
         """Undo normalization."""
         out = p14.clone()
-        out[:, P14_COL_ORGAN_TYPE] = out[:, P14_COL_ORGAN_TYPE] * ORGAN_TYPE_SCALE
-        out[:, P14_COL_BASE_X:P14_COL_BASE_Z + 1] = out[:, P14_COL_BASE_X:P14_COL_BASE_Z + 1] / BASE_SCALE
+        out[:, P_COL_ORGAN_TYPE] = out[:, P_COL_ORGAN_TYPE] * ORGAN_TYPE_SCALE
+        out[:, P_COL_BASE_X:P_COL_BASE_Z + 1] = out[:, P_COL_BASE_X:P_COL_BASE_Z + 1] / BASE_SCALE
+        out[:, P_COL_BUD_STATE] = out[:, P_COL_BUD_STATE] * BUD_STATE_SCALE
+        out[:, P_COL_CURVATURE] = out[:, P_COL_CURVATURE] * CURVATURE_SCALE
+        out[:, P_COL_PHYLLOTACTIC_ANGLE] = out[:, P_COL_PHYLLOTACTIC_ANGLE] * PHYLLOTACTIC_SCALE
         return out
 
     def __len__(self) -> int:
@@ -131,7 +147,7 @@ class PartArrayDataset(Dataset):
                     self._cached_renderer = HeliosPyTorchRenderer(image_size=self.image_size).to(self.device)
                 gt_array = PlantOrganArray.from_xml_file_typed(sample["xml"])
                 with torch.no_grad():
-                    rgb = self._cached_renderer.render_part_tensor_14d(
+                    rgb = self._cached_renderer.render_part_tensor(
                         p14.to(self.device), template_organ_array=gt_array, camera_height=1.0,
                         elevation_deg=90.0, device=self.device, focus_plant=True,
                         use_kinematics_tree=False, differentiable=False,

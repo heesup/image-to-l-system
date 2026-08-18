@@ -82,7 +82,7 @@ def main():
         # 2. Part-centric direct render (XML -> part tensor -> image)
         array = PlantOrganArray.from_xml_string(xml_str)
         part_tensor = array.to_part_tensor(device=device)
-        rendered = renderer.render_part_tensor_14d(
+        rendered = renderer.render_part_tensor(
             part_tensor,
             device=device,
             azimuth_deg=azimuth_deg,

@@ -439,7 +439,7 @@ class HeliosPyTorchRenderer(nn.Module):
 
         return type_buffer.flip(0)  # match Helios row-0 = bottom
 
-    def render_part_tensor_14d(
+    def render_part_tensor(
         self,
         part_tensor_14d: torch.Tensor,
         template_organ_array=None,
@@ -454,7 +454,7 @@ class HeliosPyTorchRenderer(nn.Module):
         use_kinematics_tree: bool = False,
         fixed_camera_bounds: Optional[Tuple[torch.Tensor, float]] = None,
     ) -> torch.Tensor:
-        mesh_dict = self.geo_builder.build_mesh_from_part_array_14d(
+        mesh_dict = self.geo_builder.build_mesh_from_part_array(
             part_tensor_14d,
             device=device,
             existence_threshold=existence_threshold,
@@ -729,7 +729,7 @@ class HeliosPyTorchRenderer(nn.Module):
 
         return out
 
-    def render_part_tensor_14d_multimodal(
+    def render_part_tensor_multimodal(
         self,
         part_tensor_14d: torch.Tensor,
         template_organ_array=None,
@@ -751,7 +751,7 @@ class HeliosPyTorchRenderer(nn.Module):
         Wrapper: build mesh from 14D part tensor, then run render_multimodal().
         Returns dict with 'rgb', 'depth', 'raw_depth', 'mask', 'organ_masks'.
         """
-        mesh_dict = self.geo_builder.build_mesh_from_part_array_14d(
+        mesh_dict = self.geo_builder.build_mesh_from_part_array(
             part_tensor_14d,
             device=device,
             existence_threshold=existence_threshold,

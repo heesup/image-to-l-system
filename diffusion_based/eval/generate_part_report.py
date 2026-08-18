@@ -32,11 +32,11 @@ if repo_root not in sys.path:
 from diffusion_based.models.plant_organ_array import (
     PlantOrganArray,
     ORGAN_LEAF,
-    P14_COL_ORGAN_TYPE,
-    P14_COL_BASE_X, P14_COL_BASE_Y, P14_COL_BASE_Z,
-    P14_COL_ROT_0, P14_COL_ROT_5,
-    P14_COL_SCALE_X, P14_COL_SCALE_Y, P14_COL_SCALE_Z,
-    P14_COL_EXISTENCE,
+    P_COL_ORGAN_TYPE,
+    P_COL_BASE_X, P_COL_BASE_Y, P_COL_BASE_Z,
+    P_COL_ROT_0, P_COL_ROT_5,
+    P_COL_SCALE_X, P_COL_SCALE_Y, P_COL_SCALE_Z,
+    P_COL_EXISTENCE,
     rotation_6d_to_matrix,
 )
 from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
@@ -106,7 +106,7 @@ def run_14d_direct_opt(
     ], weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=steps, eta_min=1e-4)
 
-    leaf_mask = p14_init[:, P14_COL_ORGAN_TYPE].long() == ORGAN_LEAF
+    leaf_mask = p14_init[:, P_COL_ORGAN_TYPE].long() == ORGAN_LEAF
     history = {"loss": [], "rgb_loss": [], "depth_loss": [], "ssim": [], "time": []}
     t_start = time.time()
 
@@ -130,7 +130,7 @@ def run_14d_direct_opt(
         exist_eval = torch.sigmoid(opt_exist).unsqueeze(-1)
         p14_eval = torch.cat([p14_init[:, :1], bases_eval, rot_6d_out, scale_eval, exist_eval], dim=-1)
 
-        out = renderer.render_part_tensor_14d_multimodal(
+        out = renderer.render_part_tensor_multimodal(
             p14_eval, template_organ_array=init_array, camera_height=5.0, elevation_deg=90.0,
             device=device, focus_plant=True, use_kinematics_tree=False,
             fixed_camera_bounds=cam_bounds, return_depth=False, return_mask=True,
@@ -173,7 +173,7 @@ def run_14d_direct_opt(
         rot_6d_out, scale_eval, bases_eval = _assemble()
         exist_eval = torch.sigmoid(opt_exist).unsqueeze(-1)
         p14_final = torch.cat([p14_init[:, :1], bases_eval, rot_6d_out, scale_eval, exist_eval], dim=-1)
-        out_final = renderer.render_part_tensor_14d_multimodal(
+        out_final = renderer.render_part_tensor_multimodal(
             p14_final, template_organ_array=init_array, camera_height=5.0, elevation_deg=90.0,
             device=device, focus_plant=True, use_kinematics_tree=False,
             fixed_camera_bounds=cam_bounds, return_depth=True, return_mask=False,
@@ -193,7 +193,7 @@ def _load_target_init_pair(renderer, device, tgt_rel, init_rel):
     tgt_arr.tensor = tgt_arr.tensor.to(device)
     tgt_p14 = tgt_arr.to_part_tensor(device=device)
 
-    tgt_mesh = renderer.geo_builder.build_mesh_from_part_array_14d(
+    tgt_mesh = renderer.geo_builder.build_mesh_from_part_array(
         tgt_p14, template_organ_array=tgt_arr, device=device, use_kinematics_tree=False
     )
     tgt_verts = tgt_mesh["vertices"]
@@ -204,7 +204,7 @@ def _load_target_init_pair(renderer, device, tgt_rel, init_rel):
                    float((bb_max[1] - bb_min[1]) * 1.05), 0.05)
     cam_bounds = (canopy_center, max_span)
 
-    tgt_out = renderer.render_part_tensor_14d_multimodal(
+    tgt_out = renderer.render_part_tensor_multimodal(
         tgt_p14, template_organ_array=tgt_arr, camera_height=5.0, elevation_deg=90.0,
         device=device, focus_plant=True, use_kinematics_tree=False,
         fixed_camera_bounds=cam_bounds, return_depth=True, return_mask=True,
@@ -214,7 +214,7 @@ def _load_target_init_pair(renderer, device, tgt_rel, init_rel):
     init_arr = PlantOrganArray.from_xml_file_typed(os.path.join(repo_root, init_rel))
     init_arr.tensor = init_arr.tensor.to(device)
     init_p14 = init_arr.to_part_tensor(device=device)
-    init_rgb = renderer.render_part_tensor_14d(
+    init_rgb = renderer.render_part_tensor(
         init_p14, template_organ_array=init_arr, camera_height=5.0, elevation_deg=90.0,
         device=device, focus_plant=True, use_kinematics_tree=False, differentiable=False,
         fixed_camera_bounds=cam_bounds,
@@ -243,7 +243,7 @@ def figure_3_direct_opt_multi_dap(pairs, renderer, device, assets_dir, steps=35)
         init_ssim = float(masked_ssim(_to_tensor(spec["init_np"], device), _to_tensor(spec["tgt_np"], device)).item())
         init_iou = float(foreground_iou(_to_tensor(spec["init_np"], device), _to_tensor(spec["tgt_np"], device)).item())
 
-        init_depth = renderer.render_part_tensor_14d_multimodal(
+        init_depth = renderer.render_part_tensor_multimodal(
             spec["init_arr"].to_part_tensor(device=device), template_organ_array=spec["init_arr"],
             camera_height=5.0, elevation_deg=90.0, device=device, focus_plant=True, use_kinematics_tree=False,
             fixed_camera_bounds=spec["cam_bounds"], return_depth=True, return_mask=False,
@@ -356,8 +356,8 @@ def figure_5_chamfer_ablation(pairs, renderer, device, assets_dir, steps=35):
         axes[row, 1].axis("off")
 
         # Target leaf bases for Chamfer
-        tgt_leaf_mask = spec["tgt_p14"][:, P14_COL_ORGAN_TYPE].long() == ORGAN_LEAF
-        tgt_leaf_bases = spec["tgt_p14"][tgt_leaf_mask, P14_COL_BASE_X:P14_COL_BASE_Z + 1].to(device)
+        tgt_leaf_mask = spec["tgt_p14"][:, P_COL_ORGAN_TYPE].long() == ORGAN_LEAF
+        tgt_leaf_bases = spec["tgt_p14"][tgt_leaf_mask, P_COL_BASE_X:P_COL_BASE_Z + 1].to(device)
 
         with_cf, _, m2 = run_14d_direct_opt(
             spec["init_arr"], spec["tgt_rgb"], spec["tgt_raw_depth"], spec["tgt_mask"],

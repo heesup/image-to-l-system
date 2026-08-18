@@ -112,7 +112,7 @@ def benchmark_accurate_dap(force_recompute=True):
         t_xml_to_14d = time.time() - t0
 
         t0 = time.time()
-        _ = renderer.render_part_tensor_14d(
+        _ = renderer.render_part_tensor(
             p14, camera_height=5.0, elevation_deg=90.0,
             device=device, focus_plant=True, use_kinematics_tree=False, differentiable=False,
         )
@@ -121,14 +121,14 @@ def benchmark_accurate_dap(force_recompute=True):
         t_render_14d = time.time() - t0
         t_end_to_end = t_xml_to_14d + t_render_14d
 
-        mesh_dict = renderer.geo_builder.build_mesh_from_part_array_14d(
+        mesh_dict = renderer.geo_builder.build_mesh_from_part_array(
             p14, device=device, use_kinematics_tree=False
         )
         tri_count = mesh_dict["faces"].shape[0]
         organ_count = p14.shape[0]
 
         # Warmup
-        _ = renderer.render_part_tensor_14d(
+        _ = renderer.render_part_tensor(
             p14, camera_height=5.0, elevation_deg=90.0,
             device=device, focus_plant=True, use_kinematics_tree=False, differentiable=False,
         )
@@ -138,7 +138,7 @@ def benchmark_accurate_dap(force_recompute=True):
         # Benchmark part-tensor Direct Forward
         t0 = time.time()
         for _ in range(5):
-            _ = renderer.render_part_tensor_14d(
+            _ = renderer.render_part_tensor(
                 p14, camera_height=5.0, elevation_deg=90.0,
                 device=device, focus_plant=True, use_kinematics_tree=False, differentiable=False,
             )
@@ -150,7 +150,7 @@ def benchmark_accurate_dap(force_recompute=True):
         t0 = time.time()
         for _ in range(3):
             opt_p14 = p14.clone().requires_grad_(True)
-            rend_14d = renderer.render_part_tensor_14d(
+            rend_14d = renderer.render_part_tensor(
                 opt_p14, camera_height=5.0, elevation_deg=90.0,
                 device=device, focus_plant=True, use_kinematics_tree=False, differentiable=True,
             )

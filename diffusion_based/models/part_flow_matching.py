@@ -29,7 +29,7 @@ class PartFlowMatchingModel(nn.Module):
     def __init__(
         self,
         max_nodes: int = 2048,
-        node_dim: int = 14,
+        node_dim: int = 17,
         image_size: int = 128,
         patch_size: int = 8,
         embed_dim: int = 256,
@@ -95,11 +95,11 @@ class PartFlowMatchingModel(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         """
         Args:
-            noisy_nodes: (B, N, 14) interpolated part tensor x_t.
+            noisy_nodes: (B, N, D) interpolated part tensor x_t.
             timesteps: (B,) flow time t in [0, 1].
             images: (B, 3, H, W) normalized condition image.
         Returns:
-            {'pred_velocity': (B, N, 14)} predicted velocity field.
+            {'pred_velocity': (B, N, D)} predicted velocity field.
         """
         image_tokens = self.image_encoder(images)  # (B, T, D)
         t_emb = self.time_embed(self._sinusoidal(timesteps))  # (B, D)

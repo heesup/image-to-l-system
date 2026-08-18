@@ -14,9 +14,9 @@ from diffusion_based.models.plant_organ_array import (
     PlantOrganArray,
     ORGAN_ROOT_META, ORGAN_SHOOT_META, ORGAN_INTERNODE, ORGAN_PETIOLE, ORGAN_LEAF,
     ORGAN_BUD, ORGAN_PEDUNCLE, ORGAN_FLOWER, ORGAN_FRUIT, ORGAN_FLOWER_CLOSED,
-    P14_COL_ORGAN_TYPE, P14_COL_BASE_X, P14_COL_BASE_Y, P14_COL_BASE_Z,
-    P14_COL_ROT_0, P14_COL_ROT_1, P14_COL_ROT_2, P14_COL_ROT_3, P14_COL_ROT_4, P14_COL_ROT_5,
-    P14_COL_SCALE_X, P14_COL_SCALE_Y, P14_COL_SCALE_Z, P14_COL_EXISTENCE, NUM_FEATURES_14D,
+    P_COL_ORGAN_TYPE, P_COL_BASE_X, P_COL_BASE_Y, P_COL_BASE_Z,
+    P_COL_ROT_0, P_COL_ROT_1, P_COL_ROT_2, P_COL_ROT_3, P_COL_ROT_4, P_COL_ROT_5,
+    P_COL_SCALE_X, P_COL_SCALE_Y, P_COL_SCALE_Z, P_COL_EXISTENCE, NUM_FEATURES,
     rotation_matrix_to_6d, rotation_6d_to_matrix,
 )
 
@@ -492,7 +492,7 @@ class HeliosPlantGeometryBuilder:
             }
         return self._infl_assets
 
-    def build_mesh_from_part_array_14d(
+    def build_mesh_from_part_array(
         self,
         part_tensor_14d: torch.Tensor,
         device: torch.device = torch.device('cpu'),
@@ -522,17 +522,17 @@ class HeliosPlantGeometryBuilder:
         infl_assets = self._get_inflorescence_assets()
 
         for idx in range(N):
-            exist = p[idx, P14_COL_EXISTENCE].item()
+            exist = p[idx, P_COL_EXISTENCE].item()
             if exist < existence_threshold:
                 continue
 
-            otype = int(p[idx, P14_COL_ORGAN_TYPE].item())
-            base = p[idx, P14_COL_BASE_X:P14_COL_BASE_Z+1]
-            r6 = p[idx, P14_COL_ROT_0:P14_COL_ROT_5+1]
+            otype = int(p[idx, P_COL_ORGAN_TYPE].item())
+            base = p[idx, P_COL_BASE_X:P_COL_BASE_Z+1]
+            r6 = p[idx, P_COL_ROT_0:P_COL_ROT_5+1]
             R = rotation_6d_to_matrix(r6)
-            sx = p[idx, P14_COL_SCALE_X]
-            sy = p[idx, P14_COL_SCALE_Y]
-            sz = p[idx, P14_COL_SCALE_Z]
+            sx = p[idx, P_COL_SCALE_X]
+            sy = p[idx, P_COL_SCALE_Y]
+            sz = p[idx, P_COL_SCALE_Z]
 
             if otype == ORGAN_LEAF:
                 lf_scale = sx * self.leaf_scale_factor

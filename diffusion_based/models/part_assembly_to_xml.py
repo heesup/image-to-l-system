@@ -18,16 +18,19 @@ import torch
 from scipy.spatial import cKDTree
 
 from diffusion_based.models.plant_organ_array import (
-    P14_COL_ORGAN_TYPE,
-    P14_COL_BASE_X,
-    P14_COL_BASE_Y,
-    P14_COL_BASE_Z,
-    P14_COL_ROT_0,
-    P14_COL_ROT_5,
-    P14_COL_SCALE_X,
-    P14_COL_SCALE_Y,
-    P14_COL_SCALE_Z,
-    P14_COL_EXISTENCE,
+    P_COL_ORGAN_TYPE,
+    P_COL_BASE_X,
+    P_COL_BASE_Y,
+    P_COL_BASE_Z,
+    P_COL_ROT_0,
+    P_COL_ROT_5,
+    P_COL_SCALE_X,
+    P_COL_SCALE_Y,
+    P_COL_SCALE_Z,
+    P_COL_EXISTENCE,
+    P_COL_BUD_STATE,
+    P_COL_CURVATURE,
+    P_COL_PHYLLOTACTIC_ANGLE,
     ORGAN_ROOT_META,
     ORGAN_SHOOT_META,
     ORGAN_LEAF,
@@ -80,7 +83,7 @@ class PartAssemblyToXMLConverter:
         N = p_np.shape[0]
 
         # 1. Separate active parts by organ type
-        active_mask = p_np[:, P14_COL_EXISTENCE] >= existence_threshold
+        active_mask = p_np[:, P_COL_EXISTENCE] >= existence_threshold
         
         root_meta_idx = None
         shoot_metas = []
@@ -94,7 +97,7 @@ class PartAssemblyToXMLConverter:
         for idx in range(N):
             if not active_mask[idx]:
                 continue
-            ot = int(round(p_np[idx, P14_COL_ORGAN_TYPE]))
+            ot = int(round(p_np[idx, P_COL_ORGAN_TYPE]))
             if ot == ORGAN_ROOT_META:
                 root_meta_idx = idx
             elif ot == ORGAN_SHOOT_META:
@@ -113,20 +116,20 @@ class PartAssemblyToXMLConverter:
                 fruits.append(idx)
 
         # Batch 6D rotation conversion for speed
-        r6_all = torch.from_numpy(p_np[:, P14_COL_ROT_0:P14_COL_ROT_5+1]).float()
+        r6_all = torch.from_numpy(p_np[:, P_COL_ROT_0:P_COL_ROT_5+1]).float()
         R_all = rotation_6d_to_matrix(r6_all).numpy()
 
         part_info = {}
         for idx in range(N):
-            base = p_np[idx, P14_COL_BASE_X:P14_COL_BASE_Z+1]
+            base = p_np[idx, P_COL_BASE_X:P_COL_BASE_Z+1]
             R = R_all[idx]
-            sx = float(p_np[idx, P14_COL_SCALE_X])
-            sy = float(p_np[idx, P14_COL_SCALE_Y])
-            sz = float(p_np[idx, P14_COL_SCALE_Z])
+            sx = float(p_np[idx, P_COL_SCALE_X])
+            sy = float(p_np[idx, P_COL_SCALE_Y])
+            sz = float(p_np[idx, P_COL_SCALE_Z])
             dir_z = R @ np.array([0.0, 0.0, 1.0])
             tip = base + dir_z * sz
             part_info[idx] = {
-                "ot": int(round(p_np[idx, P14_COL_ORGAN_TYPE])),
+                "ot": int(round(p_np[idx, P_COL_ORGAN_TYPE])),
                 "base": base,
                 "tip": tip,
                 "R": R,
@@ -134,6 +137,9 @@ class PartAssemblyToXMLConverter:
                 "sx": sx,
                 "sy": sy,
                 "sz": sz,
+                "bud_state": int(round(p_np[idx, P_COL_BUD_STATE])),
+                "curvature": float(p_np[idx, P_COL_CURVATURE]),
+                "phyllotactic_angle": float(p_np[idx, P_COL_PHYLLOTACTIC_ANGLE]),
             }
 
         if not internodes:
@@ -228,10 +234,12 @@ class PartAssemblyToXMLConverter:
                 best_pet = petioles[p_local_idx]
                 petiole_leaves[best_pet].append(l_idx)
 
-        # Associate Peduncles to closest internode base
+        # Associate Peduncles to closest internode tip (bud base == internode tip)
         if peduncles:
+            inode_tips = np.array([part_info[i]["tip"] for i in internodes])
+            inode_tip_tree = cKDTree(inode_tips)
             pd_bases = np.array([part_info[pd]["base"] for pd in peduncles])
-            _, nearest_pd_inodes = inode_base_tree.query(pd_bases)
+            _, nearest_pd_inodes = inode_tip_tree.query(pd_bases)
             if not isinstance(nearest_pd_inodes, np.ndarray):
                 nearest_pd_inodes = [nearest_pd_inodes]
             for pd_idx, i_local_idx in zip(peduncles, nearest_pd_inodes):
@@ -292,7 +300,8 @@ class PartAssemblyToXMLConverter:
                 lines.append(f'\t\t\t\t\t<internode_length>{_fmt(info["sz"])}</internode_length>')
                 lines.append(f'\t\t\t\t\t<internode_radius>{_fmt(info["sx"])}</internode_radius>')
                 lines.append(f'\t\t\t\t\t<internode_pitch>{_fmt(inode_pitch_deg)}</internode_pitch>')
-                lines.append('\t\t\t\t\t<internode_phyllotactic_angle>137.5</internode_phyllotactic_angle>')
+                phyllo = info["phyllotactic_angle"] if info["phyllotactic_angle"] > 0 else 137.5
+                lines.append(f'\t\t\t\t\t<internode_phyllotactic_angle>{_fmt(phyllo)}</internode_phyllotactic_angle>')
                 lines.append(f'\t\t\t\t\t<internode_length_max>{_fmt(info["sz"])}</internode_length_max>')
                 lines.append('\t\t\t\t\t<internode_length_segments>3</internode_length_segments>')
                 lines.append('\t\t\t\t\t<curvature_perturbations>0;0</curvature_perturbations>')
@@ -327,7 +336,7 @@ class PartAssemblyToXMLConverter:
                         lines.append(f'\t\t\t\t\t\t<petiole_length>{_fmt(p_info["sz"])}</petiole_length>')
                         lines.append(f'\t\t\t\t\t\t<petiole_radius>{_fmt(p_info["sx"])}</petiole_radius>')
                         lines.append(f'\t\t\t\t\t\t<petiole_pitch>{_fmt(pet_pitch_deg)}</petiole_pitch>')
-                        lines.append('\t\t\t\t\t\t<petiole_curvature>0</petiole_curvature>')
+                        lines.append(f'\t\t\t\t\t\t<petiole_curvature>{_fmt(p_info["curvature"])}</petiole_curvature>')
                         lines.append('\t\t\t\t\t\t<current_leaf_scale_factor>1</current_leaf_scale_factor>')
                         lines.append('\t\t\t\t\t\t<petiole_taper>0</petiole_taper>')
                         lines.append('\t\t\t\t\t\t<petiole_length_segments>3</petiole_length_segments>')
@@ -355,7 +364,11 @@ class PartAssemblyToXMLConverter:
                                 pd_info = part_info[pd_idx]
                                 infls = peduncle_infls.get(pd_idx, [])
                                 is_fruit = any(part_info[fl]["ot"] in (ORGAN_FRUIT, 8) for fl in infls)
-                                bud_state = 4 if is_fruit else (3 if infls else 1)
+                                stored_state = pd_info["bud_state"]
+                                if stored_state in (2, 3, 4):
+                                    bud_state = stored_state
+                                else:
+                                    bud_state = 4 if is_fruit else (3 if infls else 1)
 
                                 lines.append('\t\t\t\t\t\t<floral_bud>')
                                 lines.append(f'\t\t\t\t\t\t\t<bud_state>{bud_state}</bud_state>')
@@ -367,7 +380,7 @@ class PartAssemblyToXMLConverter:
                                 lines.append(f'\t\t\t\t\t\t\t\t<length>{_fmt(pd_info["sz"])}</length>')
                                 lines.append(f'\t\t\t\t\t\t\t\t<radius>{_fmt(pd_info["sx"])}</radius>')
                                 lines.append('\t\t\t\t\t\t\t\t<pitch>15</pitch>')
-                                lines.append('\t\t\t\t\t\t\t\t<curvature>0</curvature>')
+                                lines.append(f'\t\t\t\t\t\t\t\t<curvature>{_fmt(pd_info["curvature"])}</curvature>')
                                 lines.append('\t\t\t\t\t\t\t\t<roll>0</roll>')
                                 lines.append('\t\t\t\t\t\t\t</peduncle>')
 

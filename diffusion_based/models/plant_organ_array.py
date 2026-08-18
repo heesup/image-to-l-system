@@ -1,10 +1,19 @@
 """
-Plant Organ Array: part-centric (N, 14) representation and XML utilities.
+Plant Organ Array: part-centric (N, D) representation and XML utilities.
 
 This module stores plant architecture as a dimension-agnostic part-centric
-tensor. The current layout uses 14 columns (organ type, base XYZ, 6D rotation,
-scale XYZ, existence), but the class is dimension-agnostic: any tensor with
-NUM_FEATURES_14D columns is accepted.
+tensor. The current layout uses 17 columns:
+
+    [OrganType(0), Base(1..3), Rot6D(4..9), Scale(10..12), Existence(13),
+     BudState(14), Curvature(15), PhyllotacticAngle(16)]
+
+The last three columns are stored so the part tensor can round-trip back to
+Helios XML faithfully:
+  - BudState: discrete floral-bud state (1..5) that gates peduncle/flower/fruit.
+  - Curvature: shared petiole/peduncle curvature (meaning disambiguated by
+    OrganType). Internode/leaf rows leave it at 0.
+  - PhyllotacticAngle: internode phyllotactic angle (degrees); only meaningful
+    on internode rows.
 """
 
 import math
@@ -34,21 +43,24 @@ ORGAN_FLOWER_CLOSED = 9
 # PART-CENTRIC COLUMN IDs
 # =============================================================================
 
-P14_COL_ORGAN_TYPE = 0
-P14_COL_BASE_X = 1
-P14_COL_BASE_Y = 2
-P14_COL_BASE_Z = 3
-P14_COL_ROT_0 = 4
-P14_COL_ROT_1 = 5
-P14_COL_ROT_2 = 6
-P14_COL_ROT_3 = 7
-P14_COL_ROT_4 = 8
-P14_COL_ROT_5 = 9
-P14_COL_SCALE_X = 10
-P14_COL_SCALE_Y = 11
-P14_COL_SCALE_Z = 12
-P14_COL_EXISTENCE = 13
-NUM_FEATURES_14D = 14
+P_COL_ORGAN_TYPE = 0
+P_COL_BASE_X = 1
+P_COL_BASE_Y = 2
+P_COL_BASE_Z = 3
+P_COL_ROT_0 = 4
+P_COL_ROT_1 = 5
+P_COL_ROT_2 = 6
+P_COL_ROT_3 = 7
+P_COL_ROT_4 = 8
+P_COL_ROT_5 = 9
+P_COL_SCALE_X = 10
+P_COL_SCALE_Y = 11
+P_COL_SCALE_Z = 12
+P_COL_EXISTENCE = 13
+P_COL_BUD_STATE = 14
+P_COL_CURVATURE = 15
+P_COL_PHYLLOTACTIC_ANGLE = 16
+NUM_FEATURES = 17
 
 
 # =============================================================================
@@ -121,18 +133,18 @@ def _make_row(
     scale: np.ndarray,
     existence: float = 1.0,
 ) -> np.ndarray:
-    """Build a single (NUM_FEATURES_14D,) row from spatial part data."""
-    row = np.zeros(NUM_FEATURES_14D, dtype=np.float32)
-    row[P14_COL_ORGAN_TYPE] = float(organ_type)
-    row[P14_COL_BASE_X] = float(base[0])
-    row[P14_COL_BASE_Y] = float(base[1])
-    row[P14_COL_BASE_Z] = float(base[2])
+    """Build a single (NUM_FEATURES,) row from spatial part data."""
+    row = np.zeros(NUM_FEATURES, dtype=np.float32)
+    row[P_COL_ORGAN_TYPE] = float(organ_type)
+    row[P_COL_BASE_X] = float(base[0])
+    row[P_COL_BASE_Y] = float(base[1])
+    row[P_COL_BASE_Z] = float(base[2])
     r6 = _matrix_to_6d(R)
-    row[P14_COL_ROT_0:P14_COL_ROT_5 + 1] = r6
-    row[P14_COL_SCALE_X] = float(scale[0])
-    row[P14_COL_SCALE_Y] = float(scale[1])
-    row[P14_COL_SCALE_Z] = float(scale[2])
-    row[P14_COL_EXISTENCE] = float(existence)
+    row[P_COL_ROT_0:P_COL_ROT_5 + 1] = r6
+    row[P_COL_SCALE_X] = float(scale[0])
+    row[P_COL_SCALE_Y] = float(scale[1])
+    row[P_COL_SCALE_Z] = float(scale[2])
+    row[P_COL_EXISTENCE] = float(existence)
     return row
 
 
@@ -334,6 +346,7 @@ def _parse_xml_to_part_tensor(xml_content: str) -> torch.Tensor:
                                 "pitch": pdp,
                                 "curvature": pdc,
                                 "roll": pdrl,
+                                "bud_state": bs,
                             })
 
                         infl_elem = fb_elem.find("inflorescence")
@@ -360,10 +373,10 @@ def _parse_xml_to_part_tensor(xml_content: str) -> torch.Tensor:
                                 })
 
     if not records:
-        return torch.zeros((0, NUM_FEATURES_14D), dtype=torch.float32)
+        return torch.zeros((0, NUM_FEATURES), dtype=torch.float32)
 
     N = len(records)
-    part = torch.zeros((N, NUM_FEATURES_14D), dtype=torch.float32, device=device)
+    part = torch.zeros((N, NUM_FEATURES), dtype=torch.float32, device=device)
     eye_6d = rotation_matrix_to_6d(torch.eye(3, device=device))
 
     # ------------------------------------------------------------------
@@ -382,50 +395,57 @@ def _parse_xml_to_part_tensor(xml_content: str) -> torch.Tensor:
         sid = rec.get("shoot_id", 0)
         p_idx = rec.get("phytomer_idx", 0)
         if ot == ORGAN_ROOT_META:
-            part[idx, P14_COL_ORGAN_TYPE] = ORGAN_ROOT_META
-            part[idx, P14_COL_EXISTENCE] = 1.0
-            part[idx, P14_COL_BASE_X:P14_COL_BASE_Z + 1] = rec["base"]
+            part[idx, P_COL_ORGAN_TYPE] = ORGAN_ROOT_META
+            part[idx, P_COL_EXISTENCE] = 1.0
+            part[idx, P_COL_BASE_X:P_COL_BASE_Z + 1] = rec["base"]
         elif ot == ORGAN_SHOOT_META:
             shoot_meta_row[sid] = idx
-            part[idx, P14_COL_ORGAN_TYPE] = ORGAN_SHOOT_META
+            part[idx, P_COL_ORGAN_TYPE] = ORGAN_SHOOT_META
         elif ot == ORGAN_INTERNODE:
             internode_rows.setdefault(sid, []).append((p_idx, idx))
-            part[idx, P14_COL_ORGAN_TYPE] = ORGAN_INTERNODE
-            part[idx, P14_COL_SCALE_X] = rec["radius"]
-            part[idx, P14_COL_SCALE_Y] = rec["radius"]
-            part[idx, P14_COL_SCALE_Z] = rec["length"]
+            part[idx, P_COL_ORGAN_TYPE] = ORGAN_INTERNODE
+            part[idx, P_COL_SCALE_X] = rec["radius"]
+            part[idx, P_COL_SCALE_Y] = rec["radius"]
+            part[idx, P_COL_SCALE_Z] = rec["length"]
+            part[idx, P_COL_PHYLLOTACTIC_ANGLE] = rec["phyllotactic_angle"]
         elif ot == ORGAN_PETIOLE:
             pet_i = rec["parent_petiole_idx"]
             petiole_row[(sid, p_idx, pet_i)] = idx
-            part[idx, P14_COL_ORGAN_TYPE] = ORGAN_PETIOLE
-            part[idx, P14_COL_SCALE_X] = rec["radius"]
-            part[idx, P14_COL_SCALE_Y] = rec["radius"]
-            part[idx, P14_COL_SCALE_Z] = rec["length"]
+            part[idx, P_COL_ORGAN_TYPE] = ORGAN_PETIOLE
+            part[idx, P_COL_SCALE_X] = rec["radius"]
+            part[idx, P_COL_SCALE_Y] = rec["radius"]
+            part[idx, P_COL_SCALE_Z] = rec["length"]
+            part[idx, P_COL_CURVATURE] = rec["curvature"]
         elif ot == ORGAN_LEAF:
             pet_i = rec["parent_petiole_idx"]
             lf_idx = rec["child_index"]
             leaf_rows.setdefault((sid, p_idx, pet_i), {})[lf_idx] = idx
-            part[idx, P14_COL_ORGAN_TYPE] = ORGAN_LEAF
-            part[idx, P14_COL_SCALE_X] = rec["scale"]
-            part[idx, P14_COL_SCALE_Y] = rec["scale"]
-            part[idx, P14_COL_SCALE_Z] = rec["scale"]
+            part[idx, P_COL_ORGAN_TYPE] = ORGAN_LEAF
+            part[idx, P_COL_SCALE_X] = rec["scale"]
+            part[idx, P_COL_SCALE_Y] = rec["scale"]
+            part[idx, P_COL_SCALE_Z] = rec["scale"]
         elif ot == ORGAN_BUD:
             bud_idx = rec["child_index"]
             bud_rows.setdefault((sid, p_idx), []).append((bud_idx, idx))
-            part[idx, P14_COL_ORGAN_TYPE] = ORGAN_BUD
+            part[idx, P_COL_ORGAN_TYPE] = ORGAN_BUD
+            part[idx, P_COL_BUD_STATE] = rec["bud_state"]
+            part[idx, P_COL_EXISTENCE] = 1.0
         elif ot == ORGAN_PEDUNCLE:
             peduncle_rows[(sid, p_idx)] = idx
-            part[idx, P14_COL_ORGAN_TYPE] = ORGAN_PEDUNCLE
-            part[idx, P14_COL_SCALE_X] = rec["radius"]
-            part[idx, P14_COL_SCALE_Y] = rec["radius"]
-            part[idx, P14_COL_SCALE_Z] = rec["length"]
+            part[idx, P_COL_ORGAN_TYPE] = ORGAN_PEDUNCLE
+            part[idx, P_COL_SCALE_X] = rec["radius"]
+            part[idx, P_COL_SCALE_Y] = rec["radius"]
+            part[idx, P_COL_SCALE_Z] = rec["length"]
+            part[idx, P_COL_CURVATURE] = rec["curvature"]
+            part[idx, P_COL_BUD_STATE] = rec.get("bud_state", 0)
+            part[idx, P_COL_EXISTENCE] = 1.0
         elif ot == ORGAN_FLOWER:
             fl_idx = rec["child_index"]
             flower_rows.setdefault((sid, p_idx), []).append((fl_idx, idx))
-            part[idx, P14_COL_ORGAN_TYPE] = ORGAN_FLOWER
-            part[idx, P14_COL_SCALE_X] = rec["scale"]
-            part[idx, P14_COL_SCALE_Y] = rec["scale"]
-            part[idx, P14_COL_SCALE_Z] = rec["scale"]
+            part[idx, P_COL_ORGAN_TYPE] = ORGAN_FLOWER
+            part[idx, P_COL_SCALE_X] = rec["scale"]
+            part[idx, P_COL_SCALE_Y] = rec["scale"]
+            part[idx, P_COL_SCALE_Z] = rec["scale"]
 
     for sid in internode_rows:
         internode_rows[sid].sort(key=lambda x: x[0])
@@ -474,14 +494,14 @@ def _parse_xml_to_part_tensor(xml_content: str) -> torch.Tensor:
         base_roll_rad = meta_rec["roll"] * deg2rad
 
         shoot_base_pos, parent_internode_axis, parent_petiole_axis = compute_shoot_base(sid, meta_rec)
-        part[meta_idx, P14_COL_EXISTENCE] = 1.0
-        part[meta_idx, P14_COL_BASE_X:P14_COL_BASE_Z + 1] = shoot_base_pos
+        part[meta_idx, P_COL_EXISTENCE] = 1.0
+        part[meta_idx, P_COL_BASE_X:P_COL_BASE_Z + 1] = shoot_base_pos
         R_shoot = (
             rotr_z(base_yaw_rad, device) @
             rotr_y(-base_pitch_rad, device) @
             rotr_x(base_roll_rad, device)
         )
-        part[meta_idx, P14_COL_ROT_0:P14_COL_ROT_5 + 1] = rotation_matrix_to_6d(R_shoot)
+        part[meta_idx, P_COL_ROT_0:P_COL_ROT_5 + 1] = rotation_matrix_to_6d(R_shoot)
 
         curr_pos = shoot_base_pos.clone()
         prev_internode_axis = parent_internode_axis
@@ -560,16 +580,16 @@ def _parse_xml_to_part_tensor(xml_content: str) -> torch.Tensor:
             inode_tip_axis = step_dir / (torch.linalg.norm(step_dir) + 1e-6)
             node_internode_tip_axes[n_idx] = get_axis_vector_torch(inode_line, 1.0)
 
-            part[n_idx, P14_COL_EXISTENCE] = 1.0
-            part[n_idx, P14_COL_BASE_X:P14_COL_BASE_Z + 1] = inode_line[0]
-            part[n_idx, P14_COL_SCALE_X] = inode_rad
-            part[n_idx, P14_COL_SCALE_Y] = inode_rad
-            part[n_idx, P14_COL_SCALE_Z] = inode_len
+            part[n_idx, P_COL_EXISTENCE] = 1.0
+            part[n_idx, P_COL_BASE_X:P_COL_BASE_Z + 1] = inode_line[0]
+            part[n_idx, P_COL_SCALE_X] = inode_rad
+            part[n_idx, P_COL_SCALE_Y] = inode_rad
+            part[n_idx, P_COL_SCALE_Z] = inode_len
             R_inode = _get_rotation_matrix_between_vectors_batch(
                 torch.tensor([0.0, 0.0, 1.0], device=device).unsqueeze(0),
                 inode_tip_axis.unsqueeze(0),
             ).squeeze(0)
-            part[n_idx, P14_COL_ROT_0:P14_COL_ROT_5 + 1] = rotation_matrix_to_6d(R_inode)
+            part[n_idx, P_COL_ROT_0:P_COL_ROT_5 + 1] = rotation_matrix_to_6d(R_inode)
 
             pet_axes_stored = {}
             pet_line_stored = {}
@@ -641,16 +661,16 @@ def _parse_xml_to_part_tensor(xml_content: str) -> torch.Tensor:
                 pet_tip_axis = pet_tip_axis / (torch.linalg.norm(pet_tip_axis) + 1e-8)
                 pet_line_stored[petiole_index] = pet_line.clone()
 
-                part[pet_row, P14_COL_EXISTENCE] = 1.0
-                part[pet_row, P14_COL_BASE_X:P14_COL_BASE_Z + 1] = pet_base
-                part[pet_row, P14_COL_SCALE_X] = p_rad
-                part[pet_row, P14_COL_SCALE_Y] = p_rad
-                part[pet_row, P14_COL_SCALE_Z] = p_len
+                part[pet_row, P_COL_EXISTENCE] = 1.0
+                part[pet_row, P_COL_BASE_X:P_COL_BASE_Z + 1] = pet_base
+                part[pet_row, P_COL_SCALE_X] = p_rad
+                part[pet_row, P_COL_SCALE_Y] = p_rad
+                part[pet_row, P_COL_SCALE_Z] = p_len
                 R_pet = _get_rotation_matrix_between_vectors_batch(
                     torch.tensor([0.0, 0.0, 1.0], device=device).unsqueeze(0),
                     pet_tip_axis.unsqueeze(0),
                 ).squeeze(0)
-                part[pet_row, P14_COL_ROT_0:P14_COL_ROT_5 + 1] = rotation_matrix_to_6d(R_pet)
+                part[pet_row, P_COL_ROT_0:P_COL_ROT_5 + 1] = rotation_matrix_to_6d(R_pet)
 
                 if num_leaves > 0:
                     for lf_i in range(min(num_leaves, 3)):
@@ -704,12 +724,12 @@ def _parse_xml_to_part_tensor(xml_content: str) -> torch.Tensor:
                             rotr_y(-pitch_rot, device) @
                             rotr_x(roll_rot, device)
                         )
-                        part[leaf_row_idx, P14_COL_EXISTENCE] = 1.0
-                        part[leaf_row_idx, P14_COL_BASE_X:P14_COL_BASE_Z + 1] = leaf_base
-                        part[leaf_row_idx, P14_COL_SCALE_X] = l_scale
-                        part[leaf_row_idx, P14_COL_SCALE_Y] = l_scale
-                        part[leaf_row_idx, P14_COL_SCALE_Z] = l_scale
-                        part[leaf_row_idx, P14_COL_ROT_0:P14_COL_ROT_5 + 1] = rotation_matrix_to_6d(R_leaf)
+                        part[leaf_row_idx, P_COL_EXISTENCE] = 1.0
+                        part[leaf_row_idx, P_COL_BASE_X:P_COL_BASE_Z + 1] = leaf_base
+                        part[leaf_row_idx, P_COL_SCALE_X] = l_scale
+                        part[leaf_row_idx, P_COL_SCALE_Y] = l_scale
+                        part[leaf_row_idx, P_COL_SCALE_Z] = l_scale
+                        part[leaf_row_idx, P_COL_ROT_0:P_COL_ROT_5 + 1] = rotation_matrix_to_6d(R_leaf)
 
             for pet_i in sorted(k[2] for k in petioles_here):
                 process_petiole(pet_i, pet_i)
@@ -742,16 +762,9 @@ def _parse_xml_to_part_tensor(xml_content: str) -> torch.Tensor:
     # ==================================================================
     # Phase B: floral bud peduncle / flower / fruit
     # ==================================================================
-    has_floral_geometry = False
-    for _, bud_list in bud_rows.items():
-        for _, bidx in bud_list:
-            if records[bidx]["bud_state"] in (2, 3, 4):
-                has_floral_geometry = True
-                break
-        if has_floral_geometry:
-            break
+    has_buds = any(len(bud_list) > 0 for bud_list in bud_rows.values())
 
-    if has_floral_geometry:
+    if has_buds:
         for (sid, p_idx), bud_list in sorted(bud_rows.items()):
             ctx = phytomer_context.get((sid, p_idx))
             if ctx is None:
@@ -763,8 +776,6 @@ def _parse_xml_to_part_tensor(xml_content: str) -> torch.Tensor:
             for bud_index, bud_row_idx in bud_list:
                 bud_rec = records[bud_row_idx]
                 state = bud_rec["bud_state"]
-                if state not in (2, 3, 4):
-                    continue
                 pet_i = bud_rec["parent_petiole_idx"]
                 is_terminal = bud_rec["bud_is_terminal"] > 0
                 current_fruit_scale_factor = bud_rec["fruit_scale"]
@@ -779,7 +790,7 @@ def _parse_xml_to_part_tensor(xml_content: str) -> torch.Tensor:
                     bud_base = pet_line0[0] if pet_line0 is not None else ctx["inode_line"][-1]
                     base_pitch = bud_index * 0.1 * math.pi / float(Nbuds)
                     base_yaw = -0.25 * math.pi + bud_index * 0.5 * math.pi / float(Nbuds)
-                part[bud_row_idx, P14_COL_BASE_X:P14_COL_BASE_Z + 1] = bud_base
+                part[bud_row_idx, P_COL_BASE_X:P_COL_BASE_Z + 1] = bud_base
 
                 ped_row_idx = peduncle_rows.get((sid, p_idx))
                 if ped_row_idx is None:
@@ -865,22 +876,22 @@ def _parse_xml_to_part_tensor(xml_content: str) -> torch.Tensor:
 
                 ped_line = torch.stack(verts_list)
 
-                part[ped_row_idx, P14_COL_EXISTENCE] = 1.0
-                part[ped_row_idx, P14_COL_BASE_X:P14_COL_BASE_Z + 1] = ped_line[0]
-                part[ped_row_idx, P14_COL_SCALE_X] = p_rad
-                part[ped_row_idx, P14_COL_SCALE_Y] = p_rad
-                part[ped_row_idx, P14_COL_SCALE_Z] = p_len
+                part[ped_row_idx, P_COL_EXISTENCE] = 1.0
+                part[ped_row_idx, P_COL_BASE_X:P_COL_BASE_Z + 1] = ped_line[0]
+                part[ped_row_idx, P_COL_SCALE_X] = p_rad
+                part[ped_row_idx, P_COL_SCALE_Y] = p_rad
+                part[ped_row_idx, P_COL_SCALE_Z] = p_len
                 ped_axis_dir = (ped_line[-1] - ped_line[0])
                 ped_axis_dir = ped_axis_dir / (torch.linalg.norm(ped_axis_dir) + 1e-8)
                 R_ped = _get_rotation_matrix_between_vectors_batch(
                     torch.tensor([0.0, 0.0, 1.0], device=device).unsqueeze(0),
                     ped_axis_dir.unsqueeze(0),
                 ).squeeze(0)
-                part[ped_row_idx, P14_COL_ROT_0:P14_COL_ROT_5 + 1] = rotation_matrix_to_6d(R_ped)
+                part[ped_row_idx, P_COL_ROT_0:P_COL_ROT_5 + 1] = rotation_matrix_to_6d(R_ped)
 
                 fl_list = flower_rows.get((sid, p_idx), [])
                 n_flowers = len(fl_list)
-                if n_flowers == 0:
+                if n_flowers == 0 or state not in (2, 3, 4):
                     continue
 
                 for fl_idx, fl_row_idx in fl_list:
@@ -914,17 +925,17 @@ def _parse_xml_to_part_tensor(xml_content: str) -> torch.Tensor:
                             frac = 1.0 - offset / p_len
                     recalculated_peduncle_axis = get_axis_vector_torch(ped_line, frac)
 
-                    part[fl_row_idx, P14_COL_EXISTENCE] = 1.0
-                    part[fl_row_idx, P14_COL_BASE_X:P14_COL_BASE_Z + 1] = flower_base
-                    part[fl_row_idx, P14_COL_SCALE_X] = fl_rec["scale"]
-                    part[fl_row_idx, P14_COL_SCALE_Y] = fl_rec["scale"]
-                    part[fl_row_idx, P14_COL_SCALE_Z] = fl_rec["scale"]
+                    part[fl_row_idx, P_COL_EXISTENCE] = 1.0
+                    part[fl_row_idx, P_COL_BASE_X:P_COL_BASE_Z + 1] = flower_base
+                    part[fl_row_idx, P_COL_SCALE_X] = fl_rec["scale"]
+                    part[fl_row_idx, P_COL_SCALE_Y] = fl_rec["scale"]
+                    part[fl_row_idx, P_COL_SCALE_Z] = fl_rec["scale"]
                     if state == 4:
-                        part[fl_row_idx, P14_COL_ORGAN_TYPE] = ORGAN_FRUIT
+                        part[fl_row_idx, P_COL_ORGAN_TYPE] = ORGAN_FRUIT
                     elif state == 2:
-                        part[fl_row_idx, P14_COL_ORGAN_TYPE] = ORGAN_FLOWER_CLOSED
+                        part[fl_row_idx, P_COL_ORGAN_TYPE] = ORGAN_FLOWER_CLOSED
                     else:
-                        part[fl_row_idx, P14_COL_ORGAN_TYPE] = ORGAN_FLOWER
+                        part[fl_row_idx, P_COL_ORGAN_TYPE] = ORGAN_FLOWER
                     R_yaw = rodrigues_matrix_torch(recalculated_peduncle_axis, saved_yaw, device=device)
                     R_obj_net = (
                         R_yaw @
@@ -932,7 +943,7 @@ def _parse_xml_to_part_tensor(xml_content: str) -> torch.Tensor:
                         rotr_y(saved_pitch, device) @
                         rotr_x(saved_roll, device)
                     )
-                    part[fl_row_idx, P14_COL_ROT_0:P14_COL_ROT_5 + 1] = rotation_matrix_to_6d(R_obj_net)
+                    part[fl_row_idx, P_COL_ROT_0:P_COL_ROT_5 + 1] = rotation_matrix_to_6d(R_obj_net)
 
     return part
 
@@ -953,7 +964,7 @@ class PlantOrganArray:
     """
     Stores plant architecture as a part-centric tensor.
 
-    The tensor must have shape (N, NUM_FEATURES_14D). No legacy or typed layout
+    The tensor must have shape (N, NUM_FEATURES). No legacy or typed layout
     variants are supported.
     """
 
@@ -962,9 +973,9 @@ class PlantOrganArray:
             raise ValueError(
                 f"PlantOrganArray tensor must be 2D, got shape {tensor.shape}"
             )
-        if tensor.shape[1] != NUM_FEATURES_14D:
+        if tensor.shape[1] != NUM_FEATURES:
             raise ValueError(
-                f"PlantOrganArray tensor must have {NUM_FEATURES_14D} columns, "
+                f"PlantOrganArray tensor must have {NUM_FEATURES} columns, "
                 f"got {tensor.shape[1]}"
             )
         self.tensor = tensor
@@ -975,13 +986,13 @@ class PlantOrganArray:
 
     @property
     def existence(self) -> torch.Tensor:
-        return self.tensor[:, P14_COL_EXISTENCE]
+        return self.tensor[:, P_COL_EXISTENCE]
 
     @existence.setter
     def existence(self, value: torch.Tensor) -> None:
         if value.shape[0] != self.tensor.shape[0]:
             raise ValueError("existence length must match number of nodes")
-        self.tensor[:, P14_COL_EXISTENCE] = value
+        self.tensor[:, P_COL_EXISTENCE] = value
 
     def to_part_tensor(self, device: Optional[torch.device] = None) -> torch.Tensor:
         """Returns the stored part tensor, optionally moved to ``device``."""
