@@ -527,6 +527,7 @@ class HeliosPlantGeometryBuilder:
         device: torch.device = torch.device('cpu'),
         max_leaves: Optional[int] = None,
         existence_threshold: float = 0.5,
+        compute_mesh: bool = True,
     ) -> Dict[str, torch.Tensor]:
         """Build a mesh dict from a PlantOrganArray (typed (N,40) or legacy (M,94)).
 
@@ -536,6 +537,10 @@ class HeliosPlantGeometryBuilder:
         0.0) so that both representations render identically. This path is
         eval-only (non-differentiable); the differentiable backprop suites feed
         typed arrays with parent_logits directly, which flow through untouched.
+
+        Args:
+            compute_mesh: If False, only compute the (N, 14) part_transforms_14d
+                tensor and return empty vertex buffers. Much faster for 14D extraction.
         """
         if not organ_array.is_typed:
             legacy_tensor = organ_array.tensor
@@ -544,7 +549,7 @@ class HeliosPlantGeometryBuilder:
             organ_array = PlantOrganArray.from_legacy_tensor(legacy_tensor, organ_array.raw_metadata)
         return self._build_mesh_typed(
             organ_array, device=device, max_leaves=max_leaves,
-            existence_threshold=existence_threshold,
+            existence_threshold=existence_threshold, compute_mesh=compute_mesh,
         )
 
     def _build_mesh_typed(
@@ -553,6 +558,7 @@ class HeliosPlantGeometryBuilder:
         device: torch.device = torch.device('cpu'),
         max_leaves: Optional[int] = None,
         existence_threshold: float = 0.5,
+        compute_mesh: bool = True,
     ) -> Dict[str, torch.Tensor]:
         """
         Typed-native (N, 40) plant mesh builder.
@@ -562,6 +568,11 @@ class HeliosPlantGeometryBuilder:
         typed per-organ rows instead of phytomer-slot columns. Floral bud
         peduncle / flower / fruit geometry is ported from the Helios C++
         reconstruction (InputOutput.cpp / PlantArchitecture.cpp).
+
+        Args:
+            compute_mesh: If False, skip all vertex/face generation and only
+                compute the (N, 14) part_transforms_14d tensor. Used by
+                to_part_tensor_14d for fast 14D extraction.
         """
         t = organ_array.tensor.to(device)
         existence = organ_array.existence.to(device).clamp(0.0, 1.0)
@@ -871,17 +882,18 @@ class HeliosPlantGeometryBuilder:
                 inode_line = torch.stack(inode_verts_list)
                 inode_radii = inode_rad.expand(inode_line.shape[0])
 
-                v_tub, f_tub, n_tub, c_tub = generate_cone_tube_mesh_torch(
-                    inode_line, inode_radii, self.COLOR_STEM.to(device), radial_subdivisions=self.tube_radial_subdivisions
-                )
+                if compute_mesh:
+                    v_tub, f_tub, n_tub, c_tub = generate_cone_tube_mesh_torch(
+                        inode_line, inode_radii, self.COLOR_STEM.to(device), radial_subdivisions=self.tube_radial_subdivisions
+                    )
 
-                if v_tub.shape[0] > 0:
-                    all_verts.append(v_tub)
-                    all_faces.append(f_tub + vert_offset)
-                    all_normals.append(n_tub)
-                    all_colors.append(c_tub)
-                    all_organs.append(torch.zeros(v_tub.shape[0], dtype=torch.int64, device=device))  # Organ 0 = Stem
-                    vert_offset += v_tub.shape[0]
+                    if v_tub.shape[0] > 0:
+                        all_verts.append(v_tub)
+                        all_faces.append(f_tub + vert_offset)
+                        all_normals.append(n_tub)
+                        all_colors.append(c_tub)
+                        all_organs.append(torch.zeros(v_tub.shape[0], dtype=torch.int64, device=device))  # Organ 0 = Stem
+                        vert_offset += v_tub.shape[0]
 
                 curr_pos = inode_line[-1]
                 inode_tip_axis = step_dir / (torch.linalg.norm(step_dir) + 1e-6)
@@ -974,17 +986,18 @@ class HeliosPlantGeometryBuilder:
                     pet_radii = p_cls * p_rad * (1.0 - p_taper / float(p_seg_cnt) * jj)
                     pet_radii = torch.clamp(pet_radii, min=1e-6)
 
-                    v_pet, f_pet, n_pet, c_pet = generate_cone_tube_mesh_torch(
-                        pet_line, pet_radii, self.COLOR_PETIOLE.to(device), radial_subdivisions=self.tube_radial_subdivisions
-                    )
+                    if compute_mesh:
+                        v_pet, f_pet, n_pet, c_pet = generate_cone_tube_mesh_torch(
+                            pet_line, pet_radii, self.COLOR_PETIOLE.to(device), radial_subdivisions=self.tube_radial_subdivisions
+                        )
 
-                    if v_pet.shape[0] > 0:
-                        all_verts.append(v_pet)
-                        all_faces.append(f_pet + vert_offset)
-                        all_normals.append(n_pet)
-                        all_colors.append(c_pet)
-                        all_organs.append(torch.ones(v_pet.shape[0], dtype=torch.int64, device=device))  # Organ 1 = Petiole
-                        vert_offset += v_pet.shape[0]
+                        if v_pet.shape[0] > 0:
+                            all_verts.append(v_pet)
+                            all_faces.append(f_pet + vert_offset)
+                            all_normals.append(n_pet)
+                            all_colors.append(c_pet)
+                            all_organs.append(torch.ones(v_pet.shape[0], dtype=torch.int64, device=device))  # Organ 1 = Petiole
+                            vert_offset += v_pet.shape[0]
 
                     pet_tip = pet_line[-1]
                     pet_tip_axis = pet_line[-1] - pet_line[-2]
@@ -1062,59 +1075,60 @@ class HeliosPlantGeometryBuilder:
                                 if not (torch.isnan(frac) or torch.isinf(frac)):
                                     leaf_base = interpolate_tube_torch(pet_line, float(frac))
 
-                            if self.use_generic_leaves:
-                                batched_leaf_params.append((
-                                    float(tot_scale),
-                                    leaf_base,
-                                    float(azimuth_rot + yaw_rot),
-                                    float(-pitch_rot),
-                                    float(roll_rot)
-                                ))
-                            else:
-                                if num_leaves == 1:
-                                    obj_name = "CowpeaLeaf_unifoliate.obj"
+                            R_leaf = (
+                                rotr_z(azimuth_rot + yaw_rot, device) @
+                                rotr_y(-pitch_rot, device) @
+                                rotr_x(roll_rot, device)
+                            )
+                            part_transforms_14d[leaf_row_idx, P14_COL_EXISTENCE] = 1.0
+                            part_transforms_14d[leaf_row_idx, P14_COL_BASE_X:P14_COL_BASE_Z+1] = leaf_base
+                            part_transforms_14d[leaf_row_idx, P14_COL_SCALE_X] = l_scale
+                            part_transforms_14d[leaf_row_idx, P14_COL_SCALE_Y] = l_scale
+                            part_transforms_14d[leaf_row_idx, P14_COL_SCALE_Z] = l_scale
+                            part_transforms_14d[leaf_row_idx, P14_COL_ROT_0:P14_COL_ROT_5+1] = rotation_matrix_to_6d(R_leaf)
+
+                            if os.environ.get("HELIOS_DUMP_GEOM"):
+                                lb = leaf_base.detach().cpu().numpy()
+                                print(f"PTDEBUG L {sid} {p_idx} {petiole_index} {lf_i} {lb[0]:.6f} {lb[1]:.6f} {lb[2]:.6f}", file=sys.stderr)
+
+                            if compute_mesh:
+                                if self.use_generic_leaves:
+                                    batched_leaf_params.append((
+                                        float(tot_scale),
+                                        leaf_base,
+                                        float(azimuth_rot + yaw_rot),
+                                        float(-pitch_rot),
+                                        float(roll_rot)
+                                    ))
                                 else:
-                                    if lf_i == 0:
-                                        obj_name = "CowpeaLeaf_left_highres.obj"
-                                    elif lf_i == 1:
-                                        obj_name = "CowpeaLeaf_tip_highres.obj"
+                                    if num_leaves == 1:
+                                        obj_name = "CowpeaLeaf_unifoliate.obj"
                                     else:
-                                        obj_name = "CowpeaLeaf_right_highres.obj"
+                                        if lf_i == 0:
+                                            obj_name = "CowpeaLeaf_left_highres.obj"
+                                        elif lf_i == 1:
+                                            obj_name = "CowpeaLeaf_tip_highres.obj"
+                                        else:
+                                            obj_name = "CowpeaLeaf_right_highres.obj"
 
-                                try:
-                                    v_raw, f_lf_b, n_tmpl = self.asset_mgr.get_mesh_with_normals(obj_name, device)
-                                except FileNotFoundError:
-                                    continue
-                                v_lf_b = v_raw * tot_scale
-                                n_lf_b = n_tmpl
+                                    try:
+                                        v_raw, f_lf_b, n_tmpl = self.asset_mgr.get_mesh_with_normals(obj_name, device)
+                                    except FileNotFoundError:
+                                        continue
+                                    v_lf_b = v_raw * tot_scale
+                                    n_lf_b = n_tmpl
 
-                                R_leaf = (
-                                    rotr_z(azimuth_rot + yaw_rot, device) @
-                                    rotr_y(-pitch_rot, device) @
-                                    rotr_x(roll_rot, device)
-                                )
-                                v_lf_rot = (R_leaf @ v_lf_b.T).T
-                                n_lf = (R_leaf @ n_lf_b.T).T
-                                v_lf = v_lf_rot + leaf_base
+                                    v_lf_rot = (R_leaf @ v_lf_b.T).T
+                                    n_lf = (R_leaf @ n_lf_b.T).T
+                                    v_lf = v_lf_rot + leaf_base
 
-                                part_transforms_14d[leaf_row_idx, P14_COL_EXISTENCE] = 1.0
-                                part_transforms_14d[leaf_row_idx, P14_COL_BASE_X:P14_COL_BASE_Z+1] = leaf_base
-                                part_transforms_14d[leaf_row_idx, P14_COL_SCALE_X] = l_scale
-                                part_transforms_14d[leaf_row_idx, P14_COL_SCALE_Y] = l_scale
-                                part_transforms_14d[leaf_row_idx, P14_COL_SCALE_Z] = l_scale
-                                part_transforms_14d[leaf_row_idx, P14_COL_ROT_0:P14_COL_ROT_5+1] = rotation_matrix_to_6d(R_leaf)
-
-                                if os.environ.get("HELIOS_DUMP_GEOM"):
-                                    lb = leaf_base.detach().cpu().numpy()
-                                    print(f"PTDEBUG L {sid} {p_idx} {petiole_index} {lf_i} {lb[0]:.6f} {lb[1]:.6f} {lb[2]:.6f}", file=sys.stderr)
-
-                                c_lf = self.COLOR_LEAF.to(device).unsqueeze(0).expand(v_lf.shape[0], 3)
-                                all_verts.append(v_lf)
-                                all_faces.append(f_lf_b + vert_offset)
-                                all_normals.append(n_lf)
-                                all_colors.append(c_lf)
-                                all_organs.append(torch.full((v_lf.shape[0],), 2, dtype=torch.int64, device=device))  # Organ 2 = Leaf
-                                vert_offset += v_lf.shape[0]
+                                    c_lf = self.COLOR_LEAF.to(device).unsqueeze(0).expand(v_lf.shape[0], 3)
+                                    all_verts.append(v_lf)
+                                    all_faces.append(f_lf_b + vert_offset)
+                                    all_normals.append(n_lf)
+                                    all_colors.append(c_lf)
+                                    all_organs.append(torch.full((v_lf.shape[0],), 2, dtype=torch.int64, device=device))  # Organ 2 = Leaf
+                                    vert_offset += v_lf.shape[0]
 
                 for pet_i in sorted(k[2] for k in petioles_here):
                     process_petiole(pet_i, pet_i)
@@ -1152,8 +1166,8 @@ class HeliosPlantGeometryBuilder:
 
             shoot_last_internode_tips[sid] = curr_pos.clone()
 
-        # Execute batched GPU leaf transformation for generic leaves
-        if len(batched_leaf_params) > 0 and self.use_generic_leaves:
+        # Execute batched GPU leaf transformation for generic leaves (only when mesh needed)
+        if compute_mesh and len(batched_leaf_params) > 0 and self.use_generic_leaves:
             K = len(batched_leaf_params)
             scales_t = torch.tensor([item[0] for item in batched_leaf_params], dtype=torch.float32, device=device).view(K, 1, 1)
             bases_t = torch.stack([item[1] for item in batched_leaf_params]).view(K, 1, 3)
@@ -1337,16 +1351,17 @@ class HeliosPlantGeometryBuilder:
                     ped_line = torch.stack(verts_list)
                     ped_radii = torch.tensor(radii_list, dtype=torch.float32, device=device)
 
-                    v_ped, f_ped, n_ped, c_ped = generate_cone_tube_mesh_torch(
-                        ped_line, ped_radii, self.COLOR_PEDUNCLE.to(device), radial_subdivisions=n_rad
-                    )
-                    if v_ped.shape[0] > 0:
-                        all_verts.append(v_ped)
-                        all_faces.append(f_ped + vert_offset)
-                        all_normals.append(n_ped)
-                        all_colors.append(c_ped)
-                        all_organs.append(torch.full((v_ped.shape[0],), self.OT_PEDUNCLE, dtype=torch.int64, device=device))
-                        vert_offset += v_ped.shape[0]
+                    if compute_mesh:
+                        v_ped, f_ped, n_ped, c_ped = generate_cone_tube_mesh_torch(
+                            ped_line, ped_radii, self.COLOR_PEDUNCLE.to(device), radial_subdivisions=n_rad
+                        )
+                        if v_ped.shape[0] > 0:
+                            all_verts.append(v_ped)
+                            all_faces.append(f_ped + vert_offset)
+                            all_normals.append(n_ped)
+                            all_colors.append(c_ped)
+                            all_organs.append(torch.full((v_ped.shape[0],), self.OT_PEDUNCLE, dtype=torch.int64, device=device))
+                            vert_offset += v_ped.shape[0]
 
                     part_transforms_14d[ped_row_idx, P14_COL_EXISTENCE] = 1.0
                     part_transforms_14d[ped_row_idx, P14_COL_BASE_X:P14_COL_BASE_Z+1] = ped_line[0]
@@ -1450,21 +1465,22 @@ class HeliosPlantGeometryBuilder:
                         )
                         part_transforms_14d[fl_row_idx, P14_COL_ROT_0:P14_COL_ROT_5+1] = rotation_matrix_to_6d(R_obj_net)
 
-                        n_obj = compute_face_normals_torch(v_obj, f_asset)
-                        c_obj = obj_color.to(device).unsqueeze(0).repeat(v_obj.shape[0], 1)
-
                         if os.environ.get("HELIOS_DUMP_GEOM"):
                             fbs = flower_base.detach().cpu().numpy()
                             print(f"PTDEBUG FL {sid} {p_idx} {fl_idx} {fbs[0]:.6f} {fbs[1]:.6f} {fbs[2]:.6f} scale={scale_factor:.5f} state={state}", file=sys.stderr)
 
-                        all_verts.append(v_obj)
-                        all_faces.append(f_asset + vert_offset)
-                        all_normals.append(n_obj)
-                        all_colors.append(c_obj)
-                        all_organs.append(torch.full((v_obj.shape[0],), obj_ot, dtype=torch.int64, device=device))
-                        vert_offset += v_obj.shape[0]
+                        if compute_mesh:
+                            n_obj = compute_face_normals_torch(v_obj, f_asset)
+                            c_obj = obj_color.to(device).unsqueeze(0).repeat(v_obj.shape[0], 1)
 
-        if not all_verts:
+                            all_verts.append(v_obj)
+                            all_faces.append(f_asset + vert_offset)
+                            all_normals.append(n_obj)
+                            all_colors.append(c_obj)
+                            all_organs.append(torch.full((v_obj.shape[0],), obj_ot, dtype=torch.int64, device=device))
+                            vert_offset += v_obj.shape[0]
+
+        if not compute_mesh or not all_verts:
             empty3 = torch.zeros((0, 3), dtype=torch.float32, device=device)
             empty_f = torch.zeros((0, 3), dtype=torch.int64, device=device)
             empty_o = torch.zeros((0,), dtype=torch.int64, device=device)

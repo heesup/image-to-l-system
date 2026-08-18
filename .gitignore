@@ -12,9 +12,12 @@ build/
 
 # Training outputs
 train_*.log
+debug_run.log
+debug*.log
 *.pt
 diffusion_based/checkpoints/
 diffusion_based/plots/
+training_logs/
 
 # Data outputs (Helios generated data is large)
 Digital-Crops/projects/syntheticdata_generation/build/output/
@@ -37,3 +40,8 @@ dataset/helios_data/
 notebooks/output*
 diffusion_based/eval/output/*
 slurm_scripts/logs/*
+slurm-*.out
+
+# Runtime benchmark caches
+diffusion_based/eval/benchmark_cache*.json
+docs/results/assets/*_metrics.json

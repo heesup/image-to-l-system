@@ -515,16 +515,21 @@ class HeliosPyTorchRenderer(nn.Module):
         return_depth: bool = True,
         return_mask: bool = True,
         return_organ_masks: bool = True,
+        return_raw_depth: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """
         Single-pass multi-modal rendering. Returns a dict with:
             'rgb'         : (3, H, W) float [0, 1]   — shaded RGB image
             'depth'       : (H, W) float [0, 1]       — normalized depth (0=far, 1=near) [optional]
+            'raw_depth'   : (H, W) float               — raw NDC z (monotonic w/ distance) [optional]
             'mask'        : (H, W) bool                — foreground (any plant organ) [optional]
             'organ_masks' : Dict[int, (H, W) bool]    — per organ_type_id foreground [optional]
 
         Depth is normalized as:  depth_norm = 1 - (z_ndc - z_min) / (z_max - z_min + 1e-6)
         so that closer surfaces have higher values (brighter in depth visualization).
+        NOTE: this per-frame min/max normalization couples every pixel to the global
+        geometry and corrupts the gradient sign for depth supervision. For loss
+        computation use 'raw_depth' (raw NDC z, monotonic with distance) instead.
         Organ type IDs follow the same convention as render_organ_type_buffer().
         """
         verts = mesh_dict['vertices']
@@ -548,6 +553,8 @@ class HeliosPyTorchRenderer(nn.Module):
             out['rgb'] = bg
             if return_depth:
                 out['depth'] = torch.zeros((H, W), device=device)
+            if return_raw_depth:
+                out['raw_depth'] = torch.zeros((H, W), device=device)
             if return_mask:
                 out['mask'] = torch.zeros((H, W), dtype=torch.bool, device=device)
             if return_organ_masks:
@@ -597,21 +604,24 @@ class HeliosPyTorchRenderer(nn.Module):
             out['rgb'] = rgb_out.squeeze(0).permute(2, 0, 1).flip(1)  # (3,H,W)
 
             # Depth: interpolate NDC z from v_clip w-divided z
-            if return_depth:
+            if return_depth or return_raw_depth:
                 w_div = v_clip[:, 3:4].clamp(min=1e-5)
                 z_ndc = (v_clip[:, 2:3] / w_div).contiguous()  # (V, 1)
                 z_ndc_b = z_ndc.unsqueeze(0).contiguous()
                 z_rast, _ = dr.interpolate(z_ndc_b, rast_out, faces_i32)  # (1,H,W,1)
                 z_rast = z_rast.squeeze(0).squeeze(-1)  # (H,W)
-                # Only valid in foreground
-                z_fg = z_rast[fg_mask_hw]
-                if z_fg.numel() > 0:
-                    z_min, z_max = z_fg.min(), z_fg.max()
-                    depth_norm = 1.0 - (z_rast - z_min) / (z_max - z_min + 1e-6)
-                    depth_norm = depth_norm * fg_mask_hw.float()
-                else:
-                    depth_norm = torch.zeros((H, W), device=device)
-                out['depth'] = depth_norm.flip(0)  # match row-0=bottom convention
+                if return_raw_depth:
+                    out['raw_depth'] = z_rast.flip(0)  # raw NDC z, monotonic w/ distance
+                if return_depth:
+                    # Only valid in foreground
+                    z_fg = z_rast[fg_mask_hw]
+                    if z_fg.numel() > 0:
+                        z_min, z_max = z_fg.min(), z_fg.max()
+                        depth_norm = 1.0 - (z_rast - z_min) / (z_max - z_min + 1e-6)
+                        depth_norm = depth_norm * fg_mask_hw.float()
+                    else:
+                        depth_norm = torch.zeros((H, W), device=device)
+                    out['depth'] = depth_norm.flip(0)  # match row-0=bottom convention
 
             if return_mask:
                 out['mask'] = fg_mask_hw.flip(0)
@@ -715,6 +725,9 @@ class HeliosPyTorchRenderer(nn.Module):
 
         out['rgb'] = rgb_buffer.permute(2, 0, 1).flip(1)
 
+        if return_raw_depth:
+            out['raw_depth'] = z_buffer.flip(0)
+
         if return_depth:
             fg_mask = (z_buffer < 1e8)
             z_fg = z_buffer[fg_mask]
@@ -759,10 +772,11 @@ class HeliosPyTorchRenderer(nn.Module):
         return_depth: bool = True,
         return_mask: bool = True,
         return_organ_masks: bool = True,
+        return_raw_depth: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """
         Wrapper: build mesh from 14D part tensor, then run render_multimodal().
-        Returns dict with 'rgb', 'depth', 'mask', 'organ_masks'.
+        Returns dict with 'rgb', 'depth', 'raw_depth', 'mask', 'organ_masks'.
         """
         mesh_dict = self.geo_builder.build_mesh_from_part_array_14d(
             part_tensor_14d,
@@ -782,5 +796,6 @@ class HeliosPyTorchRenderer(nn.Module):
             return_depth=return_depth,
             return_mask=return_mask,
             return_organ_masks=return_organ_masks,
+            return_raw_depth=return_raw_depth,
         )
 

@@ -30,9 +30,9 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.organ_array_diffuser import PlantOrganArrayDiffuser
-from diffusion_based.models.vit_image_to_organ_array import ViTOrganArrayDiffuser
-from diffusion_based.dataset.organ_array_dataset import OrganArrayDataset
+from diffusion_based.models.legacy.organ_array_diffuser_40d import PlantOrganArrayDiffuser
+from diffusion_based.models.legacy.vit_image_to_organ_array_40d import ViTOrganArrayDiffuser
+from diffusion_based.dataset.legacy.organ_array_dataset_40d import OrganArrayDataset
 from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 from diffusion_based.models.plant_organ_array import PlantOrganArray
 from diffusion_based.models.perceptual_loss import VGGPerceptualLoss

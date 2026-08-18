@@ -9,6 +9,8 @@ This report presents the rigorous empirical validation of the **15 Loss-Reductio
 
 ## 🏛️ 14D Part Representation & Autonomous Assembly Architecture
 
+> **Note:** The active pipeline is now **14D-only**. The 40D typed-array model, training scripts, and benchmark entry points have been moved to `diffusion_based/*/legacy/`. They are kept for reference but are no longer part of the main training or evaluation workflow.
+
 ```mermaid
 flowchart TD
     subgraph "14D Part Representation (N, 14)"
@@ -24,7 +26,7 @@ flowchart TD
     subgraph "Mode B: Autonomous XML Reconstruction (Template-Free)"
         A -->|"cKDTree Spatial Connectivity Graph"| E["Stem -> Phytomer -> Petiole -> Leaf -> Peduncle -> Flower/Fruit"]
         E -->|"Inverse Kinematics (IK)"| F["Helios Pitch, Yaw, Roll, Phyllotactic Angles"]
-        F -->|"Autonomous XML Serializer"| G["100% Valid Helios XML Document"]
+        F -->|"Autonomous XML Serializer"| G["Approximate Helios XML Document (curvature hardcoded to 0)"]
     end
 ```
 
@@ -196,7 +198,11 @@ $$\mathbf{p}_i = [\text{OrganType}_i, \mathbf{b}_i^{(x, y, z)}, \mathbf{r}_i^{(0
   ```bash
   python diffusion_based/eval/benchmark_helios_vs_torch_renderer.py
   ```
-* **Regenerate Diagnostic Figures 3-7 (mSSIM + FG-IoU)**:
+* **Regenerate Diagnostic Figures 3-7 (mSSIM + FG-IoU + Depth)**:
   ```bash
-  python diffusion_based/eval/generate_report_visualizations.py
+  python diffusion_based/eval/generate_14d_report.py
+  ```
+* **Legacy 40D 15-Strategy Benchmark (moved to `legacy/`, kept for reference)**:
+  ```bash
+  python diffusion_based/eval/legacy/run_deep_15_benchmark_40d.py --mode report
   ```

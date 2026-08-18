@@ -41,17 +41,16 @@ PLANTS = [
 ]
 
 # Organ type → display color & label
+# NOTE: render_multimodal() keys organ_masks by the MESH organ-type convention
+# (helios_pytorch_geometry.py OT_* constants), NOT the 14D part-tensor convention.
+#   OT_STEM=0, OT_PETIOLE=1, OT_LEAF=2, OT_PEDUNCLE=3, OT_FLOWER=4, OT_FRUIT=5
 ORGAN_META = {
-    int(ORGAN_ROOT_META):    ("#8B4513", "Root"),
-    int(ORGAN_SHOOT_META):   ("#556B2F", "Shoot"),
-    int(ORGAN_INTERNODE):    ("#8B6914", "Internode"),
-    int(ORGAN_PETIOLE):      ("#6B8E23", "Petiole"),
-    int(ORGAN_LEAF):         ("#228B22", "Leaf"),
-    int(ORGAN_BUD):          ("#90EE90", "Bud"),
-    int(ORGAN_PEDUNCLE):     ("#BDB76B", "Peduncle"),
-    int(ORGAN_FLOWER_OPEN):  ("#FFD700", "Flower (Open)"),
-    int(ORGAN_FRUIT):        ("#DAA520", "Pod/Fruit"),
-    int(ORGAN_FLOWER_CLOSED):("#FFA500", "Flower (Closed)"),
+    0: ("#8B4513", "Stem/Internode"),
+    1: ("#6B8E23", "Petiole"),
+    2: ("#228B22", "Leaf"),
+    3: ("#BDB76B", "Peduncle"),
+    4: ("#FFD700", "Flower"),
+    5: ("#DAA520", "Pod/Fruit"),
 }
 
 renderer = HeliosPyTorchRenderer(image_size=IMG_SIZE)

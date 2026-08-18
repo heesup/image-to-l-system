@@ -13,9 +13,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Tuple, List, Optional, Any
 
-from diffusion_based.models.vit_image_to_organ_array import ViTImageToOrganArray
+from diffusion_based.models.legacy.vit_image_to_organ_array_40d import ViTImageToOrganArray
 from diffusion_based.models.plant_organ_array import PlantOrganArray
-from diffusion_based.dataset.organ_array_dataset import OrganArrayDataset
+from diffusion_based.dataset.legacy.organ_array_dataset_40d import OrganArrayDataset
 
 
 class ViTGRPOPolicy(nn.Module):
