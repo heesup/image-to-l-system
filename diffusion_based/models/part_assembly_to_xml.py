@@ -145,7 +145,64 @@ class PartAssemblyToXMLConverter:
                 "sz": sz,
                 "curvature": float(p_np[idx, P_COL_CURVATURE]),
                 "phyllotactic_angle": float(p_np[idx, P_COL_PHYLLOTACTIC_ANGLE]),
+                "orig_idx": idx,
             }
+
+        # Reconstruct the record-order grouping used by the parser. Each row in
+        # the part tensor follows the original XML child order (root, shoot,
+        # internode, petiole(s)+leaves, bud, peduncle, flowers). We can recover
+        # the phytomer each organ belongs to without relying on spatial cKDTree.
+        phytomer_groups: List[Dict[str, Any]] = []
+        current_group: Optional[Dict[str, Any]] = None
+        current_petiole: Optional[int] = None
+        current_shoot_id = -1
+        for idx in range(N):
+            if not active_mask[idx]:
+                continue
+            ot = int(round(p_np[idx, P_COL_ORGAN_TYPE]))
+            if ot == ORGAN_ROOT_META:
+                continue
+            if ot == ORGAN_SHOOT_META:
+                current_shoot_id += 1
+                current_group = None
+                current_petiole = None
+                continue
+            if ot == ORGAN_INTERNODE:
+                current_group = {
+                    "shoot_id": current_shoot_id,
+                    "internode": idx,
+                    "petioles": [],
+                    "peduncle": None,
+                    "flowers": [],
+                    "fruits": [],
+                    "bud": None,
+                }
+                phytomer_groups.append(current_group)
+                current_petiole = None
+                continue
+            if current_group is None:
+                continue
+            if ot == ORGAN_PETIOLE:
+                pet_entry = {"idx": idx, "leaves": []}
+                current_group["petioles"].append(pet_entry)
+                current_petiole = len(current_group["petioles"]) - 1
+                continue
+            if ot == ORGAN_LEAF:
+                if current_petiole is not None:
+                    current_group["petioles"][current_petiole]["leaves"].append(idx)
+                continue
+            if ot in (ORGAN_BUD, ORGAN_BUD_ABORTED):
+                current_group["bud"] = idx
+                continue
+            if ot == ORGAN_PEDUNCLE:
+                current_group["peduncle"] = idx
+                continue
+            if ot in (ORGAN_FLOWER, ORGAN_FLOWER_CLOSED):
+                current_group["flowers"].append(idx)
+                continue
+            if ot in (ORGAN_FRUIT, 8):
+                current_group["fruits"].append(idx)
+                continue
 
         if not internodes:
             # Fallback for empty plant
@@ -213,13 +270,28 @@ class PartAssemblyToXMLConverter:
         # 3. Associate Petioles, Leaves, Peduncles, Flowers using cKDTree
         phytomer_parts = {i: {"petioles": [], "peduncles": []} for i in internodes}
 
-        # Associate Petioles to closest internode base
-        inode_bases = np.array([part_info[i]["base"] for i in internodes])
-        inode_base_tree = cKDTree(inode_bases)
+        # Compute internode tips as the base of the next internode in the same
+        # shoot whenever possible. This matches the forward-kinematics parser,
+        # which places bud/peduncle bases at the curved internode tip (= next
+        # internode base), and fixes XML round-trip association.
+        inode_tip_pos = {}
+        for shoot_inodes in shoots:
+            for k, inode_idx in enumerate(shoot_inodes):
+                if k + 1 < len(shoot_inodes):
+                    inode_tip_pos[inode_idx] = part_info[shoot_inodes[k + 1]]["base"]
+                else:
+                    inode_tip_pos[inode_idx] = part_info[inode_idx]["tip"]
+        # Include any unvisited internodes as a fallback
+        for inode_idx in internodes:
+            inode_tip_pos.setdefault(inode_idx, part_info[inode_idx]["tip"])
+
+        # Associate Petioles to closest internode tip (petiole base == internode tip)
+        inode_tips = np.array([inode_tip_pos[i] for i in internodes])
+        inode_tip_tree = cKDTree(inode_tips)
 
         if petioles:
             pet_bases = np.array([part_info[p]["base"] for p in petioles])
-            _, nearest_inodes = inode_base_tree.query(pet_bases)
+            _, nearest_inodes = inode_tip_tree.query(pet_bases)
             if not isinstance(nearest_inodes, np.ndarray):
                 nearest_inodes = [nearest_inodes]
             for p_idx, i_local_idx in zip(petioles, nearest_inodes):
@@ -241,7 +313,7 @@ class PartAssemblyToXMLConverter:
 
         # Associate Peduncles to closest internode tip (bud base == internode tip)
         if peduncles:
-            inode_tips = np.array([part_info[i]["tip"] for i in internodes])
+            inode_tips = np.array([inode_tip_pos[i] for i in internodes])
             inode_tip_tree = cKDTree(inode_tips)
             pd_bases = np.array([part_info[pd]["base"] for pd in peduncles])
             _, nearest_pd_inodes = inode_tip_tree.query(pd_bases)
@@ -254,7 +326,7 @@ class PartAssemblyToXMLConverter:
         # Associate Buds to closest internode tip (bud base == internode tip)
         bud_state_by_inode = {}
         if buds:
-            inode_tips = np.array([part_info[i]["tip"] for i in internodes])
+            inode_tips = np.array([inode_tip_pos[i] for i in internodes])
             inode_tip_tree = cKDTree(inode_tips)
             bud_bases = np.array([part_info[b]["base"] for b in buds])
             _, nearest_bud_inodes = inode_tip_tree.query(bud_bases)
@@ -265,19 +337,16 @@ class PartAssemblyToXMLConverter:
                 ot = part_info[b_idx]["ot"]
                 bud_state_by_inode[best_inode] = 5 if ot == ORGAN_BUD_ABORTED else 1
 
-        # Associate Flowers & Fruits to closest peduncle tip
+        # Associate Flowers & Fruits to peduncle using the record-order groups.
+        # This fixes the round-trip because the parser places flowers on the
+        # curved peduncle line while the straight-line cKDTree lookup drifts.
         peduncle_infls = {pd: [] for pd in peduncles}
-        all_infls = flowers + fruits
-        if all_infls and peduncles:
-            pd_tips = np.array([part_info[pd]["tip"] for pd in peduncles])
-            pd_tree = cKDTree(pd_tips)
-            fl_bases = np.array([part_info[fl]["base"] for fl in all_infls])
-            _, nearest_pds = pd_tree.query(fl_bases)
-            if not isinstance(nearest_pds, np.ndarray):
-                nearest_pds = [nearest_pds]
-            for fl_idx, pd_local_idx in zip(all_infls, nearest_pds):
-                best_pd = peduncles[pd_local_idx]
-                peduncle_infls[best_pd].append(fl_idx)
+        for grp in phytomer_groups:
+            pd_idx = grp.get("peduncle")
+            if pd_idx is None:
+                continue
+            peduncle_infls[pd_idx].extend(grp.get("flowers", []))
+            peduncle_infls[pd_idx].extend(grp.get("fruits", []))
 
         # 4. Serialize to Helios XML
         lines = ['<?xml version="1.0" encoding="UTF-8"?>', '<helios>']
@@ -378,6 +447,7 @@ class PartAssemblyToXMLConverter:
 
                         # Buds, Peduncles, and Inflorescences
                         peds = phytomer_parts[inode_idx]["peduncles"]
+                        has_bud = inode_idx in bud_state_by_inode
                         if peds:
                             for pd_idx in peds:
                                 pd_info = part_info[pd_idx]
@@ -424,7 +494,7 @@ class PartAssemblyToXMLConverter:
                                         lines.append('\t\t\t\t\t\t\t\t</flower>')
                                     lines.append('\t\t\t\t\t\t\t</inflorescence>')
                                 lines.append('\t\t\t\t\t\t</floral_bud>')
-                        else:
+                        elif has_bud:
                             # Dormant or aborted floral bud (no peduncle)
                             bud_state = bud_state_by_inode.get(inode_idx, 1)
                             lines.append('\t\t\t\t\t\t<floral_bud>')

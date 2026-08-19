@@ -13,7 +13,7 @@ from typing import List, Tuple, Dict, Optional, Any
 from diffusion_based.models.plant_organ_array import (
     PlantOrganArray,
     ORGAN_ROOT_META, ORGAN_SHOOT_META, ORGAN_INTERNODE, ORGAN_PETIOLE, ORGAN_LEAF,
-    ORGAN_BUD, ORGAN_PEDUNCLE, ORGAN_FLOWER, ORGAN_FRUIT, ORGAN_FLOWER_CLOSED,
+    ORGAN_BUD, ORGAN_BUD_ABORTED, ORGAN_PEDUNCLE, ORGAN_FLOWER, ORGAN_FRUIT, ORGAN_FLOWER_CLOSED,
     P_COL_ORGAN_TYPE, P_COL_BASE_X, P_COL_BASE_Y, P_COL_BASE_Z,
     P_COL_ROT_0, P_COL_ROT_1, P_COL_ROT_2, P_COL_ROT_3, P_COL_ROT_4, P_COL_ROT_5,
     P_COL_SCALE_X, P_COL_SCALE_Y, P_COL_SCALE_Z, P_COL_EXISTENCE, NUM_FEATURES,
@@ -492,6 +492,42 @@ class HeliosPlantGeometryBuilder:
             }
         return self._infl_assets
 
+    def _is_dormant_peduncle(
+        self,
+        ped_idx: int,
+        p: torch.Tensor,
+        N: int,
+        device: torch.device,
+        dist_tol: float = 1e-4,
+    ) -> bool:
+        """Return True if this peduncle serves a dormant/aborted bud with no flower/fruit."""
+        base = p[ped_idx, P_COL_BASE_X:P_COL_BASE_Z + 1]
+        # tip of peduncle
+        r6 = p[ped_idx, P_COL_ROT_0:P_COL_ROT_5 + 1]
+        R = rotation_6d_to_matrix(r6)
+        tip = base + R @ torch.tensor([0.0, 0.0, p[ped_idx, P_COL_SCALE_Z]], device=device)
+
+        # Check for flower/fruit near the peduncle tip.
+        for j in range(N):
+            if j == ped_idx:
+                continue
+            ot = int(p[j, P_COL_ORGAN_TYPE].item())
+            if ot in (ORGAN_FLOWER, ORGAN_FRUIT, ORGAN_FLOWER_CLOSED):
+                fl_base = p[j, P_COL_BASE_X:P_COL_BASE_Z + 1]
+                if torch.norm(fl_base - tip).item() < dist_tol:
+                    return False
+
+        # Check for a dormant or aborted bud at the peduncle base.
+        for j in range(N):
+            if j == ped_idx:
+                continue
+            ot = int(p[j, P_COL_ORGAN_TYPE].item())
+            if ot in (ORGAN_BUD, ORGAN_BUD_ABORTED):
+                bud_base = p[j, P_COL_BASE_X:P_COL_BASE_Z + 1]
+                if torch.norm(bud_base - base).item() < dist_tol:
+                    return True
+        return False
+
     def build_mesh_from_part_array(
         self,
         part_tensor_14d: torch.Tensor,
@@ -558,6 +594,12 @@ class HeliosPlantGeometryBuilder:
                 len_val = sz
                 if len_val <= 1e-6 or rad <= 1e-6:
                     continue
+
+                # Skip rendering peduncles that belong to dormant/aborted buds
+                # and carry no flower/fruit, matching the Helios C++ visualizer.
+                if otype == ORGAN_PEDUNCLE:
+                    if self._is_dormant_peduncle(idx, p, N, device):
+                        continue
 
                 if otype == ORGAN_INTERNODE:
                     col = self.COLOR_STEM.to(device)
