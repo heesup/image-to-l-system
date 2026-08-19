@@ -1,10 +1,10 @@
 """
-Flow Matching (Rectified Flow) scheduler for 14D Part-Centric PlantOrganArray generation.
+Flow Matching (Rectified Flow) scheduler for Part-Centric PlantOrganArray generation.
 
 Implements the conditional flow-matching objective (Lipman et al. 2023, Liu et al.
 2023 "Rectified Flow"): instead of DDPM's noise-prediction, we learn a velocity
 field v_theta(x_t, t) that transports samples along straight-line paths from a
-Gaussian prior x_0 ~ N(0, I) to the data x_1 (the 14D part tensor).
+Gaussian prior x_0 ~ N(0, I) to the data x_1 (the part tensor).
 
     x_t = (1 - t) * x_0 + t * x_1          (linear interpolation)
     v_target = x_1 - x_0                    (constant velocity along the path)
@@ -12,7 +12,7 @@ Gaussian prior x_0 ~ N(0, I) to the data x_1 (the 14D part tensor).
 The model predicts v_theta(x_t, t, image) and is trained with MSE against v_target.
 Sampling is a simple ODE integration (Euler) from t=0 to t=1.
 
-The 14D part tensor layout (per organ):
+The part tensor layout (per organ):
     [OrganType(0), Base(1..3), Rot6D(4..9), Scale(10..12), Existence(13)]
 
 This is simpler and often faster to converge than DDPM because:
@@ -23,7 +23,20 @@ This is simpler and often faster to converge than DDPM because:
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Optional
+
+# Flow-matching node layout (must match part_array_dataset).
+FM_OT_END = 12          # 11 organ categories + 1 empty
+FM_BASE_START = FM_OT_END
+FM_BASE_END = FM_OT_END + 3
+FM_ROT_START = FM_BASE_END
+FM_ROT_END = FM_BASE_END + 6
+FM_SCALE_START = FM_ROT_END
+FM_SCALE_END = FM_ROT_END + 3
+FM_CURV_IDX = FM_SCALE_END
+FM_PHYLLO_IDX = FM_SCALE_END + 1
+FM_NODE_DIM = FM_SCALE_END + 2
 
 
 class FlowMatchingScheduler:
@@ -60,6 +73,9 @@ class FlowMatchingScheduler:
         max_nodes: int = 2048,
         device: torch.device = None,
         x0: Optional[torch.Tensor] = None,
+        guidance_fn: Optional[callable] = None,
+        guidance_weight: float = 0.0,
+        denormalize_fn: Optional[callable] = None,
     ) -> torch.Tensor:
         """
         Euler ODE integration from t=0 to t=1.
@@ -70,8 +86,14 @@ class FlowMatchingScheduler:
             images: (B, 3, H, W) condition image.
             num_steps: number of Euler steps.
             x0: optional initial sample (defaults to N(0, I)).
+            guidance_fn: optional callable(x_t_denorm) -> scalar loss. Its gradient
+                w.r.t. x_t is added to the velocity to steer sampling toward a
+                target render (render-loss-guided flow matching).
+            guidance_weight: scale of the guidance gradient.
+            denormalize_fn: optional callable to map normalized x_t back to world
+                part-tensor space before calling guidance_fn.
         Returns:
-            x1: (B, N, node_dim) generated 14D part tensor.
+            x1: (B, N, node_dim) generated 16D part tensor.
         """
         B = images.shape[0]
         if device is None:
@@ -86,5 +108,16 @@ class FlowMatchingScheduler:
             with torch.no_grad():
                 out = model(x_t, t, images)
                 v = out["pred_velocity"]  # predicted velocity
+
+            # Render-loss guidance: steer the ODE toward a target render.
+            if guidance_fn is not None and guidance_weight > 0.0:
+                x_t_g = x_t.clone().requires_grad_(True)
+                x_denorm = denormalize_fn(x_t_g) if denormalize_fn is not None else x_t_g
+                g_loss = guidance_fn(x_denorm)
+                g_grad = torch.autograd.grad(g_loss, x_t_g)[0]
+                v = v + guidance_weight * g_grad
+
             x_t = x_t + v * dt
+            # Keep the organ-type block a valid probability distribution.
+            x_t[..., :FM_OT_END] = F.softmax(x_t[..., :FM_OT_END], dim=-1)
         return x_t

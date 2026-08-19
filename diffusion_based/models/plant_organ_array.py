@@ -47,20 +47,25 @@ ORGAN_BUD_ABORTED = 10
 # PART-CENTRIC COLUMN IDs
 # =============================================================================
 
-P_COL_ORGAN_TYPE = 0
-P_COL_BASE_X = 1
-P_COL_BASE_Y = 2
-P_COL_BASE_Z = 3
-P_COL_ROT_0 = 4
-P_COL_ROT_1 = 5
-P_COL_ROT_2 = 6
-P_COL_ROT_3 = 7
-P_COL_ROT_4 = 8
-P_COL_ROT_5 = 9
-P_COL_SCALE_X = 10
-P_COL_SCALE_Y = 11
-P_COL_SCALE_Z = 12
-P_COL_EXISTENCE = 13
+# Layout: [Existence(0), OrganType(1), Base(2..4), Rot6D(5..10),
+#          Scale(11..13), Curvature(14), Phyllotactic(15)]
+# Existence is placed first so it reads naturally as a per-slot mask and so the
+# one-hot organ-type block can be appended right after it when expanding to the
+# flow-matching layout.
+P_COL_EXISTENCE = 0
+P_COL_ORGAN_TYPE = 1
+P_COL_BASE_X = 2
+P_COL_BASE_Y = 3
+P_COL_BASE_Z = 4
+P_COL_ROT_0 = 5
+P_COL_ROT_1 = 6
+P_COL_ROT_2 = 7
+P_COL_ROT_3 = 8
+P_COL_ROT_4 = 9
+P_COL_ROT_5 = 10
+P_COL_SCALE_X = 11
+P_COL_SCALE_Y = 12
+P_COL_SCALE_Z = 13
 P_COL_CURVATURE = 14
 P_COL_PHYLLOTACTIC_ANGLE = 15
 NUM_FEATURES = 16

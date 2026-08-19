@@ -1,7 +1,7 @@
 """
-Precompute and cache 14D part tensors for all XML samples to disk.
+Precompute and cache part tensors for all XML samples to disk.
 
-The 14D part tensor is extracted via forward kinematics (to_part_tensor),
+The part tensor is extracted via forward kinematics (to_part_tensor),
 which currently builds the full mesh (tube meshes + leaf OBJ loading) — ~1-13s
 per sample. This script computes each tensor ONCE and caches it to a .pt file,
 so the training dataset can load them instantly.
@@ -43,7 +43,7 @@ def main():
     else:
         xml_paths = xml_paths[args.start:]
 
-    print(f"Precomputing 14D tensors + images for {len(xml_paths)} samples -> {args.cache_dir}", flush=True)
+    print(f"Precomputing part tensors + images for {len(xml_paths)} samples -> {args.cache_dir}", flush=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
@@ -60,13 +60,13 @@ def main():
             continue
         try:
             arr = PlantOrganArray.from_xml_file_typed(xml_path)
-            p14 = arr.to_part_tensor(device=torch.device("cpu"))
-            torch.save(p14, cache_path)
-            # Render from the 14D tensor directly (fast: 0.1-0.8s) instead of
+            part = arr.to_part_tensor(device=torch.device("cpu"))
+            torch.save(part, cache_path)
+            # Render from the part tensor directly (fast: 0.1-0.8s) instead of
             # re-building the full mesh (slow: 20-40s).
             with torch.no_grad():
                 rgb = renderer.render_part_tensor(
-                    p14.to(device), template_organ_array=arr, camera_height=1.0,
+                    part.to(device), template_organ_array=arr, camera_height=1.0,
                     elevation_deg=90.0, device=device, focus_plant=True,
                     use_kinematics_tree=False, differentiable=False,
                 )

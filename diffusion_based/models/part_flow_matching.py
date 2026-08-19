@@ -24,7 +24,7 @@ from diffusion_based.models.vit_image_encoder import ViTImageEncoder
 
 
 class PartFlowMatchingModel(nn.Module):
-    """ViT encoder + transformer decoder predicting 14D velocity field."""
+    """ViT encoder + transformer decoder predicting velocity field."""
 
     def __init__(
         self,
@@ -57,7 +57,7 @@ class PartFlowMatchingModel(nn.Module):
             nn.Linear(embed_dim, embed_dim),
         )
 
-        # Project noisy 14D nodes into decoder query space
+        # Project noisy part nodes into decoder query space
         self.node_query_proj = nn.Linear(node_dim, embed_dim)
         self.node_pos_emb = nn.Embedding(max_nodes, embed_dim)
 

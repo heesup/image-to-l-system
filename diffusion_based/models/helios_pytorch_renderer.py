@@ -34,8 +34,23 @@ def compute_focus_plant_camera(
     """
     device = verts.device
 
-    if fixed_camera_bounds is not None:
+    # fixed_camera_bounds may be:
+    #   (center: torch.Tensor, max_span: float)  -> legacy XY-span FOV
+    #   {"min": [x,y,z], "max": [x,y,z]}         -> full-3D bbox FOV (same as auto focus)
+    fixed_has_bbox = isinstance(fixed_camera_bounds, dict)
+    use_full_3d_fov = (focus_plant and verts.shape[0] > 0 and
+                       (fixed_camera_bounds is None or fixed_has_bbox))
+    if fixed_has_bbox:
+        canopy_center = torch.tensor(
+            [(fixed_camera_bounds["min"][i] + fixed_camera_bounds["max"][i]) * 0.5 for i in range(3)],
+            device=device, dtype=torch.float32)
+        bb_min_x, bb_min_y, bb_min_z = fixed_camera_bounds["min"]
+        bb_max_x, bb_max_y, bb_max_z = fixed_camera_bounds["max"]
+        max_span = max((bb_max_x - bb_min_x) * 1.20, (bb_max_y - bb_min_y) * 1.20, 0.05)
+    elif fixed_camera_bounds is not None:
         canopy_center, max_span = fixed_camera_bounds
+        bb_min_x = bb_min_y = bb_min_z = 0.0
+        bb_max_x = bb_max_y = bb_max_z = 0.0
     elif verts.shape[0] > 0:
         bb_min_x = float(verts[:, 0].min().item())
         bb_max_x = float(verts[:, 0].max().item())
@@ -44,15 +59,15 @@ def compute_focus_plant_camera(
         bb_min_z = float(verts[:, 2].min().item())
         bb_max_z = float(verts[:, 2].max().item())
 
-        span_x = (bb_max_x - bb_min_x) * 1.05
-        span_y = (bb_max_y - bb_min_y) * 1.05
+        span_x = (bb_max_x - bb_min_x) * 1.20
+        span_y = (bb_max_y - bb_min_y) * 1.20
         max_span = max(span_x, span_y, 0.05)
         canopy_center = torch.tensor([(bb_min_x + bb_max_x) * 0.5, (bb_min_y + bb_max_y) * 0.5, (bb_min_z + bb_max_z) * 0.5], device=device, dtype=torch.float32)
     else:
         canopy_center = torch.tensor([0.0, 0.0, 0.0], device=device, dtype=torch.float32)
         max_span = 1.0
 
-    # Helios C++ Camera Spherical Positioning Math (main.cpp line 265-270)
+    # Helios C++ Camera Spherical Positioning Math (main.cpp)
     az_rad = math.radians(azimuth_deg)
     el_rad = math.radians(elevation_deg)
 
@@ -95,13 +110,10 @@ def compute_focus_plant_camera(
     view_mat[:3, :3] = R_view
     view_mat[:3, 3] = t_view
 
-    # --- Focus-plant FOV fitting the FULL 3D bounding box ---
-    # The old logic used only the XY span, which crops tall plants (e.g. DAP 90)
-    # at near-top-down elevation. To keep the whole plant in frame we project the
-    # 3D bbox corners into camera space and fit HFOV *and* VFOV to their extent.
+    # --- Focus-plant FOV fitting the FULL 3D bounding box with +20% margin ---
     if hfov_override_deg is not None:
         hfov_rad = math.radians(hfov_override_deg)
-    elif focus_plant and verts.shape[0] > 0:
+    elif use_full_3d_fov:
         Rv = view_mat[:3, :3].to(device)
         tv = view_mat[:3, 3].to(device)
         corners = torch.tensor(
@@ -119,22 +131,18 @@ def compute_focus_plant_camera(
         zneg = (-cam_corners[:, 2]).clamp(min=1e-4)
         vx = cam_corners[:, 0] / zneg
         vy = cam_corners[:, 1] / zneg
-        # 5% margin on the projected extent.
-        ext_x = (vx.max() - vx.min()) * 1.05
-        ext_y = (vy.max() - vy.min()) * 1.05
-        ext_x = max(ext_x, 1e-4)
-        ext_y = max(ext_y, 1e-4)
-        hfov_rad = 2.0 * math.atan(0.5 * ext_x)
-        vfov_rad = 2.0 * math.atan(0.5 * ext_y)
+        # 20% margin on the symmetric half-extent to guarantee zero clipping
+        half_ext_x = max(float(vx.abs().max().item()), 1e-4) * 1.20
+        half_ext_y = max(float(vy.abs().max().item()), 1e-4) * 1.20
+        hfov_rad = 2.0 * math.atan(half_ext_x)
+        vfov_rad = 2.0 * math.atan(half_ext_y)
         # Use the larger FOV (per axis) so the whole plant fits.
         if vfov_rad > hfov_rad * aspect_ratio:
             hfov_rad = vfov_rad / aspect_ratio
     elif focus_plant:
-        # Fallback: XY-span FOV (matches Helios main.cpp line 1569)
         half_span = max_span * 0.5
         hfov_rad = 2.0 * math.atan(half_span / max(camera_height, 1e-3))
     else:
-        # Default fixed HFOV (45 deg)
         hfov_rad = math.radians(45.0)
 
     tan_half_fov = math.tan(hfov_rad / 2.0)
@@ -473,7 +481,8 @@ class HeliosPyTorchRenderer(nn.Module):
 
     def render_part_tensor(
         self,
-        part_tensor_14d: torch.Tensor,
+        part_tensor: torch.Tensor,
+        species: Optional[str] = None,
         template_organ_array=None,
         azimuth_deg: float = 0.0,
         elevation_deg: float = 90.0,
@@ -487,8 +496,9 @@ class HeliosPyTorchRenderer(nn.Module):
         fixed_camera_bounds: Optional[Tuple[torch.Tensor, float]] = None,
     ) -> torch.Tensor:
         mesh_dict = self.geo_builder.build_mesh_from_part_array(
-            part_tensor_14d,
+            part_tensor,
             device=device,
+            species=species,
             existence_threshold=existence_threshold,
             template_organ_array=template_organ_array,
             use_kinematics_tree=use_kinematics_tree,
@@ -521,6 +531,7 @@ class HeliosPyTorchRenderer(nn.Module):
         return_mask: bool = True,
         return_organ_masks: bool = True,
         return_raw_depth: bool = False,
+        soft_existence: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """
         Single-pass multi-modal rendering. Returns a dict with:
@@ -605,7 +616,14 @@ class HeliosPyTorchRenderer(nn.Module):
             else:
                 bg = torch.zeros((1, 1, 1, 3), device=device)
             mask4 = fg_mask_hw.unsqueeze(0).unsqueeze(-1)  # (1,H,W,1)
-            rgb_out = torch.where(mask4, rgb_rast, bg)
+            if soft_existence and 'existence' in mesh_dict:
+                # Blend toward background by interpolated existence so organs at
+                # existence=0 fade out but still pass gradients to existence.
+                exist_b = mesh_dict['existence'].unsqueeze(0).unsqueeze(-1).contiguous()
+                exist_rast, _ = dr.interpolate(exist_b, rast_out, faces_i32)  # (1,H,W,1)
+                rgb_out = rgb_rast * exist_rast + bg * (1.0 - exist_rast)
+            else:
+                rgb_out = torch.where(mask4, rgb_rast, bg)
             out['rgb'] = rgb_out.squeeze(0).permute(2, 0, 1).flip(1)  # (3,H,W)
 
             # Depth: interpolate NDC z from v_clip w-divided z
@@ -763,7 +781,8 @@ class HeliosPyTorchRenderer(nn.Module):
 
     def render_part_tensor_multimodal(
         self,
-        part_tensor_14d: torch.Tensor,
+        part_tensor: torch.Tensor,
+        species: Optional[str] = None,
         template_organ_array=None,
         azimuth_deg: float = 0.0,
         elevation_deg: float = 90.0,
@@ -778,17 +797,20 @@ class HeliosPyTorchRenderer(nn.Module):
         return_mask: bool = True,
         return_organ_masks: bool = True,
         return_raw_depth: bool = False,
+        soft_existence: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """
-        Wrapper: build mesh from 14D part tensor, then run render_multimodal().
+        Wrapper: build mesh from part tensor, then run render_multimodal().
         Returns dict with 'rgb', 'depth', 'raw_depth', 'mask', 'organ_masks'.
         """
         mesh_dict = self.geo_builder.build_mesh_from_part_array(
-            part_tensor_14d,
+            part_tensor,
             device=device,
+            species=species,
             existence_threshold=existence_threshold,
             template_organ_array=template_organ_array,
             use_kinematics_tree=use_kinematics_tree,
+            soft_existence=soft_existence,
         )
         return self.render_multimodal(
             mesh_dict,
@@ -802,5 +824,6 @@ class HeliosPyTorchRenderer(nn.Module):
             return_mask=return_mask,
             return_organ_masks=return_organ_masks,
             return_raw_depth=return_raw_depth,
+            soft_existence=soft_existence,
         )
 

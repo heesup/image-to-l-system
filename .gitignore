@@ -45,3 +45,4 @@ slurm-*.out
 # Runtime benchmark caches
 diffusion_based/eval/benchmark_cache*.json
 docs/results/assets/*_metrics.json
+dataset/helios_data*

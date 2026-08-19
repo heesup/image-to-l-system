@@ -1,8 +1,8 @@
 """
-Training script for 14D Part-Centric Flow Matching.
+Training script for Part-Centric Flow Matching.
 
 Trains a ViT + transformer decoder to predict the velocity field that transports
-a Gaussian prior to the 14D part tensor, conditioned on a rendered plant image.
+a Gaussian prior to the part tensor, conditioned on a rendered plant image.
 
 Loss: masked MSE between predicted velocity and the constant velocity target
       v = x1 - x0, masked to active organ slots (existence > 0).
@@ -25,7 +25,9 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.dataset.part_array_dataset import PartArrayDataset
+from diffusion_based.dataset.part_array_dataset import (
+    PartArrayDataset, FM_OT_END, EMPTY_IDX,
+)
 from diffusion_based.models.part_flow_matching import PartFlowMatchingModel
 from diffusion_based.training.flow_matching import FlowMatchingScheduler
 
@@ -49,6 +51,7 @@ def train_epoch(
     device: torch.device,
     ema_model: AveragedModel = None,
     global_step: int = 0,
+    empty_prior: bool = False,
 ) -> Dict[str, float]:
     model.train()
     total_loss = 0.0
@@ -56,14 +59,22 @@ def train_epoch(
 
     for batch in dataloader:
         images = batch["image"].to(device)
-        nodes = batch["nodes"].to(device)  # (B, N, 14) normalized
+        nodes = batch["nodes"].to(device)  # (B, N, 16) normalized
         existence_mask = batch["existence_mask"].to(device)  # (B, N)
 
         B = images.shape[0]
 
-        # Sample time and noise
+        # Sample time and prior
         t = scheduler.sample_time(B, device)
-        x0 = torch.randn_like(nodes)  # Gaussian prior
+        if empty_prior:
+            # "Empty plant" prior: keep the target structure (base, rotation,
+            # scale) but set every slot to the EMPTY category so the model learns
+            # to grow organs from an empty plant instead of from Gaussian noise.
+            x0 = nodes.clone()
+            x0[:, :, :FM_OT_END] = 0.0
+            x0[:, :, EMPTY_IDX] = 1.0
+        else:
+            x0 = torch.randn_like(nodes)  # Gaussian prior
         x1 = nodes  # data
         x_t = scheduler.sample_xt(x0, x1, t)
         v_target = scheduler.velocity_target(x0, x1)
@@ -109,7 +120,9 @@ def main():
     parser.add_argument("--val_pattern", type=str, default=None,
                         help="Comma-separated basename globs held out for validation, e.g. '*seed00*'")
     parser.add_argument("--cache_dir", type=str, default="dataset/helios_data_14d_cache",
-                        help="Directory of precomputed 14D tensors + images (skip if absent)")
+                        help="Directory of precomputed part tensors + images (skip if absent)")
+    parser.add_argument("--empty_prior", action="store_true",
+                        help="Start flow-matching from an empty plant (existence=0) instead of Gaussian noise")
     args = parser.parse_args()
 
     set_seed(args.seed)
@@ -150,7 +163,8 @@ def main():
 
     global_step = 0
     for epoch in range(1, args.epochs + 1):
-        metrics = train_epoch(model, dataloader, optimizer, scheduler, device, ema_model, global_step)
+        metrics = train_epoch(model, dataloader, optimizer, scheduler, device, ema_model, global_step,
+                              empty_prior=args.empty_prior)
         global_step = metrics["global_step"]
         print(f"Epoch {epoch:03d} | loss={metrics['loss']:.4f}", flush=True)
 

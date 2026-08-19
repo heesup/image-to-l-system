@@ -89,6 +89,54 @@ def generate_generic_leaf_mesh_torch(
     return verts, faces_t
 
 
+def generate_sorghum_blade_mesh_torch(
+    scale: torch.Tensor,
+    aspect_ratio: float = 0.18,
+    Nx: int = 24,
+    Ny: int = 6,
+    device=torch.device('cpu')
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Generates Helios Sorghum/Grass parametric curved, drooping ribbon blade mesh."""
+    if not isinstance(scale, torch.Tensor):
+        scale = torch.tensor(scale, dtype=torch.float32, device=device)
+
+    # Normalized longitudinal coordinate s in [0, 1]
+    s = torch.linspace(0.0, 1.0, Nx + 1, device=device)
+    # Normalized transversal coordinate t in [-0.5, 0.5]
+    t = torch.linspace(-0.5, 0.5, Ny + 1, device=device)
+
+    grid_s, grid_t = torch.meshgrid(s, t, indexing='ij')
+
+    # Width profile along the leaf: sheath at s=0, peak at s=0.25~0.35, taper to tip at s=1.0
+    width_envelope = torch.sin(math.pi * (grid_s.clamp(0.0, 1.0) ** 0.55)).clamp(min=0.04)
+    local_width = scale * aspect_ratio * width_envelope
+
+    # Longitudinal catenary droop (curves outwards and arches downwards)
+    droop_z = scale * (0.04 * grid_s - 0.32 * (grid_s ** 2) - 0.12 * (grid_s ** 3))
+
+    # Transversal midrib V-fold channel (V-shape crease along center midrib)
+    v_fold = 0.22 * torch.abs(grid_t) * local_width * (1.0 - 0.6 * grid_s)
+
+    pts_x = grid_s * scale
+    pts_y = grid_t * local_width
+    pts_z = droop_z + v_fold
+
+    verts = torch.stack([pts_x, pts_y, pts_z], dim=-1).reshape(-1, 3)
+
+    faces = []
+    for i in range(Nx):
+        for j in range(Ny):
+            v0 = i * (Ny + 1) + j
+            v1 = i * (Ny + 1) + j + 1
+            v2 = (i + 1) * (Ny + 1) + j
+            v3 = (i + 1) * (Ny + 1) + j + 1
+            faces.append([v0, v2, v1])
+            faces.append([v1, v2, v3])
+
+    faces_t = torch.tensor(faces, dtype=torch.int64, device=device)
+    return verts, faces_t
+
+
 _TUBE_PROTO_CACHE: Dict[Tuple[int, int, str], Tuple[torch.Tensor, torch.Tensor]] = {}
 
 def _get_cached_tube_prototype(n_seg: int, n_rad: int, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -107,6 +155,17 @@ def get_generic_leaf_template(aspect_ratio: float = 0.65, Nx: int = 8, Ny: int =
         n_temp = compute_face_normals_torch(v_temp, f_temp)
         _GENERIC_LEAF_CACHE[key] = (v_temp, f_temp, n_temp)
     return _GENERIC_LEAF_CACHE[key]
+
+
+_SORGHUM_LEAF_CACHE: Dict[Tuple[float, int, int, str], Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
+
+def get_sorghum_leaf_template(aspect_ratio: float = 0.18, Nx: int = 24, Ny: int = 6, device=torch.device('cpu')) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    key = (aspect_ratio, Nx, Ny, str(device))
+    if key not in _SORGHUM_LEAF_CACHE:
+        v_temp, f_temp = generate_sorghum_blade_mesh_torch(scale=torch.tensor(1.0, device=device), aspect_ratio=aspect_ratio, Nx=Nx, Ny=Ny, device=device)
+        n_temp = compute_face_normals_torch(v_temp, f_temp)
+        _SORGHUM_LEAF_CACHE[key] = (v_temp, f_temp, n_temp)
+    return _SORGHUM_LEAF_CACHE[key]
 
 
 class HeliosAssetManager:
@@ -452,17 +511,113 @@ def generate_cone_tube_mesh_torch(
     return verts_t, faces_t, normals, colors_t
 
 
-class HeliosPlantGeometryBuilder:
-    """Builds complete PyTorch 3D plant meshes directly from PlantOrganArray Tensor (N, 93)."""
+SPECIES_CONFIG: Dict[str, Dict[str, Any]] = {
+    "cowpea": {
+        "leaf_obj": "CowpeaLeaf_tip_highres.obj",
+        "leaf_tip_obj": "CowpeaLeaf_tip_highres.obj",
+        "leaf_left_obj": "CowpeaLeaf_left_highres.obj",
+        "leaf_right_obj": "CowpeaLeaf_right_highres.obj",
+        "leaf_unifoliate_obj": "CowpeaLeaf_unifoliate.obj",
+        "leaf_aspect_ratio": 0.65,
+        "flower_open_obj": "CowpeaFlower_open_yellow.obj",
+        "flower_closed_obj": "CowpeaFlower_closed_yellow.obj",
+        "fruit_obj": "CowpeaPod.obj",
+        "fruit_load_scale": 0.47,
+        "color_stem": torch.tensor([0.22, 0.45, 0.15]),
+        "color_petiole": torch.tensor([0.25, 0.50, 0.18]),
+        "color_leaf": torch.tensor([0.25, 0.62, 0.18]),
+        "color_peduncle": torch.tensor([0.17, 0.213, 0.051]),
+        "color_flower_open": torch.tensor([0.921582, 0.916492, 0.344423]),
+        "color_flower_closed": torch.tensor([0.5, 0.4, 0.1]),
+        "color_fruit": torch.tensor([0.299629, 0.400454, 0.209546]),
+    },
+    "bean": {
+        "leaf_obj": "BeanLeaf_tip.obj",
+        "leaf_tip_obj": "BeanLeaf_tip.obj",
+        "leaf_left_obj": "BeanLeaf_left.obj",
+        "leaf_right_obj": "BeanLeaf_right.obj",
+        "leaf_unifoliate_obj": "BeanLeaf_unifoliate.obj",
+        "leaf_aspect_ratio": 0.65,
+        "flower_open_obj": "BeanFlower_open_white.obj",
+        "flower_closed_obj": "BeanFlower_closed_white.obj",
+        "fruit_obj": "BeanPod.obj",
+        "fruit_load_scale": 0.40,
+        "color_stem": torch.tensor([0.20, 0.42, 0.14]),
+        "color_petiole": torch.tensor([0.23, 0.48, 0.16]),
+        "color_leaf": torch.tensor([0.22, 0.58, 0.16]),
+        "color_peduncle": torch.tensor([0.18, 0.24, 0.08]),
+        "color_flower_open": torch.tensor([0.95, 0.95, 0.92]),
+        "color_flower_closed": torch.tensor([0.72, 0.76, 0.58]),
+        "color_fruit": torch.tensor([0.26, 0.38, 0.18]),
+    },
+    "sorghum": {
+        "leaf_obj": None,  # Parametric lanceolate curved ribbon blade
+        "leaf_aspect_ratio": 0.20,
+        "flower_open_obj": "RiceGrain.obj",
+        "flower_closed_obj": "RiceGrain.obj",
+        "fruit_obj": "WheatSpike.obj",
+        "fruit_load_scale": 0.35,
+        "color_stem": torch.tensor([0.24, 0.44, 0.16]),
+        "color_petiole": torch.tensor([0.22, 0.40, 0.14]),
+        "color_leaf": torch.tensor([0.19, 0.52, 0.13]),
+        "color_peduncle": torch.tensor([0.22, 0.32, 0.15]),
+        "color_flower_open": torch.tensor([0.82, 0.72, 0.32]),
+        "color_flower_closed": torch.tensor([0.65, 0.55, 0.25]),
+        "color_fruit": torch.tensor([0.58, 0.38, 0.22]),
+    },
+    "soybean": {
+        "leaf_obj": "SoybeanLeaf.obj",
+        "leaf_aspect_ratio": 0.60,
+        "flower_open_obj": "SoybeanFlower_open_white.obj",
+        "flower_closed_obj": "SoybeanFlower_open_white.obj",
+        "fruit_obj": "SoybeanPod.obj",
+        "fruit_load_scale": 0.35,
+        "color_stem": torch.tensor([0.21, 0.42, 0.14]),
+        "color_petiole": torch.tensor([0.24, 0.46, 0.16]),
+        "color_leaf": torch.tensor([0.23, 0.59, 0.17]),
+        "color_peduncle": torch.tensor([0.18, 0.22, 0.06]),
+        "color_flower_open": torch.tensor([0.90, 0.90, 0.95]),
+        "color_flower_closed": torch.tensor([0.65, 0.70, 0.55]),
+        "color_fruit": torch.tensor([0.32, 0.42, 0.22]),
+    },
+    "tomato": {
+        "leaf_obj": "TomatoLeaf.obj",
+        "leaf_aspect_ratio": 0.70,
+        "flower_open_obj": "TomatoFlower.obj",
+        "flower_closed_obj": "TomatoFlower.obj",
+        "fruit_obj": "TomatoFruit.obj",
+        "fruit_load_scale": 0.40,
+        "color_stem": torch.tensor([0.20, 0.40, 0.12]),
+        "color_petiole": torch.tensor([0.22, 0.45, 0.15]),
+        "color_leaf": torch.tensor([0.16, 0.50, 0.12]),
+        "color_peduncle": torch.tensor([0.18, 0.25, 0.08]),
+        "color_flower_open": torch.tensor([0.95, 0.90, 0.10]),
+        "color_flower_closed": torch.tensor([0.60, 0.55, 0.20]),
+        "color_fruit": torch.tensor([0.85, 0.15, 0.10]),
+    },
+}
 
-    def __init__(self, asset_manager: Optional[HeliosAssetManager] = None, use_generic_leaves: bool = False, leaf_scale_factor: float = 1.0, tube_radial_subdivisions: int = 4):
+
+class HeliosPlantGeometryBuilder:
+    """Builds complete PyTorch 3D plant meshes directly from PlantOrganArray Tensor (N, 93) with multi-species support."""
+
+    def __init__(
+        self,
+        asset_manager: Optional[HeliosAssetManager] = None,
+        species: str = "cowpea",
+        use_generic_leaves: bool = False,
+        leaf_scale_factor: float = 1.0,
+        tube_radial_subdivisions: int = 4
+    ):
         if asset_manager is None:
             asset_manager = HeliosAssetManager()
         self.asset_mgr = asset_manager
+        self.species = species.lower()
         self.use_generic_leaves = use_generic_leaves
         self.leaf_scale_factor = leaf_scale_factor
         self.tube_radial_subdivisions = tube_radial_subdivisions
 
+        # Default fallback colors
         self.COLOR_STEM = torch.tensor([0.22, 0.45, 0.15], dtype=torch.float32)
         self.COLOR_PETIOLE = torch.tensor([0.25, 0.50, 0.18], dtype=torch.float32)
         self.COLOR_LEAF = torch.tensor([0.25, 0.62, 0.18], dtype=torch.float32)
@@ -480,27 +635,31 @@ class HeliosPlantGeometryBuilder:
         self.OT_FLOWER = 4
         self.OT_FRUIT = 5
 
-        self._infl_assets: Optional[Dict[str, Tuple[torch.Tensor, torch.Tensor]]] = None
+        self._species_infl_cache: Dict[str, Dict[str, Tuple[torch.Tensor, torch.Tensor]]] = {}
 
-    def _get_inflorescence_assets(self):
-        """Lazily load inflorescence OBJ assets (pod scale baked at load)."""
-        if self._infl_assets is None:
-            self._infl_assets = {
-                'flower_open': self.asset_mgr.get_inflorescence_mesh('CowpeaFlower_open_yellow.obj', load_scale=0.0),
-                'flower_closed': self.asset_mgr.get_inflorescence_mesh('CowpeaFlower_closed_yellow.obj', load_scale=0.0),
-                'fruit': self.asset_mgr.get_inflorescence_mesh('CowpeaPod.obj', load_scale=0.47),
+    def _get_species_cfg(self, species_name: str) -> Dict[str, Any]:
+        sp = species_name.lower().strip()
+        if sp in SPECIES_CONFIG:
+            return SPECIES_CONFIG[sp]
+        # Match common aliases
+        for k in SPECIES_CONFIG:
+            if k in sp or sp in k:
+                return SPECIES_CONFIG[k]
+        return SPECIES_CONFIG["cowpea"]
+
+    def _get_inflorescence_assets_for_species(self, species_name: str) -> Dict[str, Tuple[torch.Tensor, torch.Tensor]]:
+        sp = species_name.lower().strip()
+        if sp not in self._species_infl_cache:
+            cfg = self._get_species_cfg(sp)
+            self._species_infl_cache[sp] = {
+                'flower_open': self.asset_mgr.get_inflorescence_mesh(cfg["flower_open_obj"], load_scale=0.0),
+                'flower_closed': self.asset_mgr.get_inflorescence_mesh(cfg["flower_closed_obj"], load_scale=0.0),
+                'fruit': self.asset_mgr.get_inflorescence_mesh(cfg["fruit_obj"], load_scale=cfg.get("fruit_load_scale", 0.47)),
             }
-        return self._infl_assets
+        return self._species_infl_cache[sp]
 
     def _build_peduncle_has_flower(self, p: torch.Tensor) -> torch.Tensor:
-        """Use the part-tensor record order to decide which peduncles carry flowers/fruits.
-
-        In the original XML/parser order, a phytomer is stored as
-        internode -> petiole(s) -> bud -> peduncle -> flower/fruit(s).  Therefore,
-        every flower/fruit row immediately following a peduncle row belongs to that
-        peduncle.  This is far more reliable than straight-line tip-distance checks,
-        because the parser places flowers along the *curved* peduncle line.
-        """
+        """Use the part-tensor record order to decide which peduncles carry flowers/fruits."""
         N = p.shape[0]
         ped_has_flower = torch.zeros(N, dtype=torch.bool, device=p.device)
         last_ped_idx = -1
@@ -522,12 +681,9 @@ class HeliosPlantGeometryBuilder:
         device: torch.device,
     ) -> bool:
         """Return True if this peduncle serves a dormant/aborted bud with no flower/fruit."""
-        # If the peduncle has associated flowers/fruits it must be rendered.
         if ped_has_flower[ped_idx].item():
             return False
 
-        # Otherwise it is dormant/aborted only if there is a (dormant/aborted) bud
-        # at its base.
         base = p[ped_idx, P_COL_BASE_X:P_COL_BASE_Z + 1]
         for j in range(p.shape[0]):
             if j == ped_idx:
@@ -541,69 +697,127 @@ class HeliosPlantGeometryBuilder:
 
     def build_mesh_from_part_array(
         self,
-        part_tensor_14d: torch.Tensor,
+        part_tensor: torch.Tensor,
         device: torch.device = torch.device('cpu'),
+        species: Optional[str] = None,
         existence_threshold: float = 0.5,
         template_organ_array: Optional[PlantOrganArray] = None,
         use_kinematics_tree: bool = False,
+        soft_existence: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """
-        Builds a 3D mesh directly from the 14D part-centric tensor representation.
-        Each organ is placed in 3D space directly according to its (Base, 6D Rotation, Scale).
+        Builds a 3D mesh directly from the part-centric tensor representation.
+        Supports multi-species plant architectures (cowpea, bean, sorghum, soybean, tomato).
         """
-        p = part_tensor_14d.to(device)
+        p = part_tensor.to(device)
         N = p.shape[0]
         if N == 0:
             empty3 = torch.zeros((0, 3), dtype=torch.float32, device=device)
             empty_f = torch.zeros((0, 3), dtype=torch.int64, device=device)
             empty_o = torch.zeros((0,), dtype=torch.int64, device=device)
-            return {'vertices': empty3, 'faces': empty_f, 'normals': empty3, 'colors': empty3, 'organ_types': empty_o, 'part_transforms_14d': p}
+            return {'vertices': empty3, 'faces': empty_f, 'normals': empty3, 'colors': empty3, 'organ_types': empty_o, 'part_transforms': p}
+
+        # Resolve species configuration
+        sp_name = (species or self.species).lower()
+        cfg = self._get_species_cfg(sp_name)
+
+        col_stem = cfg["color_stem"]
+        col_petiole = cfg["color_petiole"]
+        col_leaf = cfg["color_leaf"]
+        col_peduncle = cfg["color_peduncle"]
+        col_flower_open = cfg["color_flower_open"]
+        col_flower_closed = cfg["color_flower_closed"]
+        col_fruit = cfg["color_fruit"]
 
         all_verts = []
         all_faces = []
         all_normals = []
         all_colors = []
         all_organs = []
+        all_exist = []
         vert_offset = 0
 
-        infl_assets = self._get_inflorescence_assets()
+        infl_assets = self._get_inflorescence_assets_for_species(sp_name)
         ped_has_flower = self._build_peduncle_has_flower(p)
+
+        # Preload leaf templates and specialized leaflet meshes
+        sorghum_leaf_tmpl = get_sorghum_leaf_template(aspect_ratio=cfg.get("leaf_aspect_ratio", 0.20), device=device)
+        generic_leaf_tmpl = get_generic_leaf_template(aspect_ratio=cfg.get("leaf_aspect_ratio", 0.65), device=device)
+
+        leaflet_tmpls = {}
+        for k in ["leaf_obj", "leaf_tip_obj", "leaf_left_obj", "leaf_right_obj", "leaf_unifoliate_obj"]:
+            if k in cfg and cfg[k] is not None:
+                try:
+                    leaflet_tmpls[k] = self.asset_mgr.get_mesh_with_normals(cfg[k], device)
+                except Exception:
+                    pass
+
+        curr_petiole_leaf_count = 0
 
         for idx in range(N):
             exist_tensor = p[idx, P_COL_EXISTENCE]
-            # Soft existence weight: keeps the operation differentiable while still
-            # suppressing organs whose existence value is below the threshold.
-            exist_weight = torch.sigmoid((exist_tensor - existence_threshold) * 20.0)
-            if exist_weight.item() < 1e-4:
-                continue
+            exist_weight = torch.sigmoid((exist_tensor - existence_threshold) * 20.0).clamp(min=1e-3)
+            if soft_existence:
+                # Render at full scale; existence is carried as a vertex attribute.
+                # Use a linear (non-saturated) mapping so the gradient is strong
+                # even when existence=0, letting organs grow from an empty plant.
+                exist_weight = 1.0
+                exist_attr = exist_tensor.clamp(min=0.0, max=1.0)
 
             otype = int(p[idx, P_COL_ORGAN_TYPE].item())
             base = p[idx, P_COL_BASE_X:P_COL_BASE_Z+1]
             r6 = p[idx, P_COL_ROT_0:P_COL_ROT_5+1]
-            R = rotation_6d_to_matrix(r6)
+            R = rotation_6d_to_matrix(r6.unsqueeze(0)).squeeze(0)
             sx = p[idx, P_COL_SCALE_X] * exist_weight
             sy = p[idx, P_COL_SCALE_Y] * exist_weight
             sz = p[idx, P_COL_SCALE_Z] * exist_weight
+
+            if otype != ORGAN_LEAF:
+                curr_petiole_leaf_count = 0
 
             if otype == ORGAN_LEAF:
                 lf_scale = sx * self.leaf_scale_factor
                 if lf_scale <= 1e-6:
                     continue
-                try:
-                    v_raw, f_lf_b, n_tmpl = self.asset_mgr.get_mesh_with_normals("CowpeaLeaf_unifoliate.obj", device)
-                except FileNotFoundError:
-                    continue
 
-                v_lf_b = v_raw * lf_scale
+                leaf_sub_idx = curr_petiole_leaf_count
+                curr_petiole_leaf_count += 1
+
+                if sp_name == "sorghum":
+                    v_tmpl, f_tmpl, n_tmpl = sorghum_leaf_tmpl
+                    v_lf_raw = v_tmpl
+                    f_lf_b = f_tmpl
+                elif self.use_generic_leaves or len(leaflet_tmpls) == 0:
+                    v_tmpl, f_tmpl, n_tmpl = generic_leaf_tmpl
+                    v_lf_raw = v_tmpl
+                    f_lf_b = f_tmpl
+                else:
+                    # Select appropriate leaflet mesh
+                    target_key = "leaf_obj"
+                    if leaf_sub_idx == 0 and "leaf_left_obj" in leaflet_tmpls:
+                        target_key = "leaf_left_obj"
+                    elif leaf_sub_idx == 1 and "leaf_tip_obj" in leaflet_tmpls:
+                        target_key = "leaf_tip_obj"
+                    elif leaf_sub_idx == 2 and "leaf_right_obj" in leaflet_tmpls:
+                        target_key = "leaf_right_obj"
+
+                    if target_key in leaflet_tmpls:
+                        v_lf_raw, f_lf_b, n_tmpl = leaflet_tmpls[target_key]
+                    else:
+                        v_lf_raw, f_lf_b, n_tmpl = leaflet_tmpls.get("leaf_obj", generic_leaf_tmpl)
+
+                v_lf_b = v_lf_raw * lf_scale
                 v_lf = (R @ v_lf_b.T).T + base
                 n_lf = (R @ n_tmpl.T).T
-                c_lf = self.COLOR_LEAF.to(device).unsqueeze(0).expand(v_lf.shape[0], 3)
+                c_lf = col_leaf.to(device).unsqueeze(0).expand(v_lf.shape[0], 3)
 
                 all_verts.append(v_lf)
                 all_faces.append(f_lf_b + vert_offset)
                 all_normals.append(n_lf)
                 all_colors.append(c_lf)
                 all_organs.append(torch.full((v_lf.shape[0],), self.OT_LEAF, dtype=torch.int64, device=device))
+                if soft_existence:
+                    all_exist.append(exist_attr.expand(v_lf.shape[0]))
                 vert_offset += v_lf.shape[0]
 
             elif otype in (ORGAN_INTERNODE, ORGAN_PETIOLE, ORGAN_PEDUNCLE):
@@ -612,20 +826,18 @@ class HeliosPlantGeometryBuilder:
                 if len_val <= 1e-6 or rad <= 1e-6:
                     continue
 
-                # Skip rendering peduncles that belong to dormant/aborted buds
-                # and carry no flower/fruit, matching the Helios C++ visualizer.
                 if otype == ORGAN_PEDUNCLE:
                     if self._is_dormant_peduncle(idx, p, ped_has_flower, device):
                         continue
 
                 if otype == ORGAN_INTERNODE:
-                    col = self.COLOR_STEM.to(device)
+                    col = col_stem.to(device)
                     ot_id = self.OT_STEM
                 elif otype == ORGAN_PETIOLE:
-                    col = self.COLOR_PETIOLE.to(device)
+                    col = col_petiole.to(device)
                     ot_id = self.OT_PETIOLE
                 else:
-                    col = self.COLOR_PEDUNCLE.to(device)
+                    col = col_peduncle.to(device)
                     ot_id = self.OT_PEDUNCLE
 
                 p0 = base
@@ -642,6 +854,8 @@ class HeliosPlantGeometryBuilder:
                     all_normals.append(n_tub)
                     all_colors.append(c_tub)
                     all_organs.append(torch.full((v_tub.shape[0],), ot_id, dtype=torch.int64, device=device))
+                    if soft_existence:
+                        all_exist.append(exist_attr.expand(v_tub.shape[0]))
                     vert_offset += v_tub.shape[0]
 
             elif otype in (ORGAN_FLOWER, ORGAN_FRUIT, ORGAN_FLOWER_CLOSED):
@@ -650,15 +864,15 @@ class HeliosPlantGeometryBuilder:
                     continue
                 if otype == ORGAN_FRUIT:
                     asset_name = 'fruit'
-                    obj_color = self.COLOR_FRUIT
+                    obj_color = col_fruit
                     obj_ot = self.OT_FRUIT
                 elif otype == ORGAN_FLOWER_CLOSED:
                     asset_name = 'flower_closed'
-                    obj_color = self.COLOR_FLOWER_CLOSED
+                    obj_color = col_flower_closed
                     obj_ot = self.OT_FLOWER
                 else:
                     asset_name = 'flower_open'
-                    obj_color = self.COLOR_FLOWER_OPEN
+                    obj_color = col_flower_open
                     obj_ot = self.OT_FLOWER
 
                 v_asset, f_asset = infl_assets[asset_name]
@@ -674,20 +888,25 @@ class HeliosPlantGeometryBuilder:
                 all_normals.append(n_obj)
                 all_colors.append(c_obj)
                 all_organs.append(torch.full((v_obj.shape[0],), obj_ot, dtype=torch.int64, device=device))
+                if soft_existence:
+                    all_exist.append(exist_attr.expand(v_obj.shape[0]))
                 vert_offset += v_obj.shape[0]
 
         if not all_verts:
             empty3 = torch.zeros((0, 3), dtype=torch.float32, device=device)
             empty_f = torch.zeros((0, 3), dtype=torch.int64, device=device)
             empty_o = torch.zeros((0,), dtype=torch.int64, device=device)
-            return {'vertices': empty3, 'faces': empty_f, 'normals': empty3, 'colors': empty3, 'organ_types': empty_o, 'part_transforms_14d': p}
+            return {'vertices': empty3, 'faces': empty_f, 'normals': empty3, 'colors': empty3, 'organ_types': empty_o, 'part_transforms': p}
 
-        return {
+        out = {
             'vertices': torch.cat(all_verts, dim=0),
             'faces': torch.cat(all_faces, dim=0),
             'normals': torch.cat(all_normals, dim=0),
             'colors': torch.cat(all_colors, dim=0),
             'organ_types': torch.cat(all_organs, dim=0),
-            'part_transforms_14d': p
+            'part_transforms': p
         }
+        if soft_existence:
+            out['existence'] = torch.cat(all_exist, dim=0)
+        return out
 

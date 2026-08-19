@@ -1,5 +1,5 @@
 """
-Autonomous 14D Part Assembly to Helios XML Converter (Ultra-Fast Vectorized).
+Autonomous Part Assembly to Helios XML Converter (Ultra-Fast Vectorized).
 
 Reconstructs a fully valid, standalone Helios XML plant architecture document
 from an unorganized (N, 14) spatial part tensor without requiring any original
@@ -74,13 +74,13 @@ class PartAssemblyToXMLConverter:
 
     def convert_to_xml_string(
         self,
-        part_tensor_14d: torch.Tensor,
+        part_tensor: torch.Tensor,
         plant_id: int = 0,
         plant_type: str = "cowpea",
         existence_threshold: float = 0.5,
     ) -> str:
         """Converts (N, 14) part tensor to a valid Helios XML string."""
-        p_np = part_tensor_14d.detach().cpu().numpy()
+        p_np = part_tensor.detach().cpu().numpy()
         N = p_np.shape[0]
 
         # 1. Separate active parts by organ type
