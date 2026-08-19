@@ -58,6 +58,11 @@ def render_one(job_args):
     tmp_dir = os.path.join(output_dir, f"_tmp_{os.getpid()}_{plant_type}_{dap}_{seed}")
     os.makedirs(tmp_dir, exist_ok=True)
 
+    # Resolve species-specific config if available
+    sp_cfg = os.path.join(REPO_ROOT, "Digital-Crops", "projects", "syntheticdata_generation", "configs", f"params_{plant_type}.json")
+    if os.path.exists(sp_cfg):
+        params_file = sp_cfg
+
     cmd = [
         MAIN_BIN,
         "--renderer", renderer,

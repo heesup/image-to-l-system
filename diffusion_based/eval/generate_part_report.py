@@ -104,18 +104,22 @@ def run_direct_opt(
     delta_rot_6d = torch.zeros((N, 6), device=device, requires_grad=True)
     delta_scale = torch.zeros((N, 3), device=device, requires_grad=True)
     delta_base = torch.zeros((N, 3), device=device, requires_grad=True)
-    # Initialize existence logit so sigmoid(logit) = stored existence.
-    # (The stored tensor holds existence directly in [0,1], not a logit.)
-    exist_init = part_init[:, P_COL_EXISTENCE].clamp(1e-3, 1 - 1e-3).clone().detach()
-    opt_exist = torch.logit(exist_init).requires_grad_(True)
+    
+    # Initialize existence logits:
+    # If empty_start, begin from negative logit (soft transparent baseline) so gradients can sprout organs.
+    if empty_start:
+        opt_exist = torch.full((N,), -1.2, device=device, requires_grad=True)
+    else:
+        exist_init = part_init[:, P_COL_EXISTENCE].clamp(1e-3, 1 - 1e-3).clone().detach()
+        opt_exist = torch.logit(exist_init).requires_grad_(True)
 
     optimizer = torch.optim.AdamW([
         {"params": [delta_yaw], "lr": lr * 1.5},
         {"params": [delta_xy], "lr": lr * 1.0},
         {"params": [delta_rot_6d], "lr": lr * 0.8},
         {"params": [delta_scale], "lr": lr * 0.8},
-        {"params": [delta_base], "lr": lr * 0.4},
-        {"params": [opt_exist], "lr": lr * 0.6},
+        {"params": [delta_base], "lr": lr * 0.5},
+        {"params": [opt_exist], "lr": lr * (2.5 if empty_start else 0.8)},
     ], weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=steps, eta_min=1e-4)
 
@@ -142,10 +146,8 @@ def run_direct_opt(
     for s in range(steps):
         optimizer.zero_grad()
         rot_6d_out, scale_eval, bases_eval = _assemble()
-        # With empty_start we want a true zero baseline with a strong gradient,
-        # so use the raw existence value; otherwise keep it in [0,1] via sigmoid.
-        exist_eval = (opt_exist if empty_start else torch.sigmoid(opt_exist)).unsqueeze(-1)
-        # New layout: [Existence, OrganType, Base, Rot6D, Scale, Curv, Phyllo]
+        exist_eval = torch.sigmoid(opt_exist).unsqueeze(-1)
+        # Layout: [Existence, OrganType, Base, Rot6D, Scale, Curv, Phyllo]
         part_eval = torch.cat([
             exist_eval,
             part_init[:, P_COL_ORGAN_TYPE:P_COL_ORGAN_TYPE + 1],
@@ -158,7 +160,7 @@ def run_direct_opt(
             part_eval, template_organ_array=init_array, camera_height=5.0, elevation_deg=ELEVATION_DEG,
             device=device, focus_plant=True, use_kinematics_tree=False,
             fixed_camera_bounds=cam_bounds, return_depth=False, return_mask=True,
-            return_organ_masks=False, return_raw_depth=True, soft_existence=empty_start,
+            return_organ_masks=False, return_raw_depth=True, soft_existence=True,
         )
         rend = out["rgb"]
         pred_raw_depth = out["raw_depth"]
@@ -199,7 +201,7 @@ def run_direct_opt(
 
     with torch.no_grad():
         rot_6d_out, scale_eval, bases_eval = _assemble()
-        exist_eval = (opt_exist if empty_start else torch.sigmoid(opt_exist)).unsqueeze(-1)
+        exist_eval = torch.sigmoid(opt_exist).unsqueeze(-1)
         part_final = torch.cat([
             exist_eval,
             part_init[:, P_COL_ORGAN_TYPE:P_COL_ORGAN_TYPE + 1],
@@ -211,7 +213,7 @@ def run_direct_opt(
             part_final, template_organ_array=init_array, camera_height=5.0, elevation_deg=ELEVATION_DEG,
             device=device, focus_plant=True, use_kinematics_tree=False,
             fixed_camera_bounds=cam_bounds, return_depth=True, return_mask=False,
-            return_organ_masks=False, soft_existence=empty_start,
+            return_organ_masks=False, soft_existence=True,
         )
         rgb_np = out_final["rgb"].permute(1, 2, 0).cpu().numpy().clip(0, 1)
         depth_np = out_final["depth"].cpu().numpy()
@@ -224,13 +226,31 @@ def run_direct_opt(
 
 ELEVATION_DEG = 89.88  # matches Helios radiation camera
 
+def _resolve_xml_path(rel_or_abs: str) -> str:
+    if os.path.isabs(rel_or_abs) and os.path.exists(rel_or_abs):
+        return rel_or_abs
+    full_path = os.path.join(repo_root, rel_or_abs)
+    if os.path.exists(full_path):
+        return full_path
+    import re
+    m = re.search(r'dap0*(\d+)', rel_or_abs)
+    if m:
+        dap_num = int(m.group(1))
+        dap_cand = os.path.join(repo_root, "Digital-Crops/projects/syntheticdata_generation/build/output/exact_gt_renders", f"rad_dap{dap_num:03d}_0000_plant_0000.xml")
+        if os.path.exists(dap_cand):
+            return dap_cand
+    return full_path
+
+
 def _load_target_init_pair(renderer, device, tgt_rel, init_rel):
-    tgt_arr = PlantOrganArray.from_xml_file(os.path.join(repo_root, tgt_rel))
+    tgt_xml = _resolve_xml_path(tgt_rel)
+    init_xml = _resolve_xml_path(init_rel)
+
+    tgt_arr = PlantOrganArray.from_xml_file(tgt_xml)
     tgt_part = tgt_arr.to_part_tensor(device=device)
 
     # Load the original Helios C++ render for the target (seed00).
     helios_np = None
-    tgt_xml = os.path.join(repo_root, tgt_rel)
     tgt_prefix = os.path.basename(tgt_xml).replace("_plant_0000.xml", "")
     from PIL import Image
     for suffix in ("_rad.jpeg", "_vis.jpeg"):
@@ -258,7 +278,7 @@ def _load_target_init_pair(renderer, device, tgt_rel, init_rel):
         return_organ_masks=False, return_raw_depth=True,
     )
 
-    init_arr = PlantOrganArray.from_xml_file(os.path.join(repo_root, init_rel))
+    init_arr = PlantOrganArray.from_xml_file(init_xml)
     init_part = init_arr.to_part_tensor(device=device)
     init_rgb = renderer.render_part_tensor(
         init_part, template_organ_array=init_arr, camera_height=5.0, elevation_deg=ELEVATION_DEG,
@@ -280,26 +300,30 @@ def _load_target_init_pair(renderer, device, tgt_rel, init_rel):
 # Figures
 # -----------------------------------------------------------------------------
 
-def figure_3_direct_opt_multi_dap(pairs, renderer, device, assets_dir, steps=35):
-    print("Generating Figure 3: Direct Optimization Multi-DAP Panel...")
+def figure_3_direct_opt_multi_dap(pairs, renderer, device, assets_dir, steps=40):
+    print("Generating Figure 3: Direct Optimization Multi-DAP Panel (Zero-Existence Start)...")
     fig, axes = plt.subplots(3, 7, figsize=(22, 12))
     plt.subplots_adjust(wspace=0.12, hspace=0.28)
     metrics = {"dap": [], "init_ssim": [], "init_iou": [], "opt_ssim": [], "opt_iou": []}
 
     for row, spec in enumerate(pairs):
-        init_ssim = float(masked_ssim(_to_tensor(spec["init_np"], device), _to_tensor(spec["tgt_np"], device)).item())
-        init_iou = float(foreground_iou(_to_tensor(spec["init_np"], device), _to_tensor(spec["tgt_np"], device)).item())
-
-        init_depth = renderer.render_part_tensor_multimodal(
-            spec["init_arr"].to_part_tensor(device=device), template_organ_array=spec["init_arr"],
+        # Render zero-existence initial seed (all organ existence = 0.0)
+        zero_part = spec["init_arr"].to_part_tensor(device=device).clone()
+        zero_part[:, P_COL_EXISTENCE] = 0.0
+        zero_out = renderer.render_part_tensor_multimodal(
+            zero_part, template_organ_array=spec["init_arr"],
             camera_height=5.0, elevation_deg=ELEVATION_DEG, device=device, focus_plant=True, use_kinematics_tree=False,
-            fixed_camera_bounds=spec["cam_bounds"], return_depth=True, return_mask=False,
-            return_organ_masks=False,
-        )["depth"].cpu().numpy()
+            fixed_camera_bounds=spec["cam_bounds"], return_depth=True, return_mask=True,
+            return_organ_masks=False, return_raw_depth=False, soft_existence=True,
+        )
+        init_np = zero_out["rgb"].permute(1, 2, 0).cpu().numpy().clip(0, 1)
+        init_depth = zero_out["depth"].cpu().numpy()
+        init_ssim = float(masked_ssim(_to_tensor(init_np, device), _to_tensor(spec["tgt_np"], device)).item())
+        init_iou = float(foreground_iou(_to_tensor(init_np, device), _to_tensor(spec["tgt_np"], device)).item())
 
         opt_rgb, opt_depth, m = run_direct_opt(
             spec["init_arr"], spec["tgt_rgb"], spec["tgt_raw_depth"], spec["tgt_mask"],
-            spec["cam_bounds"], renderer, device, mode="rgb_depth", steps=steps, lr=0.04,
+            spec["cam_bounds"], renderer, device, mode="rgb_depth", steps=steps, lr=0.05, empty_start=True,
         )
 
         # Col 0: Original Helios C++ render
@@ -317,14 +341,14 @@ def figure_3_direct_opt_multi_dap(pairs, renderer, device, assets_dir, steps=35)
         axes[row, 2].imshow(_depth_colormap(spec["tgt_depth"].cpu().numpy()))
         axes[row, 2].set_title("Ground Truth Depth\n(closer = brighter)", fontsize=11, fontweight="bold")
         axes[row, 2].axis("off")
-        axes[row, 3].imshow(spec["init_np"])
-        axes[row, 3].set_title(f"Initial Template Seed\nmSSIM: {init_ssim:.3f} | IoU: {init_iou:.2f}", fontsize=11)
+        axes[row, 3].imshow(init_np)
+        axes[row, 3].set_title(f"Initial Zero-Existence Seed\nmSSIM: {init_ssim:.3f} | IoU: {init_iou:.2f}", fontsize=11)
         axes[row, 3].axis("off")
         axes[row, 4].imshow(_depth_colormap(init_depth))
-        axes[row, 4].set_title("Initial Seed Depth", fontsize=11)
+        axes[row, 4].set_title("Initial Zero-Existence Depth", fontsize=11)
         axes[row, 4].axis("off")
         axes[row, 5].imshow(opt_rgb)
-        axes[row, 5].set_title(f"16D RGB+Depth Opt\nmSSIM: {m['ssim']:.3f} | IoU: {m['iou']:.2f}", fontsize=11, color="navy", fontweight="bold")
+        axes[row, 5].set_title(f"16D RGB+Depth Opt (from Zero)\nmSSIM: {m['ssim']:.3f} | IoU: {m['iou']:.2f}", fontsize=11, color="navy", fontweight="bold")
         axes[row, 5].axis("off")
         axes[row, 6].imshow(_depth_colormap(opt_depth))
         axes[row, 6].set_title("Optimized Depth", fontsize=11, color="navy", fontweight="bold")
