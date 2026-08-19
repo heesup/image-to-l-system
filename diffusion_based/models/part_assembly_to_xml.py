@@ -94,6 +94,7 @@ class PartAssemblyToXMLConverter:
         peduncles = []
         flowers = []
         fruits = []
+        buds = []
 
         for idx in range(N):
             if not active_mask[idx]:
@@ -117,6 +118,8 @@ class PartAssemblyToXMLConverter:
                 flowers.append(idx)
             elif ot in (ORGAN_FRUIT, 8):
                 fruits.append(idx)
+            elif ot in (ORGAN_BUD, ORGAN_BUD_ABORTED):
+                buds.append(idx)
 
         # Batch 6D rotation conversion for speed
         r6_all = torch.from_numpy(p_np[:, P_COL_ROT_0:P_COL_ROT_5+1]).float()
@@ -248,6 +251,20 @@ class PartAssemblyToXMLConverter:
                 best_inode = internodes[i_local_idx]
                 phytomer_parts[best_inode]["peduncles"].append(pd_idx)
 
+        # Associate Buds to closest internode tip (bud base == internode tip)
+        bud_state_by_inode = {}
+        if buds:
+            inode_tips = np.array([part_info[i]["tip"] for i in internodes])
+            inode_tip_tree = cKDTree(inode_tips)
+            bud_bases = np.array([part_info[b]["base"] for b in buds])
+            _, nearest_bud_inodes = inode_tip_tree.query(bud_bases)
+            if not isinstance(nearest_bud_inodes, np.ndarray):
+                nearest_bud_inodes = [nearest_bud_inodes]
+            for b_idx, i_local_idx in zip(buds, nearest_bud_inodes):
+                best_inode = internodes[i_local_idx]
+                ot = part_info[b_idx]["ot"]
+                bud_state_by_inode[best_inode] = 5 if ot == ORGAN_BUD_ABORTED else 1
+
         # Associate Flowers & Fruits to closest peduncle tip
         peduncle_infls = {pd: [] for pd in peduncles}
         all_infls = flowers + fruits
@@ -374,7 +391,7 @@ class PartAssemblyToXMLConverter:
                                 elif any(ot == ORGAN_FLOWER for ot in infl_ots):
                                     bud_state = 3
                                 else:
-                                    bud_state = 1
+                                    bud_state = bud_state_by_inode.get(inode_idx, 1)
 
                                 lines.append('\t\t\t\t\t\t<floral_bud>')
                                 lines.append(f'\t\t\t\t\t\t\t<bud_state>{bud_state}</bud_state>')
@@ -408,9 +425,10 @@ class PartAssemblyToXMLConverter:
                                     lines.append('\t\t\t\t\t\t\t</inflorescence>')
                                 lines.append('\t\t\t\t\t\t</floral_bud>')
                         else:
-                            # Dormant floral bud
+                            # Dormant or aborted floral bud (no peduncle)
+                            bud_state = bud_state_by_inode.get(inode_idx, 1)
                             lines.append('\t\t\t\t\t\t<floral_bud>')
-                            lines.append('\t\t\t\t\t\t\t<bud_state>0</bud_state>')
+                            lines.append(f'\t\t\t\t\t\t\t<bud_state>{bud_state}</bud_state>')
                             lines.append('\t\t\t\t\t\t\t<parent_index>0</parent_index>')
                             lines.append('\t\t\t\t\t\t\t<bud_index>0</bud_index>')
                             lines.append('\t\t\t\t\t\t\t<is_terminal>0</is_terminal>')

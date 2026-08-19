@@ -19,7 +19,7 @@ if repo_root not in sys.path:
 from diffusion_based.models.plant_organ_array import (
     PlantOrganArray,
     ORGAN_ROOT_META, ORGAN_SHOOT_META, ORGAN_INTERNODE, ORGAN_PETIOLE,
-    ORGAN_LEAF, ORGAN_BUD, ORGAN_PEDUNCLE, ORGAN_FLOWER_OPEN, ORGAN_FRUIT, ORGAN_FLOWER_CLOSED,
+    ORGAN_LEAF, ORGAN_BUD, ORGAN_PEDUNCLE, ORGAN_FLOWER, ORGAN_FRUIT, ORGAN_FLOWER_CLOSED,
 )
 from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 
@@ -59,7 +59,7 @@ def load_plant(xml_path):
     full = os.path.join(repo_root, xml_path)
     if not os.path.exists(full):
         return None, None
-    arr = PlantOrganArray.from_xml_file_typed(full)
+    arr = PlantOrganArray.from_xml_file(full)
     p14 = arr.to_part_tensor(device=DEVICE)
     return arr, p14
 
