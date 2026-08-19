@@ -488,7 +488,7 @@ class HeliosPlantGeometryBuilder:
             self._infl_assets = {
                 'flower_open': self.asset_mgr.get_inflorescence_mesh('CowpeaFlower_open_yellow.obj', load_scale=0.0),
                 'flower_closed': self.asset_mgr.get_inflorescence_mesh('CowpeaFlower_closed_yellow.obj', load_scale=0.0),
-                'fruit': self.asset_mgr.get_inflorescence_mesh('CowpeaPod.obj', load_scale=0.75),
+                'fruit': self.asset_mgr.get_inflorescence_mesh('CowpeaPod.obj', load_scale=0.47),
             }
         return self._infl_assets
 

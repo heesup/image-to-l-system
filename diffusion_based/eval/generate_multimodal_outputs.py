@@ -4,6 +4,7 @@ Produces fig8_multimodal_depth_mask.png for the benchmark report.
 """
 import os
 import sys
+import json
 import numpy as np
 import torch
 import matplotlib
@@ -11,7 +12,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap
-from PIL import Image
+from PIL import Image, ImageDraw
 
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
@@ -32,17 +33,32 @@ IMG_SIZE = 256
 ASSETS_DIR = os.path.join(repo_root, "docs", "results", "assets")
 os.makedirs(ASSETS_DIR, exist_ok=True)
 
+EXACT_GT_DIR = os.path.join(repo_root, "Digital-Crops", "projects", "syntheticdata_generation", "build", "output", "exact_gt_renders")
+
 PLANTS = [
     ("DAP 10\n(Seedling)",
      "dataset/helios_data/cowpea_dap010_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml",
-     os.path.join(repo_root, "Digital-Crops", "projects", "syntheticdata_generation", "build", "output", "dap10_gt_0000_vis.jpeg")),
+     os.path.join(EXACT_GT_DIR, "exact_dap010_0000_vis.jpeg"),
+     os.path.join(EXACT_GT_DIR, "rad_dap010_0000_masks.json")),
     ("DAP 50\n(Branching)",
      "dataset/helios_data/cowpea_dap050_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml",
-     os.path.join(repo_root, "Digital-Crops", "projects", "syntheticdata_generation", "build", "output", "dap50_gt_0000_vis.jpeg")),
+     os.path.join(EXACT_GT_DIR, "exact_dap050_0000_vis.jpeg"),
+     os.path.join(EXACT_GT_DIR, "rad_dap050_0000_masks.json")),
     ("DAP 90\n(Mature)",
      "dataset/helios_data/cowpea_dap090_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml",
-     os.path.join(repo_root, "Digital-Crops", "projects", "syntheticdata_generation", "build", "output", "dap100_gt_0000_vis.jpeg")),
+     os.path.join(EXACT_GT_DIR, "exact_dap090_0000_vis.jpeg"),
+     os.path.join(EXACT_GT_DIR, "rad_dap090_0000_masks.json")),
 ]
+
+# Helios COCO organ category -> display color
+HELIOS_CAT_COLORS = {
+    0: (0.55, 0.27, 0.07),   # internode
+    1: (0.42, 0.56, 0.14),   # petiole
+    2: (0.13, 0.56, 0.13),   # leaf
+    3: (0.74, 0.72, 0.42),   # floral_bud
+    4: (1.00, 0.84, 0.00),   # flower
+    5: (0.85, 0.65, 0.13),   # pod
+}
 
 # Organ type → display color & label
 # NOTE: render_multimodal() keys organ_masks by the MESH organ-type convention
@@ -89,25 +105,57 @@ def depth_colormap(depth_tensor):
     rgb[d == 0] = 0  # black background where no plant
     return rgb
 
+def helios_organ_map(masks_path, H, W):
+    """Rasterize Helios COCO polygon masks into a single organ-type color image.
+
+    The COCO polygon coordinates are given in the *original* image resolution
+    (e.g. 720x720). We must scale them down to the target (H, W) canvas, otherwise
+    the polygons exceed the small canvas bounds and get clipped.
+    """
+    data = json.load(open(masks_path))
+    src_w = int(data["images"][0].get("width", 720))
+    src_h = int(data["images"][0].get("height", 720))
+    sx = W / src_w
+    sy = H / src_h
+    cat_masks = {cat["id"]: np.zeros((H, W), dtype=np.uint8) for cat in data["categories"]}
+    for ann in data["annotations"]:
+        cat = ann["category_id"]
+        seg = ann["segmentation"]
+        if not isinstance(seg, list):
+            continue
+        canvas = Image.new("L", (W, H), 0)
+        draw = ImageDraw.Draw(canvas)
+        for poly in seg:
+            pts = []
+            for i in range(0, len(poly), 2):
+                pts.append((poly[i] * sx, poly[i + 1] * sy))
+            if len(pts) >= 3:
+                draw.polygon(pts, fill=1)
+        cat_masks[cat] = np.maximum(cat_masks[cat], np.array(canvas))
+    rgb = np.ones((H, W, 3), dtype=np.float32)  # white background
+    for cat_id, color in HELIOS_CAT_COLORS.items():
+        rgb[cat_masks[cat_id] > 0] = color
+    return rgb
+
 # -----------------------------------------------------------------------
 # Figure 8: Multi-Modal Output Visualization
 # -----------------------------------------------------------------------
 print("Generating Figure 8: Multi-Modal Render Outputs (RGB / Depth / Mask / Organ Map)...")
 
 n_rows = len(PLANTS)
-n_cols = 5  # Helios GT | RGB | Depth | FG Mask | Organ Type
+n_cols = 6  # Helios GT | Helios Organ Map | RGB | Depth | FG Mask | Organ Type
 
-fig, axes = plt.subplots(n_rows, n_cols, figsize=(22, 5 * n_rows))
+fig, axes = plt.subplots(n_rows, n_cols, figsize=(26, 5 * n_rows))
 fig.patch.set_facecolor("#1a1a2e")
 plt.subplots_adjust(wspace=0.05, hspace=0.18)
 
-col_titles = ["Helios C++\nGT Render", "RGB Render", "Depth Map\n(closer = brighter)", "Foreground Mask", "Organ-Type Map"]
-col_colors = ["#ff9999", "#e0e0e0", "#c3a6e0", "#88d8c0", "#f7c59f"]
+col_titles = ["Helios C++\nGT Render", "Helios C++\nOrgan-Type Map", "RGB Render", "Depth Map\n(closer = brighter)", "Foreground Mask", "16D Organ-Type Map"]
+col_colors = ["#ff9999", "#ff9999", "#e0e0e0", "#c3a6e0", "#88d8c0", "#f7c59f"]
 
 for col, (title, color) in enumerate(zip(col_titles, col_colors)):
     axes[0, col].set_title(title, fontsize=13, fontweight="bold", color=color, pad=8)
 
-for row, (label, xml_path, helios_path) in enumerate(PLANTS):
+for row, (label, xml_path, helios_path, helios_masks_path) in enumerate(PLANTS):
     arr, p14 = load_plant(xml_path)
     ax_row = axes[row]
 
@@ -115,7 +163,6 @@ for row, (label, xml_path, helios_path) in enumerate(PLANTS):
     ax = ax_row[0]
     if os.path.exists(helios_path):
         helios_img = np.array(Image.open(helios_path).convert("RGB")) / 255.0
-        # Crop/pad to square center if needed
         h, w = helios_img.shape[:2]
         if h != w:
             min_dim = min(h, w)
@@ -133,6 +180,16 @@ for row, (label, xml_path, helios_path) in enumerate(PLANTS):
     ax.set_ylabel(label, fontsize=12, color="#e0e0e0", rotation=0,
                   labelpad=65, va='center', fontweight='bold')
 
+    # --- Col 1: Helios C++ radiation organ-type map ---
+    ax = ax_row[1]
+    if os.path.exists(helios_masks_path):
+        helios_organ = helios_organ_map(helios_masks_path, IMG_SIZE, IMG_SIZE)
+        ax.imshow(helios_organ)
+    else:
+        ax.text(0.5, 0.5, "No Helios masks", ha='center', va='center', color='red', fontsize=10, transform=ax.transAxes)
+    ax.set_facecolor("#0d0d1a")
+    ax.axis("off")
+
     if arr is None or p14 is None:
         for ax in ax_row:
             ax.text(0.5, 0.5, "File not found", ha='center', va='center',
@@ -148,7 +205,7 @@ for row, (label, xml_path, helios_path) in enumerate(PLANTS):
         p14,
         template_organ_array=arr,
         azimuth_deg=0.0,
-        elevation_deg=90.0,
+        elevation_deg=89.88,
         camera_height=5.0,
         device=DEVICE,
         return_depth=True,
@@ -168,8 +225,8 @@ for row, (label, xml_path, helios_path) in enumerate(PLANTS):
     d_min     = float(depth_raw[depth_raw > 0].min()) if (depth_raw > 0).any() else 0
     d_max     = float(depth_raw.max())
 
-    # --- Col 1: RGB ---
-    ax = ax_row[1]
+    # --- Col 2: RGB ---
+    ax = ax_row[2]
     ax.imshow(rgb_np)
     ax.set_facecolor("#0d0d1a")
     ax.axis("off")
@@ -178,8 +235,8 @@ for row, (label, xml_path, helios_path) in enumerate(PLANTS):
             fontsize=9, color='white', va='bottom',
             bbox=dict(boxstyle='round,pad=0.2', facecolor='black', alpha=0.6))
 
-    # --- Col 2: Depth ---
-    ax = ax_row[2]
+    # --- Col 3: Depth ---
+    ax = ax_row[3]
     ax.imshow(depth_np)
     ax.set_facecolor("#0d0d1a")
     ax.axis("off")
@@ -187,8 +244,8 @@ for row, (label, xml_path, helios_path) in enumerate(PLANTS):
             fontsize=9, color='#c3a6e0', va='bottom',
             bbox=dict(boxstyle='round,pad=0.2', facecolor='black', alpha=0.6))
 
-    # --- Col 3: Foreground Mask ---
-    ax = ax_row[3]
+    # --- Col 4: Foreground Mask ---
+    ax = ax_row[4]
     mask_display = np.stack([mask_np * 0.4, mask_np * 0.9, mask_np * 0.6], axis=-1)
     ax.imshow(mask_display)
     ax.set_facecolor("#0d0d1a")
@@ -197,8 +254,8 @@ for row, (label, xml_path, helios_path) in enumerate(PLANTS):
             fontsize=9, color='#88d8c0', va='bottom',
             bbox=dict(boxstyle='round,pad=0.2', facecolor='black', alpha=0.6))
 
-    # --- Col 4: Organ-Type Map ---
-    ax = ax_row[4]
+    # --- Col 5: 16D Organ-Type Map ---
+    ax = ax_row[5]
     ax.imshow(organ_np)
     ax.set_facecolor("#0d0d1a")
     ax.axis("off")
