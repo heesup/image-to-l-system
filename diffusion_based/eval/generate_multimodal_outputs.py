@@ -38,15 +38,15 @@ EXACT_GT_DIR = os.path.join(repo_root, "Digital-Crops", "projects", "syntheticda
 PLANTS = [
     ("DAP 10\n(Seedling)",
      "dataset/helios_data/cowpea_dap010_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml",
-     os.path.join(EXACT_GT_DIR, "exact_dap010_0000_vis.jpeg"),
+     os.path.join(EXACT_GT_DIR, "rad_dap010_0000_rad.jpeg"),
      os.path.join(EXACT_GT_DIR, "rad_dap010_0000_masks.json")),
     ("DAP 50\n(Branching)",
      "dataset/helios_data/cowpea_dap050_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml",
-     os.path.join(EXACT_GT_DIR, "exact_dap050_0000_vis.jpeg"),
+     os.path.join(EXACT_GT_DIR, "rad_dap050_0000_rad.jpeg"),
      os.path.join(EXACT_GT_DIR, "rad_dap050_0000_masks.json")),
     ("DAP 90\n(Mature)",
      "dataset/helios_data/cowpea_dap090_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml",
-     os.path.join(EXACT_GT_DIR, "exact_dap090_0000_vis.jpeg"),
+     os.path.join(EXACT_GT_DIR, "rad_dap090_0000_rad.jpeg"),
      os.path.join(EXACT_GT_DIR, "rad_dap090_0000_masks.json")),
 ]
 
@@ -149,7 +149,7 @@ fig, axes = plt.subplots(n_rows, n_cols, figsize=(26, 5 * n_rows))
 fig.patch.set_facecolor("#1a1a2e")
 plt.subplots_adjust(wspace=0.05, hspace=0.18)
 
-col_titles = ["Helios C++\nGT Render", "Helios C++\nOrgan-Type Map", "RGB Render", "Depth Map\n(closer = brighter)", "Foreground Mask", "16D Organ-Type Map"]
+col_titles = ["Helios C++\nRadiation Render", "Helios C++\nOrgan-Type Map", "RGB Render", "Depth Map\n(closer = brighter)", "Foreground Mask", "16D Organ-Type Map"]
 col_colors = ["#ff9999", "#ff9999", "#e0e0e0", "#c3a6e0", "#88d8c0", "#f7c59f"]
 
 for col, (title, color) in enumerate(zip(col_titles, col_colors)):

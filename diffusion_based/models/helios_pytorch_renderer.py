@@ -56,16 +56,6 @@ def compute_focus_plant_camera(
     az_rad = math.radians(azimuth_deg)
     el_rad = math.radians(elevation_deg)
 
-    if hfov_override_deg is not None:
-        hfov_rad = math.radians(hfov_override_deg)
-    elif focus_plant:
-        # Auto-fit FOV to plant bounding box + 5% margin matching Helios main.cpp line 1569
-        half_span = max_span * 0.5
-        hfov_rad = 2.0 * math.atan(half_span / max(camera_height, 1e-3))
-    else:
-        # Default fixed HFOV (45 deg)
-        hfov_rad = math.radians(45.0)
-
     dist = camera_height / max(math.sin(el_rad), 1e-3)
 
     if focus_plant:
@@ -104,6 +94,48 @@ def compute_focus_plant_camera(
     view_mat = torch.eye(4, device=device, dtype=torch.float32)
     view_mat[:3, :3] = R_view
     view_mat[:3, 3] = t_view
+
+    # --- Focus-plant FOV fitting the FULL 3D bounding box ---
+    # The old logic used only the XY span, which crops tall plants (e.g. DAP 90)
+    # at near-top-down elevation. To keep the whole plant in frame we project the
+    # 3D bbox corners into camera space and fit HFOV *and* VFOV to their extent.
+    if hfov_override_deg is not None:
+        hfov_rad = math.radians(hfov_override_deg)
+    elif focus_plant and verts.shape[0] > 0:
+        Rv = view_mat[:3, :3].to(device)
+        tv = view_mat[:3, 3].to(device)
+        corners = torch.tensor(
+            [
+                [bb_min_x, bb_min_y, bb_min_z], [bb_max_x, bb_min_y, bb_min_z],
+                [bb_min_x, bb_max_y, bb_min_z], [bb_max_x, bb_max_y, bb_min_z],
+                [bb_min_x, bb_min_y, bb_max_z], [bb_max_x, bb_min_y, bb_max_z],
+                [bb_min_x, bb_max_y, bb_max_z], [bb_max_x, bb_max_y, bb_max_z],
+            ],
+            device=device, dtype=torch.float32,
+        )
+        # Camera-space coords: x right, y up, -z forward.
+        cam_corners = corners @ Rv.t() + tv
+        # Perspective divide: view x / (-z), view y / (-z). Use a small epsilon.
+        zneg = (-cam_corners[:, 2]).clamp(min=1e-4)
+        vx = cam_corners[:, 0] / zneg
+        vy = cam_corners[:, 1] / zneg
+        # 5% margin on the projected extent.
+        ext_x = (vx.max() - vx.min()) * 1.05
+        ext_y = (vy.max() - vy.min()) * 1.05
+        ext_x = max(ext_x, 1e-4)
+        ext_y = max(ext_y, 1e-4)
+        hfov_rad = 2.0 * math.atan(0.5 * ext_x)
+        vfov_rad = 2.0 * math.atan(0.5 * ext_y)
+        # Use the larger FOV (per axis) so the whole plant fits.
+        if vfov_rad > hfov_rad * aspect_ratio:
+            hfov_rad = vfov_rad / aspect_ratio
+    elif focus_plant:
+        # Fallback: XY-span FOV (matches Helios main.cpp line 1569)
+        half_span = max_span * 0.5
+        hfov_rad = 2.0 * math.atan(half_span / max(camera_height, 1e-3))
+    else:
+        # Default fixed HFOV (45 deg)
+        hfov_rad = math.radians(45.0)
 
     tan_half_fov = math.tan(hfov_rad / 2.0)
     f_x = 1.0 / tan_half_fov
