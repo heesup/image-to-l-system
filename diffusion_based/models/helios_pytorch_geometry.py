@@ -492,39 +492,50 @@ class HeliosPlantGeometryBuilder:
             }
         return self._infl_assets
 
+    def _build_peduncle_has_flower(self, p: torch.Tensor) -> torch.Tensor:
+        """Use the part-tensor record order to decide which peduncles carry flowers/fruits.
+
+        In the original XML/parser order, a phytomer is stored as
+        internode -> petiole(s) -> bud -> peduncle -> flower/fruit(s).  Therefore,
+        every flower/fruit row immediately following a peduncle row belongs to that
+        peduncle.  This is far more reliable than straight-line tip-distance checks,
+        because the parser places flowers along the *curved* peduncle line.
+        """
+        N = p.shape[0]
+        ped_has_flower = torch.zeros(N, dtype=torch.bool, device=p.device)
+        last_ped_idx = -1
+        for i in range(N):
+            ot = int(p[i, P_COL_ORGAN_TYPE].item())
+            if ot == ORGAN_PEDUNCLE:
+                last_ped_idx = i
+            elif ot in (ORGAN_FLOWER, ORGAN_FRUIT, ORGAN_FLOWER_CLOSED) and last_ped_idx >= 0:
+                ped_has_flower[last_ped_idx] = True
+            elif ot == ORGAN_INTERNODE:
+                last_ped_idx = -1
+        return ped_has_flower
+
     def _is_dormant_peduncle(
         self,
         ped_idx: int,
         p: torch.Tensor,
-        N: int,
+        ped_has_flower: torch.Tensor,
         device: torch.device,
-        dist_tol: float = 1e-4,
     ) -> bool:
         """Return True if this peduncle serves a dormant/aborted bud with no flower/fruit."""
+        # If the peduncle has associated flowers/fruits it must be rendered.
+        if ped_has_flower[ped_idx].item():
+            return False
+
+        # Otherwise it is dormant/aborted only if there is a (dormant/aborted) bud
+        # at its base.
         base = p[ped_idx, P_COL_BASE_X:P_COL_BASE_Z + 1]
-        # tip of peduncle
-        r6 = p[ped_idx, P_COL_ROT_0:P_COL_ROT_5 + 1]
-        R = rotation_6d_to_matrix(r6)
-        tip = base + R @ torch.tensor([0.0, 0.0, p[ped_idx, P_COL_SCALE_Z]], device=device)
-
-        # Check for flower/fruit near the peduncle tip.
-        for j in range(N):
-            if j == ped_idx:
-                continue
-            ot = int(p[j, P_COL_ORGAN_TYPE].item())
-            if ot in (ORGAN_FLOWER, ORGAN_FRUIT, ORGAN_FLOWER_CLOSED):
-                fl_base = p[j, P_COL_BASE_X:P_COL_BASE_Z + 1]
-                if torch.norm(fl_base - tip).item() < dist_tol:
-                    return False
-
-        # Check for a dormant or aborted bud at the peduncle base.
-        for j in range(N):
+        for j in range(p.shape[0]):
             if j == ped_idx:
                 continue
             ot = int(p[j, P_COL_ORGAN_TYPE].item())
             if ot in (ORGAN_BUD, ORGAN_BUD_ABORTED):
                 bud_base = p[j, P_COL_BASE_X:P_COL_BASE_Z + 1]
-                if torch.norm(bud_base - base).item() < dist_tol:
+                if torch.norm(bud_base - base).item() < 1e-4:
                     return True
         return False
 
@@ -556,22 +567,28 @@ class HeliosPlantGeometryBuilder:
         vert_offset = 0
 
         infl_assets = self._get_inflorescence_assets()
+        ped_has_flower = self._build_peduncle_has_flower(p)
 
         for idx in range(N):
-            exist = p[idx, P_COL_EXISTENCE].item()
-            if exist < existence_threshold:
+            exist_tensor = p[idx, P_COL_EXISTENCE]
+            # Soft existence weight: keeps the operation differentiable while still
+            # suppressing organs whose existence value is below the threshold.
+            exist_weight = torch.sigmoid((exist_tensor - existence_threshold) * 20.0)
+            if exist_weight.item() < 1e-4:
                 continue
 
             otype = int(p[idx, P_COL_ORGAN_TYPE].item())
             base = p[idx, P_COL_BASE_X:P_COL_BASE_Z+1]
             r6 = p[idx, P_COL_ROT_0:P_COL_ROT_5+1]
             R = rotation_6d_to_matrix(r6)
-            sx = p[idx, P_COL_SCALE_X]
-            sy = p[idx, P_COL_SCALE_Y]
-            sz = p[idx, P_COL_SCALE_Z]
+            sx = p[idx, P_COL_SCALE_X] * exist_weight
+            sy = p[idx, P_COL_SCALE_Y] * exist_weight
+            sz = p[idx, P_COL_SCALE_Z] * exist_weight
 
             if otype == ORGAN_LEAF:
                 lf_scale = sx * self.leaf_scale_factor
+                if lf_scale <= 1e-6:
+                    continue
                 try:
                     v_raw, f_lf_b, n_tmpl = self.asset_mgr.get_mesh_with_normals("CowpeaLeaf_unifoliate.obj", device)
                 except FileNotFoundError:
@@ -598,7 +615,7 @@ class HeliosPlantGeometryBuilder:
                 # Skip rendering peduncles that belong to dormant/aborted buds
                 # and carry no flower/fruit, matching the Helios C++ visualizer.
                 if otype == ORGAN_PEDUNCLE:
-                    if self._is_dormant_peduncle(idx, p, N, device):
+                    if self._is_dormant_peduncle(idx, p, ped_has_flower, device):
                         continue
 
                 if otype == ORGAN_INTERNODE:
@@ -629,6 +646,8 @@ class HeliosPlantGeometryBuilder:
 
             elif otype in (ORGAN_FLOWER, ORGAN_FRUIT, ORGAN_FLOWER_CLOSED):
                 scale_factor = sx
+                if scale_factor <= 1e-6:
+                    continue
                 if otype == ORGAN_FRUIT:
                     asset_name = 'fruit'
                     obj_color = self.COLOR_FRUIT

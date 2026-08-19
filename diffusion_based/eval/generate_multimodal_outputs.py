@@ -11,6 +11,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap
+from PIL import Image
 
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
@@ -33,11 +34,14 @@ os.makedirs(ASSETS_DIR, exist_ok=True)
 
 PLANTS = [
     ("DAP 10\n(Seedling)",
-     "dataset/helios_data/cowpea_dap010_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml"),
+     "dataset/helios_data/cowpea_dap010_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml",
+     os.path.join(repo_root, "Digital-Crops", "projects", "syntheticdata_generation", "build", "output", "dap10_gt_0000_vis.jpeg")),
     ("DAP 50\n(Branching)",
-     "dataset/helios_data/cowpea_dap050_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml"),
+     "dataset/helios_data/cowpea_dap050_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml",
+     os.path.join(repo_root, "Digital-Crops", "projects", "syntheticdata_generation", "build", "output", "dap50_gt_0000_vis.jpeg")),
     ("DAP 90\n(Mature)",
-     "dataset/helios_data/cowpea_dap090_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml"),
+     "dataset/helios_data/cowpea_dap090_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml",
+     os.path.join(repo_root, "Digital-Crops", "projects", "syntheticdata_generation", "build", "output", "dap100_gt_0000_vis.jpeg")),
 ]
 
 # Organ type → display color & label
@@ -91,21 +95,43 @@ def depth_colormap(depth_tensor):
 print("Generating Figure 8: Multi-Modal Render Outputs (RGB / Depth / Mask / Organ Map)...")
 
 n_rows = len(PLANTS)
-n_cols = 4  # RGB | Depth | FG Mask | Organ Type
+n_cols = 5  # Helios GT | RGB | Depth | FG Mask | Organ Type
 
-fig, axes = plt.subplots(n_rows, n_cols, figsize=(18, 5 * n_rows))
+fig, axes = plt.subplots(n_rows, n_cols, figsize=(22, 5 * n_rows))
 fig.patch.set_facecolor("#1a1a2e")
 plt.subplots_adjust(wspace=0.05, hspace=0.18)
 
-col_titles = ["RGB Render", "Depth Map\n(closer = brighter)", "Foreground Mask", "Organ-Type Map"]
-col_colors = ["#e0e0e0", "#c3a6e0", "#88d8c0", "#f7c59f"]
+col_titles = ["Helios C++\nGT Render", "RGB Render", "Depth Map\n(closer = brighter)", "Foreground Mask", "Organ-Type Map"]
+col_colors = ["#ff9999", "#e0e0e0", "#c3a6e0", "#88d8c0", "#f7c59f"]
 
 for col, (title, color) in enumerate(zip(col_titles, col_colors)):
     axes[0, col].set_title(title, fontsize=13, fontweight="bold", color=color, pad=8)
 
-for row, (label, xml_path) in enumerate(PLANTS):
+for row, (label, xml_path, helios_path) in enumerate(PLANTS):
     arr, p14 = load_plant(xml_path)
     ax_row = axes[row]
+
+    # --- Col 0: Helios C++ GT ---
+    ax = ax_row[0]
+    if os.path.exists(helios_path):
+        helios_img = np.array(Image.open(helios_path).convert("RGB")) / 255.0
+        # Crop/pad to square center if needed
+        h, w = helios_img.shape[:2]
+        if h != w:
+            min_dim = min(h, w)
+            y0 = (h - min_dim) // 2
+            x0 = (w - min_dim) // 2
+            helios_img = helios_img[y0:y0+min_dim, x0:x0+min_dim]
+        if helios_img.shape[0] != IMG_SIZE:
+            from PIL import Image as PILImage
+            helios_img = np.array(PILImage.fromarray((helios_img * 255).astype(np.uint8)).resize((IMG_SIZE, IMG_SIZE), Image.LANCZOS)) / 255.0
+        ax.imshow(helios_img)
+    else:
+        ax.text(0.5, 0.5, "No Helios GT", ha='center', va='center', color='red', fontsize=10, transform=ax.transAxes)
+    ax.set_facecolor("#0d0d1a")
+    ax.axis("off")
+    ax.set_ylabel(label, fontsize=12, color="#e0e0e0", rotation=0,
+                  labelpad=65, va='center', fontweight='bold')
 
     if arr is None or p14 is None:
         for ax in ax_row:
@@ -142,20 +168,18 @@ for row, (label, xml_path) in enumerate(PLANTS):
     d_min     = float(depth_raw[depth_raw > 0].min()) if (depth_raw > 0).any() else 0
     d_max     = float(depth_raw.max())
 
-    # --- Col 0: RGB ---
-    ax = ax_row[0]
+    # --- Col 1: RGB ---
+    ax = ax_row[1]
     ax.imshow(rgb_np)
     ax.set_facecolor("#0d0d1a")
     ax.axis("off")
-    ax.set_ylabel(label, fontsize=12, color="#e0e0e0", rotation=0,
-                  labelpad=65, va='center', fontweight='bold')
     organ_count = p14.shape[0]
     ax.text(0.02, 0.02, f"N={organ_count} organs", transform=ax.transAxes,
             fontsize=9, color='white', va='bottom',
             bbox=dict(boxstyle='round,pad=0.2', facecolor='black', alpha=0.6))
 
-    # --- Col 1: Depth ---
-    ax = ax_row[1]
+    # --- Col 2: Depth ---
+    ax = ax_row[2]
     ax.imshow(depth_np)
     ax.set_facecolor("#0d0d1a")
     ax.axis("off")
@@ -163,8 +187,8 @@ for row, (label, xml_path) in enumerate(PLANTS):
             fontsize=9, color='#c3a6e0', va='bottom',
             bbox=dict(boxstyle='round,pad=0.2', facecolor='black', alpha=0.6))
 
-    # --- Col 2: Foreground Mask ---
-    ax = ax_row[2]
+    # --- Col 3: Foreground Mask ---
+    ax = ax_row[3]
     mask_display = np.stack([mask_np * 0.4, mask_np * 0.9, mask_np * 0.6], axis=-1)
     ax.imshow(mask_display)
     ax.set_facecolor("#0d0d1a")
@@ -173,8 +197,8 @@ for row, (label, xml_path) in enumerate(PLANTS):
             fontsize=9, color='#88d8c0', va='bottom',
             bbox=dict(boxstyle='round,pad=0.2', facecolor='black', alpha=0.6))
 
-    # --- Col 3: Organ-Type Map ---
-    ax = ax_row[3]
+    # --- Col 4: Organ-Type Map ---
+    ax = ax_row[4]
     ax.imshow(organ_np)
     ax.set_facecolor("#0d0d1a")
     ax.axis("off")
