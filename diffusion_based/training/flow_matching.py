@@ -56,7 +56,7 @@ class FlowMatchingScheduler:
         model: nn.Module,
         images: torch.Tensor,
         num_steps: int = 50,
-        node_dim: int = 17,
+        node_dim: int = 16,
         max_nodes: int = 2048,
         device: torch.device = None,
         x0: Optional[torch.Tensor] = None,

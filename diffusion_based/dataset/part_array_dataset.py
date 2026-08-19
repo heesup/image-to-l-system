@@ -3,17 +3,16 @@ Dataset for paired (rendered image, part-centric PlantOrganArray tensor) samples
 
 The part tensor layout (per organ):
     [OrganType(0), Base(1..3), Rot6D(4..9), Scale(10..12), Existence(13),
-     BudState(14), Curvature(15), PhyllotacticAngle(16)]
+     Curvature(14), PhyllotacticAngle(15)]
 
 Normalization (fixed, hand-tuned to unit-ish scale for flow matching):
-    - organ type (col 0):  / 9.0  -> [0, 1]  (categorical, rounded at inference)
+    - organ type (col 0):  / 10.0 -> [0, 1]  (categorical, rounded at inference)
     - base (cols 1..3):    * 100.0 -> ~[-1, 1] (world coords are ~cm scale)
     - rot6d (cols 4..9):   unchanged (already [-1, 1])
     - scale (cols 10..12): unchanged (already [0, 1])
     - existence (col 13):  unchanged (already [0, 1])
-    - bud_state (col 14):  / 5.0   -> [0, 1]
-    - curvature (col 15):  / 100.0 -> ~[-1, 1] (degrees)
-    - phyllotactic (col 16): / 180.0 -> ~[0, 1] (degrees)
+    - curvature (col 14):  / 100.0 -> ~[-1, 1] (degrees)
+    - phyllotactic (col 15): / 180.0 -> ~[0, 1] (degrees)
 """
 
 import os
@@ -31,16 +30,14 @@ from diffusion_based.models.plant_organ_array import (
     P_COL_BASE_X,
     P_COL_BASE_Z,
     P_COL_EXISTENCE,
-    P_COL_BUD_STATE,
     P_COL_CURVATURE,
     P_COL_PHYLLOTACTIC_ANGLE,
     NUM_FEATURES,
 )
 
 # Fixed normalization constants (see module docstring)
-ORGAN_TYPE_SCALE = 9.0
+ORGAN_TYPE_SCALE = 10.0
 BASE_SCALE = 100.0
-BUD_STATE_SCALE = 5.0
 CURVATURE_SCALE = 100.0
 PHYLLOTACTIC_SCALE = 180.0
 
@@ -99,7 +96,6 @@ class PartArrayDataset(Dataset):
         out = p14.clone()
         out[:, P_COL_ORGAN_TYPE] = out[:, P_COL_ORGAN_TYPE] / ORGAN_TYPE_SCALE
         out[:, P_COL_BASE_X:P_COL_BASE_Z + 1] = out[:, P_COL_BASE_X:P_COL_BASE_Z + 1] * BASE_SCALE
-        out[:, P_COL_BUD_STATE] = out[:, P_COL_BUD_STATE] / BUD_STATE_SCALE
         out[:, P_COL_CURVATURE] = out[:, P_COL_CURVATURE] / CURVATURE_SCALE
         out[:, P_COL_PHYLLOTACTIC_ANGLE] = out[:, P_COL_PHYLLOTACTIC_ANGLE] / PHYLLOTACTIC_SCALE
         return out
@@ -109,7 +105,6 @@ class PartArrayDataset(Dataset):
         out = p14.clone()
         out[:, P_COL_ORGAN_TYPE] = out[:, P_COL_ORGAN_TYPE] * ORGAN_TYPE_SCALE
         out[:, P_COL_BASE_X:P_COL_BASE_Z + 1] = out[:, P_COL_BASE_X:P_COL_BASE_Z + 1] / BASE_SCALE
-        out[:, P_COL_BUD_STATE] = out[:, P_COL_BUD_STATE] * BUD_STATE_SCALE
         out[:, P_COL_CURVATURE] = out[:, P_COL_CURVATURE] * CURVATURE_SCALE
         out[:, P_COL_PHYLLOTACTIC_ANGLE] = out[:, P_COL_PHYLLOTACTIC_ANGLE] * PHYLLOTACTIC_SCALE
         return out

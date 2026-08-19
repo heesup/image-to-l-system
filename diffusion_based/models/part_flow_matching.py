@@ -29,7 +29,7 @@ class PartFlowMatchingModel(nn.Module):
     def __init__(
         self,
         max_nodes: int = 2048,
-        node_dim: int = 17,
+        node_dim: int = 16,
         image_size: int = 128,
         patch_size: int = 8,
         embed_dim: int = 256,

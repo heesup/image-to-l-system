@@ -28,7 +28,6 @@ from diffusion_based.models.plant_organ_array import (
     P_COL_SCALE_Y,
     P_COL_SCALE_Z,
     P_COL_EXISTENCE,
-    P_COL_BUD_STATE,
     P_COL_CURVATURE,
     P_COL_PHYLLOTACTIC_ANGLE,
     ORGAN_ROOT_META,
@@ -36,9 +35,11 @@ from diffusion_based.models.plant_organ_array import (
     ORGAN_LEAF,
     ORGAN_PETIOLE,
     ORGAN_BUD,
+    ORGAN_BUD_ABORTED,
     ORGAN_INTERNODE,
     ORGAN_PEDUNCLE,
     ORGAN_FLOWER,
+    ORGAN_FLOWER_CLOSED,
     ORGAN_FRUIT,
     rotation_6d_to_matrix,
 )
@@ -112,6 +113,8 @@ class PartAssemblyToXMLConverter:
                 peduncles.append(idx)
             elif ot == ORGAN_FLOWER:
                 flowers.append(idx)
+            elif ot == ORGAN_FLOWER_CLOSED:
+                flowers.append(idx)
             elif ot in (ORGAN_FRUIT, 8):
                 fruits.append(idx)
 
@@ -137,7 +140,6 @@ class PartAssemblyToXMLConverter:
                 "sx": sx,
                 "sy": sy,
                 "sz": sz,
-                "bud_state": int(round(p_np[idx, P_COL_BUD_STATE])),
                 "curvature": float(p_np[idx, P_COL_CURVATURE]),
                 "phyllotactic_angle": float(p_np[idx, P_COL_PHYLLOTACTIC_ANGLE]),
             }
@@ -363,12 +365,16 @@ class PartAssemblyToXMLConverter:
                             for pd_idx in peds:
                                 pd_info = part_info[pd_idx]
                                 infls = peduncle_infls.get(pd_idx, [])
-                                is_fruit = any(part_info[fl]["ot"] in (ORGAN_FRUIT, 8) for fl in infls)
-                                stored_state = pd_info["bud_state"]
-                                if stored_state in (2, 3, 4):
-                                    bud_state = stored_state
+                                # Derive bud_state from associated inflorescence organ types
+                                infl_ots = [part_info[fl]["ot"] for fl in infls]
+                                if any(ot in (ORGAN_FRUIT, 8) for ot in infl_ots):
+                                    bud_state = 4
+                                elif any(ot == ORGAN_FLOWER_CLOSED for ot in infl_ots):
+                                    bud_state = 2
+                                elif any(ot == ORGAN_FLOWER for ot in infl_ots):
+                                    bud_state = 3
                                 else:
-                                    bud_state = 4 if is_fruit else (3 if infls else 1)
+                                    bud_state = 1
 
                                 lines.append('\t\t\t\t\t\t<floral_bud>')
                                 lines.append(f'\t\t\t\t\t\t\t<bud_state>{bud_state}</bud_state>')

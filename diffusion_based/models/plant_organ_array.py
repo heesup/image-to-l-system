@@ -2,14 +2,17 @@
 Plant Organ Array: part-centric (N, D) representation and XML utilities.
 
 This module stores plant architecture as a dimension-agnostic part-centric
-tensor. The current layout uses 17 columns:
+tensor. The current layout uses 16 columns:
 
     [OrganType(0), Base(1..3), Rot6D(4..9), Scale(10..12), Existence(13),
-     BudState(14), Curvature(15), PhyllotacticAngle(16)]
+     Curvature(14), PhyllotacticAngle(15)]
 
-The last three columns are stored so the part tensor can round-trip back to
+The floral-bud state is folded into the organ type: dormant bud (state 1) is
+ORGAN_BUD, aborted bud (state 5) is ORGAN_BUD_ABORTED, and the flowering states
+(2/3/4) are ORGAN_FLOWER_CLOSED / ORGAN_FLOWER / ORGAN_FRUIT respectively.
+
+The last two columns are stored so the part tensor can round-trip back to
 Helios XML faithfully:
-  - BudState: discrete floral-bud state (1..5) that gates peduncle/flower/fruit.
   - Curvature: shared petiole/peduncle curvature (meaning disambiguated by
     OrganType). Internode/leaf rows leave it at 0.
   - PhyllotacticAngle: internode phyllotactic angle (degrees); only meaningful
@@ -37,6 +40,7 @@ ORGAN_PEDUNCLE = 6
 ORGAN_FLOWER = 7
 ORGAN_FRUIT = 8
 ORGAN_FLOWER_CLOSED = 9
+ORGAN_BUD_ABORTED = 10
 
 
 # =============================================================================
@@ -57,10 +61,9 @@ P_COL_SCALE_X = 10
 P_COL_SCALE_Y = 11
 P_COL_SCALE_Z = 12
 P_COL_EXISTENCE = 13
-P_COL_BUD_STATE = 14
-P_COL_CURVATURE = 15
-P_COL_PHYLLOTACTIC_ANGLE = 16
-NUM_FEATURES = 17
+P_COL_CURVATURE = 14
+P_COL_PHYLLOTACTIC_ANGLE = 15
+NUM_FEATURES = 16
 
 
 # =============================================================================
@@ -427,8 +430,8 @@ def _parse_xml_to_part_tensor(xml_content: str) -> torch.Tensor:
         elif ot == ORGAN_BUD:
             bud_idx = rec["child_index"]
             bud_rows.setdefault((sid, p_idx), []).append((bud_idx, idx))
-            part[idx, P_COL_ORGAN_TYPE] = ORGAN_BUD
-            part[idx, P_COL_BUD_STATE] = rec["bud_state"]
+            bs = rec["bud_state"]
+            part[idx, P_COL_ORGAN_TYPE] = ORGAN_BUD_ABORTED if bs == 5 else ORGAN_BUD
             part[idx, P_COL_EXISTENCE] = 1.0
         elif ot == ORGAN_PEDUNCLE:
             peduncle_rows[(sid, p_idx)] = idx
@@ -437,7 +440,6 @@ def _parse_xml_to_part_tensor(xml_content: str) -> torch.Tensor:
             part[idx, P_COL_SCALE_Y] = rec["radius"]
             part[idx, P_COL_SCALE_Z] = rec["length"]
             part[idx, P_COL_CURVATURE] = rec["curvature"]
-            part[idx, P_COL_BUD_STATE] = rec.get("bud_state", 0)
             part[idx, P_COL_EXISTENCE] = 1.0
         elif ot == ORGAN_FLOWER:
             fl_idx = rec["child_index"]
