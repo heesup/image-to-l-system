@@ -112,7 +112,11 @@ class PartArrayDataset(Dataset):
         ])
 
         import fnmatch as _fnmatch
-        xml_paths = sorted(glob.glob(os.path.join(self.data_root, "*_plant_*.xml")))
+        xml_paths = sorted(glob.glob(os.path.join(self.data_root, "**", "*_plant_*.xml"), recursive=True))
+        if not xml_paths:
+            xml_paths = sorted(glob.glob(os.path.join(self.data_root, "*_plant_*.xml")))
+        # Filter out transient / temporary SLURM worker directories
+        xml_paths = [p for p in xml_paths if "/_tmp_" not in p and "_tmp_" not in os.path.basename(p)]
         if include_globs:
             xml_paths = [p for p in xml_paths if any(_fnmatch.fnmatch(os.path.basename(p), pat) for pat in include_globs)]
         elif exclude_globs:
@@ -199,6 +203,8 @@ class PartArrayDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         sample = self.samples[idx]
         cache_key = sample["xml"]
+        if not os.path.exists(sample["xml"]):
+            return self.__getitem__((idx + 1) % len(self.samples))
 
         # Load (or compute) the part tensor ONCE, then derive both the
         # rendered image and the padded/normalized training tensor from it.
@@ -206,33 +212,55 @@ class PartArrayDataset(Dataset):
         if self.cache_dir is not None:
             cache_path = os.path.join(self.cache_dir, f"{sample['prefix']}.pt")
             if os.path.exists(cache_path):
-                part = torch.load(cache_path, map_location="cpu")
+                try:
+                    part = torch.load(cache_path, map_location="cpu")
+                except Exception:
+                    part = None
         if part is None:
-            gt_array = PlantOrganArray.from_xml_file(sample["xml"])
-            part = gt_array.to_part_tensor(device=torch.device("cpu"))
+            try:
+                gt_array = PlantOrganArray.from_xml_file(sample["xml"])
+                part = gt_array.to_part_tensor(device=torch.device("cpu"))
+            except Exception:
+                return self.__getitem__((idx + 1) % len(self.samples))
 
         # Image
         if cache_key in self._image_cache:
             image_tensor = self._image_cache[cache_key]
         else:
-            rgb = None
-            if self.cache_dir is not None:
-                img_path = os.path.join(self.cache_dir, f"{sample['prefix']}_img.pt")
-                if os.path.exists(img_path):
-                    rgb = torch.load(img_path, map_location="cpu")
-            if rgb is None:
-                if self._cached_renderer is None:
-                    from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
-                    self._cached_renderer = HeliosPyTorchRenderer(image_size=self.image_size).to(self.device)
-                gt_array = PlantOrganArray.from_xml_file_typed(sample["xml"])
-                with torch.no_grad():
-                    rgb = self._cached_renderer.render_part_tensor(
-                        part.to(self.device), template_organ_array=gt_array, camera_height=1.0,
-                        elevation_deg=90.0, device=self.device, focus_plant=True,
-                        use_kinematics_tree=False, differentiable=False,
-                    )
-                rgb = rgb.cpu()
-            image_tensor = self._transform_tensor(rgb).cpu()
+            image_tensor = None
+            if sample.get("jpeg") and os.path.exists(sample["jpeg"]):
+                try:
+                    with Image.open(sample["jpeg"]) as pil_img:
+                        pil_rgb = pil_img.convert("RGB")
+                        # resize to self.image_size
+                        pil_rgb = pil_rgb.resize((self.image_size, self.image_size), Image.Resampling.BILINEAR)
+                        arr_img = np.array(pil_rgb, dtype=np.float32) / 255.0
+                        rgb_t = torch.from_numpy(arr_img).permute(2, 0, 1)
+                        image_tensor = transforms.Normalize(
+                            mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+                        )(rgb_t)
+                except Exception:
+                    image_tensor = None
+
+            if image_tensor is None:
+                if self.cache_dir is not None:
+                    img_path = os.path.join(self.cache_dir, f"{sample['prefix']}_img.pt")
+                    if os.path.exists(img_path):
+                        rgb = torch.load(img_path, map_location="cpu")
+                        image_tensor = self._transform_tensor(rgb).cpu()
+                if image_tensor is None:
+                    if self._cached_renderer is None:
+                        from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+                        self._cached_renderer = HeliosPyTorchRenderer(image_size=self.image_size).to(self.device)
+                    gt_array = PlantOrganArray.from_xml_file_typed(sample["xml"])
+                    with torch.no_grad():
+                        rgb = self._cached_renderer.render_part_tensor(
+                            part.to(self.device), template_organ_array=gt_array, camera_height=1.0,
+                            elevation_deg=90.0, device=self.device, focus_plant=True,
+                            use_kinematics_tree=False, differentiable=False,
+                        )
+                    rgb = rgb.cpu()
+                    image_tensor = self._transform_tensor(rgb).cpu()
             self._image_cache[cache_key] = image_tensor
 
         # Part tensor (padded + FM-encoded)

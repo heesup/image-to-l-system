@@ -26,7 +26,7 @@ if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
 from diffusion_based.dataset.part_array_dataset import (
-    PartArrayDataset, FM_OT_END, EMPTY_IDX,
+    PartArrayDataset, FM_OT_END, EMPTY_IDX, FM_BASE_START, FM_NODE_DIM,
 )
 from diffusion_based.models.part_flow_matching import PartFlowMatchingModel
 from diffusion_based.training.flow_matching import FlowMatchingScheduler
@@ -67,25 +67,30 @@ def train_epoch(
         # Sample time and prior
         t = scheduler.sample_time(B, device)
         if empty_prior:
-            # "Empty plant" prior: keep the target structure (base, rotation,
-            # scale) but set every slot to the EMPTY category so the model learns
-            # to grow organs from an empty plant instead of from Gaussian noise.
-            x0 = nodes.clone()
-            x0[:, :, :FM_OT_END] = 0.0
+            # True Zero Plant Array Prior:
+            # All 3D bases, rotations, scales, curvature, phyllotaxis = 0, and all slots are EMPTY.
+            # No template coordinates are used.
+            x0 = torch.zeros_like(nodes)
             x0[:, :, EMPTY_IDX] = 1.0
         else:
-            x0 = torch.randn_like(nodes)  # Gaussian prior
-        x1 = nodes  # data
+            x0 = torch.randn_like(nodes)  # Standard Gaussian Noise Prior
+
+        x1 = nodes  # Ground truth 26D normalized organ array
         x_t = scheduler.sample_xt(x0, x1, t)
         v_target = scheduler.velocity_target(x0, x1)
 
         outputs = model(x_t, t, images)
         pred_velocity = outputs["pred_velocity"]
 
-        # Masked MSE: only active organ slots contribute
+        # Category velocity loss (across all slots: learning active organ types vs empty)
+        loss_cat = F.mse_loss(pred_velocity[:, :, :FM_OT_END], v_target[:, :, :FM_OT_END])
+
+        # Geometry velocity loss (masked to active organ slots: base, rot, scale, curv, phyllo)
         active_mask = existence_mask.unsqueeze(-1).float()  # (B, N, 1)
-        diff = (pred_velocity - v_target) ** 2
-        loss = (diff * active_mask).sum() / max(active_mask.sum(), 1.0)
+        diff_geom = (pred_velocity[:, :, FM_BASE_START:] - v_target[:, :, FM_BASE_START:]) ** 2
+        loss_geom = (diff_geom * active_mask).sum() / max(active_mask.sum() * (FM_NODE_DIM - FM_BASE_START), 1.0)
+
+        loss = loss_cat + 2.0 * loss_geom
 
         optimizer.zero_grad()
         loss.backward()

@@ -100,9 +100,8 @@ def main():
 
     x0 = None
     if args.empty_prior:
-        # Empty-plant prior: every slot is the EMPTY category.
-        x0 = gt_nodes[0].unsqueeze(0).to(device).clone()
-        x0[:, :, :FM_OT_END] = 0.0
+        # True Zero-Plant Prior: all coordinates zero, all slots EMPTY
+        x0 = torch.zeros((1, args.max_nodes, ds.node_dim), device=device)
         x0[:, :, EMPTY_IDX] = 1.0
 
     with torch.no_grad():
