@@ -37,15 +37,15 @@ EXACT_GT_DIR = os.path.join(repo_root, "Digital-Crops", "projects", "syntheticda
 
 PLANTS = [
     ("DAP 10\n(Seedling)",
-     "dataset/helios_data/cowpea_dap010_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml",
+     os.path.join(EXACT_GT_DIR, "rad_dap010_0000_plant_0000.xml"),
      os.path.join(EXACT_GT_DIR, "rad_dap010_0000_rad.jpeg"),
      os.path.join(EXACT_GT_DIR, "rad_dap010_0000_masks.json")),
     ("DAP 50\n(Branching)",
-     "dataset/helios_data/cowpea_dap050_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml",
+     os.path.join(EXACT_GT_DIR, "rad_dap050_0000_plant_0000.xml"),
      os.path.join(EXACT_GT_DIR, "rad_dap050_0000_rad.jpeg"),
      os.path.join(EXACT_GT_DIR, "rad_dap050_0000_masks.json")),
     ("DAP 90\n(Mature)",
-     "dataset/helios_data/cowpea_dap090_seed00_caz000_h1.0_se045_saz180_0000_plant_0000.xml",
+     os.path.join(EXACT_GT_DIR, "rad_dap090_0000_plant_0000.xml"),
      os.path.join(EXACT_GT_DIR, "rad_dap090_0000_rad.jpeg"),
      os.path.join(EXACT_GT_DIR, "rad_dap090_0000_masks.json")),
 ]
@@ -76,7 +76,10 @@ ORGAN_META = {
 renderer = HeliosPyTorchRenderer(image_size=IMG_SIZE)
 
 def load_plant(xml_path):
-    full = os.path.join(repo_root, xml_path)
+    if not os.path.isabs(xml_path):
+        full = os.path.join(repo_root, xml_path)
+    else:
+        full = xml_path
     if not os.path.exists(full):
         return None, None
     arr = PlantOrganArray.from_xml_file(full)

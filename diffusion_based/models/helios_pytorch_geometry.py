@@ -513,11 +513,7 @@ def generate_cone_tube_mesh_torch(
 
 SPECIES_CONFIG: Dict[str, Dict[str, Any]] = {
     "cowpea": {
-        "leaf_obj": "CowpeaLeaf_tip_highres.obj",
-        "leaf_tip_obj": "CowpeaLeaf_tip_highres.obj",
-        "leaf_left_obj": "CowpeaLeaf_left_highres.obj",
-        "leaf_right_obj": "CowpeaLeaf_right_highres.obj",
-        "leaf_unifoliate_obj": "CowpeaLeaf_unifoliate.obj",
+        "leaf_obj": "CowpeaLeaf_unifoliate.obj",
         "leaf_aspect_ratio": 0.65,
         "flower_open_obj": "CowpeaFlower_open_yellow.obj",
         "flower_closed_obj": "CowpeaFlower_closed_yellow.obj",
@@ -532,11 +528,7 @@ SPECIES_CONFIG: Dict[str, Dict[str, Any]] = {
         "color_fruit": torch.tensor([0.299629, 0.400454, 0.209546]),
     },
     "bean": {
-        "leaf_obj": "BeanLeaf_tip.obj",
-        "leaf_tip_obj": "BeanLeaf_tip.obj",
-        "leaf_left_obj": "BeanLeaf_left.obj",
-        "leaf_right_obj": "BeanLeaf_right.obj",
-        "leaf_unifoliate_obj": "BeanLeaf_unifoliate.obj",
+        "leaf_obj": "BeanLeaf_unifoliate.obj",
         "leaf_aspect_ratio": 0.65,
         "flower_open_obj": "BeanFlower_open_white.obj",
         "flower_closed_obj": "BeanFlower_closed_white.obj",
@@ -787,24 +779,12 @@ class HeliosPlantGeometryBuilder:
                     v_tmpl, f_tmpl, n_tmpl = sorghum_leaf_tmpl
                     v_lf_raw = v_tmpl
                     f_lf_b = f_tmpl
-                elif self.use_generic_leaves or len(leaflet_tmpls) == 0:
+                elif self.use_generic_leaves or "leaf_obj" not in leaflet_tmpls:
                     v_tmpl, f_tmpl, n_tmpl = generic_leaf_tmpl
                     v_lf_raw = v_tmpl
                     f_lf_b = f_tmpl
                 else:
-                    # Select appropriate leaflet mesh
-                    target_key = "leaf_obj"
-                    if leaf_sub_idx == 0 and "leaf_left_obj" in leaflet_tmpls:
-                        target_key = "leaf_left_obj"
-                    elif leaf_sub_idx == 1 and "leaf_tip_obj" in leaflet_tmpls:
-                        target_key = "leaf_tip_obj"
-                    elif leaf_sub_idx == 2 and "leaf_right_obj" in leaflet_tmpls:
-                        target_key = "leaf_right_obj"
-
-                    if target_key in leaflet_tmpls:
-                        v_lf_raw, f_lf_b, n_tmpl = leaflet_tmpls[target_key]
-                    else:
-                        v_lf_raw, f_lf_b, n_tmpl = leaflet_tmpls.get("leaf_obj", generic_leaf_tmpl)
+                    v_lf_raw, f_lf_b, n_tmpl = leaflet_tmpls["leaf_obj"]
 
                 v_lf_b = v_lf_raw * lf_scale
                 v_lf = (R @ v_lf_b.T).T + base

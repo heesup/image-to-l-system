@@ -104,7 +104,10 @@ def run_direct_opt(
     delta_rot_6d = torch.zeros((N, 6), device=device, requires_grad=True)
     delta_scale = torch.zeros((N, 3), device=device, requires_grad=True)
     delta_base = torch.zeros((N, 3), device=device, requires_grad=True)
-    opt_exist = part_init[:, P_COL_EXISTENCE].clone().detach().requires_grad_(True)
+    # Initialize existence logit so sigmoid(logit) = stored existence.
+    # (The stored tensor holds existence directly in [0,1], not a logit.)
+    exist_init = part_init[:, P_COL_EXISTENCE].clamp(1e-3, 1 - 1e-3).clone().detach()
+    opt_exist = torch.logit(exist_init).requires_grad_(True)
 
     optimizer = torch.optim.AdamW([
         {"params": [delta_yaw], "lr": lr * 1.5},
@@ -165,8 +168,10 @@ def run_direct_opt(
         loss = loss_rgb
         loss_depth = torch.tensor(0.0, device=device)
         if "depth" in mode:
-            fg_union = pred_mask | target_mask
-            loss_depth = affine_invariant_depth_loss(pred_raw_depth, target_raw_depth, mask=fg_union)
+            # Use the intersection of pred & target foreground so the affine
+            # depth loss is not skewed by target-only pixels where pred=0.
+            fg_inter = pred_mask & target_mask
+            loss_depth = affine_invariant_depth_loss(pred_raw_depth, target_raw_depth, mask=fg_inter)
             loss = loss + 0.5 * loss_depth
         # Structural regularization: keep organ bases from drifting far from the init
         # (prevents the optimizer from scattering organs and destroying the plant).
@@ -223,6 +228,20 @@ def _load_target_init_pair(renderer, device, tgt_rel, init_rel):
     tgt_arr = PlantOrganArray.from_xml_file(os.path.join(repo_root, tgt_rel))
     tgt_part = tgt_arr.to_part_tensor(device=device)
 
+    # Load the original Helios C++ render for the target (seed00).
+    helios_np = None
+    tgt_xml = os.path.join(repo_root, tgt_rel)
+    tgt_prefix = os.path.basename(tgt_xml).replace("_plant_0000.xml", "")
+    from PIL import Image
+    for suffix in ("_rad.jpeg", "_vis.jpeg"):
+        cand = os.path.join(os.path.dirname(tgt_xml), tgt_prefix + suffix)
+        if os.path.exists(cand):
+            try:
+                helios_np = np.array(Image.open(cand).convert("RGB")) / 255.0
+            except Exception:
+                helios_np = None
+            break
+
     tgt_mesh = renderer.geo_builder.build_mesh_from_part_array(
         tgt_part, template_organ_array=tgt_arr, device=device, use_kinematics_tree=False
     )
@@ -251,6 +270,7 @@ def _load_target_init_pair(renderer, device, tgt_rel, init_rel):
         "tgt_arr": tgt_arr, "tgt_part": tgt_part, "tgt_rgb": tgt_out["rgb"],
         "tgt_depth": tgt_out["depth"], "tgt_raw_depth": tgt_out["raw_depth"],
         "tgt_mask": tgt_out["mask"], "tgt_np": tgt_out["rgb"].permute(1, 2, 0).cpu().numpy().clip(0, 1),
+        "helios_np": helios_np,
         "init_arr": init_arr, "init_np": init_rgb.permute(1, 2, 0).cpu().numpy().clip(0, 1),
         "cam_bounds": cam_bounds,
     }
@@ -262,7 +282,7 @@ def _load_target_init_pair(renderer, device, tgt_rel, init_rel):
 
 def figure_3_direct_opt_multi_dap(pairs, renderer, device, assets_dir, steps=35):
     print("Generating Figure 3: Direct Optimization Multi-DAP Panel...")
-    fig, axes = plt.subplots(3, 6, figsize=(20, 12))
+    fig, axes = plt.subplots(3, 7, figsize=(22, 12))
     plt.subplots_adjust(wspace=0.12, hspace=0.28)
     metrics = {"dap": [], "init_ssim": [], "init_iou": [], "opt_ssim": [], "opt_iou": []}
 
@@ -282,24 +302,33 @@ def figure_3_direct_opt_multi_dap(pairs, renderer, device, assets_dir, steps=35)
             spec["cam_bounds"], renderer, device, mode="rgb_depth", steps=steps, lr=0.04,
         )
 
-        axes[row, 0].imshow(spec["tgt_np"])
-        axes[row, 0].set_title(f"{spec['title']} (Top View)\nGround Truth RGB", fontsize=11, fontweight="bold")
+        # Col 0: Original Helios C++ render
+        if spec.get("helios_np") is not None:
+            axes[row, 0].imshow(spec["helios_np"])
+            axes[row, 0].set_title(f"{spec['title']}\nHelios C++ Original", fontsize=11, fontweight="bold")
+        else:
+            axes[row, 0].text(0.5, 0.5, "No Helios image", ha='center', va='center', color='red', fontsize=10, transform=axes[row, 0].transAxes)
+            axes[row, 0].set_title(f"{spec['title']}\nHelios C++", fontsize=11, fontweight="bold")
         axes[row, 0].axis("off")
-        axes[row, 1].imshow(_depth_colormap(spec["tgt_depth"].cpu().numpy()))
-        axes[row, 1].set_title("Ground Truth Depth\n(closer = brighter)", fontsize=11, fontweight="bold")
+
+        axes[row, 1].imshow(spec["tgt_np"])
+        axes[row, 1].set_title(f"Ground Truth RGB", fontsize=11, fontweight="bold")
         axes[row, 1].axis("off")
-        axes[row, 2].imshow(spec["init_np"])
-        axes[row, 2].set_title(f"Initial Template Seed\nmSSIM: {init_ssim:.3f} | IoU: {init_iou:.2f}", fontsize=11)
+        axes[row, 2].imshow(_depth_colormap(spec["tgt_depth"].cpu().numpy()))
+        axes[row, 2].set_title("Ground Truth Depth\n(closer = brighter)", fontsize=11, fontweight="bold")
         axes[row, 2].axis("off")
-        axes[row, 3].imshow(_depth_colormap(init_depth))
-        axes[row, 3].set_title("Initial Seed Depth", fontsize=11)
+        axes[row, 3].imshow(spec["init_np"])
+        axes[row, 3].set_title(f"Initial Template Seed\nmSSIM: {init_ssim:.3f} | IoU: {init_iou:.2f}", fontsize=11)
         axes[row, 3].axis("off")
-        axes[row, 4].imshow(opt_rgb)
-        axes[row, 4].set_title(f"16D RGB+Depth Opt\nmSSIM: {m['ssim']:.3f} | IoU: {m['iou']:.2f}", fontsize=11, color="navy", fontweight="bold")
+        axes[row, 4].imshow(_depth_colormap(init_depth))
+        axes[row, 4].set_title("Initial Seed Depth", fontsize=11)
         axes[row, 4].axis("off")
-        axes[row, 5].imshow(_depth_colormap(opt_depth))
-        axes[row, 5].set_title("Optimized Depth", fontsize=11, color="navy", fontweight="bold")
+        axes[row, 5].imshow(opt_rgb)
+        axes[row, 5].set_title(f"16D RGB+Depth Opt\nmSSIM: {m['ssim']:.3f} | IoU: {m['iou']:.2f}", fontsize=11, color="navy", fontweight="bold")
         axes[row, 5].axis("off")
+        axes[row, 6].imshow(_depth_colormap(opt_depth))
+        axes[row, 6].set_title("Optimized Depth", fontsize=11, color="navy", fontweight="bold")
+        axes[row, 6].axis("off")
 
         metrics["dap"].append(spec["title"])
         metrics["init_ssim"].append(init_ssim)
