@@ -212,6 +212,163 @@ class BotanicalScaffoldGenerator:
 
         return scaffold
 
+    def generate_conditioned(
+        self,
+        radius: float,
+        height: float,
+        leaf_scale: float,
+        active_count: int,
+        device: torch.device = None,
+    ) -> torch.Tensor:
+        """
+        Dynamically constructs a 3D Botanical Scaffold tensor (max_nodes, node_dim)
+        precisely scaled to (radius, height, leaf_scale) with exactly `active_count` non-empty slots.
+        All remaining slots (max_nodes - active_count) are initialized as empty background slots.
+        """
+        active_count = max(4, min(self.max_nodes, active_count))
+        scaffold = torch.zeros((self.max_nodes, self.node_dim), dtype=torch.float32)
+
+        # 1. Compute slot counts for the active subset
+        slot_counts = {}
+        allocated = 0
+        sorted_types = sorted(EMPIRICAL_PROPORTIONS.items(), key=lambda x: x[1], reverse=True)
+        for ot, prop in sorted_types[:-1]:
+            cnt = int(round(prop * active_count))
+            slot_counts[ot] = cnt
+            allocated += cnt
+        slot_counts[sorted_types[-1][0]] = max(1, active_count - allocated)
+
+        curr_idx = 0
+
+        # A. Root Meta
+        root_cnt = slot_counts.get(ORGAN_ROOT_META, 1)
+        for _ in range(root_cnt):
+            if curr_idx >= active_count: break
+            scaffold[curr_idx, CATEGORY_TO_IDX[ORGAN_ROOT_META]] = 1.0
+            scaffold[curr_idx, FM_BASE_START:FM_BASE_END] = torch.tensor([0.0, 0.0, 0.0]) * BASE_SCALE
+            scaffold[curr_idx, FM_ROT_START:FM_ROT_END] = torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+            scaffold[curr_idx, FM_SCALE_START:FM_SCALE_END] = torch.tensor([0.005, 0.005, 0.005]) * SCALE_SCALE
+            curr_idx += 1
+
+        # B. Shoot Meta
+        shoot_cnt = slot_counts.get(ORGAN_SHOOT_META, 1)
+        for i in range(shoot_cnt):
+            if curr_idx >= active_count: break
+            scaffold[curr_idx, CATEGORY_TO_IDX[ORGAN_SHOOT_META]] = 1.0
+            scaffold[curr_idx, FM_BASE_START:FM_BASE_END] = torch.tensor([0.0, 0.0, 0.005 * (i + 1)]) * BASE_SCALE
+            scaffold[curr_idx, FM_ROT_START:FM_ROT_END] = torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+            scaffold[curr_idx, FM_SCALE_START:FM_SCALE_END] = torch.tensor([0.01, 0.01, 0.01]) * SCALE_SCALE
+            curr_idx += 1
+
+        # C. Internodes
+        internode_cnt = slot_counts.get(ORGAN_INTERNODE, 1)
+        for i in range(internode_cnt):
+            if curr_idx >= active_count: break
+            frac = (i + 1) / max(1, internode_cnt)
+            z_pos = frac * height
+            r_jitter = 0.01 * radius * math.sin(i * 1.5)
+            theta = i * GOLDEN_RATIO_ANGLE
+            scaffold[curr_idx, CATEGORY_TO_IDX[ORGAN_INTERNODE]] = 1.0
+            scaffold[curr_idx, FM_BASE_START:FM_BASE_END] = torch.tensor([
+                r_jitter * math.cos(theta),
+                r_jitter * math.sin(theta),
+                z_pos,
+            ]) * BASE_SCALE
+            scaffold[curr_idx, FM_ROT_START:FM_ROT_END] = torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+            scaffold[curr_idx, FM_SCALE_START:FM_SCALE_END] = torch.tensor([0.01, 0.01, height / max(1, internode_cnt)]) * SCALE_SCALE
+            curr_idx += 1
+
+        # D. Petioles & Peduncles
+        for ot, cnt in [(ORGAN_PETIOLE, slot_counts.get(ORGAN_PETIOLE, 1)), (ORGAN_PEDUNCLE, slot_counts.get(ORGAN_PEDUNCLE, 1))]:
+            for i in range(cnt):
+                if curr_idx >= active_count: break
+                frac = (i + 1) / max(1, cnt)
+                z_pos = 0.03 + frac * max(0.01, height - 0.04)
+                r_pos = 0.02 + 0.6 * radius * math.sqrt(frac)
+                theta = i * GOLDEN_RATIO_ANGLE
+                scaffold[curr_idx, CATEGORY_TO_IDX[ot]] = 1.0
+                scaffold[curr_idx, FM_BASE_START:FM_BASE_END] = torch.tensor([
+                    r_pos * math.cos(theta),
+                    r_pos * math.sin(theta),
+                    z_pos,
+                ]) * BASE_SCALE
+                cos_t, sin_t = math.cos(theta), math.sin(theta)
+                scaffold[curr_idx, FM_ROT_START:FM_ROT_END] = torch.tensor([cos_t, sin_t, 0.3, -sin_t, cos_t, 0.0])
+                scaffold[curr_idx, FM_SCALE_START:FM_SCALE_END] = torch.tensor([0.008, 0.008, max(0.02, 0.5 * radius)]) * SCALE_SCALE
+                curr_idx += 1
+
+        # E. Leaves
+        leaf_cnt = slot_counts.get(ORGAN_LEAF, 1)
+        for i in range(leaf_cnt):
+            if curr_idx >= active_count: break
+            frac = (i + 0.5) / max(1, leaf_cnt)
+            z_pos = 0.02 + (frac ** 0.75) * max(0.01, height - 0.03)
+            cone_factor = math.sin(frac * math.pi * 0.85)
+            r_pos = 0.03 + radius * (0.35 + 0.65 * cone_factor) * math.sqrt(frac)
+            theta = i * GOLDEN_RATIO_ANGLE
+
+            scaffold[curr_idx, CATEGORY_TO_IDX[ORGAN_LEAF]] = 1.0
+            scaffold[curr_idx, FM_BASE_START:FM_BASE_END] = torch.tensor([
+                r_pos * math.cos(theta),
+                r_pos * math.sin(theta),
+                z_pos,
+            ]) * BASE_SCALE
+            cos_t, sin_t = math.cos(theta), math.sin(theta)
+            scaffold[curr_idx, FM_ROT_START:FM_ROT_END] = torch.tensor([cos_t, sin_t, 0.707, -sin_t, cos_t, 0.0])
+            scaffold[curr_idx, FM_SCALE_START:FM_SCALE_END] = torch.tensor([leaf_scale, leaf_scale, 0.002]) * SCALE_SCALE
+            curr_idx += 1
+
+        # F. Reproductive structures
+        repro_types = [ORGAN_BUD, ORGAN_BUD_ABORTED, ORGAN_FRUIT, ORGAN_FLOWER, ORGAN_FLOWER_CLOSED]
+        for ot in repro_types:
+            cnt = slot_counts.get(ot, 1)
+            for i in range(cnt):
+                if curr_idx >= active_count: break
+                frac = (i + 1) / max(1, cnt)
+                z_pos = 0.03 + frac * max(0.01, height - 0.05)
+                r_pos = 0.02 + 0.65 * radius * frac
+                theta = (i * GOLDEN_RATIO_ANGLE) + 0.5
+                scaffold[curr_idx, CATEGORY_TO_IDX[ot]] = 1.0
+                scaffold[curr_idx, FM_BASE_START:FM_BASE_END] = torch.tensor([
+                    r_pos * math.cos(theta),
+                    r_pos * math.sin(theta),
+                    z_pos,
+                ]) * BASE_SCALE
+                scaffold[curr_idx, FM_ROT_START:FM_ROT_END] = torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+                scaffold[curr_idx, FM_SCALE_START:FM_SCALE_END] = torch.tensor([0.015, 0.015, 0.015]) * SCALE_SCALE
+                curr_idx += 1
+
+        # Inactive background slots
+        while curr_idx < self.max_nodes:
+            scaffold[curr_idx, EMPTY_IDX] = 1.0
+            curr_idx += 1
+
+        if device is not None:
+            scaffold = scaffold.to(device)
+        return scaffold
+
+    def generate_from_dap(
+        self,
+        dap: float,
+        species: str = "cowpea",
+        device: torch.device = None,
+    ) -> torch.Tensor:
+        """Generates a stage-conditioned scaffold tensor (max_nodes, node_dim) from developmental age (DAP)."""
+        dap_val = float(dap)
+        frac = min(1.0, max(0.0, (dap_val - 5.0) / 85.0))
+        radius = 0.10 + 0.68 * (frac ** 0.8)
+        height = 0.09 + 0.64 * (frac ** 0.9)
+        leaf_scale = 0.035 + 0.075 * (frac ** 0.5)
+        active_count = int(16 + (self.max_nodes - 16) * (frac ** 1.1))
+
+        return self.generate_conditioned(
+            radius=radius,
+            height=height,
+            leaf_scale=leaf_scale,
+            active_count=active_count,
+            device=device,
+        )
+
     def get_canonical_scaffold(self, device: torch.device = None) -> torch.Tensor:
         """Returns the canonical deterministic scaffold tensor (max_nodes, node_dim)."""
         t = self._canonical_scaffold.clone()
@@ -224,21 +381,22 @@ class BotanicalScaffoldGenerator:
         batch_size: int,
         device: torch.device = None,
         noise_std: float = 0.015,
+        dap: Optional[float] = None,
     ) -> torch.Tensor:
         """
         Samples batch of initial prior states x_0 ~ p_scaffold(x).
-        Adds small smooth spatial perturbation to base positions and scale while
-        preserving organ type simplex representations.
+        If dap is given, generates developmentally conditioned prior.
         """
-        canon = self.get_canonical_scaffold(device=device)  # (max_nodes, node_dim)
-        batch = canon.unsqueeze(0).repeat(batch_size, 1, 1)  # (B, max_nodes, node_dim)
+        if dap is not None:
+            canon = self.generate_from_dap(dap, device=device)
+        else:
+            canon = self.get_canonical_scaffold(device=device)
+
+        batch = canon.unsqueeze(0).repeat(batch_size, 1, 1)
 
         if noise_std > 0:
-            # Add spatial jitter to base positions
             base_noise = torch.randn((batch_size, self.max_nodes, 3), device=device) * noise_std
             batch[:, :, FM_BASE_START:FM_BASE_END] += base_noise
-
-            # Add subtle scale variation
             scale_noise = torch.randn((batch_size, self.max_nodes, 3), device=device) * (noise_std * 0.5)
             batch[:, :, FM_SCALE_START:FM_SCALE_END] = (batch[:, :, FM_SCALE_START:FM_SCALE_END] + scale_noise).clamp(min=1e-4)
 

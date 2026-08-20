@@ -70,11 +70,19 @@ def train_epoch(
 
         B = images.shape[0]
 
-        # Sample time and prior
-        t = scheduler.sample_time(B, device)
         if prior_type == "scaffold" and scaffold_gen is not None:
-            # 3D Botanical Scaffold Prior (Fibonacci phyllotaxis + empirical organ ratios)
-            x0 = scaffold_gen.sample_prior(B, device=device, noise_std=0.015)
+            # 3D Developmental Botanical Scaffold Prior conditioned on sample age (DAP)
+            daps = batch.get("dap", None)
+            if daps is not None:
+                x0_list = []
+                for b in range(B):
+                    dap_b = float(daps[b].item())
+                    x0_list.append(scaffold_gen.generate_from_dap(dap_b, device=device))
+                x0 = torch.stack(x0_list, dim=0)
+                base_noise = torch.randn((B, nodes.shape[1], 3), device=device) * 0.015
+                x0[:, :, FM_BASE_START:FM_BASE_END] += base_noise
+            else:
+                x0 = scaffold_gen.sample_prior(B, device=device, noise_std=0.015)
         elif prior_type == "empty":
             # Zero Plant Array Prior
             x0 = torch.zeros_like(nodes)
@@ -84,6 +92,7 @@ def train_epoch(
             x0 = torch.randn_like(nodes)
 
         x1 = nodes  # Ground truth 26D normalized organ array
+        t = scheduler.sample_time(B, device)
         x_t = scheduler.sample_xt(x0, x1, t)
         v_target = scheduler.velocity_target(x0, x1)
 
