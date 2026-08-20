@@ -151,7 +151,8 @@ class HeliosPyTorchRenderer(nn.Module):
         background: str = "ground",
         light_dir: Optional[torch.Tensor] = None,
         differentiable: bool = False,
-        focus_plant: bool = True
+        focus_plant: bool = True,
+        hfov_override_deg: Optional[float] = None,
     ) -> torch.Tensor:
         verts = mesh_dict['vertices']     # (V, 3)
         faces = mesh_dict['faces']        # (F, 3)
@@ -173,7 +174,8 @@ class HeliosPyTorchRenderer(nn.Module):
 
         # Camera Matrices matching Helios C++ --focus-plant
         view_mat, proj_mat, _ = compute_focus_plant_camera(
-            verts, organ_types, azimuth_deg, elevation_deg, camera_height, aspect_ratio=1.0, focus_plant=focus_plant
+            verts, organ_types, azimuth_deg, elevation_deg, camera_height,
+            aspect_ratio=1.0, focus_plant=focus_plant, hfov_override_deg=hfov_override_deg
         )
 
         # Transform Vertices to Camera & NDC Space
@@ -441,6 +443,7 @@ class HeliosPyTorchRenderer(nn.Module):
         differentiable: bool = False,
         focus_plant: bool = True,
         image_size: Optional[int] = None,
+        hfov_override_deg: Optional[float] = None,
     ) -> torch.Tensor:
         """Helper alias for forward."""
         return self.forward(
@@ -451,6 +454,7 @@ class HeliosPyTorchRenderer(nn.Module):
             background=background,
             differentiable=differentiable,
             focus_plant=focus_plant,
+            hfov_override_deg=hfov_override_deg,
         )
 
     def render_depth(
@@ -461,6 +465,7 @@ class HeliosPyTorchRenderer(nn.Module):
         camera_height: float = 5.0,
         focus_plant: bool = True,
         image_size: Optional[int] = None,
+        hfov_override_deg: Optional[float] = None,
     ) -> torch.Tensor:
         verts = mesh_dict['vertices'].detach()
         faces = mesh_dict['faces'].detach()
@@ -472,7 +477,7 @@ class HeliosPyTorchRenderer(nn.Module):
 
         view_mat, proj_mat, _ = compute_focus_plant_camera(
             verts, mesh_dict.get('organ_types', None), azimuth_deg, elevation_deg, camera_height,
-            aspect_ratio=1.0, focus_plant=focus_plant
+            aspect_ratio=1.0, focus_plant=focus_plant, hfov_override_deg=hfov_override_deg
         )
 
         glctx = self._get_nvdiffrast_context(device)

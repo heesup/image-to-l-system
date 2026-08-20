@@ -104,17 +104,33 @@ def main():
         mesh = renderer.geo_builder.build_mesh_from_organ_array(arr, device=device)
         verts = mesh["vertices"]
         print(f"  Forward Kinematics Mesh: {verts.shape[0]} vertices, {mesh['faces'].shape[0]} faces")
-        cam_bounds = {"min": verts.min(dim=0)[0].tolist(), "max": verts.max(dim=0)[0].tolist()}
 
-        # 3. Multi-modal PyTorch Differentiable Render
+        # 3. Read exact camera parameters from Helios metadata if available
+        cam_json_path = xml_path.replace("_plant_0000.xml", "_camera.json")
+        cam_h = 5.0
+        cam_hfov = None
+        cam_el = 90.0
+        if os.path.exists(cam_json_path):
+            import json, math
+            with open(cam_json_path, "r") as f:
+                cam_data = json.load(f)
+            f_len = cam_data.get("camera_properties", {}).get("focal_length", 50.0)
+            s_w = cam_data.get("camera_properties", {}).get("sensor_width", 35.0)
+            cam_h = float(cam_data.get("acquisition_properties", {}).get("camera_height_m", 5.0))
+            cam_el = float(cam_data.get("acquisition_properties", {}).get("camera_angle_deg", 90.0))
+            cam_hfov = 2.0 * math.degrees(math.atan((s_w * 0.5) / max(f_len, 1e-3)))
+            print(f"  Exact Camera Profile: H={cam_h:.2f}m, Elevation={cam_el:.1f}deg, HFOV={cam_hfov:.2f}deg")
+
+        # Multi-modal PyTorch Differentiable Render
         rendered = renderer.render_mesh(
             mesh,
             azimuth_deg=0.0,
-            elevation_deg=45.0,
-            camera_height=1.0,
+            elevation_deg=cam_el,
+            camera_height=cam_h,
             background="ground",
             differentiable=False,
-            focus_plant=True,
+            focus_plant=(cam_hfov is None),
+            hfov_override_deg=cam_hfov,
             image_size=256,
         )
         rgb_pt_np = rendered.permute(1, 2, 0).detach().cpu().numpy().clip(0, 1)
@@ -123,9 +139,10 @@ def main():
         depth_t = renderer.render_depth(
             mesh,
             azimuth_deg=0.0,
-            elevation_deg=45.0,
-            camera_height=1.0,
-            focus_plant=True,
+            elevation_deg=cam_el,
+            camera_height=cam_h,
+            focus_plant=(cam_hfov is None),
+            hfov_override_deg=cam_hfov,
             image_size=256,
         )
         depth_pt_np = depth_t.detach().cpu().numpy()
@@ -134,9 +151,10 @@ def main():
         type_buf = renderer.render_organ_type_buffer(
             mesh,
             azimuth_deg=0.0,
-            elevation_deg=45.0,
-            camera_height=1.0,
-            focus_plant=True,
+            elevation_deg=cam_el,
+            camera_height=cam_h,
+            focus_plant=(cam_hfov is None),
+            hfov_override_deg=cam_hfov,
             image_size=256,
         )
         type_np = type_buf.detach().cpu().numpy()
