@@ -30,6 +30,7 @@ from diffusion_based.dataset.part_array_dataset import (
     FM_BASE_START, FM_BASE_END, FM_ROT_START, FM_ROT_END,
     FM_SCALE_START, FM_SCALE_END,
 )
+from diffusion_based.models.botanical_scaffold import BotanicalScaffoldGenerator
 from diffusion_based.models.part_flow_matching import PartFlowMatchingModel
 from diffusion_based.training.flow_matching import FlowMatchingScheduler
 
@@ -53,7 +54,8 @@ def train_epoch(
     device: torch.device,
     ema_model: AveragedModel = None,
     global_step: int = 0,
-    empty_prior: bool = False,
+    prior_type: str = "scaffold",
+    scaffold_gen: BotanicalScaffoldGenerator = None,
     epoch: int = 1,
 ) -> Dict[str, float]:
     model.train()
@@ -63,21 +65,23 @@ def train_epoch(
 
     for batch_idx, batch in enumerate(dataloader):
         images = batch["image"].to(device)
-        nodes = batch["nodes"].to(device)  # (B, N, 16) normalized
+        nodes = batch["nodes"].to(device)  # (B, N, 26) normalized
         existence_mask = batch["existence_mask"].to(device)  # (B, N)
 
         B = images.shape[0]
 
         # Sample time and prior
         t = scheduler.sample_time(B, device)
-        if empty_prior:
-            # True Zero Plant Array Prior:
-            # All 3D bases, rotations, scales, curvature, phyllotaxis = 0, and all slots are EMPTY.
-            # No template coordinates are used.
+        if prior_type == "scaffold" and scaffold_gen is not None:
+            # 3D Botanical Scaffold Prior (Fibonacci phyllotaxis + empirical organ ratios)
+            x0 = scaffold_gen.sample_prior(B, device=device, noise_std=0.015)
+        elif prior_type == "empty":
+            # Zero Plant Array Prior
             x0 = torch.zeros_like(nodes)
             x0[:, :, EMPTY_IDX] = 1.0
         else:
-            x0 = torch.randn_like(nodes)  # Standard Gaussian Noise Prior
+            # Standard Gaussian Noise Prior
+            x0 = torch.randn_like(nodes)
 
         x1 = nodes  # Ground truth 26D normalized organ array
         x_t = scheduler.sample_xt(x0, x1, t)
@@ -106,10 +110,10 @@ def train_epoch(
             diff_scale = (pred_velocity[:, :, FM_SCALE_START:FM_SCALE_END] - v_target[:, :, FM_SCALE_START:FM_SCALE_END]) ** 2
             loss_scale = (diff_scale * active_mask).sum() / (num_active * 3.0)
 
-            # Inactive slot velocity penalty: ensure unactivated slots remain perfectly at 0
+            # Inactive slot velocity penalty: ensure unactivated slots remain smooth
             loss_inactive_geom = (pred_velocity[:, :, FM_BASE_START:] ** 2 * (1.0 - active_mask)).mean()
 
-            loss = loss_cat + 1.0 * loss_base + 1.0 * loss_rot + 3.0 * loss_scale + 0.5 * loss_inactive_geom
+            loss = loss_cat + 1.0 * loss_base + 1.0 * loss_rot + 3.0 * loss_scale + 0.3 * loss_inactive_geom
 
         optimizer.zero_grad()
         loss.backward()
@@ -148,13 +152,19 @@ def main():
                         help="Comma-separated basename globs held out for validation, e.g. '*seed00*'")
     parser.add_argument("--cache_dir", type=str, default="dataset/cache",
                         help="Directory of precomputed part tensors + images (skip if absent)")
+    parser.add_argument("--prior_type", type=str, default="scaffold", choices=["scaffold", "empty", "gaussian"],
+                        help="Prior distribution: scaffold (3D botanical lattice), empty (zero plant array), gaussian (standard noise)")
     parser.add_argument("--empty_prior", action="store_true",
-                        help="Start flow-matching from an empty plant (existence=0) instead of Gaussian noise")
+                        help="Backward-compatibility alias for --prior_type empty")
     args = parser.parse_args()
+
+    if args.empty_prior:
+        args.prior_type = "empty"
 
     set_seed(args.seed)
     device = get_device()
     print(f"Using device: {device}")
+    print(f"Flow Matching Prior type: {args.prior_type}")
 
     val_globs = [g.strip() for g in args.val_pattern.split(",")] if args.val_pattern else []
     dataset = PartArrayDataset(
@@ -167,6 +177,8 @@ def main():
         cache_dir=args.cache_dir if os.path.isdir(args.cache_dir) else None,
     )
     print(f"Train dataset size: {len(dataset)}")
+
+    scaffold_gen = BotanicalScaffoldGenerator(max_nodes=args.max_nodes) if args.prior_type == "scaffold" else None
 
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
 
@@ -190,8 +202,10 @@ def main():
 
     global_step = 0
     for epoch in range(1, args.epochs + 1):
-        metrics = train_epoch(model, dataloader, optimizer, scheduler, device, ema_model, global_step,
-                              empty_prior=args.empty_prior, epoch=epoch)
+        metrics = train_epoch(
+            model, dataloader, optimizer, scheduler, device, ema_model, global_step,
+            prior_type=args.prior_type, scaffold_gen=scaffold_gen, epoch=epoch
+        )
         global_step = metrics["global_step"]
         print(f"Epoch {epoch:03d} | loss={metrics['loss']:.4f}", flush=True)
 
