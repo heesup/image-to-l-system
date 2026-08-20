@@ -73,11 +73,24 @@ renderer = HeliosPyTorchRenderer(image_size=IMG_SIZE).to(DEVICE)
 
 
 def depth_colormap(depth_tensor):
-    """Apply plasma colormap to depth map, black where depth == 0."""
+    """Apply plasma colormap to depth map with normalized foreground contrast (closer = brighter)."""
     d = depth_tensor.detach().cpu().numpy()
+    fg_mask = (d > 0.0)
+    if not fg_mask.any():
+        return np.zeros((d.shape[0], d.shape[1], 3), dtype=np.float32)
+
+    d_min = d[fg_mask].min()
+    d_max = d[fg_mask].max()
+    d_norm = np.zeros_like(d)
+    if d_max > d_min:
+        # Normalize so that top/nearest leaves = 1.0 (bright yellow), lower leaves = 0.0 (dark purple)
+        d_norm[fg_mask] = (d_max - d[fg_mask]) / (d_max - d_min)
+    else:
+        d_norm[fg_mask] = 1.0
+
     cmap = plt.get_cmap("plasma")
-    rgb = cmap(d)[:, :, :3].astype(np.float32)
-    rgb[d == 0] = 0.0  # black background where no plant
+    rgb = cmap(d_norm)[:, :, :3].astype(np.float32)
+    rgb[~fg_mask] = 0.0  # black background where no plant
     return rgb
 
 

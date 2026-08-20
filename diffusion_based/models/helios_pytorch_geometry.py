@@ -28,7 +28,8 @@ from diffusion_based.models.plant_organ_array import (
     COL_PET1_TAPER, COL_PET1_LEN_SEGS, COL_PET1_RAD_SUBDIV, COL_PET1_LFLT_SCALE,
     COL_PET1_LFLT_OFFSET, COL_PET1_NUM_LEAVES,
     COL_PET1_L0_SCALE, COL_PET1_L0_PITCH, COL_PET1_L0_YAW, COL_PET1_L0_ROLL,
-    COL_HAS_BUD, COL_BUD_STATE, COL_PED_LEN, COL_PED_RAD, COL_PED_PITCH, COL_PED_CURV, COL_PED_ROLL,
+    COL_HAS_BUD, COL_BUD_STATE, COL_BUD_IS_TERMINAL, COL_BUD_FRUIT_SCALE,
+    COL_PED_LEN, COL_PED_RAD, COL_PED_PITCH, COL_PED_CURV, COL_PED_ROLL,
     COL_NUM_FLOWERS, COL_FLOWER_OFFSET, COL_FL0_PITCH, COL_FL0_YAW, COL_FL0_ROLL, COL_FL0_AZIMUTH, COL_FL0_BASE_SCALE
 )
 
@@ -464,7 +465,9 @@ class HeliosPlantGeometryBuilder:
         self.COLOR_STEM = torch.tensor([0.22, 0.45, 0.15], dtype=torch.float32)
         self.COLOR_PETIOLE = torch.tensor([0.25, 0.50, 0.18], dtype=torch.float32)
         self.COLOR_LEAF = torch.tensor([0.25, 0.62, 0.18], dtype=torch.float32)
-        self.COLOR_FLOWER = torch.tensor([0.95, 0.85, 0.20], dtype=torch.float32)
+        self.COLOR_PEDUNCLE = torch.tensor([0.55, 0.52, 0.25], dtype=torch.float32)
+        self.COLOR_FLOWER = torch.tensor([0.98, 0.85, 0.15], dtype=torch.float32)
+        self.COLOR_POD = torch.tensor([0.85, 0.65, 0.13], dtype=torch.float32)
 
     def build_mesh_from_organ_array(
         self,
@@ -986,6 +989,115 @@ class HeliosPlantGeometryBuilder:
                 node_info['petiole_axes'] = pet_axes_stored
                 if 0 in pet_axes_stored:
                     node_info['petiole_axis'] = pet_axes_stored[0].clone()
+
+                # -------------------------------------------------------------
+                # 3. FLORAL BUDS, PEDUNCLES, FLOWERS AND PODS
+                # -------------------------------------------------------------
+                bud_state = int(row[COL_BUD_STATE].item()) if row.shape[0] > COL_BUD_STATE else 0
+                fruit_scale = float(row[COL_BUD_FRUIT_SCALE].item()) if row.shape[0] > COL_BUD_FRUIT_SCALE else 0.0
+                num_flowers = int(row[COL_NUM_FLOWERS].item()) if row.shape[0] > COL_NUM_FLOWERS else 0
+                ped_len = row[COL_PED_LEN] if row.shape[0] > COL_PED_LEN else torch.tensor(0.0, device=device)
+                ped_rad = row[COL_PED_RAD] if row.shape[0] > COL_PED_RAD else torch.tensor(0.0, device=device)
+
+                # Geometry only exists if bud is active in flowering/fruiting state (InputOutput.cpp:2118):
+                # BUD_FLOWER_CLOSED=2, BUD_FLOWER_OPEN=3, BUD_FRUITING=4.
+                is_active_flower = (bud_state in [2, 3, 4])
+
+                if is_active_flower and node_exist > existence_threshold:
+                    is_terminal_bud = (row[COL_BUD_IS_TERMINAL] > 0.5) if row.shape[0] > COL_BUD_IS_TERMINAL else False
+                    if is_terminal_bud:
+                        ped_base = inode_tip.clone()
+                    else:
+                        ped_base = inode_line[0].clone()
+
+                    ped_tip = ped_base.clone()
+                    if ped_len > 1e-4 and ped_rad > 1e-5:
+                        if 0 in pet_axes_stored:
+                            ped_axis = inode_tip_axis * 0.85 + pet_axes_stored[0] * 0.15
+                        else:
+                            ped_axis = inode_tip_axis * 0.85 + prev_petiole_axis * 0.15
+                        ped_axis = ped_axis / (torch.linalg.norm(ped_axis) + 1e-6)
+                        ped_tip = ped_base + ped_axis * ped_len
+                        ped_line = torch.stack([ped_base, ped_tip], dim=0)
+                        v_ped, f_ped, n_ped, c_ped = generate_cone_tube_mesh_torch(
+                            ped_line,
+                            torch.tensor([ped_rad, ped_rad], device=device),
+                            self.COLOR_PEDUNCLE.to(device),
+                            self.tube_radial_subdivisions
+                        )
+                        if v_ped.shape[0] > 0:
+                            all_verts.append(v_ped)
+                            all_faces.append(f_ped + vert_offset)
+                            all_normals.append(n_ped)
+                            all_colors.append(c_ped)
+                            all_organs.append(torch.full((v_ped.shape[0],), 3, dtype=torch.int64, device=device)) # Organ 3 = Peduncle
+                            vert_offset += v_ped.shape[0]
+
+                    # Flowers & Pods
+                    is_bean = (species is not None and "bean" in species.lower())
+
+                    for fl_i in range(min(max(num_flowers, 1 if (bud_state in [2, 3, 4]) else 0), 4)):
+                        fl_base_col = COL_FL0_PITCH + fl_i * 5
+                        fl_pitch_deg = row[fl_base_col] if fl_base_col < row.shape[0] else torch.tensor(30.0, device=device)
+                        fl_yaw_deg = row[fl_base_col + 1] if fl_base_col + 1 < row.shape[0] else torch.tensor(0.0, device=device)
+                        fl_roll_deg = row[fl_base_col + 2] if fl_base_col + 2 < row.shape[0] else torch.tensor(0.0, device=device)
+                        fl_az_deg = row[fl_base_col + 3] if fl_base_col + 3 < row.shape[0] else torch.tensor(0.0, device=device)
+                        fl_scale = row[fl_base_col + 4] if fl_base_col + 4 < row.shape[0] else torch.tensor(0.09, device=device)
+
+                        if fl_scale <= 1e-4:
+                            fl_scale = torch.tensor(0.09, device=device)
+
+                        tot_fl_scale = fl_scale * node_exist
+
+                        # Determine if Pod or Flower
+                        is_pod = (bud_state == 4 or fruit_scale > 0.0)
+                        if is_pod:
+                            obj_name = "BeanPod.obj" if is_bean else "CowpeaPod.obj"
+                            col_mesh = self.COLOR_POD.to(device)
+                            organ_type_val = 5 # Pod/Fruit
+                        else:
+                            if is_bean:
+                                obj_name = "BeanFlower_open_white.obj" if bud_state == 3 else "BeanFlower_closed_white.obj"
+                                col_mesh = torch.tensor([0.95, 0.95, 0.95], dtype=torch.float32, device=device)
+                            else:
+                                obj_name = "CowpeaFlower_open_yellow.obj" if bud_state == 3 else "CowpeaFlower_closed_yellow.obj"
+                                col_mesh = self.COLOR_FLOWER.to(device)
+                            organ_type_val = 4 # Flower
+
+                        try:
+                            v_fl_b, f_fl_b = self.asset_mgr.get_mesh(obj_name)
+                        except FileNotFoundError:
+                            continue
+
+                        v_fl_b = v_fl_b.to(device) * tot_fl_scale
+                        f_fl_b = f_fl_b.to(device)
+
+                        # Flower rotation (InputOutput.cpp:2245-2248)
+                        pitch_r = math.radians(float(fl_pitch_deg.item()))
+                        yaw_r = math.radians(float(fl_yaw_deg.item()))
+                        roll_r = math.radians(float(fl_roll_deg.item()))
+                        az_r = math.radians(float(fl_az_deg.item()))
+
+                        R_fl = (
+                            rotr_z(az_r, device) @
+                            rotr_z(yaw_r, device) @
+                            rotr_y(-pitch_r, device) @
+                            rotr_x(roll_r, device)
+                        )
+
+                        v_fl_rot = (R_fl @ v_fl_b.T).T
+                        v_fl = v_fl_rot + ped_tip
+
+                        n_fl = compute_face_normals_torch(v_fl, f_fl_b)
+                        c_fl = col_mesh.unsqueeze(0).repeat(v_fl.shape[0], 1)
+
+                        all_verts.append(v_fl)
+                        all_faces.append(f_fl_b + vert_offset)
+                        all_normals.append(n_fl)
+                        all_colors.append(c_fl)
+                        all_organs.append(torch.full((v_fl.shape[0],), organ_type_val, dtype=torch.int64, device=device))
+                        vert_offset += v_fl.shape[0]
+
                 # Update parent context for the next phytomer on this shoot
                 prev_internode_axis = inode_tip_axis
                 if 0 in pet_axes_stored:
