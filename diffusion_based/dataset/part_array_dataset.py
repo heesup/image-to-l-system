@@ -173,11 +173,12 @@ class PartArrayDataset(Dataset):
             out[mask, i] = 1.0
         # Empty category = slots that are inactive (existence <= 0.5).
         out[exist <= 0.5, EMPTY_IDX] = 1.0
-        out[:, FM_BASE_START:FM_BASE_END] = part[:, P_COL_BASE_X:P_COL_BASE_Z + 1] * BASE_SCALE
-        out[:, FM_ROT_START:FM_ROT_END] = part[:, P_COL_ROT_0:P_COL_ROT_5 + 1]
-        out[:, FM_SCALE_START:FM_SCALE_END] = part[:, P_COL_SCALE_X:P_COL_SCALE_Z + 1] * SCALE_SCALE
-        out[:, FM_CURV_IDX] = part[:, P_COL_CURVATURE] / CURVATURE_SCALE
-        out[:, FM_PHYLLO_IDX] = part[:, P_COL_PHYLLOTACTIC_ANGLE] / PHYLLOTACTIC_SCALE
+        active_mask = (exist > 0.5)
+        out[active_mask, FM_BASE_START:FM_BASE_END] = part[active_mask, P_COL_BASE_X:P_COL_BASE_Z + 1] * BASE_SCALE
+        out[active_mask, FM_ROT_START:FM_ROT_END] = part[active_mask, P_COL_ROT_0:P_COL_ROT_5 + 1]
+        out[active_mask, FM_SCALE_START:FM_SCALE_END] = part[active_mask, P_COL_SCALE_X:P_COL_SCALE_Z + 1] * SCALE_SCALE
+        out[active_mask, FM_CURV_IDX] = part[active_mask, P_COL_CURVATURE] / CURVATURE_SCALE
+        out[active_mask, FM_PHYLLO_IDX] = part[active_mask, P_COL_PHYLLOTACTIC_ANGLE] / PHYLLOTACTIC_SCALE
         return out
 
     def decode_fm(self, fm: torch.Tensor) -> torch.Tensor:

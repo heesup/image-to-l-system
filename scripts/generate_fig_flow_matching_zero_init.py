@@ -249,18 +249,18 @@ def main():
         opt_delta_base = torch.zeros((512, 3), device=device, requires_grad=True)
 
         optimizer = torch.optim.AdamW([
-            {"params": [opt_yaw], "lr": 0.03},
-            {"params": [opt_global_scale], "lr": 0.12},
-            {"params": [opt_scale], "lr": 0.05},
-            {"params": [opt_delta_base], "lr": 0.03},
+            {"params": [opt_yaw], "lr": 0.02},
+            {"params": [opt_global_scale], "lr": 0.04},
+            {"params": [opt_scale], "lr": 0.03},
+            {"params": [opt_delta_base], "lr": 0.02},
         ])
 
         gt_fg = (gt_out["depth"] > 0.01).float()
-        for _ in range(50):
+        for _ in range(40):
             optimizer.zero_grad()
-            g_scale = torch.exp(opt_global_scale)
-            eval_bases = refined_part[:, P_COL_BASE_X:P_COL_BASE_Z + 1] * g_scale + torch.tanh(opt_delta_base) * 0.05
-            eval_scales = refined_part[:, P_COL_SCALE_X:P_COL_SCALE_Z + 1] * torch.exp(opt_scale * 0.3) * g_scale
+            g_scale = torch.exp(opt_global_scale.clamp(-0.8, 0.8))
+            eval_bases = refined_part[:, P_COL_BASE_X:P_COL_BASE_Z + 1] * g_scale + torch.tanh(opt_delta_base) * 0.03
+            eval_scales = refined_part[:, P_COL_SCALE_X:P_COL_SCALE_Z + 1] * torch.exp(opt_scale * 0.2) * g_scale
             p_eval = torch.cat([
                 refined_part[:, :P_COL_BASE_X],
                 eval_bases,
@@ -280,14 +280,14 @@ def main():
             loss_rgb = F.l1_loss(loss_out["rgb"], gt_out["rgb"])
             loss_depth = (torch.abs(loss_out["depth"] - gt_out["depth"]) * intersection).sum() / (intersection.sum() + 1e-6) if intersection.sum() > 10 else torch.tensor(0.0, device=device)
 
-            loss = 1.0 * loss_rgb + 2.0 * loss_depth + 4.0 * loss_silhouette
+            loss = 1.0 * loss_rgb + 1.5 * loss_depth + 2.0 * loss_silhouette
             loss.backward()
             optimizer.step()
 
         with torch.no_grad():
-            g_scale = torch.exp(opt_global_scale)
-            eval_bases = refined_part[:, P_COL_BASE_X:P_COL_BASE_Z + 1] * g_scale + torch.tanh(opt_delta_base) * 0.05
-            eval_scales = refined_part[:, P_COL_SCALE_X:P_COL_SCALE_Z + 1] * torch.exp(opt_scale * 0.3) * g_scale
+            g_scale = torch.exp(opt_global_scale.clamp(-0.8, 0.8))
+            eval_bases = refined_part[:, P_COL_BASE_X:P_COL_BASE_Z + 1] * g_scale + torch.tanh(opt_delta_base) * 0.03
+            eval_scales = refined_part[:, P_COL_SCALE_X:P_COL_SCALE_Z + 1] * torch.exp(opt_scale * 0.2) * g_scale
             p_eval = torch.cat([
                 refined_part[:, :P_COL_BASE_X],
                 eval_bases,

@@ -106,7 +106,10 @@ def train_epoch(
             diff_scale = (pred_velocity[:, :, FM_SCALE_START:FM_SCALE_END] - v_target[:, :, FM_SCALE_START:FM_SCALE_END]) ** 2
             loss_scale = (diff_scale * active_mask).sum() / (num_active * 3.0)
 
-            loss = loss_cat + 1.0 * loss_base + 1.0 * loss_rot + 3.0 * loss_scale
+            # Inactive slot velocity penalty: ensure unactivated slots remain perfectly at 0
+            loss_inactive_geom = (pred_velocity[:, :, FM_BASE_START:] ** 2 * (1.0 - active_mask)).mean()
+
+            loss = loss_cat + 1.0 * loss_base + 1.0 * loss_rot + 3.0 * loss_scale + 0.5 * loss_inactive_geom
 
         optimizer.zero_grad()
         loss.backward()
