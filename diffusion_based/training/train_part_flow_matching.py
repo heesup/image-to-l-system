@@ -52,12 +52,14 @@ def train_epoch(
     ema_model: AveragedModel = None,
     global_step: int = 0,
     empty_prior: bool = False,
+    epoch: int = 1,
 ) -> Dict[str, float]:
     model.train()
     total_loss = 0.0
     count = 0
+    num_batches = len(dataloader)
 
-    for batch in dataloader:
+    for batch_idx, batch in enumerate(dataloader):
         images = batch["image"].to(device)
         nodes = batch["nodes"].to(device)  # (B, N, 16) normalized
         existence_mask = batch["existence_mask"].to(device)  # (B, N)
@@ -79,18 +81,19 @@ def train_epoch(
         x_t = scheduler.sample_xt(x0, x1, t)
         v_target = scheduler.velocity_target(x0, x1)
 
-        outputs = model(x_t, t, images)
-        pred_velocity = outputs["pred_velocity"]
+        with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+            outputs = model(x_t, t, images)
+            pred_velocity = outputs["pred_velocity"]
 
-        # Category velocity loss (across all slots: learning active organ types vs empty)
-        loss_cat = F.mse_loss(pred_velocity[:, :, :FM_OT_END], v_target[:, :, :FM_OT_END])
+            # Category velocity loss (across all slots: learning active organ types vs empty)
+            loss_cat = F.mse_loss(pred_velocity[:, :, :FM_OT_END], v_target[:, :, :FM_OT_END])
 
-        # Geometry velocity loss (masked to active organ slots: base, rot, scale, curv, phyllo)
-        active_mask = existence_mask.unsqueeze(-1).float()  # (B, N, 1)
-        diff_geom = (pred_velocity[:, :, FM_BASE_START:] - v_target[:, :, FM_BASE_START:]) ** 2
-        loss_geom = (diff_geom * active_mask).sum() / max(active_mask.sum() * (FM_NODE_DIM - FM_BASE_START), 1.0)
+            # Geometry velocity loss (masked to active organ slots: base, rot, scale, curv, phyllo)
+            active_mask = existence_mask.unsqueeze(-1).float()  # (B, N, 1)
+            diff_geom = (pred_velocity[:, :, FM_BASE_START:] - v_target[:, :, FM_BASE_START:]) ** 2
+            loss_geom = (diff_geom * active_mask).sum() / max(active_mask.sum() * (FM_NODE_DIM - FM_BASE_START), 1.0)
 
-        loss = loss_cat + 2.0 * loss_geom
+            loss = loss_cat + 2.0 * loss_geom
 
         optimizer.zero_grad()
         loss.backward()
@@ -104,27 +107,30 @@ def train_epoch(
         total_loss += loss.item() * B
         count += B
 
+        if (batch_idx + 1) % 25 == 0 or (batch_idx + 1) == num_batches:
+            print(f"  [Epoch {epoch:02d}] Step {batch_idx+1:03d}/{num_batches:03d} | Loss: {loss.item():.4f} (Cat: {loss_cat.item():.4f}, Geom: {loss_geom.item():.4f})", flush=True)
+
     return {"loss": total_loss / max(count, 1), "global_step": global_step}
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_root", type=str, default="dataset/helios_data")
-    parser.add_argument("--max_nodes", type=int, default=2048)
+    parser.add_argument("--max_nodes", type=int, default=512)
     parser.add_argument("--image_size", type=int, default=128)
     parser.add_argument("--patch_size", type=int, default=8)
     parser.add_argument("--embed_dim", type=int, default=256)
     parser.add_argument("--encoder_layers", type=int, default=6)
     parser.add_argument("--decoder_layers", type=int, default=4)
-    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--save_every", type=int, default=10)
-    parser.add_argument("--checkpoint_dir", type=str, default="diffusion_based/checkpoints")
+    parser.add_argument("--save_every", type=int, default=1)
+    parser.add_argument("--checkpoint_dir", type=str, default="diffusion_based/checkpoints/fm")
     parser.add_argument("--val_pattern", type=str, default=None,
                         help="Comma-separated basename globs held out for validation, e.g. '*seed00*'")
-    parser.add_argument("--cache_dir", type=str, default="dataset/helios_data_14d_cache",
+    parser.add_argument("--cache_dir", type=str, default="dataset/cache",
                         help="Directory of precomputed part tensors + images (skip if absent)")
     parser.add_argument("--empty_prior", action="store_true",
                         help="Start flow-matching from an empty plant (existence=0) instead of Gaussian noise")
@@ -146,7 +152,7 @@ def main():
     )
     print(f"Train dataset size: {len(dataset)}")
 
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=0)
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
 
     model = PartFlowMatchingModel(
         max_nodes=args.max_nodes,
@@ -169,7 +175,7 @@ def main():
     global_step = 0
     for epoch in range(1, args.epochs + 1):
         metrics = train_epoch(model, dataloader, optimizer, scheduler, device, ema_model, global_step,
-                              empty_prior=args.empty_prior)
+                              empty_prior=args.empty_prior, epoch=epoch)
         global_step = metrics["global_step"]
         print(f"Epoch {epoch:03d} | loss={metrics['loss']:.4f}", flush=True)
 

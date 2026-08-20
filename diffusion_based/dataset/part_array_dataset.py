@@ -121,7 +121,8 @@ class PartArrayDataset(Dataset):
             xml_paths = [p for p in xml_paths if any(_fnmatch.fnmatch(os.path.basename(p), pat) for pat in include_globs)]
         elif exclude_globs:
             xml_paths = [p for p in xml_paths if not any(_fnmatch.fnmatch(os.path.basename(p), pat) for pat in exclude_globs)]
-        self.samples = [self._resolve_pair(p) for p in xml_paths]
+        resolved = [self._resolve_pair(p) for p in xml_paths]
+        self.samples = [p for p in resolved if p["jpeg"] and os.path.exists(p["jpeg"])]
 
     def _resolve_pair(self, xml_path: str) -> Dict[str, str]:
         prefix = os.path.basename(xml_path).split("_plant_")[0]
@@ -203,25 +204,28 @@ class PartArrayDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         sample = self.samples[idx]
         cache_key = sample["xml"]
-        if not os.path.exists(sample["xml"]):
-            return self.__getitem__((idx + 1) % len(self.samples))
 
-        # Load (or compute) the part tensor ONCE, then derive both the
-        # rendered image and the padded/normalized training tensor from it.
-        part = None
+        # Fast path: Load complete pre-cached sample dict directly
         if self.cache_dir is not None:
             cache_path = os.path.join(self.cache_dir, f"{sample['prefix']}.pt")
             if os.path.exists(cache_path):
                 try:
-                    part = torch.load(cache_path, map_location="cpu")
+                    data = torch.load(cache_path, map_location="cpu", weights_only=False)
+                    if isinstance(data, dict) and "image" in data and "nodes" in data:
+                        return data
                 except Exception:
-                    part = None
-        if part is None:
-            try:
-                gt_array = PlantOrganArray.from_xml_file(sample["xml"])
-                part = gt_array.to_part_tensor(device=torch.device("cpu"))
-            except Exception:
-                return self.__getitem__((idx + 1) % len(self.samples))
+                    pass
+
+        if not os.path.exists(sample["xml"]):
+            return self.__getitem__((idx + 1) % len(self.samples))
+
+        # Fallback path: Load XML and compute on the fly
+        part = None
+        try:
+            gt_array = PlantOrganArray.from_xml_file(sample["xml"])
+            part = gt_array.to_part_tensor(device=torch.device("cpu"))
+        except Exception:
+            return self.__getitem__((idx + 1) % len(self.samples))
 
         # Image
         if cache_key in self._image_cache:
@@ -243,24 +247,7 @@ class PartArrayDataset(Dataset):
                     image_tensor = None
 
             if image_tensor is None:
-                if self.cache_dir is not None:
-                    img_path = os.path.join(self.cache_dir, f"{sample['prefix']}_img.pt")
-                    if os.path.exists(img_path):
-                        rgb = torch.load(img_path, map_location="cpu")
-                        image_tensor = self._transform_tensor(rgb).cpu()
-                if image_tensor is None:
-                    if self._cached_renderer is None:
-                        from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
-                        self._cached_renderer = HeliosPyTorchRenderer(image_size=self.image_size).to(self.device)
-                    gt_array = PlantOrganArray.from_xml_file_typed(sample["xml"])
-                    with torch.no_grad():
-                        rgb = self._cached_renderer.render_part_tensor(
-                            part.to(self.device), template_organ_array=gt_array, camera_height=1.0,
-                            elevation_deg=90.0, device=self.device, focus_plant=True,
-                            use_kinematics_tree=False, differentiable=False,
-                        )
-                    rgb = rgb.cpu()
-                    image_tensor = self._transform_tensor(rgb).cpu()
+                return self.__getitem__((idx + 1) % len(self.samples))
             self._image_cache[cache_key] = image_tensor
 
         # Part tensor (padded + FM-encoded)
