@@ -1,35 +1,211 @@
 """
-Plant Organ Array: part-centric (N, D) representation and XML utilities.
+Plant Organ Array representation and XML Round-trip Parser/Writer.
 
-This module stores plant architecture as a dimension-agnostic part-centric
-tensor. The current layout uses 16 columns:
+This module provides two tensor layouts:
 
-    [OrganType(0), Base(1..3), Rot6D(4..9), Scale(10..12), Existence(13),
-     Curvature(14), PhyllotacticAngle(15)]
+  1. LEGACY (N, 94): fixed phytomer-slot layout used by the initial diffusion
+     pipeline. Kept for backward compatibility and marked for deletion.
 
-The floral-bud state is folded into the organ type: dormant bud (state 1) is
-ORGAN_BUD, aborted bud (state 5) is ORGAN_BUD_ABORTED, and the flowering states
-(2/3/4) are ORGAN_FLOWER_CLOSED / ORGAN_FLOWER / ORGAN_FRUIT respectively.
+  2. TYPED   (N, 40): per-organ-row layout with a categorical organ_type
+     column. Fields are shared only when they have the same physical meaning.
+     XML round-trip is honest: every tag is reconstructed from the tensor,
+     no raw XML text is cached.
 
-The last two columns are stored so the part tensor can round-trip back to
-Helios XML faithfully:
-  - Curvature: shared petiole/peduncle curvature (meaning disambiguated by
-    OrganType). Internode/leaf rows leave it at 0.
-  - PhyllotacticAngle: internode phyllotactic angle (degrees); only meaningful
-    on internode rows.
+Organ types (categorical integer, col ORGAN_TYPE):
+  0 = ROOT_META   (plant base + age)
+  1 = SHOOT_META  (shoot metadata + base rotation)
+  2 = INTERNODE
+  3 = PETIOLE
+  4 = LEAF
+  5 = BUD
+  6 = PEDUNCLE
+  7 = FLOWER
 """
 
+import os
 import math
-from typing import Optional
+import glob
 import torch
 import numpy as np
 import xml.etree.ElementTree as ET
+from typing import List, Tuple, Dict, Any, Optional
 
 
 # =============================================================================
-# ORGAN TYPE IDs
+# LEGACY 94D COLUMN CONSTANTS
+# =============================================================================
+# DEPRECATED: scheduled for deletion after the typed (N, 40) migration.
+
+COL_PLANT_ID = 0
+COL_PLANT_AGE = 1
+COL_SHOOT_ID = 2
+COL_SHOOT_TYPE = 3           # 0=unifoliate, 1=trifoliate
+COL_PARENT_SHOOT_ID = 4
+COL_PARENT_NODE_IDX = 5
+COL_PARENT_PETIOLE_IDX = 6
+COL_SHOOT_ROT_PITCH = 7
+COL_SHOOT_ROT_YAW = 8
+COL_SHOOT_ROT_ROLL = 9
+COL_PHYTOMER_IDX = 10
+
+# Internode
+COL_INODE_LEN = 11
+COL_INODE_RAD = 12
+COL_INODE_PITCH = 13
+COL_INODE_PHYLLO_ANG = 14
+COL_INODE_LEN_MAX = 15
+COL_INODE_LEN_SEGS = 16
+COL_CURV_PERT_0 = 17
+COL_CURV_PERT_1 = 18
+COL_YAW_PERT_0 = 19
+COL_YAW_PERT_1 = 20
+
+# Petiole 0
+COL_PET0_LEN = 21
+COL_PET0_RAD = 22
+COL_PET0_PITCH = 23
+COL_PET0_CURV = 24
+COL_PET0_LEAF_SCALE = 25
+COL_PET0_TAPER = 26
+COL_PET0_LEN_SEGS = 27
+COL_PET0_RAD_SUBDIV = 28
+COL_PET0_LFLT_SCALE = 29
+COL_PET0_LFLT_OFFSET = 30
+COL_PET0_NUM_LEAVES = 31
+
+# Leaves of Petiole 0 (up to 3 leaves)
+COL_PET0_L0_SCALE = 32
+COL_PET0_L0_PITCH = 33
+COL_PET0_L0_YAW = 34
+COL_PET0_L0_ROLL = 35
+
+COL_PET0_L1_SCALE = 36
+COL_PET0_L1_PITCH = 37
+COL_PET0_L1_YAW = 38
+COL_PET0_L1_ROLL = 39
+
+COL_PET0_L2_SCALE = 40
+COL_PET0_L2_PITCH = 41
+COL_PET0_L2_YAW = 42
+COL_PET0_L2_ROLL = 43
+
+# Petiole 1 (if present in unifoliate shoots)
+COL_HAS_PET1 = 44
+COL_PET1_LEN = 45
+COL_PET1_RAD = 46
+COL_PET1_PITCH = 47
+COL_PET1_CURV = 48
+COL_PET1_LEAF_SCALE = 49
+COL_PET1_TAPER = 50
+COL_PET1_LEN_SEGS = 51
+COL_PET1_RAD_SUBDIV = 52
+COL_PET1_LFLT_SCALE = 53
+COL_PET1_LFLT_OFFSET = 54
+COL_PET1_NUM_LEAVES = 55
+
+COL_PET1_L0_SCALE = 56
+COL_PET1_L0_PITCH = 57
+COL_PET1_L0_YAW = 58
+COL_PET1_L0_ROLL = 59
+
+# Floral Bud
+COL_HAS_BUD = 60
+COL_BUD_STATE = 61
+COL_BUD_PARENT_IDX = 62
+COL_BUD_IDX = 63
+COL_BUD_IS_TERMINAL = 64
+COL_BUD_FRUIT_SCALE = 65
+
+# Peduncle
+COL_PED_LEN = 66
+COL_PED_RAD = 67
+COL_PED_PITCH = 68
+COL_PED_CURV = 69
+COL_PED_ROLL = 70
+
+# Inflorescence & Flowers (up to 4 flowers)
+COL_NUM_FLOWERS = 71
+COL_FLOWER_OFFSET = 72
+
+# Flower 0
+COL_FL0_PITCH = 73
+COL_FL0_YAW = 74
+COL_FL0_ROLL = 75
+COL_FL0_AZIMUTH = 76
+COL_FL0_BASE_SCALE = 77
+
+# Flower 1
+COL_FL1_PITCH = 78
+COL_FL1_YAW = 79
+COL_FL1_ROLL = 80
+COL_FL1_AZIMUTH = 81
+COL_FL1_BASE_SCALE = 82
+
+# Flower 2
+COL_FL2_PITCH = 83
+COL_FL2_YAW = 84
+COL_FL2_ROLL = 85
+COL_FL2_AZIMUTH = 86
+COL_FL2_BASE_SCALE = 87
+
+# Flower 3
+COL_FL3_PITCH = 88
+COL_FL3_YAW = 89
+COL_FL3_ROLL = 90
+COL_FL3_AZIMUTH = 91
+COL_FL3_BASE_SCALE = 92
+
+COL_EXISTENCE = 93
+NUM_FEATURES_LEGACY = 94
+
+
+# =============================================================================
+# TYPED 40D COLUMN CONSTANTS
 # =============================================================================
 
+T_COL_PLANT_ID = 0
+T_COL_PLANT_AGE = 1
+T_COL_BASE_X = 2
+T_COL_BASE_Y = 3
+T_COL_BASE_Z = 4
+T_COL_SHOOT_ID = 5
+T_COL_PARENT_SHOOT_ID = 6
+T_COL_PARENT_NODE_IDX = 7
+T_COL_PARENT_PETIOLE_IDX = 8
+T_COL_PHYTOMER_IDX = 9
+T_COL_CHILD_INDEX = 10
+T_COL_ORGAN_TYPE = 11
+T_COL_SHOOT_TYPE = 12
+T_COL_LENGTH = 13
+T_COL_RADIUS = 14
+T_COL_SCALE = 15
+T_COL_PITCH = 16
+T_COL_YAW = 17
+T_COL_ROLL = 18
+T_COL_CURVATURE = 19
+T_COL_PHYLLOTACTIC_ANGLE = 20
+T_COL_LENGTH_MAX = 21
+T_COL_LENGTH_SEGMENTS = 22
+T_COL_CURV_PERT_0 = 23
+T_COL_CURV_PERT_1 = 24
+T_COL_YAW_PERT_0 = 25
+T_COL_YAW_PERT_1 = 26
+T_COL_CURRENT_LEAF_SCALE_FACTOR = 27
+T_COL_TAPER = 28
+T_COL_RADIAL_SUBDIVISIONS = 29
+T_COL_LEAFLET_SCALE = 30
+T_COL_LEAFLET_OFFSET = 31
+T_COL_BUD_STATE = 32
+T_COL_BUD_PARENT_INDEX = 33
+T_COL_BUD_IS_TERMINAL = 34
+T_COL_FRUIT_SCALE = 35
+T_COL_FLOWER_AZIMUTH = 36
+T_COL_FLOWER_OFFSET = 37
+T_COL_RESERVED = 38
+T_COL_EXISTENCE = 39
+NUM_FEATURES_TYPED = 40
+
+# Categorical organ types
 ORGAN_ROOT_META = 0
 ORGAN_SHOOT_META = 1
 ORGAN_INTERNODE = 2
@@ -38,1020 +214,11 @@ ORGAN_LEAF = 4
 ORGAN_BUD = 5
 ORGAN_PEDUNCLE = 6
 ORGAN_FLOWER = 7
-ORGAN_FRUIT = 8
-ORGAN_FLOWER_CLOSED = 9
-ORGAN_BUD_ABORTED = 10
+NUM_ORGAN_TYPES = 8
 
 
 # =============================================================================
-# PART-CENTRIC COLUMN IDs
-# =============================================================================
-
-# Layout: [Existence(0), OrganType(1), Base(2..4), Rot6D(5..10),
-#          Scale(11..13), Curvature(14), Phyllotactic(15)]
-# Existence is placed first so it reads naturally as a per-slot mask and so the
-# one-hot organ-type block can be appended right after it when expanding to the
-# flow-matching layout.
-P_COL_EXISTENCE = 0
-P_COL_ORGAN_TYPE = 1
-P_COL_BASE_X = 2
-P_COL_BASE_Y = 3
-P_COL_BASE_Z = 4
-P_COL_ROT_0 = 5
-P_COL_ROT_1 = 6
-P_COL_ROT_2 = 7
-P_COL_ROT_3 = 8
-P_COL_ROT_4 = 9
-P_COL_ROT_5 = 10
-P_COL_SCALE_X = 11
-P_COL_SCALE_Y = 12
-P_COL_SCALE_Z = 13
-P_COL_CURVATURE = 14
-P_COL_PHYLLOTACTIC_ANGLE = 15
-NUM_FEATURES = 16
-
-
-# =============================================================================
-# ROTATION HELPERS
-# =============================================================================
-
-def rotation_matrix_to_6d(R: torch.Tensor) -> torch.Tensor:
-    """
-    Converts 3x3 rotation matrix (or (..., 3, 3)) to continuous 6D representation
-    by taking the first two column vectors.
-    """
-    if R.dim() == 2:
-        return torch.cat([R[:, 0], R[:, 1]], dim=0)
-    col1 = R[..., :, 0]
-    col2 = R[..., :, 1]
-    return torch.cat([col1, col2], dim=-1)
-
-
-def rotation_6d_to_matrix(r6: torch.Tensor) -> torch.Tensor:
-    """
-    Converts 6D continuous rotation representation (..., 6) to 3x3 rotation
-    matrix (..., 3, 3) using Gram-Schmidt orthogonalization (Zhou et al.,
-    CVPR 2019).
-    """
-    if r6.dim() == 1:
-        r6_b = r6.unsqueeze(0)
-    else:
-        r6_b = r6
-
-    a1 = r6_b[..., 0:3]
-    a2 = r6_b[..., 3:6]
-
-    b1 = torch.nn.functional.normalize(a1, dim=-1, eps=1e-8)
-    dot = torch.sum(b1 * a2, dim=-1, keepdim=True)
-    b2 = torch.nn.functional.normalize(a2 - dot * b1, dim=-1, eps=1e-8)
-    b3 = torch.cross(b1, b2, dim=-1)
-
-    R = torch.stack([b1, b2, b3], dim=-1)
-    if r6.dim() == 1:
-        return R.squeeze(0)
-    return R
-
-
-def _rotation_matrix(roll_rad: float, pitch_rad: float, yaw_rad: float) -> np.ndarray:
-    """Tait-Bryan XYZ rotation matrix (roll, pitch, yaw in radians)."""
-    cr, sr = math.cos(roll_rad), math.sin(roll_rad)
-    cp, sp = math.cos(pitch_rad), math.sin(pitch_rad)
-    cy, sy = math.cos(yaw_rad), math.sin(yaw_rad)
-    R = np.array(
-        [
-            [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-            [-sp, cp * sr, cp * cr],
-        ],
-        dtype=np.float32,
-    )
-    return R
-
-
-def _matrix_to_6d(R: np.ndarray) -> np.ndarray:
-    """Convert a numpy 3x3 rotation matrix to a 6D continuous representation."""
-    r6 = rotation_matrix_to_6d(torch.from_numpy(R).float())
-    return r6.numpy()
-
-
-def _make_row(
-    organ_type: int,
-    base: np.ndarray,
-    R: np.ndarray,
-    scale: np.ndarray,
-    existence: float = 1.0,
-) -> np.ndarray:
-    """Build a single (NUM_FEATURES,) row from spatial part data."""
-    row = np.zeros(NUM_FEATURES, dtype=np.float32)
-    row[P_COL_ORGAN_TYPE] = float(organ_type)
-    row[P_COL_BASE_X] = float(base[0])
-    row[P_COL_BASE_Y] = float(base[1])
-    row[P_COL_BASE_Z] = float(base[2])
-    r6 = _matrix_to_6d(R)
-    row[P_COL_ROT_0:P_COL_ROT_5 + 1] = r6
-    row[P_COL_SCALE_X] = float(scale[0])
-    row[P_COL_SCALE_Y] = float(scale[1])
-    row[P_COL_SCALE_Z] = float(scale[2])
-    row[P_COL_EXISTENCE] = float(existence)
-    return row
-
-
-def _parse_xml_to_part_tensor(xml_content: str) -> torch.Tensor:
-    """
-    Direct XML -> part tensor parser.
-
-    Parses a Helios XML document into a flat list of per-organ records, then runs
-    the same forward-kinematics chain as the original typed mesh builder
-    (internode/petiole/leaf curvature, phyllotaxis, leaf roll/yaw, peduncle and
-    flower/fruit orientation) to produce the part-centric tensor directly, with
-    no intermediate 40D typed array.
-    """
-    from diffusion_based.models.helios_pytorch_geometry import (
-        rotr_x, rotr_y, rotr_z,
-        rotate_vector_about_axis,
-        rotate_points_about_axis,
-        rodrigues_matrix_torch,
-        interpolate_tube_torch,
-        get_axis_vector_torch,
-        clamp_offset_torch,
-        _get_rotation_matrix_between_vectors_batch,
-    )
-
-    root = ET.fromstring(xml_content)
-    if root.tag != "helios":
-        raise ValueError("Root tag must be <helios>")
-
-    device = torch.device("cpu")
-    deg2rad = torch.tensor(math.pi / 180.0, dtype=torch.float32, device=device)
-    z_axis = torch.tensor([0.0, 0.0, 1.0], device=device)
-    gravitropic_curvature = 200.0
-
-    # ------------------------------------------------------------------
-    # Phase 0: parse XML into a flat list of organ records (dicts).
-    # Each record carries the same fields the old 40D typed rows carried.
-    # ------------------------------------------------------------------
-    records: list = []  # list of dicts
-
-    for plant_elem in root.findall("plant_instance"):
-        plant_id = int(plant_elem.attrib.get("ID", plant_elem.attrib.get("id", 0)))
-        bp_text = _get_text_default(plant_elem, "base_position", None)
-        if bp_text is None:
-            bp_text = _get_text_default(plant_elem, "plant_base_position", "0 0 0")
-        bp_vals = [float(x) for x in bp_text.replace(";", " ").split() if x.strip()]
-        if len(bp_vals) < 3:
-            bp_vals = [0.0, 0.0, 0.0]
-        plant_base = torch.tensor(bp_vals[:3], dtype=torch.float32, device=device)
-        plant_age = _get_float_text(plant_elem, "plant_age", 0.0)
-
-        records.append({
-            "organ_type": ORGAN_ROOT_META,
-            "plant_id": plant_id,
-            "plant_age": plant_age,
-            "base": plant_base,
-        })
-
-        for shoot_elem in plant_elem.findall("shoot"):
-            sid = int(shoot_elem.attrib.get("ID", shoot_elem.attrib.get("shoot_id", shoot_elem.attrib.get("id", 0))))
-            stl = _get_text_default(shoot_elem, "shoot_type_label", "unifoliate")
-            shoot_type = 0 if "unifoliate" in (stl or "") else 1
-            psi = _get_int_text(shoot_elem, "parent_shoot_ID", -1)
-            pni = _get_int_text(shoot_elem, "parent_node_index", 0)
-            ppi = _get_int_text(shoot_elem, "parent_petiole_index", 0)
-            br_text = _get_text_default(shoot_elem, "base_rotation", None)
-            if br_text is not None:
-                br_vals = [float(x) for x in br_text.split() if x.strip()]
-                br_pitch, br_yaw, br_roll = (br_vals + [0.0, 0.0, 0.0])[:3]
-            else:
-                br_pitch = _get_float_text(shoot_elem, "shoot_base_pitch", 0.0)
-                br_yaw = _get_float_text(shoot_elem, "shoot_base_yaw", 0.0)
-                br_roll = _get_float_text(shoot_elem, "shoot_base_roll", 0.0)
-
-            records.append({
-                "organ_type": ORGAN_SHOOT_META,
-                "shoot_id": sid,
-                "shoot_type": shoot_type,
-                "parent_shoot_id": psi,
-                "parent_node_idx": pni,
-                "parent_petiole_idx": ppi,
-                "pitch": br_pitch,
-                "yaw": br_yaw,
-                "roll": br_roll,
-            })
-
-            for phyto_idx, phyto_elem in enumerate(shoot_elem.findall("phytomer")):
-                internode_elem = phyto_elem.find("internode")
-                if internode_elem is None:
-                    continue
-
-                il = _get_float_text(internode_elem, "internode_length", 0.0)
-                ir = _get_float_text(internode_elem, "internode_radius", 0.0)
-                ip = _get_float_text(internode_elem, "internode_pitch", 0.0)
-                ipa = _get_float_text(internode_elem, "internode_phyllotactic_angle", 0.0)
-                ilm = _get_float_text(internode_elem, "internode_length_max", 0.0)
-                ils = _get_int_text(internode_elem, "internode_length_segments", 2)
-                cp_text = _get_text_default(internode_elem, "curvature_perturbations", "0;0")
-                cp_list = [float(x) for x in (cp_text or "").split(";") if x.strip()]
-                cp0 = cp_list[0] if len(cp_list) > 0 else 0.0
-                cp1 = cp_list[1] if len(cp_list) > 1 else 0.0
-                yp_text = _get_text_default(internode_elem, "yaw_perturbations", "0;0")
-                yp_list = [float(x) for x in (yp_text or "").split(";") if x.strip()]
-                yp0 = yp_list[0] if len(yp_list) > 0 else 0.0
-                yp1 = yp_list[1] if len(yp_list) > 1 else 0.0
-
-                records.append({
-                    "organ_type": ORGAN_INTERNODE,
-                    "shoot_id": sid,
-                    "phytomer_idx": phyto_idx,
-                    "length": il,
-                    "radius": ir,
-                    "pitch": ip,
-                    "phyllotactic_angle": ipa,
-                    "length_max": ilm,
-                    "length_segments": ils,
-                    "curv_pert_0": cp0,
-                    "curv_pert_1": cp1,
-                    "yaw_pert_0": yp0,
-                    "yaw_pert_1": yp1,
-                })
-
-                for pet_i, pet_elem in enumerate(internode_elem.findall("petiole")):
-                    pl = _get_float_text(pet_elem, "petiole_length", 0.0)
-                    pr = _get_float_text(pet_elem, "petiole_radius", 0.0)
-                    pp = _get_float_text(pet_elem, "petiole_pitch", 0.0)
-                    pc = _get_float_text(pet_elem, "petiole_curvature", 0.0)
-                    cls_val = _get_float_text(pet_elem, "current_leaf_scale_factor", 1.0)
-                    pt = _get_float_text(pet_elem, "petiole_taper", 0.25)
-                    pls = _get_int_text(pet_elem, "petiole_length_segments", 5)
-                    lflt_scale = _get_float_text(pet_elem, "leaflet_scale", 1.0)
-                    lflt_offset = _get_float_text(pet_elem, "leaflet_offset", 0.4)
-
-                    records.append({
-                        "organ_type": ORGAN_PETIOLE,
-                        "shoot_id": sid,
-                        "phytomer_idx": phyto_idx,
-                        "parent_petiole_idx": pet_i,
-                        "length": pl,
-                        "radius": pr,
-                        "pitch": pp,
-                        "curvature": pc,
-                        "current_leaf_scale_factor": cls_val,
-                        "taper": pt,
-                        "length_segments": pls,
-                        "leaflet_scale": lflt_scale,
-                        "leaflet_offset": lflt_offset,
-                    })
-
-                    for lf_idx, leaf_elem in enumerate(pet_elem.findall("leaf")):
-                        lfs = _get_float_text(leaf_elem, "leaf_scale", 1.0)
-                        lfp = _get_float_text(leaf_elem, "leaf_pitch", 0.0)
-                        lfy = _get_float_text(leaf_elem, "leaf_yaw", 0.0)
-                        lfr = _get_float_text(leaf_elem, "leaf_roll", 0.0)
-                        records.append({
-                            "organ_type": ORGAN_LEAF,
-                            "shoot_id": sid,
-                            "phytomer_idx": phyto_idx,
-                            "parent_petiole_idx": pet_i,
-                            "child_index": lf_idx,
-                            "scale": lfs,
-                            "pitch": lfp,
-                            "yaw": lfy,
-                            "roll": lfr,
-                        })
-
-                    fb_elem = pet_elem.find("floral_bud")
-                    if fb_elem is not None:
-                        bs = _get_int_text(fb_elem, "bud_state", 5)
-                        bpi = _get_int_text(fb_elem, "parent_index", 0)
-                        bidx = _get_int_text(fb_elem, "bud_index", 0)
-                        biterm = _get_int_text(fb_elem, "is_terminal", 0)
-                        bcfs = _get_float_text(fb_elem, "current_fruit_scale_factor", 1.0)
-                        records.append({
-                            "organ_type": ORGAN_BUD,
-                            "shoot_id": sid,
-                            "phytomer_idx": phyto_idx,
-                            "parent_petiole_idx": pet_i,
-                            "child_index": bidx,
-                            "bud_state": bs,
-                            "bud_parent_index": bpi,
-                            "bud_is_terminal": biterm,
-                            "fruit_scale": bcfs,
-                        })
-
-                        ped_elem = fb_elem.find("peduncle")
-                        if ped_elem is not None:
-                            pdl = _get_float_text(ped_elem, "length", 0.0)
-                            pdr = _get_float_text(ped_elem, "radius", 0.0)
-                            pdp = _get_float_text(ped_elem, "pitch", 0.0)
-                            pdc = _get_float_text(ped_elem, "curvature", 0.0)
-                            pdrl = _get_float_text(ped_elem, "roll", 0.0)
-                            records.append({
-                                "organ_type": ORGAN_PEDUNCLE,
-                                "shoot_id": sid,
-                                "phytomer_idx": phyto_idx,
-                                "parent_petiole_idx": pet_i,
-                                "length": pdl,
-                                "radius": pdr,
-                                "pitch": pdp,
-                                "curvature": pdc,
-                                "roll": pdrl,
-                                "bud_state": bs,
-                            })
-
-                        infl_elem = fb_elem.find("inflorescence")
-                        if infl_elem is not None:
-                            foff = _get_float_text(infl_elem, "flower_offset", 0.05)
-                            for fl_idx, fl_elem in enumerate(infl_elem.findall("flower")):
-                                fp = _get_float_text(fl_elem, "flower_pitch", 0.0)
-                                fy = _get_float_text(fl_elem, "flower_yaw", 0.0)
-                                fr = _get_float_text(fl_elem, "flower_roll", 0.0)
-                                fa = _get_float_text(fl_elem, "flower_azimuth", 0.0)
-                                fbs = _get_float_text(fl_elem, "flower_base_scale", 1.0)
-                                records.append({
-                                    "organ_type": ORGAN_FLOWER,
-                                    "shoot_id": sid,
-                                    "phytomer_idx": phyto_idx,
-                                    "parent_petiole_idx": pet_i,
-                                    "child_index": fl_idx,
-                                    "pitch": fp,
-                                    "yaw": fy,
-                                    "roll": fr,
-                                    "flower_azimuth": fa,
-                                    "scale": fbs,
-                                    "flower_offset": foff,
-                                })
-
-    if not records:
-        return torch.zeros((0, NUM_FEATURES), dtype=torch.float32)
-
-    N = len(records)
-    part = torch.zeros((N, NUM_FEATURES), dtype=torch.float32, device=device)
-    eye_6d = rotation_matrix_to_6d(torch.eye(3, device=device))
-
-    # ------------------------------------------------------------------
-    # Build index maps over records (mirrors the old typed index maps).
-    # ------------------------------------------------------------------
-    shoot_meta_row: dict = {}
-    internode_rows: dict = {}   # sid -> [(p_idx, rec_idx)]
-    petiole_row: dict = {}      # (sid, p_idx, pet_i) -> rec_idx
-    leaf_rows: dict = {}        # (sid, p_idx, pet_i) -> {lf_idx: rec_idx}
-    bud_rows: dict = {}         # (sid, p_idx) -> [(bud_idx, rec_idx)]
-    peduncle_rows: dict = {}    # (sid, p_idx) -> rec_idx
-    flower_rows: dict = {}      # (sid, p_idx) -> [(fl_idx, rec_idx)]
-
-    for idx, rec in enumerate(records):
-        ot = rec["organ_type"]
-        sid = rec.get("shoot_id", 0)
-        p_idx = rec.get("phytomer_idx", 0)
-        if ot == ORGAN_ROOT_META:
-            part[idx, P_COL_ORGAN_TYPE] = ORGAN_ROOT_META
-            part[idx, P_COL_EXISTENCE] = 1.0
-            part[idx, P_COL_BASE_X:P_COL_BASE_Z + 1] = rec["base"]
-        elif ot == ORGAN_SHOOT_META:
-            shoot_meta_row[sid] = idx
-            part[idx, P_COL_ORGAN_TYPE] = ORGAN_SHOOT_META
-        elif ot == ORGAN_INTERNODE:
-            internode_rows.setdefault(sid, []).append((p_idx, idx))
-            part[idx, P_COL_ORGAN_TYPE] = ORGAN_INTERNODE
-            part[idx, P_COL_SCALE_X] = rec["radius"]
-            part[idx, P_COL_SCALE_Y] = rec["radius"]
-            part[idx, P_COL_SCALE_Z] = rec["length"]
-            part[idx, P_COL_PHYLLOTACTIC_ANGLE] = rec["phyllotactic_angle"]
-        elif ot == ORGAN_PETIOLE:
-            pet_i = rec["parent_petiole_idx"]
-            petiole_row[(sid, p_idx, pet_i)] = idx
-            part[idx, P_COL_ORGAN_TYPE] = ORGAN_PETIOLE
-            part[idx, P_COL_SCALE_X] = rec["radius"]
-            part[idx, P_COL_SCALE_Y] = rec["radius"]
-            part[idx, P_COL_SCALE_Z] = rec["length"]
-            part[idx, P_COL_CURVATURE] = rec["curvature"]
-        elif ot == ORGAN_LEAF:
-            pet_i = rec["parent_petiole_idx"]
-            lf_idx = rec["child_index"]
-            leaf_rows.setdefault((sid, p_idx, pet_i), {})[lf_idx] = idx
-            part[idx, P_COL_ORGAN_TYPE] = ORGAN_LEAF
-            part[idx, P_COL_SCALE_X] = rec["scale"]
-            part[idx, P_COL_SCALE_Y] = rec["scale"]
-            part[idx, P_COL_SCALE_Z] = rec["scale"]
-        elif ot == ORGAN_BUD:
-            bud_idx = rec["child_index"]
-            bud_rows.setdefault((sid, p_idx), []).append((bud_idx, idx))
-            bs = rec["bud_state"]
-            part[idx, P_COL_ORGAN_TYPE] = ORGAN_BUD_ABORTED if bs == 5 else ORGAN_BUD
-            part[idx, P_COL_EXISTENCE] = 1.0
-        elif ot == ORGAN_PEDUNCLE:
-            peduncle_rows[(sid, p_idx)] = idx
-            part[idx, P_COL_ORGAN_TYPE] = ORGAN_PEDUNCLE
-            part[idx, P_COL_SCALE_X] = rec["radius"]
-            part[idx, P_COL_SCALE_Y] = rec["radius"]
-            part[idx, P_COL_SCALE_Z] = rec["length"]
-            part[idx, P_COL_CURVATURE] = rec["curvature"]
-            part[idx, P_COL_EXISTENCE] = 1.0
-        elif ot == ORGAN_FLOWER:
-            fl_idx = rec["child_index"]
-            flower_rows.setdefault((sid, p_idx), []).append((fl_idx, idx))
-            part[idx, P_COL_ORGAN_TYPE] = ORGAN_FLOWER
-            part[idx, P_COL_SCALE_X] = rec["scale"]
-            part[idx, P_COL_SCALE_Y] = rec["scale"]
-            part[idx, P_COL_SCALE_Z] = rec["scale"]
-
-    for sid in internode_rows:
-        internode_rows[sid].sort(key=lambda x: x[0])
-    for key in bud_rows:
-        bud_rows[key].sort(key=lambda x: x[0])
-    for key in flower_rows:
-        flower_rows[key].sort(key=lambda x: x[0])
-
-    sorted_shoot_ids = sorted(internode_rows.keys())
-    node_output_info: dict = {}
-    node_internode_tip_axes = torch.zeros((N, 3), dtype=torch.float32, device=device)
-
-    def compute_shoot_base(sid: int, meta_rec: dict):
-        parent_sid = meta_rec.get("parent_shoot_id", -1)
-        parent_node_idx = meta_rec.get("parent_node_idx", 0)
-        parent_petiole_index = meta_rec.get("parent_petiole_idx", 0)
-        if parent_sid < 0 or (parent_sid, parent_node_idx) not in node_output_info:
-            shoot_base_pos = torch.zeros(3, dtype=torch.float32, device=device)
-            parent_internode_axis = torch.tensor([0.0, 0.0, 1.0], device=device)
-            parent_petiole_axis = torch.tensor([0.0, -1.0, 0.0], device=device)
-        else:
-            p_info = node_output_info[(parent_sid, parent_node_idx)]
-            parent_internode_axis = p_info["internode_axis"]
-            pet_axes = p_info.get("petiole_axes", {})
-            if parent_petiole_index in pet_axes:
-                parent_petiole_axis = pet_axes[parent_petiole_index]
-            else:
-                parent_petiole_axis = p_info.get("petiole_axis", torch.tensor([0.0, -1.0, 0.0], device=device))
-            shoot_base_pos = p_info["tip"]
-        return shoot_base_pos, parent_internode_axis, parent_petiole_axis
-
-    phytomer_context: dict = {}
-    shoot_last_internode_tips: dict = {}
-    phytomer_petiole_count: dict = {}
-
-    # ==================================================================
-    # Phase A: internodes, petioles, leaves
-    # ==================================================================
-    for sid in sorted_shoot_ids:
-        node_indices = internode_rows[sid]
-        meta_idx = shoot_meta_row.get(sid, node_indices[0][1] if len(node_indices) > 0 else 0)
-        meta_rec = records[meta_idx]
-
-        base_pitch_rad = meta_rec["pitch"] * deg2rad
-        base_yaw_rad = meta_rec["yaw"] * deg2rad
-        base_roll_rad = meta_rec["roll"] * deg2rad
-
-        shoot_base_pos, parent_internode_axis, parent_petiole_axis = compute_shoot_base(sid, meta_rec)
-        part[meta_idx, P_COL_EXISTENCE] = 1.0
-        part[meta_idx, P_COL_BASE_X:P_COL_BASE_Z + 1] = shoot_base_pos
-        R_shoot = (
-            rotr_z(base_yaw_rad, device) @
-            rotr_y(-base_pitch_rad, device) @
-            rotr_x(base_roll_rad, device)
-        )
-        part[meta_idx, P_COL_ROT_0:P_COL_ROT_5 + 1] = rotation_matrix_to_6d(R_shoot)
-
-        curr_pos = shoot_base_pos.clone()
-        prev_internode_axis = parent_internode_axis
-        prev_petiole_axis = parent_petiole_axis
-
-        for p_idx_in_shoot, (p_idx, n_idx) in enumerate(node_indices):
-            rec = records[n_idx]
-
-            petiole_rot_axis = torch.linalg.cross(prev_internode_axis, prev_petiole_axis)
-            if torch.linalg.norm(petiole_rot_axis) < 1e-6:
-                petiole_rot_axis = torch.tensor([1.0, 0.0, 0.0], device=device)
-            else:
-                petiole_rot_axis = petiole_rot_axis / torch.linalg.norm(petiole_rot_axis)
-
-            inode_pitch_rad = rec["pitch"] * deg2rad
-            inode_phyllo_rad = rec["phyllotactic_angle"] * deg2rad
-
-            i_axis = prev_internode_axis.clone()
-            if p_idx_in_shoot == 0:
-                if inode_pitch_rad != 0.0:
-                    i_axis = rotate_vector_about_axis(i_axis, petiole_rot_axis, 0.5 * inode_pitch_rad)
-                if base_roll_rad != 0.0:
-                    petiole_rot_axis = rotate_vector_about_axis(petiole_rot_axis, prev_internode_axis, base_roll_rad)
-                    i_axis = rotate_vector_about_axis(i_axis, prev_internode_axis, base_roll_rad)
-                if base_pitch_rad != 0.0:
-                    base_pitch_axis = -1.0 * torch.linalg.cross(prev_internode_axis, prev_petiole_axis)
-                    if torch.linalg.norm(base_pitch_axis) > 1e-6:
-                        base_pitch_axis = base_pitch_axis / torch.linalg.norm(base_pitch_axis)
-                        petiole_rot_axis = rotate_vector_about_axis(petiole_rot_axis, base_pitch_axis, -base_pitch_rad)
-                        i_axis = rotate_vector_about_axis(i_axis, base_pitch_axis, -base_pitch_rad)
-                if base_yaw_rad != 0.0:
-                    petiole_rot_axis = rotate_vector_about_axis(petiole_rot_axis, prev_internode_axis, base_yaw_rad)
-                    i_axis = rotate_vector_about_axis(i_axis, prev_internode_axis, base_yaw_rad)
-            else:
-                if inode_pitch_rad != 0.0:
-                    i_axis = rotate_vector_about_axis(i_axis, petiole_rot_axis, -1.25 * inode_pitch_rad)
-
-            i_axis = i_axis / (torch.linalg.norm(i_axis) + 1e-6)
-
-            shoot_bending_axis = torch.linalg.cross(i_axis, z_axis)
-            shoot_bending_norm = torch.linalg.norm(shoot_bending_axis)
-            if shoot_bending_norm < 1e-6:
-                shoot_bending_axis = torch.tensor([0.0, 1.0, 0.0], device=device)
-            else:
-                shoot_bending_axis = shoot_bending_axis / shoot_bending_norm
-
-            inode_len = max(rec["length"], 1e-4)
-            inode_rad = max(rec["radius"], 1e-4)
-            seg_cnt = max(1, rec["length_segments"])
-            seg_len = inode_len / seg_cnt
-            seg_len_max = max(rec["length_max"], 1e-4) / seg_cnt
-
-            curv_p0, curv_p1 = rec["curv_pert_0"], rec["curv_pert_1"]
-            yaw_p0, yaw_p1 = rec["yaw_pert_0"], rec["yaw_pert_1"]
-
-            inode_verts_list = [curr_pos.clone()]
-            step_p = curr_pos.clone()
-            step_dir = i_axis.clone()
-            for s in range(seg_cnt):
-                if p_idx_in_shoot > 0:
-                    curv_pert = curv_p0 if s == 0 else curv_p1
-                    yaw_pert = yaw_p0 if s == 0 else yaw_p1
-                    curv_fact = 0.5 - step_dir[2] / 2.0
-                    if step_dir[2] < 0:
-                        curv_fact = curv_fact * 2.0
-                    curvature_angle = deg2rad * (gravitropic_curvature * curv_fact * seg_len_max + curv_pert)
-                    if curvature_angle != 0.0:
-                        step_dir = rotate_vector_about_axis(step_dir, shoot_bending_axis, curvature_angle)
-                    if yaw_pert != 0.0:
-                        step_dir = rotate_vector_about_axis(step_dir, z_axis, deg2rad * yaw_pert)
-                step_p = step_p + step_dir * seg_len
-                inode_verts_list.append(step_p)
-
-            inode_line = torch.stack(inode_verts_list)
-            curr_pos = inode_line[-1]
-            inode_tip_axis = step_dir / (torch.linalg.norm(step_dir) + 1e-6)
-            node_internode_tip_axes[n_idx] = get_axis_vector_torch(inode_line, 1.0)
-
-            part[n_idx, P_COL_EXISTENCE] = 1.0
-            part[n_idx, P_COL_BASE_X:P_COL_BASE_Z + 1] = inode_line[0]
-            part[n_idx, P_COL_SCALE_X] = inode_rad
-            part[n_idx, P_COL_SCALE_Y] = inode_rad
-            part[n_idx, P_COL_SCALE_Z] = inode_len
-            R_inode = _get_rotation_matrix_between_vectors_batch(
-                torch.tensor([0.0, 0.0, 1.0], device=device).unsqueeze(0),
-                inode_tip_axis.unsqueeze(0),
-            ).squeeze(0)
-            part[n_idx, P_COL_ROT_0:P_COL_ROT_5 + 1] = rotation_matrix_to_6d(R_inode)
-
-            pet_axes_stored = {}
-            pet_line_stored = {}
-            node_info = {
-                "tip": curr_pos,
-                "internode_axis": inode_tip_axis,
-                "radius": inode_rad,
-            }
-
-            petioles_here = [k for k in petiole_row if k[0] == sid and k[1] == p_idx]
-            phytomer_petiole_count[(sid, p_idx)] = len(petioles_here)
-
-            def process_petiole(pet_i, petiole_index):
-                pet_row = petiole_row.get((sid, p_idx, pet_i))
-                if pet_row is None:
-                    return
-                pet_rec = records[pet_row]
-                p_len_raw = pet_rec["length"]
-                p_rad_raw = pet_rec["radius"]
-                p_pitch_deg = pet_rec["pitch"]
-                p_curv_deg = pet_rec["curvature"]
-                p_cls = pet_rec["current_leaf_scale_factor"]
-                p_taper = pet_rec["taper"]
-                p_seg_cnt = max(1, pet_rec["length_segments"])
-                lflt_scale = pet_rec["leaflet_scale"]
-                lflt_offset = pet_rec["leaflet_offset"]
-
-                leaf_dict = leaf_rows.get((sid, p_idx, pet_i), {})
-                leaf_list = sorted(leaf_dict.items(), key=lambda kv: kv[0])
-                num_leaves = len(leaf_list)
-
-                pet_pitch_rad = p_pitch_deg * deg2rad
-                pet_axis = rotate_vector_about_axis(i_axis, petiole_rot_axis, abs(pet_pitch_rad))
-                pet_rot_ax = petiole_rot_axis.clone()
-                if p_idx_in_shoot != 0 and inode_phyllo_rad != 0.0:
-                    pet_axis = rotate_vector_about_axis(pet_axis, i_axis, inode_phyllo_rad)
-                    pet_rot_ax = rotate_vector_about_axis(pet_rot_ax, i_axis, inode_phyllo_rad)
-                if petiole_index > 0:
-                    petioles_per_internode = 2.0 if len(petioles_here) > 1 else 1.0
-                    budrot = torch.tensor(petiole_index * 2.0 * math.pi / petioles_per_internode, device=device)
-                    pet_axis = rotate_vector_about_axis(pet_axis, i_axis, budrot)
-                    pet_rot_ax = rotate_vector_about_axis(pet_rot_ax, i_axis, budrot)
-                pet_axis = pet_axis / (torch.linalg.norm(pet_axis) + 1e-12)
-                pet_axes_stored[petiole_index] = pet_axis.clone()
-
-                p_len = p_len_raw
-                p_rad = p_rad_raw
-                if p_len <= 0 or p_rad <= 0:
-                    return
-
-                pet_rot_ax_norm = pet_rot_ax / (torch.linalg.norm(pet_rot_ax) + 1e-8)
-                pet_base = inode_line[-1]
-                seq_len = p_len / p_seg_cnt
-
-                curv_per_seg = p_curv_deg * seq_len * deg2rad
-                if abs(curv_per_seg) > 1e-12:
-                    s_indices = torch.arange(1, p_seg_cnt + 1, device=device, dtype=torch.float32)
-                    angles = -s_indices * curv_per_seg
-                    dirs = rotate_points_about_axis(pet_axis.unsqueeze(0).expand(p_seg_cnt, 3), pet_rot_ax_norm, angles)
-                    offsets = torch.cumsum(dirs * seq_len, dim=0)
-                    pet_line = torch.cat([pet_base.unsqueeze(0), pet_base.unsqueeze(0) + offsets], dim=0)
-                else:
-                    s_indices = torch.arange(1, p_seg_cnt + 1, device=device, dtype=torch.float32).unsqueeze(-1)
-                    offsets = s_indices * (pet_axis * seq_len)
-                    pet_line = torch.cat([pet_base.unsqueeze(0), pet_base.unsqueeze(0) + offsets], dim=0)
-
-                pet_tip = pet_line[-1]
-                pet_tip_axis = pet_line[-1] - pet_line[-2]
-                pet_tip_axis = pet_tip_axis / (torch.linalg.norm(pet_tip_axis) + 1e-8)
-                pet_line_stored[petiole_index] = pet_line.clone()
-
-                part[pet_row, P_COL_EXISTENCE] = 1.0
-                part[pet_row, P_COL_BASE_X:P_COL_BASE_Z + 1] = pet_base
-                part[pet_row, P_COL_SCALE_X] = p_rad
-                part[pet_row, P_COL_SCALE_Y] = p_rad
-                part[pet_row, P_COL_SCALE_Z] = p_len
-                R_pet = _get_rotation_matrix_between_vectors_batch(
-                    torch.tensor([0.0, 0.0, 1.0], device=device).unsqueeze(0),
-                    pet_tip_axis.unsqueeze(0),
-                ).squeeze(0)
-                part[pet_row, P_COL_ROT_0:P_COL_ROT_5 + 1] = rotation_matrix_to_6d(R_pet)
-
-                if num_leaves > 0:
-                    for lf_i in range(min(num_leaves, 3)):
-                        lf_idx, leaf_row_idx = leaf_list[lf_i]
-                        lr = records[leaf_row_idx]
-                        l_scale = lr["scale"]
-                        l_pitch_raw = lr["pitch"] * deg2rad
-                        l_yaw = lr["yaw"] * deg2rad
-                        l_roll_raw = lr["roll"] * deg2rad
-
-                        ind_from_tip = float(lf_i) - float(num_leaves - 1) / 2.0
-                        compound_rotation = 0.0
-                        if num_leaves > 1:
-                            if lf_i == (num_leaves - 1) / 2.0:
-                                compound_rotation = 0.0
-                            elif lf_i < (num_leaves - 1) / 2.0:
-                                compound_rotation = -0.5 * math.pi
-                            else:
-                                compound_rotation = 0.5 * math.pi
-
-                        asin_pz = torch.asin(torch.clamp(pet_tip_axis[2], -1.0, 1.0))
-
-                        if num_leaves == 1:
-                            roll_rot = torch.acos(torch.clamp(inode_tip_axis[2], -1.0, 1.0)) - l_roll_raw
-                        elif ind_from_tip != 0:
-                            sign_roll = compound_rotation / abs(compound_rotation)
-                            roll_rot = (asin_pz + l_roll_raw) * sign_roll
-                        else:
-                            roll_rot = 0.0
-
-                        pitch_rot = l_pitch_raw
-                        if ind_from_tip == 0:
-                            pitch_rot = pitch_rot + asin_pz
-
-                        yaw_rot = 0.0
-                        if ind_from_tip != 0:
-                            yaw_rot = l_yaw
-
-                        azimuth_rot = -torch.atan2(pet_tip_axis[1], pet_tip_axis[0] + 1e-8) + compound_rotation
-
-                        leaf_base = pet_tip
-                        if num_leaves > 1 and lflt_offset > 0.0 and ind_from_tip != 0:
-                            offset = (abs(ind_from_tip) - 0.5) * lflt_offset * p_len
-                            frac = 1.0 - offset / max(p_len, 1e-6)
-                            frac = max(0.0, min(1.0, frac))
-                            if not (math.isnan(frac) or math.isinf(frac)):
-                                leaf_base = interpolate_tube_torch(pet_line, frac)
-
-                        R_leaf = (
-                            rotr_z(azimuth_rot + yaw_rot, device) @
-                            rotr_y(-pitch_rot, device) @
-                            rotr_x(roll_rot, device)
-                        )
-                        part[leaf_row_idx, P_COL_EXISTENCE] = 1.0
-                        part[leaf_row_idx, P_COL_BASE_X:P_COL_BASE_Z + 1] = leaf_base
-                        part[leaf_row_idx, P_COL_SCALE_X] = l_scale
-                        part[leaf_row_idx, P_COL_SCALE_Y] = l_scale
-                        part[leaf_row_idx, P_COL_SCALE_Z] = l_scale
-                        part[leaf_row_idx, P_COL_ROT_0:P_COL_ROT_5 + 1] = rotation_matrix_to_6d(R_leaf)
-
-            for pet_i in sorted(k[2] for k in petioles_here):
-                process_petiole(pet_i, pet_i)
-
-            node_info["petiole_axes"] = pet_axes_stored
-            if 0 in pet_axes_stored:
-                node_info["petiole_axis"] = pet_axes_stored[0].clone()
-            node_output_info[(sid, p_idx)] = node_info
-
-            phytomer_context[(sid, p_idx)] = {
-                "inode_line": inode_line,
-                "inode_tip_axis": inode_tip_axis,
-                "tip_getaxis": node_internode_tip_axes[n_idx].clone(),
-                "pet_lines": {k: v.clone() for k, v in pet_line_stored.items()},
-                "p_idx_in_shoot": p_idx_in_shoot,
-                "n_idx": n_idx,
-            }
-
-            prev_internode_axis = inode_tip_axis
-            if 0 in pet_axes_stored:
-                prev_petiole_axis = pet_axes_stored[0]
-            else:
-                ghost = torch.linalg.cross(inode_tip_axis, z_axis)
-                if torch.linalg.norm(ghost) < 0.01:
-                    ghost = torch.tensor([0.0, 1.0, 0.0], device=device)
-                prev_petiole_axis = ghost / torch.linalg.norm(ghost)
-
-        shoot_last_internode_tips[sid] = curr_pos.clone()
-
-    # ==================================================================
-    # Phase B: floral bud peduncle / flower / fruit
-    # ==================================================================
-    has_buds = any(len(bud_list) > 0 for bud_list in bud_rows.values())
-
-    if has_buds:
-        for (sid, p_idx), bud_list in sorted(bud_rows.items()):
-            ctx = phytomer_context.get((sid, p_idx))
-            if ctx is None:
-                continue
-            Nbuds = len(bud_list)
-            petiole_count = max(1, phytomer_petiole_count.get((sid, p_idx), 1))
-            petioles_per_internode = float(petiole_count)
-
-            for bud_index, bud_row_idx in bud_list:
-                bud_rec = records[bud_row_idx]
-                state = bud_rec["bud_state"]
-                pet_i = bud_rec["parent_petiole_idx"]
-                is_terminal = bud_rec["bud_is_terminal"] > 0
-                current_fruit_scale_factor = bud_rec["fruit_scale"]
-                flower_offset = bud_rec.get("flower_offset", 0.05)
-
-                if is_terminal:
-                    bud_base = shoot_last_internode_tips.get(sid, ctx["inode_line"][-1])
-                    base_pitch = (math.pi / 6.0) if Nbuds > 1 else 0.0
-                    base_yaw = bud_index * 2.0 * math.pi / float(Nbuds)
-                else:
-                    pet_line0 = ctx["pet_lines"].get(pet_i)
-                    bud_base = pet_line0[0] if pet_line0 is not None else ctx["inode_line"][-1]
-                    base_pitch = bud_index * 0.1 * math.pi / float(Nbuds)
-                    base_yaw = -0.25 * math.pi + bud_index * 0.5 * math.pi / float(Nbuds)
-                part[bud_row_idx, P_COL_BASE_X:P_COL_BASE_Z + 1] = bud_base
-
-                ped_row_idx = peduncle_rows.get((sid, p_idx))
-                if ped_row_idx is None:
-                    continue
-                ped_rec = records[ped_row_idx]
-                p_len = ped_rec["length"]
-                p_rad = ped_rec["radius"]
-                p_pitch_rad = ped_rec["pitch"] * deg2rad
-                p_curv_deg = ped_rec["curvature"]
-                if p_len <= 0 or p_rad <= 0:
-                    continue
-
-                inode_line = ctx["inode_line"]
-                peduncle_axis = ctx["tip_getaxis"].clone()
-
-                if ctx["p_idx_in_shoot"] > 0:
-                    prev_n_idx = None
-                    for (pp_idx, nn_idx) in internode_rows[sid]:
-                        if pp_idx == p_idx:
-                            break
-                        prev_n_idx = nn_idx
-                    if prev_n_idx is not None:
-                        parent_internode_axis = node_internode_tip_axes[prev_n_idx]
-                    else:
-                        parent_internode_axis = torch.tensor([0.0, 0.0, 1.0], device=device)
-                else:
-                    meta_idx = shoot_meta_row.get(sid, 0)
-                    pmeta = records[meta_idx]
-                    parent_sid = pmeta.get("parent_shoot_id", -1)
-                    if parent_sid >= 0:
-                        parent_node_xml = pmeta.get("parent_node_idx", 0)
-                        parent_lin = _xml_parent_node_to_linear_idx(records, parent_sid, parent_node_xml)
-                        parent_internode_axis = node_internode_tip_axes[parent_lin]
-                    else:
-                        parent_internode_axis = torch.tensor([0.0, 0.0, 1.0], device=device)
-
-                pet_line = ctx["pet_lines"].get(pet_i)
-                if pet_line is not None:
-                    current_petiole_axis = get_axis_vector_torch(pet_line, 0.0)
-                    parent_petiole_base_axis = get_axis_vector_torch(pet_line, 0.0)
-                else:
-                    current_petiole_axis = parent_internode_axis
-                    parent_petiole_base_axis = ctx["tip_getaxis"]
-
-                infl_bending = torch.linalg.cross(parent_internode_axis, current_petiole_axis)
-                if torch.linalg.norm(infl_bending) < 0.001:
-                    infl_bending = torch.tensor([1.0, 0.0, 0.0], device=device)
-                else:
-                    infl_bending = infl_bending / torch.linalg.norm(infl_bending)
-
-                if p_pitch_rad != 0 or base_pitch != 0:
-                    peduncle_axis = rotate_vector_about_axis(peduncle_axis, infl_bending, p_pitch_rad + base_pitch)
-
-                internode_axis = ctx["tip_getaxis"]
-                parent_petiole_azimuth = -torch.atan2(parent_petiole_base_axis[1], parent_petiole_base_axis[0])
-                current_peduncle_azimuth = -torch.atan2(peduncle_axis[1], peduncle_axis[0])
-                azimuthal_rotation = current_peduncle_azimuth - parent_petiole_azimuth
-                peduncle_axis = rotate_vector_about_axis(peduncle_axis, internode_axis, azimuthal_rotation)
-                infl_bending = rotate_vector_about_axis(infl_bending, internode_axis, azimuthal_rotation)
-                peduncle_axis = peduncle_axis / (torch.linalg.norm(peduncle_axis) + 1e-6)
-
-                segs = max(1, ped_rec.get("length_segments", 6))
-                dr = p_len / segs
-                axis = peduncle_axis
-                verts_list = [bud_base.clone()]
-                for i in range(segs):
-                    if abs(p_curv_deg) > 0:
-                        hba = torch.linalg.cross(axis, z_axis)
-                        m = torch.linalg.norm(hba)
-                        if m > 0.001:
-                            hba = hba / m
-                            theta_curv = deg2rad * (p_curv_deg * dr)
-                            zc = torch.clamp(axis[2], -1.0, 1.0)
-                            theta_from_target = torch.acos(zc) if p_curv_deg > 0 else torch.acos(-zc)
-                            if abs(theta_curv) >= theta_from_target:
-                                axis = z_axis if p_curv_deg > 0 else -z_axis
-                            else:
-                                axis = rotate_vector_about_axis(axis, hba, theta_curv)
-                                axis = axis / (torch.linalg.norm(axis) + 1e-6)
-                        else:
-                            axis = z_axis if p_curv_deg > 0 else -z_axis
-                    verts_list.append(verts_list[-1] + dr * axis)
-
-                ped_line = torch.stack(verts_list)
-
-                part[ped_row_idx, P_COL_EXISTENCE] = 1.0
-                part[ped_row_idx, P_COL_BASE_X:P_COL_BASE_Z + 1] = ped_line[0]
-                part[ped_row_idx, P_COL_SCALE_X] = p_rad
-                part[ped_row_idx, P_COL_SCALE_Y] = p_rad
-                part[ped_row_idx, P_COL_SCALE_Z] = p_len
-                ped_axis_dir = (ped_line[-1] - ped_line[0])
-                ped_axis_dir = ped_axis_dir / (torch.linalg.norm(ped_axis_dir) + 1e-8)
-                R_ped = _get_rotation_matrix_between_vectors_batch(
-                    torch.tensor([0.0, 0.0, 1.0], device=device).unsqueeze(0),
-                    ped_axis_dir.unsqueeze(0),
-                ).squeeze(0)
-                part[ped_row_idx, P_COL_ROT_0:P_COL_ROT_5 + 1] = rotation_matrix_to_6d(R_ped)
-
-                fl_list = flower_rows.get((sid, p_idx), [])
-                n_flowers = len(fl_list)
-                if n_flowers == 0 or state not in (2, 3, 4):
-                    continue
-
-                for fl_idx, fl_row_idx in fl_list:
-                    fl_rec = records[fl_row_idx]
-                    saved_pitch = fl_rec["pitch"] * deg2rad
-                    saved_yaw = fl_rec["yaw"] * deg2rad
-                    saved_roll = fl_rec["roll"] * deg2rad
-                    saved_azimuth = fl_rec["flower_azimuth"] * deg2rad
-                    base_scale = fl_rec["scale"]
-
-                    flower_offset_clamped = clamp_offset_torch(n_flowers, flower_offset)
-                    ind_from_tip_computed = abs(float(fl_idx) - float(n_flowers - 1) / float(petioles_per_internode))
-                    flower_base = ped_line[-1]
-                    if n_flowers > 1 and flower_offset_clamped > 0 and ind_from_tip_computed != 0:
-                        offset_computed = (ind_from_tip_computed - 0.5) * flower_offset_clamped * p_len
-                        frac_computed = 1.0
-                        if p_len > 0:
-                            frac_computed = 1.0 - offset_computed / p_len
-                        flower_base = interpolate_tube_torch(ped_line, frac_computed)
-
-                    flower_offset_val = flower_offset
-                    if n_flowers > 2:
-                        denom = 0.5 * float(n_flowers) - 1.0
-                        if flower_offset_val * denom > 1.0:
-                            flower_offset_val = 1.0 / denom
-                    ind_from_tip = abs(float(fl_idx) - float(n_flowers - 1) / float(petioles_per_internode))
-                    frac = 1.0
-                    if n_flowers > 1 and flower_offset_val > 0 and ind_from_tip != 0:
-                        offset = (ind_from_tip - 0.5) * flower_offset_val * p_len
-                        if p_len > 0:
-                            frac = 1.0 - offset / p_len
-                    recalculated_peduncle_axis = get_axis_vector_torch(ped_line, frac)
-
-                    part[fl_row_idx, P_COL_EXISTENCE] = 1.0
-                    part[fl_row_idx, P_COL_BASE_X:P_COL_BASE_Z + 1] = flower_base
-                    part[fl_row_idx, P_COL_SCALE_X] = fl_rec["scale"]
-                    part[fl_row_idx, P_COL_SCALE_Y] = fl_rec["scale"]
-                    part[fl_row_idx, P_COL_SCALE_Z] = fl_rec["scale"]
-                    if state == 4:
-                        part[fl_row_idx, P_COL_ORGAN_TYPE] = ORGAN_FRUIT
-                    elif state == 2:
-                        part[fl_row_idx, P_COL_ORGAN_TYPE] = ORGAN_FLOWER_CLOSED
-                    else:
-                        part[fl_row_idx, P_COL_ORGAN_TYPE] = ORGAN_FLOWER
-                    R_yaw = rodrigues_matrix_torch(recalculated_peduncle_axis, saved_yaw, device=device)
-                    R_obj_net = (
-                        R_yaw @
-                        rotr_z(saved_azimuth, device) @
-                        rotr_y(saved_pitch, device) @
-                        rotr_x(saved_roll, device)
-                    )
-                    part[fl_row_idx, P_COL_ROT_0:P_COL_ROT_5 + 1] = rotation_matrix_to_6d(R_obj_net)
-
-    return part
-
-
-def _xml_parent_node_to_linear_idx(records: list, parent_sid: int, parent_node_xml: int) -> int:
-    """Map a (shoot_id, xml node index) to the linear record index of that internode."""
-    for idx, rec in enumerate(records):
-        if rec.get("organ_type") == ORGAN_INTERNODE and rec.get("shoot_id") == parent_sid and rec.get("phytomer_idx") == parent_node_xml:
-            return idx
-    return 0
-
-
-# =============================================================================
-# PLANT ORGAN ARRAY CLASS
-# =============================================================================
-
-class PlantOrganArray:
-    """
-    Stores plant architecture as a part-centric tensor.
-
-    The tensor must have shape (N, NUM_FEATURES). No legacy or typed layout
-    variants are supported.
-    """
-
-    def __init__(self, tensor: torch.Tensor):
-        if tensor.ndim != 2:
-            raise ValueError(
-                f"PlantOrganArray tensor must be 2D, got shape {tensor.shape}"
-            )
-        if tensor.shape[1] != NUM_FEATURES:
-            raise ValueError(
-                f"PlantOrganArray tensor must have {NUM_FEATURES} columns, "
-                f"got {tensor.shape[1]}"
-            )
-        self.tensor = tensor
-
-    @property
-    def num_nodes(self) -> int:
-        return self.tensor.shape[0]
-
-    @property
-    def existence(self) -> torch.Tensor:
-        return self.tensor[:, P_COL_EXISTENCE]
-
-    @existence.setter
-    def existence(self, value: torch.Tensor) -> None:
-        if value.shape[0] != self.tensor.shape[0]:
-            raise ValueError("existence length must match number of nodes")
-        self.tensor[:, P_COL_EXISTENCE] = value
-
-    def to_part_tensor(self, device: Optional[torch.device] = None) -> torch.Tensor:
-        """Returns the stored part tensor, optionally moved to ``device``."""
-        return self.tensor.to(device)
-
-    @classmethod
-    def from_part_tensor(cls, part_tensor: torch.Tensor) -> "PlantOrganArray":
-        """Wraps a raw part tensor in a PlantOrganArray."""
-        return cls(part_tensor)
-
-    def to_xml_string(self, existence_threshold: float = 0.5) -> str:
-        """Serializes the part tensor to a Helios XML string."""
-        from diffusion_based.models.part_assembly_to_xml import PartAssemblyToXMLConverter
-
-        converter = PartAssemblyToXMLConverter()
-        return converter.convert_to_xml_string(
-            self.tensor,
-            plant_id=0,
-            plant_type="cowpea",
-            existence_threshold=existence_threshold,
-        )
-
-    def write_xml(self, filepath: str) -> None:
-        """Writes ``to_xml_string()`` output to ``filepath``."""
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(self.to_xml_string())
-
-    @classmethod
-    def from_xml_string(cls, xml_content: str) -> "PlantOrganArray":
-        """Parses a Helios XML string directly into a part-centric PlantOrganArray."""
-        return cls(_parse_xml_to_part_tensor(xml_content))
-
-    @classmethod
-    def from_xml_string_typed(cls, xml_content: str) -> "PlantOrganArray":
-        """Alias for :meth:`from_xml_string` for backward-compatible naming."""
-        return cls.from_xml_string(xml_content)
-
-    @classmethod
-    def from_xml_file(cls, filepath: str) -> "PlantOrganArray":
-        with open(filepath, "r", encoding="utf-8") as f:
-            content = f.read()
-        return cls.from_xml_string(content)
-
-    @classmethod
-    def from_xml_file_typed(cls, filepath: str) -> "PlantOrganArray":
-        with open(filepath, "r", encoding="utf-8") as f:
-            content = f.read()
-        return cls.from_xml_string(content)
-
-
-# =============================================================================
-# SMALL XML PARSING HELPERS
+# SMALL HELPERS
 # =============================================================================
 
 def _fmt(val: float) -> str:
@@ -1073,7 +240,1441 @@ def _to_float(x) -> float:
     return float(x)
 
 
-def _get_text_default(elem: Optional[ET.Element], tag: str, default: Optional[str]) -> Optional[str]:
+# =============================================================================
+# PLANT ORGAN ARRAY CLASS
+# =============================================================================
+
+class PlantOrganArray:
+    """
+    Stores plant architecture as a 2D Organ Array Tensor.
+
+    Supports both the legacy (N, 94) phytomer-slot layout and the new typed
+    (N, 40) per-organ-row layout. The legacy path is kept for backward
+    compatibility and is marked for deletion.
+
+    Optional soft parent representation for topology optimization:
+      parent_logits: (num_shoots, K) soft weights over K candidate parents.
+      parent_candidates: (num_shoots, K, 3) int tensor with candidate
+                           (parent_shoot_idx, parent_node_idx, parent_petiole_idx).
+    """
+
+    def __init__(
+        self,
+        tensor: torch.Tensor,
+        raw_metadata: Optional[List[Dict[str, Any]]] = None,
+        parent_logits: Optional[torch.Tensor] = None,
+        parent_candidates: Optional[torch.Tensor] = None,
+    ):
+        self.tensor = tensor
+        self.raw_metadata = raw_metadata if raw_metadata is not None else []
+
+        if self.tensor.ndim != 2:
+            raise ValueError(f"PlantOrganArray tensor must be 2D, got shape {self.tensor.shape}")
+
+        self.num_features = self.tensor.shape[1]
+        if self.num_features not in (NUM_FEATURES_LEGACY, NUM_FEATURES_TYPED):
+            raise ValueError(
+                f"PlantOrganArray tensor must have {NUM_FEATURES_LEGACY} (legacy) or "
+                f"{NUM_FEATURES_TYPED} (typed) columns, got {self.num_features}"
+            )
+
+        self.parent_logits = parent_logits
+        self.parent_candidates = parent_candidates
+        if parent_logits is not None and parent_candidates is not None:
+            if parent_logits.shape[:1] != parent_candidates.shape[:1]:
+                raise ValueError("parent_logits and parent_candidates must have the same number of shoots")
+            if parent_logits.shape[1] != parent_candidates.shape[1]:
+                raise ValueError("parent_logits and parent_candidates must have the same K")
+
+    @property
+    def is_typed(self) -> bool:
+        return self.tensor.shape[1] == NUM_FEATURES_TYPED
+
+    @property
+    def is_legacy(self) -> bool:
+        return self.tensor.shape[1] == NUM_FEATURES_LEGACY
+
+    @property
+    def num_nodes(self) -> int:
+        return self.tensor.shape[0]
+
+    @property
+    def existence(self) -> torch.Tensor:
+        if self.is_typed:
+            return self.tensor[:, T_COL_EXISTENCE]
+        return self.tensor[:, COL_EXISTENCE]
+
+    @existence.setter
+    def existence(self, value: torch.Tensor) -> None:
+        if value.shape[0] != self.tensor.shape[0]:
+            raise ValueError("existence length must match number of nodes")
+        if self.is_typed:
+            self.tensor[:, T_COL_EXISTENCE] = value
+        else:
+            self.tensor[:, COL_EXISTENCE] = value
+
+    # -------------------------------------------------------------------------
+    # XML OUTPUT DISPATCH
+    # -------------------------------------------------------------------------
+    def to_xml_string(self, existence_threshold: float = 0.5) -> str:
+        """Serializes the tensor back to exact Helios XML string."""
+        if self.is_typed:
+            return self._to_xml_string_typed(existence_threshold=existence_threshold)
+        return self._to_xml_string_legacy(existence_threshold=existence_threshold)
+
+    def write_xml(self, filepath: str) -> None:
+        content = self.to_xml_string()
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    # -------------------------------------------------------------------------
+    # XML INPUT DISPATCH
+    # -------------------------------------------------------------------------
+    @classmethod
+    def from_xml_string(cls, xml_content: str) -> "PlantOrganArray":
+        """Returns a PlantOrganArray with the typed (N, 40) per-organ layout."""
+        return cls._from_xml_string_typed(xml_content)
+
+    @classmethod
+    def from_xml_string_typed(cls, xml_content: str) -> "PlantOrganArray":
+        """TYPED: returns a PlantOrganArray with the (N, 40) per-organ layout."""
+        return cls._from_xml_string_typed(xml_content)
+
+    @classmethod
+    def from_xml_file(cls, filepath: str) -> "PlantOrganArray":
+        with open(filepath, "r", encoding="utf-8") as f:
+            content = f.read()
+        return cls._from_xml_string_typed(content)
+
+    @classmethod
+    def from_xml_file_typed(cls, filepath: str) -> "PlantOrganArray":
+        with open(filepath, "r", encoding="utf-8") as f:
+            content = f.read()
+        return cls.from_xml_string_typed(content)
+
+    # -------------------------------------------------------------------------
+    # LEGACY 94D XML WRITER
+    # -------------------------------------------------------------------------
+    def _to_xml_string_legacy(self, existence_threshold: float = 0.5) -> str:
+        """DEPRECATED: legacy (N, 94) XML writer."""
+        lines = [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<helios>'
+        ]
+        t = self.tensor
+
+        if self.num_nodes == 0:
+            lines.append('</helios>')
+            return "\n".join(lines) + "\n"
+
+        plant_groups: Dict[int, Dict[int, List[int]]] = {}
+        for idx in range(self.num_nodes):
+            pid = int(t[idx, COL_PLANT_ID].item())
+            sid = int(t[idx, COL_SHOOT_ID].item())
+            plant_groups.setdefault(pid, {}).setdefault(sid, []).append(idx)
+
+        shoots_dict_for_parent: Dict[int, int] = {}
+        for idx in range(self.num_nodes):
+            sid = int(t[idx, COL_SHOOT_ID].item())
+            if sid not in shoots_dict_for_parent:
+                shoots_dict_for_parent[sid] = idx
+
+        for pid, shoots in plant_groups.items():
+            first_idx = list(shoots.values())[0][0]
+            first_meta = self.raw_metadata[first_idx] if first_idx < len(self.raw_metadata) else {}
+
+            bp_str = first_meta.get("raw_bp", " 0 0 0 ")
+            pa_str = first_meta.get("raw_pa", _fmt(t[first_idx, COL_PLANT_AGE].item()))
+
+            lines.append(f'\t<plant_instance ID="{pid}">')
+            lines.append(f'\t\t<base_position>{bp_str}</base_position>')
+            lines.append(f'\t\t<plant_age> {pa_str.strip()} </plant_age>')
+
+            for sid, node_indices in shoots.items():
+                s_first_idx = node_indices[0]
+                s_meta = self.raw_metadata[s_first_idx] if s_first_idx < len(self.raw_metadata) else {}
+                stl_str = s_meta.get("raw_stl", "unifoliate" if t[s_first_idx, COL_SHOOT_TYPE] == 0 else "trifoliate")
+
+                if self.parent_logits is not None and self.parent_candidates is not None:
+                    sorted_sids = sorted(shoots_dict_for_parent.keys())
+                    sid_to_sorted_idx = {s: i for i, s in enumerate(sorted_sids)}
+                    s_idx = sid_to_sorted_idx.get(sid, 0)
+                    if s_idx < self.parent_logits.shape[0]:
+                        best_k = int(torch.argmax(self.parent_logits[s_idx]).item())
+                        best_parent = self.parent_candidates[s_idx, best_k]
+                        psi_str = str(int(best_parent[0].item()))
+                        pni_str = str(int(best_parent[1].item()))
+                        ppi_str = str(int(best_parent[2].item()))
+                    else:
+                        psi_str = s_meta.get("raw_psi", str(int(t[s_first_idx, COL_PARENT_SHOOT_ID].item())))
+                        pni_str = s_meta.get("raw_pni", str(int(t[s_first_idx, COL_PARENT_NODE_IDX].item())))
+                        ppi_str = s_meta.get("raw_ppi", str(int(t[s_first_idx, COL_PARENT_PETIOLE_IDX].item())))
+                else:
+                    psi_str = s_meta.get("raw_psi", str(int(t[s_first_idx, COL_PARENT_SHOOT_ID].item())))
+                    pni_str = s_meta.get("raw_pni", str(int(t[s_first_idx, COL_PARENT_NODE_IDX].item())))
+                    ppi_str = s_meta.get("raw_ppi", str(int(t[s_first_idx, COL_PARENT_PETIOLE_IDX].item())))
+
+                br_str = s_meta.get("raw_br", f" {_fmt(t[s_first_idx, COL_SHOOT_ROT_PITCH].item())} {_fmt(t[s_first_idx, COL_SHOOT_ROT_YAW].item())} {_fmt(t[s_first_idx, COL_SHOOT_ROT_ROLL].item())} ")
+
+                lines.append(f'\t\t<shoot ID="{sid}">')
+                lines.append(f'\t\t\t<shoot_type_label> {stl_str.strip()} </shoot_type_label>')
+                lines.append(f'\t\t\t<parent_shoot_ID> {psi_str.strip()} </parent_shoot_ID>')
+                lines.append(f'\t\t\t<parent_node_index> {pni_str.strip()} </parent_node_index>')
+                lines.append(f'\t\t\t<parent_petiole_index> {ppi_str.strip()} </parent_petiole_index>')
+                lines.append(f'\t\t\t<base_rotation>{br_str}</base_rotation>')
+
+                for n_idx in node_indices:
+                    if t[n_idx, COL_EXISTENCE].item() < existence_threshold:
+                        continue
+                    node_vec = t[n_idx]
+                    meta = self.raw_metadata[n_idx] if n_idx < len(self.raw_metadata) else {}
+                    p_idx = int(node_vec[COL_PHYTOMER_IDX].item())
+
+                    lines.append('\t\t\t<phytomer>')
+                    lines.append('\t\t\t\t<internode>')
+                    lines.append(f'\t\t\t\t\t<internode_length>{meta.get("raw_il", _fmt(node_vec[COL_INODE_LEN].item()))}</internode_length>')
+                    lines.append(f'\t\t\t\t\t<internode_radius>{meta.get("raw_ir", _fmt(node_vec[COL_INODE_RAD].item()))}</internode_radius>')
+                    lines.append(f'\t\t\t\t\t<internode_pitch>{meta.get("raw_ip", _fmt(node_vec[COL_INODE_PITCH].item()))}</internode_pitch>')
+                    lines.append(f'\t\t\t\t\t<internode_phyllotactic_angle>{meta.get("raw_ipa", _fmt(node_vec[COL_INODE_PHYLLO_ANG].item()))}</internode_phyllotactic_angle>')
+                    lines.append(f'\t\t\t\t\t<internode_length_max>{meta.get("raw_ilm", _fmt(node_vec[COL_INODE_LEN_MAX].item()))}</internode_length_max>')
+                    lines.append(f'\t\t\t\t\t<internode_length_segments>{meta.get("raw_ils", str(int(node_vec[COL_INODE_LEN_SEGS].item())))}</internode_length_segments>')
+                    lines.append(f'\t\t\t\t\t<curvature_perturbations>{meta.get("raw_cp", f"{_fmt(node_vec[COL_CURV_PERT_0].item())};{_fmt(node_vec[COL_CURV_PERT_1].item())}")}</curvature_perturbations>')
+                    lines.append(f'\t\t\t\t\t<yaw_perturbations>{meta.get("raw_yp", f"{_fmt(node_vec[COL_YAW_PERT_0].item())};{_fmt(node_vec[COL_YAW_PERT_1].item())}")}</yaw_perturbations>')
+
+                    # Petiole 0
+                    lines.append('\t\t\t\t\t<petiole>')
+                    lines.append(f'\t\t\t\t\t\t<petiole_length>{meta.get("raw_pet0_l", _fmt(node_vec[COL_PET0_LEN].item()))}</petiole_length>')
+                    lines.append(f'\t\t\t\t\t\t<petiole_radius>{meta.get("raw_pet0_r", _fmt(node_vec[COL_PET0_RAD].item()))}</petiole_radius>')
+                    lines.append(f'\t\t\t\t\t\t<petiole_pitch>{meta.get("raw_pet0_p", _fmt(node_vec[COL_PET0_PITCH].item()))}</petiole_pitch>')
+                    lines.append(f'\t\t\t\t\t\t<petiole_curvature>{meta.get("raw_pet0_c", _fmt(node_vec[COL_PET0_CURV].item()))}</petiole_curvature>')
+                    lines.append(f'\t\t\t\t\t\t<current_leaf_scale_factor>{meta.get("raw_pet0_cls", _fmt(node_vec[COL_PET0_LEAF_SCALE].item()))}</current_leaf_scale_factor>')
+                    lines.append(f'\t\t\t\t\t\t<petiole_taper>{meta.get("raw_pet0_t", _fmt(node_vec[COL_PET0_TAPER].item()))}</petiole_taper>')
+                    lines.append(f'\t\t\t\t\t\t<petiole_length_segments>{meta.get("raw_pet0_ls", str(int(node_vec[COL_PET0_LEN_SEGS].item())))}</petiole_length_segments>')
+                    lines.append(f'\t\t\t\t\t\t<petiole_radial_subdivisions>{meta.get("raw_pet0_rs", str(int(node_vec[COL_PET0_RAD_SUBDIV].item())))}</petiole_radial_subdivisions>')
+                    lines.append(f'\t\t\t\t\t\t<leaflet_scale>{meta.get("raw_pet0_lfls", _fmt(node_vec[COL_PET0_LFLT_SCALE].item()))}</leaflet_scale>')
+                    lines.append(f'\t\t\t\t\t\t<leaflet_offset>{meta.get("raw_pet0_lflo", _fmt(node_vec[COL_PET0_LFLT_OFFSET].item()))}</leaflet_offset>')
+
+                    num_leaves0 = int(node_vec[COL_PET0_NUM_LEAVES].item())
+                    leaf_metas0 = meta.get("pet0_leaves", [])
+                    for lf_idx in range(num_leaves0):
+                        lf_m = leaf_metas0[lf_idx] if lf_idx < len(leaf_metas0) else {}
+                        base_col = COL_PET0_L0_SCALE + lf_idx * 4
+                        lines.append('\t\t\t\t\t\t<leaf>')
+                        lines.append(f'\t\t\t\t\t\t\t<leaf_scale>{lf_m.get("raw_scale", _fmt(node_vec[base_col].item()))}</leaf_scale>')
+                        lines.append(f'\t\t\t\t\t\t\t<leaf_pitch>{lf_m.get("raw_pitch", _fmt(node_vec[base_col+1].item()))}</leaf_pitch>')
+                        lines.append(f'\t\t\t\t\t\t\t<leaf_yaw>{lf_m.get("raw_yaw", _fmt(node_vec[base_col+2].item()))}</leaf_yaw>')
+                        lines.append(f'\t\t\t\t\t\t\t<leaf_roll>{lf_m.get("raw_roll", _fmt(node_vec[base_col+3].item()))}</leaf_roll>')
+                        lines.append('\t\t\t\t\t\t</leaf>')
+
+                    if node_vec[COL_HAS_BUD] > 0:
+                        lines.append('\t\t\t\t\t\t<floral_bud>')
+                        lines.append(f'\t\t\t\t\t\t\t<bud_state>{meta.get("raw_bs", str(int(node_vec[COL_BUD_STATE].item())))}</bud_state>')
+                        lines.append(f'\t\t\t\t\t\t\t<parent_index>{meta.get("raw_bpidx", str(int(node_vec[COL_BUD_PARENT_IDX].item())))}</parent_index>')
+                        lines.append(f'\t\t\t\t\t\t\t<bud_index>{meta.get("raw_bidx", str(int(node_vec[COL_BUD_IDX].item())))}</bud_index>')
+                        lines.append(f'\t\t\t\t\t\t\t<is_terminal>{meta.get("raw_biterm", str(int(node_vec[COL_BUD_IS_TERMINAL].item())))}</is_terminal>')
+                        lines.append(f'\t\t\t\t\t\t\t<current_fruit_scale_factor>{meta.get("raw_bcfs", _fmt(node_vec[COL_BUD_FRUIT_SCALE].item()))}</current_fruit_scale_factor>')
+
+                        lines.append('\t\t\t\t\t\t\t<peduncle>')
+                        lines.append(f'\t\t\t\t\t\t\t\t<length>{meta.get("raw_ped_l", _fmt(node_vec[COL_PED_LEN].item()))}</length>')
+                        lines.append(f'\t\t\t\t\t\t\t\t<radius>{meta.get("raw_ped_r", _fmt(node_vec[COL_PED_RAD].item()))}</radius>')
+                        lines.append(f'\t\t\t\t\t\t\t\t<pitch>{meta.get("raw_ped_p", _fmt(node_vec[COL_PED_PITCH].item()))}</pitch>')
+                        lines.append(f'\t\t\t\t\t\t\t\t<curvature>{meta.get("raw_ped_c", _fmt(node_vec[COL_PED_CURV].item()))}</curvature>')
+                        lines.append(f'\t\t\t\t\t\t\t\t<roll>{meta.get("raw_ped_rl", _fmt(node_vec[COL_PED_ROLL].item()))}</roll>')
+                        lines.append('\t\t\t\t\t\t\t</peduncle>')
+
+                        lines.append('\t\t\t\t\t\t\t<inflorescence>')
+                        lines.append(f'\t\t\t\t\t\t\t\t<flower_offset>{meta.get("raw_foff", _fmt(node_vec[COL_FLOWER_OFFSET].item()))}</flower_offset>')
+                        num_fl = int(node_vec[COL_NUM_FLOWERS].item())
+                        fl_metas = meta.get("flowers", [])
+                        for fl_idx in range(num_fl):
+                            fl_m = fl_metas[fl_idx] if fl_idx < len(fl_metas) else {}
+                            fl_base_col = COL_FL0_PITCH + fl_idx * 5
+                            lines.append('\t\t\t\t\t\t\t\t<flower>')
+                            lines.append(f'\t\t\t\t\t\t\t\t\t<flower_pitch>{fl_m.get("raw_pitch", _fmt(node_vec[fl_base_col].item()))}</flower_pitch>')
+                            lines.append(f'\t\t\t\t\t\t\t\t\t<flower_yaw>{fl_m.get("raw_yaw", _fmt(node_vec[fl_base_col+1].item()))}</flower_yaw>')
+                            lines.append(f'\t\t\t\t\t\t\t\t\t<flower_roll>{fl_m.get("raw_roll", _fmt(node_vec[fl_base_col+2].item()))}</flower_roll>')
+                            lines.append(f'\t\t\t\t\t\t\t\t\t<flower_azimuth>{fl_m.get("raw_azimuth", _fmt(node_vec[fl_base_col+3].item()))}</flower_azimuth>')
+                            lines.append(f'\t\t\t\t\t\t\t\t\t<flower_base_scale>{fl_m.get("raw_base_scale", _fmt(node_vec[fl_base_col+4].item()))}</flower_base_scale>')
+                            lines.append('\t\t\t\t\t\t\t\t</flower>')
+                        lines.append('\t\t\t\t\t\t\t</inflorescence>')
+                        lines.append('\t\t\t\t\t\t</floral_bud>')
+
+                    lines.append('\t\t\t\t\t</petiole>')
+
+                    # Petiole 1
+                    if node_vec[COL_HAS_PET1] > 0:
+                        lines.append('\t\t\t\t\t<petiole>')
+                        lines.append(f'\t\t\t\t\t\t<petiole_length>{meta.get("raw_pet1_l", _fmt(node_vec[COL_PET1_LEN].item()))}</petiole_length>')
+                        lines.append(f'\t\t\t\t\t\t<petiole_radius>{meta.get("raw_pet1_r", _fmt(node_vec[COL_PET1_RAD].item()))}</petiole_radius>')
+                        lines.append(f'\t\t\t\t\t\t<petiole_pitch>{meta.get("raw_pet1_p", _fmt(node_vec[COL_PET1_PITCH].item()))}</petiole_pitch>')
+                        lines.append(f'\t\t\t\t\t\t<petiole_curvature>{meta.get("raw_pet1_c", _fmt(node_vec[COL_PET1_CURV].item()))}</petiole_curvature>')
+                        lines.append(f'\t\t\t\t\t\t<current_leaf_scale_factor>{meta.get("raw_pet1_cls", _fmt(node_vec[COL_PET1_LEAF_SCALE].item()))}</current_leaf_scale_factor>')
+                        lines.append(f'\t\t\t\t\t\t<petiole_taper>{meta.get("raw_pet1_t", _fmt(node_vec[COL_PET1_TAPER].item()))}</petiole_taper>')
+                        lines.append(f'\t\t\t\t\t\t<petiole_length_segments>{meta.get("raw_pet1_ls", str(int(node_vec[COL_PET1_LEN_SEGS].item())))}</petiole_length_segments>')
+                        lines.append(f'\t\t\t\t\t\t<petiole_radial_subdivisions>{meta.get("raw_pet1_rs", str(int(node_vec[COL_PET1_RAD_SUBDIV].item())))}</petiole_radial_subdivisions>')
+                        lines.append(f'\t\t\t\t\t\t<leaflet_scale>{meta.get("raw_pet1_lfls", _fmt(node_vec[COL_PET1_LFLT_SCALE].item()))}</leaflet_scale>')
+                        lines.append(f'\t\t\t\t\t\t<leaflet_offset>{meta.get("raw_pet1_lflo", _fmt(node_vec[COL_PET1_LFLT_OFFSET].item()))}</leaflet_offset>')
+
+                        num_leaves1 = int(node_vec[COL_PET1_NUM_LEAVES].item())
+                        leaf_metas1 = meta.get("pet1_leaves", [])
+                        for lf_idx in range(num_leaves1):
+                            lf_m = leaf_metas1[lf_idx] if lf_idx < len(leaf_metas1) else {}
+                            base_col = COL_PET1_L0_SCALE + lf_idx * 4
+                            lines.append('\t\t\t\t\t\t<leaf>')
+                            lines.append(f'\t\t\t\t\t\t\t<leaf_scale>{lf_m.get("raw_scale", _fmt(node_vec[base_col].item()))}</leaf_scale>')
+                            lines.append(f'\t\t\t\t\t\t\t<leaf_pitch>{lf_m.get("raw_pitch", _fmt(node_vec[base_col+1].item()))}</leaf_pitch>')
+                            lines.append(f'\t\t\t\t\t\t\t<leaf_yaw>{lf_m.get("raw_yaw", _fmt(node_vec[base_col+2].item()))}</leaf_yaw>')
+                            lines.append(f'\t\t\t\t\t\t\t<leaf_roll>{lf_m.get("raw_roll", _fmt(node_vec[base_col+3].item()))}</leaf_roll>')
+                            lines.append('\t\t\t\t\t\t</leaf>')
+
+                        lines.append('\t\t\t\t\t</petiole>')
+
+                    lines.append('\t\t\t\t</internode>')
+                    lines.append('\t\t\t</phytomer>')
+
+                lines.append('\t\t</shoot>')
+
+            lines.append('\t</plant_instance>')
+
+        lines.append('</helios>')
+        return "\n".join(lines) + "\n"
+
+    # -------------------------------------------------------------------------
+    # TYPED 40D XML WRITER (honest round-trip)
+    # -------------------------------------------------------------------------
+    def _to_xml_string_typed(self, existence_threshold: float = 0.5) -> str:
+        """TYPED (N, 40) XML writer. Reconstructs XML directly from tensor."""
+        lines = [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<helios>'
+        ]
+        t = self.tensor
+        N = self.num_nodes
+        if N == 0:
+            lines.append('</helios>')
+            return "\n".join(lines) + "\n"
+
+        # Build dictionaries: plant_id -> shoot_id -> phytomer_idx -> organ rows
+        plants: Dict[int, Dict[int, Dict[int, List[torch.Tensor]]]] = {}
+        root_meta: Dict[int, torch.Tensor] = {}
+        shoot_meta: Dict[Tuple[int, int], torch.Tensor] = {}
+
+        for idx in range(N):
+            if t[idx, T_COL_EXISTENCE].item() < existence_threshold:
+                continue
+            pid = _to_int(t[idx, T_COL_PLANT_ID])
+            sid = _to_int(t[idx, T_COL_SHOOT_ID])
+            ot = _to_int(t[idx, T_COL_ORGAN_TYPE])
+            if ot == ORGAN_ROOT_META:
+                root_meta[pid] = t[idx]
+                continue
+            if ot == ORGAN_SHOOT_META:
+                shoot_meta[(pid, sid)] = t[idx]
+                continue
+            pidx = _to_int(t[idx, T_COL_PHYTOMER_IDX])
+            plants.setdefault(pid, {}).setdefault(sid, {}).setdefault(pidx, []).append(t[idx])
+
+        for pid in sorted(plants.keys()):
+            rm = root_meta.get(pid, torch.zeros(NUM_FEATURES_TYPED))
+            bp_x = _fmt(_to_float(rm[T_COL_BASE_X]))
+            bp_y = _fmt(_to_float(rm[T_COL_BASE_Y]))
+            bp_z = _fmt(_to_float(rm[T_COL_BASE_Z]))
+            pa = _fmt(_to_float(rm[T_COL_PLANT_AGE]))
+
+            lines.append(f'\t<plant_instance ID="{pid}">')
+            lines.append(f'\t\t<base_position> {bp_x} {bp_y} {bp_z} </base_position>')
+            lines.append(f'\t\t<plant_age> {pa} </plant_age>')
+
+            shoots = plants[pid]
+            for sid in sorted(shoots.keys()):
+                sm = shoot_meta.get((pid, sid), torch.zeros(NUM_FEATURES_TYPED))
+                st = _to_int(sm[T_COL_SHOOT_TYPE])
+                stl_str = "unifoliate" if st == 0 else "trifoliate"
+                psi = _to_int(sm[T_COL_PARENT_SHOOT_ID])
+                pni = _to_int(sm[T_COL_PARENT_NODE_IDX])
+                ppi = _to_int(sm[T_COL_PARENT_PETIOLE_IDX])
+                br_p = _fmt(_to_float(sm[T_COL_PITCH]))
+                br_y = _fmt(_to_float(sm[T_COL_YAW]))
+                br_r = _fmt(_to_float(sm[T_COL_ROLL]))
+
+                lines.append(f'\t\t<shoot ID="{sid}">')
+                lines.append(f'\t\t\t<shoot_type_label> {stl_str} </shoot_type_label>')
+                lines.append(f'\t\t\t<parent_shoot_ID> {psi} </parent_shoot_ID>')
+                lines.append(f'\t\t\t<parent_node_index> {pni} </parent_node_index>')
+                lines.append(f'\t\t\t<parent_petiole_index> {ppi} </parent_petiole_index>')
+                lines.append(f'\t\t\t<base_rotation> {br_p} {br_y} {br_r} </base_rotation>')
+
+                phytomers = shoots[sid]
+                for pidx in sorted(phytomers.keys()):
+                    rows = phytomers[pidx]
+                    lines.append('\t\t\t<phytomer>')
+                    lines.append('\t\t\t\t<internode>')
+
+                    internode = None
+                    petioles: Dict[int, List[torch.Tensor]] = {}
+                    buds: List[torch.Tensor] = []
+                    peduncles: List[torch.Tensor] = []
+                    flowers: List[torch.Tensor] = []
+
+                    for row in rows:
+                        ot = _to_int(row[T_COL_ORGAN_TYPE])
+                        if ot == ORGAN_INTERNODE:
+                            internode = row
+                        elif ot == ORGAN_PETIOLE:
+                            pet_i = _to_int(row[T_COL_PARENT_PETIOLE_IDX])
+                            petioles.setdefault(pet_i, []).append(row)
+                        elif ot == ORGAN_LEAF:
+                            pet_i = _to_int(row[T_COL_PARENT_PETIOLE_IDX])
+                            petioles.setdefault(pet_i, []).append(row)
+                        elif ot == ORGAN_BUD:
+                            pet_i = _to_int(row[T_COL_PARENT_PETIOLE_IDX])
+                            petioles.setdefault(pet_i, []).append(row)
+                        elif ot == ORGAN_PEDUNCLE:
+                            pet_i = _to_int(row[T_COL_PARENT_PETIOLE_IDX])
+                            petioles.setdefault(pet_i, []).append(row)
+                        elif ot == ORGAN_FLOWER:
+                            pet_i = _to_int(row[T_COL_PARENT_PETIOLE_IDX])
+                            petioles.setdefault(pet_i, []).append(row)
+
+                    # Internode fields
+                    if internode is not None:
+                        r = internode
+                        lines.append(f'\t\t\t\t\t<internode_length>{_fmt(_to_float(r[T_COL_LENGTH]))}</internode_length>')
+                        lines.append(f'\t\t\t\t\t<internode_radius>{_fmt(_to_float(r[T_COL_RADIUS]))}</internode_radius>')
+                        lines.append(f'\t\t\t\t\t<internode_pitch>{_fmt(_to_float(r[T_COL_PITCH]))}</internode_pitch>')
+                        lines.append(f'\t\t\t\t\t<internode_phyllotactic_angle>{_fmt(_to_float(r[T_COL_PHYLLOTACTIC_ANGLE]))}</internode_phyllotactic_angle>')
+                        lines.append(f'\t\t\t\t\t<internode_length_max>{_fmt(_to_float(r[T_COL_LENGTH_MAX]))}</internode_length_max>')
+                        lines.append(f'\t\t\t\t\t<internode_length_segments>{_to_int(r[T_COL_LENGTH_SEGMENTS])}</internode_length_segments>')
+                        lines.append(f'\t\t\t\t\t<curvature_perturbations>{_fmt(_to_float(r[T_COL_CURV_PERT_0]))};{_fmt(_to_float(r[T_COL_CURV_PERT_1]))}</curvature_perturbations>')
+                        lines.append(f'\t\t\t\t\t<yaw_perturbations>{_fmt(_to_float(r[T_COL_YAW_PERT_0]))};{_fmt(_to_float(r[T_COL_YAW_PERT_1]))}</yaw_perturbations>')
+
+                    # Petioles in order 0, 1, ...
+                    for pet_i in sorted(petioles.keys()):
+                        pet_rows = petioles[pet_i]
+                        pet = None
+                        leaves = []
+                        bud = None
+                        peduncle = None
+                        flowers = []
+                        for pr in pet_rows:
+                                ot = _to_int(pr[T_COL_ORGAN_TYPE])
+                                if ot == ORGAN_PETIOLE:
+                                    pet = pr
+                                elif ot == ORGAN_LEAF:
+                                    leaves.append(pr)
+                                elif ot == ORGAN_BUD:
+                                    bud = pr
+                                elif ot == ORGAN_PEDUNCLE:
+                                    peduncle = pr
+                                elif ot == ORGAN_FLOWER:
+                                    flowers.append(pr)
+
+                        if pet is None:
+                            continue
+                        lines.append('\t\t\t\t\t<petiole>')
+                        lines.append(f'\t\t\t\t\t\t<petiole_length>{_fmt(_to_float(pet[T_COL_LENGTH]))}</petiole_length>')
+                        lines.append(f'\t\t\t\t\t\t<petiole_radius>{_fmt(_to_float(pet[T_COL_RADIUS]))}</petiole_radius>')
+                        lines.append(f'\t\t\t\t\t\t<petiole_pitch>{_fmt(_to_float(pet[T_COL_PITCH]))}</petiole_pitch>')
+                        lines.append(f'\t\t\t\t\t\t<petiole_curvature>{_fmt(_to_float(pet[T_COL_CURVATURE]))}</petiole_curvature>')
+                        lines.append(f'\t\t\t\t\t\t<current_leaf_scale_factor>{_fmt(_to_float(pet[T_COL_CURRENT_LEAF_SCALE_FACTOR]))}</current_leaf_scale_factor>')
+                        lines.append(f'\t\t\t\t\t\t<petiole_taper>{_fmt(_to_float(pet[T_COL_TAPER]))}</petiole_taper>')
+                        lines.append(f'\t\t\t\t\t\t<petiole_length_segments>{_to_int(pet[T_COL_LENGTH_SEGMENTS])}</petiole_length_segments>')
+                        lines.append(f'\t\t\t\t\t\t<petiole_radial_subdivisions>{_to_int(pet[T_COL_RADIAL_SUBDIVISIONS])}</petiole_radial_subdivisions>')
+                        lines.append(f'\t\t\t\t\t\t<leaflet_scale>{_fmt(_to_float(pet[T_COL_LEAFLET_SCALE]))}</leaflet_scale>')
+                        lines.append(f'\t\t\t\t\t\t<leaflet_offset>{_fmt(_to_float(pet[T_COL_LEAFLET_OFFSET]))}</leaflet_offset>')
+
+                        leaves = sorted(leaves, key=lambda r: _to_int(r[T_COL_CHILD_INDEX]))
+                        for lf in leaves:
+                            lines.append('\t\t\t\t\t\t<leaf>')
+                            lines.append(f'\t\t\t\t\t\t\t<leaf_scale>{_fmt(_to_float(lf[T_COL_SCALE]))}</leaf_scale>')
+                            lines.append(f'\t\t\t\t\t\t\t<leaf_pitch>{_fmt(_to_float(lf[T_COL_PITCH]))}</leaf_pitch>')
+                            lines.append(f'\t\t\t\t\t\t\t<leaf_yaw>{_fmt(_to_float(lf[T_COL_YAW]))}</leaf_yaw>')
+                            lines.append(f'\t\t\t\t\t\t\t<leaf_roll>{_fmt(_to_float(lf[T_COL_ROLL]))}</leaf_roll>')
+                            lines.append('\t\t\t\t\t\t</leaf>')
+
+                        if bud is not None:
+                            lines.append('\t\t\t\t\t\t<floral_bud>')
+                            lines.append(f'\t\t\t\t\t\t\t<bud_state>{_to_int(bud[T_COL_BUD_STATE])}</bud_state>')
+                            lines.append(f'\t\t\t\t\t\t\t<parent_index>{_to_int(bud[T_COL_BUD_PARENT_INDEX])}</parent_index>')
+                            lines.append(f'\t\t\t\t\t\t\t<bud_index>{_to_int(bud[T_COL_CHILD_INDEX])}</bud_index>')
+                            lines.append(f'\t\t\t\t\t\t\t<is_terminal>{_to_int(bud[T_COL_BUD_IS_TERMINAL])}</is_terminal>')
+                            lines.append(f'\t\t\t\t\t\t\t<current_fruit_scale_factor>{_fmt(_to_float(bud[T_COL_FRUIT_SCALE]))}</current_fruit_scale_factor>')
+
+                            if peduncle is not None:
+                                lines.append('\t\t\t\t\t\t\t<peduncle>')
+                                lines.append(f'\t\t\t\t\t\t\t\t<length>{_fmt(_to_float(peduncle[T_COL_LENGTH]))}</length>')
+                                lines.append(f'\t\t\t\t\t\t\t\t<radius>{_fmt(_to_float(peduncle[T_COL_RADIUS]))}</radius>')
+                                lines.append(f'\t\t\t\t\t\t\t\t<pitch>{_fmt(_to_float(peduncle[T_COL_PITCH]))}</pitch>')
+                                lines.append(f'\t\t\t\t\t\t\t\t<curvature>{_fmt(_to_float(peduncle[T_COL_CURVATURE]))}</curvature>')
+                                lines.append(f'\t\t\t\t\t\t\t\t<roll>{_fmt(_to_float(peduncle[T_COL_ROLL]))}</roll>')
+                                lines.append('\t\t\t\t\t\t\t</peduncle>')
+
+                            if flowers or (bud is not None and _to_float(bud[T_COL_FLOWER_OFFSET]) != 0.0):
+                                lines.append('\t\t\t\t\t\t\t<inflorescence>')
+                                if flowers:
+                                    foff = _fmt(_to_float(flowers[0][T_COL_FLOWER_OFFSET]))
+                                else:
+                                    foff = _fmt(_to_float(bud[T_COL_FLOWER_OFFSET]))
+                                lines.append(f'\t\t\t\t\t\t\t\t<flower_offset>{foff}</flower_offset>')
+                                flowers = sorted(flowers, key=lambda r: _to_int(r[T_COL_CHILD_INDEX]))
+                                for fl in flowers:
+                                    lines.append('\t\t\t\t\t\t\t\t<flower>')
+                                    lines.append(f'\t\t\t\t\t\t\t\t\t<flower_pitch>{_fmt(_to_float(fl[T_COL_PITCH]))}</flower_pitch>')
+                                    lines.append(f'\t\t\t\t\t\t\t\t\t<flower_yaw>{_fmt(_to_float(fl[T_COL_YAW]))}</flower_yaw>')
+                                    lines.append(f'\t\t\t\t\t\t\t\t\t<flower_roll>{_fmt(_to_float(fl[T_COL_ROLL]))}</flower_roll>')
+                                    lines.append(f'\t\t\t\t\t\t\t\t\t<flower_azimuth>{_fmt(_to_float(fl[T_COL_FLOWER_AZIMUTH]))}</flower_azimuth>')
+                                    lines.append(f'\t\t\t\t\t\t\t\t\t<flower_base_scale>{_fmt(_to_float(fl[T_COL_SCALE]))}</flower_base_scale>')
+                                    lines.append('\t\t\t\t\t\t\t\t</flower>')
+                                lines.append('\t\t\t\t\t\t\t</inflorescence>')
+
+                            lines.append('\t\t\t\t\t\t</floral_bud>')
+
+                        lines.append('\t\t\t\t\t</petiole>')
+
+                    lines.append('\t\t\t\t</internode>')
+                    lines.append('\t\t\t</phytomer>')
+
+                lines.append('\t\t</shoot>')
+
+            lines.append('\t</plant_instance>')
+
+        lines.append('</helios>')
+        return "\n".join(lines) + "\n"
+
+    # -------------------------------------------------------------------------
+    # LEGACY 94D XML PARSER
+    # -------------------------------------------------------------------------
+    @classmethod
+    def _from_xml_string_legacy(cls, xml_content: str) -> "PlantOrganArray":
+        """DEPRECATED: legacy (N, 94) parser."""
+        root = ET.fromstring(xml_content)
+        if root.tag != "helios":
+            raise ValueError("Root tag must be <helios>")
+
+        rows = []
+        raw_metadata = []
+
+        for plant_elem in root.findall("plant_instance"):
+            plant_id = int(plant_elem.attrib.get("ID", 0))
+
+            bp_elem = plant_elem.find("base_position")
+            raw_bp = bp_elem.text if bp_elem is not None else " 0 0 0 "
+            bp_vals = [float(x) for x in raw_bp.strip().split()]
+            bp = (bp_vals[0], bp_vals[1], bp_vals[2]) if len(bp_vals) >= 3 else (0.0, 0.0, 0.0)
+
+            age_elem = plant_elem.find("plant_age")
+            raw_pa = age_elem.text if age_elem is not None else "0"
+            plant_age = float(raw_pa.strip())
+
+            for shoot_elem in plant_elem.findall("shoot"):
+                shoot_id = int(shoot_elem.attrib.get("ID", 0))
+
+                stl_elem = shoot_elem.find("shoot_type_label")
+                raw_stl = stl_elem.text if stl_elem is not None else "unifoliate"
+                shoot_type = 0 if "unifoliate" in raw_stl else 1
+
+                psi_elem = shoot_elem.find("parent_shoot_ID")
+                raw_psi = psi_elem.text if psi_elem is not None else "-1"
+                psi = int(raw_psi.strip())
+
+                pni_elem = shoot_elem.find("parent_node_index")
+                raw_pni = pni_elem.text if pni_elem is not None else "0"
+                pni = int(raw_pni.strip())
+
+                ppi_elem = shoot_elem.find("parent_petiole_index")
+                raw_ppi = ppi_elem.text if ppi_elem is not None else "0"
+                ppi = int(raw_ppi.strip())
+
+                br_elem = shoot_elem.find("base_rotation")
+                raw_br = br_elem.text if br_elem is not None else " 0 0 0 "
+                br_vals = [float(x) for x in raw_br.strip().split()]
+                br = (br_vals[0], br_vals[1], br_vals[2]) if len(br_vals) >= 3 else (0.0, 0.0, 0.0)
+
+                for phyto_idx, phyto_elem in enumerate(shoot_elem.findall("phytomer")):
+                    row = [0.0] * NUM_FEATURES_LEGACY
+                    meta: Dict[str, Any] = {
+                        "raw_bp": raw_bp,
+                        "raw_pa": raw_pa,
+                        "raw_stl": raw_stl,
+                        "raw_psi": raw_psi,
+                        "raw_pni": raw_pni,
+                        "raw_ppi": raw_ppi,
+                        "raw_br": raw_br,
+                    }
+
+                    row[COL_PLANT_ID] = float(plant_id)
+                    row[COL_PLANT_AGE] = plant_age
+                    row[COL_SHOOT_ID] = float(shoot_id)
+                    row[COL_SHOOT_TYPE] = float(shoot_type)
+                    row[COL_PARENT_SHOOT_ID] = float(psi)
+                    row[COL_PARENT_NODE_IDX] = float(pni)
+                    row[COL_PARENT_PETIOLE_IDX] = float(ppi)
+                    row[COL_SHOOT_ROT_PITCH] = br[0]
+                    row[COL_SHOOT_ROT_YAW] = br[1]
+                    row[COL_SHOOT_ROT_ROLL] = br[2]
+                    row[COL_PHYTOMER_IDX] = float(phyto_idx)
+
+                    internode_elem = phyto_elem.find("internode")
+                    if internode_elem is not None:
+                        il_elem = internode_elem.find("internode_length")
+                        meta["raw_il"] = il_elem.text if il_elem is not None else "0"
+                        row[COL_INODE_LEN] = float(meta["raw_il"].strip())
+
+                        ir_elem = internode_elem.find("internode_radius")
+                        meta["raw_ir"] = ir_elem.text if ir_elem is not None else "0"
+                        row[COL_INODE_RAD] = float(meta["raw_ir"].strip())
+
+                        ip_elem = internode_elem.find("internode_pitch")
+                        meta["raw_ip"] = ip_elem.text if ip_elem is not None else "0"
+                        row[COL_INODE_PITCH] = float(meta["raw_ip"].strip())
+
+                        ipa_elem = internode_elem.find("internode_phyllotactic_angle")
+                        meta["raw_ipa"] = ipa_elem.text if ipa_elem is not None else "0"
+                        row[COL_INODE_PHYLLO_ANG] = float(meta["raw_ipa"].strip())
+
+                        ilm_elem = internode_elem.find("internode_length_max")
+                        meta["raw_ilm"] = ilm_elem.text if ilm_elem is not None else "0"
+                        row[COL_INODE_LEN_MAX] = float(meta["raw_ilm"].strip())
+
+                        ils_elem = internode_elem.find("internode_length_segments")
+                        meta["raw_ils"] = ils_elem.text if ils_elem is not None else "2"
+                        row[COL_INODE_LEN_SEGS] = float(meta["raw_ils"].strip())
+
+                        cp_elem = internode_elem.find("curvature_perturbations")
+                        meta["raw_cp"] = cp_elem.text if cp_elem is not None else "0;0"
+                        cp_list = [float(x) for x in meta["raw_cp"].strip().split(";") if x.strip()]
+                        if len(cp_list) > 0: row[COL_CURV_PERT_0] = cp_list[0]
+                        if len(cp_list) > 1: row[COL_CURV_PERT_1] = cp_list[1]
+
+                        yp_elem = internode_elem.find("yaw_perturbations")
+                        meta["raw_yp"] = yp_elem.text if yp_elem is not None else "0;0"
+                        yp_list = [float(x) for x in meta["raw_yp"].strip().split(";") if x.strip()]
+                        if len(yp_list) > 0: row[COL_YAW_PERT_0] = yp_list[0]
+                        if len(yp_list) > 1: row[COL_YAW_PERT_1] = yp_list[1]
+
+                        petiole_elems = internode_elem.findall("petiole")
+                        for pet_i, pet_elem in enumerate(petiole_elems):
+                            if pet_i > 1:
+                                break
+                            prefix = "pet0_" if pet_i == 0 else "pet1_"
+
+                            pl_elem = pet_elem.find("petiole_length")
+                            meta[prefix + "l"] = pl_elem.text if pl_elem is not None else "0"
+                            pr_elem = pet_elem.find("petiole_radius")
+                            meta[prefix + "r"] = pr_elem.text if pr_elem is not None else "0"
+                            pp_elem = pet_elem.find("petiole_pitch")
+                            meta[prefix + "p"] = pp_elem.text if pp_elem is not None else "0"
+                            pc_elem = pet_elem.find("petiole_curvature")
+                            meta[prefix + "c"] = pc_elem.text if pc_elem is not None else "0"
+                            cls_elem = pet_elem.find("current_leaf_scale_factor")
+                            meta[prefix + "cls"] = cls_elem.text if cls_elem is not None else "1"
+
+                            pt_elem = pet_elem.find("petiole_taper")
+                            meta[prefix + "t"] = pt_elem.text if pt_elem is not None else "0.25"
+                            pls_elem = pet_elem.find("petiole_length_segments")
+                            meta[prefix + "ls"] = pls_elem.text if pls_elem is not None else "5"
+                            prs_elem = pet_elem.find("petiole_radial_subdivisions")
+                            meta[prefix + "rs"] = prs_elem.text if prs_elem is not None else "6"
+                            ls_elem = pet_elem.find("leaflet_scale")
+                            meta[prefix + "lfls"] = ls_elem.text if ls_elem is not None else "1"
+                            lo_elem = pet_elem.find("leaflet_offset")
+                            meta[prefix + "lflo"] = lo_elem.text if lo_elem is not None else "0.4"
+
+                            base_col = COL_PET0_LEN if pet_i == 0 else COL_PET1_LEN
+                            if pet_i == 1:
+                                row[COL_HAS_PET1] = 1.0
+
+                            row[base_col] = float(meta[prefix + "l"].strip())
+                            row[base_col + 1] = float(meta[prefix + "r"].strip())
+                            row[base_col + 2] = float(meta[prefix + "p"].strip())
+                            row[base_col + 3] = float(meta[prefix + "c"].strip())
+                            row[base_col + 4] = float(meta[prefix + "cls"].strip())
+                            row[base_col + 5] = float(meta[prefix + "t"].strip())
+                            row[base_col + 6] = float(meta[prefix + "ls"].strip())
+                            row[base_col + 7] = float(meta[prefix + "rs"].strip())
+                            row[base_col + 8] = float(meta[prefix + "lfls"].strip())
+                            row[base_col + 9] = float(meta[prefix + "lflo"].strip())
+
+                            leaf_elems = pet_elem.findall("leaf")
+                            row[base_col + 10] = float(len(leaf_elems))
+                            leaf_metas = []
+
+                            leaf_base_col = COL_PET0_L0_SCALE if pet_i == 0 else COL_PET1_L0_SCALE
+                            for lf_idx, leaf_elem in enumerate(leaf_elems):
+                                if pet_i == 0 and lf_idx >= 3:
+                                    break
+                                if pet_i == 1 and lf_idx >= 1:
+                                    break
+                                lfs_elem = leaf_elem.find("leaf_scale")
+                                raw_lfs = lfs_elem.text if lfs_elem is not None else "1"
+                                lfp_elem = leaf_elem.find("leaf_pitch")
+                                raw_lfp = lfp_elem.text if lfp_elem is not None else "0"
+                                lfy_elem = leaf_elem.find("leaf_yaw")
+                                raw_lfy = lfy_elem.text if lfy_elem is not None else "0"
+                                lfr_elem = leaf_elem.find("leaf_roll")
+                                raw_lfr = lfr_elem.text if lfr_elem is not None else "0"
+
+                                leaf_metas.append({
+                                    "raw_scale": raw_lfs,
+                                    "raw_pitch": raw_lfp,
+                                    "raw_yaw": raw_lfy,
+                                    "raw_roll": raw_lfr
+                                })
+
+                                cur_col = leaf_base_col + lf_idx * 4
+                                row[cur_col] = float(raw_lfs.strip())
+                                row[cur_col + 1] = float(raw_lfp.strip())
+                                row[cur_col + 2] = float(raw_lfy.strip())
+                                row[cur_col + 3] = float(raw_lfr.strip())
+
+                            meta[prefix + "leaves"] = leaf_metas
+
+                            if pet_i == 0:
+                                fb_elem = pet_elem.find("floral_bud")
+                                if fb_elem is not None:
+                                    row[COL_HAS_BUD] = 1.0
+                                    bs_elem = fb_elem.find("bud_state")
+                                    meta["raw_bs"] = bs_elem.text if bs_elem is not None else "5"
+                                    row[COL_BUD_STATE] = float(meta["raw_bs"].strip())
+
+                                    pidx_elem = fb_elem.find("parent_index")
+                                    meta["raw_bpidx"] = pidx_elem.text if pidx_elem is not None else "0"
+                                    row[COL_BUD_PARENT_IDX] = float(meta["raw_bpidx"].strip())
+
+                                    bidx_elem = fb_elem.find("bud_index")
+                                    meta["raw_bidx"] = bidx_elem.text if bidx_elem is not None else "0"
+                                    row[COL_BUD_IDX] = float(meta["raw_bidx"].strip())
+
+                                    iterm_elem = fb_elem.find("is_terminal")
+                                    meta["raw_biterm"] = iterm_elem.text if iterm_elem is not None else "0"
+                                    row[COL_BUD_IS_TERMINAL] = float(meta["raw_biterm"].strip())
+
+                                    cfs_elem = fb_elem.find("current_fruit_scale_factor")
+                                    meta["raw_bcfs"] = cfs_elem.text if cfs_elem is not None else "1"
+                                    row[COL_BUD_FRUIT_SCALE] = float(meta["raw_bcfs"].strip())
+
+                                    ped_elem = fb_elem.find("peduncle")
+                                    if ped_elem is not None:
+                                        plen_elem = ped_elem.find("length")
+                                        meta["raw_ped_l"] = plen_elem.text if plen_elem is not None else "0"
+                                        row[COL_PED_LEN] = float(meta["raw_ped_l"].strip())
+
+                                        prad_elem = ped_elem.find("radius")
+                                        meta["raw_ped_r"] = prad_elem.text if prad_elem is not None else "0"
+                                        row[COL_PED_RAD] = float(meta["raw_ped_r"].strip())
+
+                                        ppitch_elem = ped_elem.find("pitch")
+                                        meta["raw_ped_p"] = ppitch_elem.text if ppitch_elem is not None else "0"
+                                        row[COL_PED_PITCH] = float(meta["raw_ped_p"].strip())
+
+                                        pcurv_elem = ped_elem.find("curvature")
+                                        meta["raw_ped_c"] = pcurv_elem.text if pcurv_elem is not None else "0"
+                                        row[COL_PED_CURV] = float(meta["raw_ped_c"].strip())
+
+                                        proll_elem = ped_elem.find("roll")
+                                        meta["raw_ped_rl"] = proll_elem.text if proll_elem is not None else "0"
+                                        row[COL_PED_ROLL] = float(meta["raw_ped_rl"].strip())
+
+                                    infl_elem = fb_elem.find("inflorescence")
+                                    if infl_elem is not None:
+                                        foff_elem = infl_elem.find("flower_offset")
+                                        meta["raw_foff"] = foff_elem.text if foff_elem is not None else "0.05"
+                                        row[COL_FLOWER_OFFSET] = float(meta["raw_foff"].strip())
+
+                                        flower_elems = infl_elem.findall("flower")
+                                        row[COL_NUM_FLOWERS] = float(len(flower_elems))
+                                        fl_metas = []
+
+                                        for fl_idx, fl_elem in enumerate(flower_elems):
+                                            if fl_idx >= 4:
+                                                break
+                                            fp_elem = fl_elem.find("flower_pitch")
+                                            raw_fp = fp_elem.text if fp_elem is not None else "0"
+                                            fy_elem = fl_elem.find("flower_yaw")
+                                            raw_fy = fy_elem.text if fy_elem is not None else "0"
+                                            fr_elem = fl_elem.find("flower_roll")
+                                            raw_fr = fr_elem.text if fr_elem is not None else "0"
+                                            fa_elem = fl_elem.find("flower_azimuth")
+                                            raw_fa = fa_elem.text if fa_elem is not None else "0"
+                                            fbs_elem = fl_elem.find("flower_base_scale")
+                                            raw_fbs = fbs_elem.text if fbs_elem is not None else "1"
+
+                                            fl_metas.append({
+                                                "raw_pitch": raw_fp,
+                                                "raw_yaw": raw_fy,
+                                                "raw_roll": raw_fr,
+                                                "raw_azimuth": raw_fa,
+                                                "raw_base_scale": raw_fbs
+                                            })
+
+                                            fl_base_col = COL_FL0_PITCH + fl_idx * 5
+                                            row[fl_base_col] = float(raw_fp.strip())
+                                            row[fl_base_col + 1] = float(raw_fy.strip())
+                                            row[fl_base_col + 2] = float(raw_fr.strip())
+                                            row[fl_base_col + 3] = float(raw_fa.strip())
+                                            row[fl_base_col + 4] = float(raw_fbs.strip())
+
+                                        meta["flowers"] = fl_metas
+
+                    rows.append(row)
+                    raw_metadata.append(meta)
+
+        tensor = torch.tensor(rows, dtype=torch.float32)
+        tensor[:, COL_EXISTENCE] = 1.0
+        return cls(tensor=tensor, raw_metadata=raw_metadata)
+
+    # -------------------------------------------------------------------------
+    # TYPED 40D XML PARSER (honest round-trip)
+    # -------------------------------------------------------------------------
+    @classmethod
+    def _from_xml_string_typed(cls, xml_content: str) -> "PlantOrganArray":
+        """TYPED (N, 40) parser. Produces per-organ rows."""
+        root = ET.fromstring(xml_content)
+        if root.tag != "helios":
+            raise ValueError("Root tag must be <helios>")
+
+        rows: List[List[float]] = []
+
+        for plant_elem in root.findall("plant_instance"):
+            plant_id = int(plant_elem.attrib.get("ID", 0))
+
+            bp_elem = plant_elem.find("base_position")
+            raw_bp = bp_elem.text if bp_elem is not None else " 0 0 0 "
+            bp_vals = [float(x) for x in raw_bp.strip().split()]
+            bp = (bp_vals[0], bp_vals[1], bp_vals[2]) if len(bp_vals) >= 3 else (0.0, 0.0, 0.0)
+
+            age_elem = plant_elem.find("plant_age")
+            plant_age = float(age_elem.text.strip()) if age_elem is not None and age_elem.text else 0.0
+
+            # ROOT_META row
+            root_row = [0.0] * NUM_FEATURES_TYPED
+            root_row[T_COL_PLANT_ID] = float(plant_id)
+            root_row[T_COL_PLANT_AGE] = plant_age
+            root_row[T_COL_BASE_X] = bp[0]
+            root_row[T_COL_BASE_Y] = bp[1]
+            root_row[T_COL_BASE_Z] = bp[2]
+            root_row[T_COL_ORGAN_TYPE] = float(ORGAN_ROOT_META)
+            root_row[T_COL_EXISTENCE] = 1.0
+            rows.append(root_row)
+
+            for shoot_elem in plant_elem.findall("shoot"):
+                shoot_id = int(shoot_elem.attrib.get("ID", 0))
+
+                stl_elem = shoot_elem.find("shoot_type_label")
+                raw_stl = stl_elem.text if stl_elem is not None else "unifoliate"
+                shoot_type = 0 if "unifoliate" in raw_stl else 1
+
+                psi_elem = shoot_elem.find("parent_shoot_ID")
+                psi = int(psi_elem.text.strip()) if psi_elem is not None and psi_elem.text else -1
+
+                pni_elem = shoot_elem.find("parent_node_index")
+                pni = int(pni_elem.text.strip()) if pni_elem is not None and pni_elem.text else 0
+
+                ppi_elem = shoot_elem.find("parent_petiole_index")
+                ppi = int(ppi_elem.text.strip()) if ppi_elem is not None and ppi_elem.text else 0
+
+                br_elem = shoot_elem.find("base_rotation")
+                raw_br = br_elem.text if br_elem is not None else " 0 0 0 "
+                br_vals = [float(x) for x in raw_br.strip().split()]
+                br = (br_vals[0], br_vals[1], br_vals[2]) if len(br_vals) >= 3 else (0.0, 0.0, 0.0)
+
+                # SHOOT_META row
+                shoot_row = [0.0] * NUM_FEATURES_TYPED
+                shoot_row[T_COL_PLANT_ID] = float(plant_id)
+                shoot_row[T_COL_SHOOT_ID] = float(shoot_id)
+                shoot_row[T_COL_PARENT_SHOOT_ID] = float(psi)
+                shoot_row[T_COL_PARENT_NODE_IDX] = float(pni)
+                shoot_row[T_COL_PARENT_PETIOLE_IDX] = float(ppi)
+                shoot_row[T_COL_ORGAN_TYPE] = float(ORGAN_SHOOT_META)
+                shoot_row[T_COL_SHOOT_TYPE] = float(shoot_type)
+                shoot_row[T_COL_PITCH] = br[0]
+                shoot_row[T_COL_YAW] = br[1]
+                shoot_row[T_COL_ROLL] = br[2]
+                shoot_row[T_COL_EXISTENCE] = 1.0
+                rows.append(shoot_row)
+
+                for phyto_idx, phyto_elem in enumerate(shoot_elem.findall("phytomer")):
+                    internode_elem = phyto_elem.find("internode")
+                    if internode_elem is None:
+                        continue
+
+                    # Internode row
+                    il = _get_float_text(internode_elem, "internode_length", 0.0)
+                    ir = _get_float_text(internode_elem, "internode_radius", 0.0)
+                    ip = _get_float_text(internode_elem, "internode_pitch", 0.0)
+                    ipa = _get_float_text(internode_elem, "internode_phyllotactic_angle", 0.0)
+                    ilm = _get_float_text(internode_elem, "internode_length_max", 0.0)
+                    ils = _get_int_text(internode_elem, "internode_length_segments", 2)
+                    cp_text = _get_text_default(internode_elem, "curvature_perturbations", "0;0")
+                    cp_list = [float(x) for x in cp_text.strip().split(";") if x.strip()]
+                    cp0 = cp_list[0] if len(cp_list) > 0 else 0.0
+                    cp1 = cp_list[1] if len(cp_list) > 1 else 0.0
+                    yp_text = _get_text_default(internode_elem, "yaw_perturbations", "0;0")
+                    yp_list = [float(x) for x in yp_text.strip().split(";") if x.strip()]
+                    yp0 = yp_list[0] if len(yp_list) > 0 else 0.0
+                    yp1 = yp_list[1] if len(yp_list) > 1 else 0.0
+
+                    inode_row = [0.0] * NUM_FEATURES_TYPED
+                    inode_row[T_COL_PLANT_ID] = float(plant_id)
+                    inode_row[T_COL_PLANT_AGE] = plant_age
+                    inode_row[T_COL_SHOOT_ID] = float(shoot_id)
+                    inode_row[T_COL_PHYTOMER_IDX] = float(phyto_idx)
+                    inode_row[T_COL_ORGAN_TYPE] = float(ORGAN_INTERNODE)
+                    inode_row[T_COL_LENGTH] = il
+                    inode_row[T_COL_RADIUS] = ir
+                    inode_row[T_COL_PITCH] = ip
+                    inode_row[T_COL_PHYLLOTACTIC_ANGLE] = ipa
+                    inode_row[T_COL_LENGTH_MAX] = ilm
+                    inode_row[T_COL_LENGTH_SEGMENTS] = float(ils)
+                    inode_row[T_COL_CURV_PERT_0] = cp0
+                    inode_row[T_COL_CURV_PERT_1] = cp1
+                    inode_row[T_COL_YAW_PERT_0] = yp0
+                    inode_row[T_COL_YAW_PERT_1] = yp1
+                    inode_row[T_COL_EXISTENCE] = 1.0
+                    rows.append(inode_row)
+
+                    # Petioles, leaves, buds
+                    for pet_i, pet_elem in enumerate(internode_elem.findall("petiole")):
+                        pl = _get_float_text(pet_elem, "petiole_length", 0.0)
+                        pr = _get_float_text(pet_elem, "petiole_radius", 0.0)
+                        pp = _get_float_text(pet_elem, "petiole_pitch", 0.0)
+                        pc = _get_float_text(pet_elem, "petiole_curvature", 0.0)
+                        cls_val = _get_float_text(pet_elem, "current_leaf_scale_factor", 1.0)
+                        pt = _get_float_text(pet_elem, "petiole_taper", 0.25)
+                        pls = _get_int_text(pet_elem, "petiole_length_segments", 5)
+                        prs = _get_int_text(pet_elem, "petiole_radial_subdivisions", 6)
+                        lfls = _get_float_text(pet_elem, "leaflet_scale", 1.0)
+                        lflo = _get_float_text(pet_elem, "leaflet_offset", 0.4)
+
+                        pet_row = [0.0] * NUM_FEATURES_TYPED
+                        pet_row[T_COL_PLANT_ID] = float(plant_id)
+                        pet_row[T_COL_SHOOT_ID] = float(shoot_id)
+                        pet_row[T_COL_PHYTOMER_IDX] = float(phyto_idx)
+                        pet_row[T_COL_PARENT_PETIOLE_IDX] = float(pet_i)
+                        pet_row[T_COL_ORGAN_TYPE] = float(ORGAN_PETIOLE)
+                        pet_row[T_COL_LENGTH] = pl
+                        pet_row[T_COL_RADIUS] = pr
+                        pet_row[T_COL_PITCH] = pp
+                        pet_row[T_COL_CURVATURE] = pc
+                        pet_row[T_COL_CURRENT_LEAF_SCALE_FACTOR] = cls_val
+                        pet_row[T_COL_TAPER] = pt
+                        pet_row[T_COL_LENGTH_SEGMENTS] = float(pls)
+                        pet_row[T_COL_RADIAL_SUBDIVISIONS] = float(prs)
+                        pet_row[T_COL_LEAFLET_SCALE] = lfls
+                        pet_row[T_COL_LEAFLET_OFFSET] = lflo
+                        pet_row[T_COL_EXISTENCE] = 1.0
+                        rows.append(pet_row)
+
+                        leaf_elems = pet_elem.findall("leaf")
+                        for lf_idx, leaf_elem in enumerate(leaf_elems):
+                            lfs = _get_float_text(leaf_elem, "leaf_scale", 1.0)
+                            lfp = _get_float_text(leaf_elem, "leaf_pitch", 0.0)
+                            lfy = _get_float_text(leaf_elem, "leaf_yaw", 0.0)
+                            lfr = _get_float_text(leaf_elem, "leaf_roll", 0.0)
+
+                            leaf_row = [0.0] * NUM_FEATURES_TYPED
+                            leaf_row[T_COL_PLANT_ID] = float(plant_id)
+                            leaf_row[T_COL_SHOOT_ID] = float(shoot_id)
+                            leaf_row[T_COL_PHYTOMER_IDX] = float(phyto_idx)
+                            leaf_row[T_COL_PARENT_PETIOLE_IDX] = float(pet_i)
+                            leaf_row[T_COL_CHILD_INDEX] = float(lf_idx)
+                            leaf_row[T_COL_ORGAN_TYPE] = float(ORGAN_LEAF)
+                            leaf_row[T_COL_SCALE] = lfs
+                            leaf_row[T_COL_PITCH] = lfp
+                            leaf_row[T_COL_YAW] = lfy
+                            leaf_row[T_COL_ROLL] = lfr
+                            leaf_row[T_COL_EXISTENCE] = 1.0
+                            rows.append(leaf_row)
+
+                        # Floral bud is only on petiole 0
+                        if pet_i == 0:
+                            fb_elem = pet_elem.find("floral_bud")
+                            if fb_elem is not None:
+                                bs = _get_int_text(fb_elem, "bud_state", 5)
+                                bpi = _get_int_text(fb_elem, "parent_index", 0)
+                                bidx = _get_int_text(fb_elem, "bud_index", 0)
+                                biterm = _get_int_text(fb_elem, "is_terminal", 0)
+                                bcfs = _get_float_text(fb_elem, "current_fruit_scale_factor", 1.0)
+
+                                bud_row = [0.0] * NUM_FEATURES_TYPED
+                                bud_row[T_COL_PLANT_ID] = float(plant_id)
+                                bud_row[T_COL_SHOOT_ID] = float(shoot_id)
+                                bud_row[T_COL_PHYTOMER_IDX] = float(phyto_idx)
+                                bud_row[T_COL_PARENT_PETIOLE_IDX] = float(pet_i)
+                                bud_row[T_COL_CHILD_INDEX] = float(bidx)
+                                bud_row[T_COL_ORGAN_TYPE] = float(ORGAN_BUD)
+                                bud_row[T_COL_BUD_STATE] = float(bs)
+                                bud_row[T_COL_BUD_PARENT_INDEX] = float(bpi)
+                                bud_row[T_COL_BUD_IS_TERMINAL] = float(biterm)
+                                bud_row[T_COL_FRUIT_SCALE] = bcfs
+                                bud_row[T_COL_EXISTENCE] = 1.0
+                                rows.append(bud_row)
+
+                                ped_elem = fb_elem.find("peduncle")
+                                if ped_elem is not None:
+                                    pdl = _get_float_text(ped_elem, "length", 0.0)
+                                    pdr = _get_float_text(ped_elem, "radius", 0.0)
+                                    pdp = _get_float_text(ped_elem, "pitch", 0.0)
+                                    pdc = _get_float_text(ped_elem, "curvature", 0.0)
+                                    pdrl = _get_float_text(ped_elem, "roll", 0.0)
+
+                                    ped_row = [0.0] * NUM_FEATURES_TYPED
+                                    ped_row[T_COL_PLANT_ID] = float(plant_id)
+                                    ped_row[T_COL_SHOOT_ID] = float(shoot_id)
+                                    ped_row[T_COL_PHYTOMER_IDX] = float(phyto_idx)
+                                    ped_row[T_COL_PARENT_PETIOLE_IDX] = float(pet_i)
+                                    ped_row[T_COL_ORGAN_TYPE] = float(ORGAN_PEDUNCLE)
+                                    ped_row[T_COL_LENGTH] = pdl
+                                    ped_row[T_COL_RADIUS] = pdr
+                                    ped_row[T_COL_PITCH] = pdp
+                                    ped_row[T_COL_CURVATURE] = pdc
+                                    ped_row[T_COL_ROLL] = pdrl
+                                    ped_row[T_COL_EXISTENCE] = 1.0
+                                    rows.append(ped_row)
+
+                                infl_elem = fb_elem.find("inflorescence")
+                                if infl_elem is not None:
+                                    foff = _get_float_text(infl_elem, "flower_offset", 0.05)
+                                    # Store flower_offset on the bud row so it survives even when
+                                    # the inflorescence contains no <flower> tags.
+                                    if bud_row is not None:
+                                        bud_row[T_COL_FLOWER_OFFSET] = foff
+                                    flower_elems = infl_elem.findall("flower")
+                                    for fl_idx, fl_elem in enumerate(flower_elems):
+                                        fp = _get_float_text(fl_elem, "flower_pitch", 0.0)
+                                        fy = _get_float_text(fl_elem, "flower_yaw", 0.0)
+                                        fr = _get_float_text(fl_elem, "flower_roll", 0.0)
+                                        fa = _get_float_text(fl_elem, "flower_azimuth", 0.0)
+                                        fbs = _get_float_text(fl_elem, "flower_base_scale", 1.0)
+
+                                        fl_row = [0.0] * NUM_FEATURES_TYPED
+                                        fl_row[T_COL_PLANT_ID] = float(plant_id)
+                                        fl_row[T_COL_SHOOT_ID] = float(shoot_id)
+                                        fl_row[T_COL_PHYTOMER_IDX] = float(phyto_idx)
+                                        fl_row[T_COL_PARENT_PETIOLE_IDX] = float(pet_i)
+                                        fl_row[T_COL_CHILD_INDEX] = float(fl_idx)
+                                        fl_row[T_COL_ORGAN_TYPE] = float(ORGAN_FLOWER)
+                                        fl_row[T_COL_PITCH] = fp
+                                        fl_row[T_COL_YAW] = fy
+                                        fl_row[T_COL_ROLL] = fr
+                                        fl_row[T_COL_FLOWER_AZIMUTH] = fa
+                                        fl_row[T_COL_SCALE] = fbs
+                                        fl_row[T_COL_FLOWER_OFFSET] = foff
+                                        fl_row[T_COL_EXISTENCE] = 1.0
+                                        rows.append(fl_row)
+
+        tensor = torch.tensor(rows, dtype=torch.float32)
+        return cls(tensor=tensor, raw_metadata=[])
+
+    # -------------------------------------------------------------------------
+    # CONVERSIONS BETWEEN LEGACY AND TYPED
+    # -------------------------------------------------------------------------
+    def to_legacy_tensor(self) -> torch.Tensor:
+        """Convert a typed (N, 40) tensor to legacy (M, 94) phytomer-slot tensor.
+
+        This is a lossy grouping operation: per-organ rows are grouped back into
+        phytomer slots. It is provided only for compatibility with code that has
+        not yet migrated to the typed layout.
+        """
+        if self.is_legacy:
+            return self.tensor.clone()
+
+        t = self.tensor
+        N = self.num_nodes
+
+        # Group by (plant_id, shoot_id, phytomer_idx)
+        phytomers: Dict[Tuple[int, int, int], List[torch.Tensor]] = {}
+        shoot_meta_rows: Dict[Tuple[int, int], torch.Tensor] = {}
+        root_meta_rows: Dict[int, torch.Tensor] = {}
+
+        for idx in range(N):
+            pid = _to_int(t[idx, T_COL_PLANT_ID])
+            sid = _to_int(t[idx, T_COL_SHOOT_ID])
+            pidx = _to_int(t[idx, T_COL_PHYTOMER_IDX])
+            ot = _to_int(t[idx, T_COL_ORGAN_TYPE])
+            if ot == ORGAN_ROOT_META:
+                root_meta_rows[pid] = t[idx]
+            elif ot == ORGAN_SHOOT_META:
+                shoot_meta_rows[(pid, sid)] = t[idx]
+            else:
+                phytomers.setdefault((pid, sid, pidx), []).append(t[idx])
+
+        rows = []
+        raw_metadata = []
+
+        for (pid, sid, pidx), organ_rows in sorted(phytomers.items()):
+            row = [0.0] * NUM_FEATURES_LEGACY
+            meta: Dict[str, Any] = {}
+
+            root = root_meta_rows.get(pid, torch.zeros(NUM_FEATURES_TYPED))
+            shoot = shoot_meta_rows.get((pid, sid), torch.zeros(NUM_FEATURES_TYPED))
+
+            row[COL_PLANT_ID] = float(pid)
+            row[COL_PLANT_AGE] = _to_float(root[T_COL_PLANT_AGE])
+            row[COL_SHOOT_ID] = float(sid)
+            row[COL_SHOOT_TYPE] = _to_float(shoot[T_COL_SHOOT_TYPE])
+            row[COL_PARENT_SHOOT_ID] = _to_float(shoot[T_COL_PARENT_SHOOT_ID])
+            row[COL_PARENT_NODE_IDX] = _to_float(shoot[T_COL_PARENT_NODE_IDX])
+            row[COL_PARENT_PETIOLE_IDX] = _to_float(shoot[T_COL_PARENT_PETIOLE_IDX])
+            row[COL_SHOOT_ROT_PITCH] = _to_float(shoot[T_COL_PITCH])
+            row[COL_SHOOT_ROT_YAW] = _to_float(shoot[T_COL_YAW])
+            row[COL_SHOOT_ROT_ROLL] = _to_float(shoot[T_COL_ROLL])
+            row[COL_PHYTOMER_IDX] = float(pidx)
+
+            meta["raw_bp"] = f" {_fmt(_to_float(root[T_COL_BASE_X]))} {_fmt(_to_float(root[T_COL_BASE_Y]))} {_fmt(_to_float(root[T_COL_BASE_Z]))} "
+            meta["raw_pa"] = _fmt(_to_float(root[T_COL_PLANT_AGE]))
+            meta["raw_stl"] = "unifoliate" if _to_int(shoot[T_COL_SHOOT_TYPE]) == 0 else "trifoliate"
+            meta["raw_psi"] = str(_to_int(shoot[T_COL_PARENT_SHOOT_ID]))
+            meta["raw_pni"] = str(_to_int(shoot[T_COL_PARENT_NODE_IDX]))
+            meta["raw_ppi"] = str(_to_int(shoot[T_COL_PARENT_PETIOLE_IDX]))
+            meta["raw_br"] = f" {_fmt(_to_float(shoot[T_COL_PITCH]))} {_fmt(_to_float(shoot[T_COL_YAW]))} {_fmt(_to_float(shoot[T_COL_ROLL]))} "
+
+            for r in organ_rows:
+                ot = _to_int(r[T_COL_ORGAN_TYPE])
+                if ot == ORGAN_INTERNODE:
+                    row[COL_INODE_LEN] = _to_float(r[T_COL_LENGTH])
+                    row[COL_INODE_RAD] = _to_float(r[T_COL_RADIUS])
+                    row[COL_INODE_PITCH] = _to_float(r[T_COL_PITCH])
+                    row[COL_INODE_PHYLLO_ANG] = _to_float(r[T_COL_PHYLLOTACTIC_ANGLE])
+                    row[COL_INODE_LEN_MAX] = _to_float(r[T_COL_LENGTH_MAX])
+                    row[COL_INODE_LEN_SEGS] = _to_float(r[T_COL_LENGTH_SEGMENTS])
+                    row[COL_CURV_PERT_0] = _to_float(r[T_COL_CURV_PERT_0])
+                    row[COL_CURV_PERT_1] = _to_float(r[T_COL_CURV_PERT_1])
+                    row[COL_YAW_PERT_0] = _to_float(r[T_COL_YAW_PERT_0])
+                    row[COL_YAW_PERT_1] = _to_float(r[T_COL_YAW_PERT_1])
+                elif ot == ORGAN_PETIOLE:
+                    pet_i = _to_int(r[T_COL_PARENT_PETIOLE_IDX])
+                    base_col = COL_PET0_LEN if pet_i == 0 else COL_PET1_LEN
+                    row[base_col] = _to_float(r[T_COL_LENGTH])
+                    row[base_col + 1] = _to_float(r[T_COL_RADIUS])
+                    row[base_col + 2] = _to_float(r[T_COL_PITCH])
+                    row[base_col + 3] = _to_float(r[T_COL_CURVATURE])
+                    row[base_col + 4] = _to_float(r[T_COL_CURRENT_LEAF_SCALE_FACTOR])
+                    row[base_col + 5] = _to_float(r[T_COL_TAPER])
+                    row[base_col + 6] = _to_float(r[T_COL_LENGTH_SEGMENTS])
+                    row[base_col + 7] = _to_float(r[T_COL_RADIAL_SUBDIVISIONS])
+                    row[base_col + 8] = _to_float(r[T_COL_LEAFLET_SCALE])
+                    row[base_col + 9] = _to_float(r[T_COL_LEAFLET_OFFSET])
+                    if pet_i == 1:
+                        row[COL_HAS_PET1] = 1.0
+                elif ot == ORGAN_LEAF:
+                    pet_i = _to_int(r[T_COL_PARENT_PETIOLE_IDX])
+                    lf_idx = _to_int(r[T_COL_CHILD_INDEX])
+                    leaf_base_col = COL_PET0_L0_SCALE if pet_i == 0 else COL_PET1_L0_SCALE
+                    cur_col = leaf_base_col + lf_idx * 4
+                    row[cur_col] = _to_float(r[T_COL_SCALE])
+                    row[cur_col + 1] = _to_float(r[T_COL_PITCH])
+                    row[cur_col + 2] = _to_float(r[T_COL_YAW])
+                    row[cur_col + 3] = _to_float(r[T_COL_ROLL])
+                    # Update num_leaves
+                    base_col = COL_PET0_LEN if pet_i == 0 else COL_PET1_LEN
+                    row[base_col + 10] = max(row[base_col + 10], float(lf_idx + 1))
+                elif ot == ORGAN_BUD:
+                    row[COL_HAS_BUD] = 1.0
+                    row[COL_BUD_STATE] = _to_float(r[T_COL_BUD_STATE])
+                    row[COL_BUD_PARENT_IDX] = _to_float(r[T_COL_BUD_PARENT_INDEX])
+                    row[COL_BUD_IDX] = _to_float(r[T_COL_CHILD_INDEX])
+                    row[COL_BUD_IS_TERMINAL] = _to_float(r[T_COL_BUD_IS_TERMINAL])
+                    row[COL_BUD_FRUIT_SCALE] = _to_float(r[T_COL_FRUIT_SCALE])
+                elif ot == ORGAN_PEDUNCLE:
+                    row[COL_PED_LEN] = _to_float(r[T_COL_LENGTH])
+                    row[COL_PED_RAD] = _to_float(r[T_COL_RADIUS])
+                    row[COL_PED_PITCH] = _to_float(r[T_COL_PITCH])
+                    row[COL_PED_CURV] = _to_float(r[T_COL_CURVATURE])
+                    row[COL_PED_ROLL] = _to_float(r[T_COL_ROLL])
+                elif ot == ORGAN_FLOWER:
+                    fl_idx = _to_int(r[T_COL_CHILD_INDEX])
+                    fl_base_col = COL_FL0_PITCH + fl_idx * 5
+                    row[fl_base_col] = _to_float(r[T_COL_PITCH])
+                    row[fl_base_col + 1] = _to_float(r[T_COL_YAW])
+                    row[fl_base_col + 2] = _to_float(r[T_COL_ROLL])
+                    row[fl_base_col + 3] = _to_float(r[T_COL_FLOWER_AZIMUTH])
+                    row[fl_base_col + 4] = _to_float(r[T_COL_SCALE])
+                    row[COL_NUM_FLOWERS] = max(row[COL_NUM_FLOWERS], float(fl_idx + 1))
+                    row[COL_FLOWER_OFFSET] = _to_float(r[T_COL_FLOWER_OFFSET])
+
+            rows.append(row)
+            raw_metadata.append(meta)
+
+        legacy_tensor = torch.tensor(rows, dtype=torch.float32)
+        legacy_tensor[:, COL_EXISTENCE] = 1.0
+        return legacy_tensor
+
+    def to_legacy_tensor_diff(self) -> torch.Tensor:
+        """Differentiable typed->legacy conversion.
+
+        Equivalent values to :meth:`to_legacy_tensor` but preserves the
+        autograd graph: every legacy cell that comes from a typed parameter is
+        produced with advanced-indexing gather from the typed tensor, so
+        gradients flow back to the continuous columns. Cells that are pure
+        constants (existence flags, petiole/leaf/flower counts, ...) are baked
+        as non-differentiable constants. Returns a legacy (M, 94) tensor.
+        """
+        t = self.tensor
+        N = self.num_nodes
+
+        # Group by (plant_id, shoot_id, phytomer_idx) -- same logic as
+        # to_legacy_tensor, but record source (row, col) references instead of
+        # materializing float values.
+        phytomers: Dict[Tuple[int, int, int], List[int]] = {}
+        shoot_meta_rows: Dict[Tuple[int, int], int] = {}
+        root_meta_rows: Dict[int, int] = {}
+
+        for idx in range(N):
+            pid = _to_int(t[idx, T_COL_PLANT_ID])
+            sid = _to_int(t[idx, T_COL_SHOOT_ID])
+            pidx = _to_int(t[idx, T_COL_PHYTOMER_IDX])
+            ot = _to_int(t[idx, T_COL_ORGAN_TYPE])
+            if ot == ORGAN_ROOT_META:
+                root_meta_rows[pid] = idx
+            elif ot == ORGAN_SHOOT_META:
+                shoot_meta_rows[(pid, sid)] = idx
+            else:
+                phytomers.setdefault((pid, sid, pidx), []).append(idx)
+
+        M = len(phytomers)
+        pad = N  # index of the zero-padding row appended to t
+
+        src_row = np.full((M, NUM_FEATURES_LEGACY), pad, dtype=np.int64)
+        src_col = np.zeros((M, NUM_FEATURES_LEGACY), dtype=np.int64)
+        use_gather = np.zeros((M, NUM_FEATURES_LEGACY), dtype=bool)
+        const_val = np.zeros((M, NUM_FEATURES_LEGACY), dtype=np.float32)
+
+        def set_cell(L: int, col: int, row_idx: int, t_col: int) -> None:
+            src_row[L, col] = row_idx
+            src_col[L, col] = t_col
+            use_gather[L, col] = True
+
+        for row_i, (key, organ_indices) in enumerate(sorted(phytomers.items())):
+            (pid, sid, pidx) = key
+            root_i = root_meta_rows.get(pid, pad)
+            shoot_i = shoot_meta_rows.get((pid, sid), pad)
+            first = organ_indices[0]
+
+            set_cell(row_i, COL_PLANT_ID, first, T_COL_PLANT_ID)
+            set_cell(row_i, COL_PLANT_AGE, root_i, T_COL_PLANT_AGE)
+            set_cell(row_i, COL_SHOOT_ID, first, T_COL_SHOOT_ID)
+            set_cell(row_i, COL_SHOOT_TYPE, shoot_i, T_COL_SHOOT_TYPE)
+            set_cell(row_i, COL_PARENT_SHOOT_ID, shoot_i, T_COL_PARENT_SHOOT_ID)
+            set_cell(row_i, COL_PARENT_NODE_IDX, shoot_i, T_COL_PARENT_NODE_IDX)
+            set_cell(row_i, COL_PARENT_PETIOLE_IDX, shoot_i, T_COL_PARENT_PETIOLE_IDX)
+            set_cell(row_i, COL_SHOOT_ROT_PITCH, shoot_i, T_COL_PITCH)
+            set_cell(row_i, COL_SHOOT_ROT_YAW, shoot_i, T_COL_YAW)
+            set_cell(row_i, COL_SHOOT_ROT_ROLL, shoot_i, T_COL_ROLL)
+            set_cell(row_i, COL_PHYTOMER_IDX, first, T_COL_PHYTOMER_IDX)
+
+            for idx in organ_indices:
+                ot = _to_int(t[idx, T_COL_ORGAN_TYPE])
+                if ot == ORGAN_INTERNODE:
+                    set_cell(row_i, COL_INODE_LEN, idx, T_COL_LENGTH)
+                    set_cell(row_i, COL_INODE_RAD, idx, T_COL_RADIUS)
+                    set_cell(row_i, COL_INODE_PITCH, idx, T_COL_PITCH)
+                    set_cell(row_i, COL_INODE_PHYLLO_ANG, idx, T_COL_PHYLLOTACTIC_ANGLE)
+                    set_cell(row_i, COL_INODE_LEN_MAX, idx, T_COL_LENGTH_MAX)
+                    set_cell(row_i, COL_INODE_LEN_SEGS, idx, T_COL_LENGTH_SEGMENTS)
+                    set_cell(row_i, COL_CURV_PERT_0, idx, T_COL_CURV_PERT_0)
+                    set_cell(row_i, COL_CURV_PERT_1, idx, T_COL_CURV_PERT_1)
+                    set_cell(row_i, COL_YAW_PERT_0, idx, T_COL_YAW_PERT_0)
+                    set_cell(row_i, COL_YAW_PERT_1, idx, T_COL_YAW_PERT_1)
+                elif ot == ORGAN_PETIOLE:
+                    pet_i = _to_int(t[idx, T_COL_PARENT_PETIOLE_IDX])
+                    base_col = COL_PET0_LEN if pet_i == 0 else COL_PET1_LEN
+                    set_cell(row_i, base_col, idx, T_COL_LENGTH)
+                    set_cell(row_i, base_col + 1, idx, T_COL_RADIUS)
+                    set_cell(row_i, base_col + 2, idx, T_COL_PITCH)
+                    set_cell(row_i, base_col + 3, idx, T_COL_CURVATURE)
+                    set_cell(row_i, base_col + 4, idx, T_COL_CURRENT_LEAF_SCALE_FACTOR)
+                    set_cell(row_i, base_col + 5, idx, T_COL_TAPER)
+                    set_cell(row_i, base_col + 6, idx, T_COL_LENGTH_SEGMENTS)
+                    set_cell(row_i, base_col + 7, idx, T_COL_RADIAL_SUBDIVISIONS)
+                    set_cell(row_i, base_col + 8, idx, T_COL_LEAFLET_SCALE)
+                    set_cell(row_i, base_col + 9, idx, T_COL_LEAFLET_OFFSET)
+                    if pet_i == 1:
+                        const_val[row_i, COL_HAS_PET1] = 1.0
+                elif ot == ORGAN_LEAF:
+                    pet_i = _to_int(t[idx, T_COL_PARENT_PETIOLE_IDX])
+                    lf_idx = _to_int(t[idx, T_COL_CHILD_INDEX])
+                    leaf_base_col = COL_PET0_L0_SCALE if pet_i == 0 else COL_PET1_L0_SCALE
+                    cur_col = leaf_base_col + lf_idx * 4
+                    set_cell(row_i, cur_col, idx, T_COL_SCALE)
+                    set_cell(row_i, cur_col + 1, idx, T_COL_PITCH)
+                    set_cell(row_i, cur_col + 2, idx, T_COL_YAW)
+                    set_cell(row_i, cur_col + 3, idx, T_COL_ROLL)
+                    base_col = COL_PET0_LEN if pet_i == 0 else COL_PET1_LEN
+                    const_val[row_i, base_col + 10] = max(
+                        const_val[row_i, base_col + 10], float(lf_idx + 1)
+                    )
+                elif ot == ORGAN_BUD:
+                    const_val[row_i, COL_HAS_BUD] = 1.0
+                    set_cell(row_i, COL_BUD_STATE, idx, T_COL_BUD_STATE)
+                    set_cell(row_i, COL_BUD_PARENT_IDX, idx, T_COL_BUD_PARENT_INDEX)
+                    set_cell(row_i, COL_BUD_IDX, idx, T_COL_CHILD_INDEX)
+                    set_cell(row_i, COL_BUD_IS_TERMINAL, idx, T_COL_BUD_IS_TERMINAL)
+                    set_cell(row_i, COL_BUD_FRUIT_SCALE, idx, T_COL_FRUIT_SCALE)
+                elif ot == ORGAN_PEDUNCLE:
+                    set_cell(row_i, COL_PED_LEN, idx, T_COL_LENGTH)
+                    set_cell(row_i, COL_PED_RAD, idx, T_COL_RADIUS)
+                    set_cell(row_i, COL_PED_PITCH, idx, T_COL_PITCH)
+                    set_cell(row_i, COL_PED_CURV, idx, T_COL_CURVATURE)
+                    set_cell(row_i, COL_PED_ROLL, idx, T_COL_ROLL)
+                elif ot == ORGAN_FLOWER:
+                    fl_idx = _to_int(t[idx, T_COL_CHILD_INDEX])
+                    fl_base_col = COL_FL0_PITCH + fl_idx * 5
+                    set_cell(row_i, fl_base_col, idx, T_COL_PITCH)
+                    set_cell(row_i, fl_base_col + 1, idx, T_COL_YAW)
+                    set_cell(row_i, fl_base_col + 2, idx, T_COL_ROLL)
+                    set_cell(row_i, fl_base_col + 3, idx, T_COL_FLOWER_AZIMUTH)
+                    set_cell(row_i, fl_base_col + 4, idx, T_COL_SCALE)
+                    const_val[row_i, COL_NUM_FLOWERS] = max(
+                        const_val[row_i, COL_NUM_FLOWERS], float(fl_idx + 1)
+                    )
+                    set_cell(row_i, COL_FLOWER_OFFSET, idx, T_COL_FLOWER_OFFSET)
+
+            const_val[row_i, COL_EXISTENCE] = 1.0
+
+        if M == 0:
+            return torch.zeros((0, NUM_FEATURES_LEGACY), dtype=torch.float32, device=t.device)
+
+        src_row_t = torch.from_numpy(src_row).to(device=t.device)
+        src_col_t = torch.from_numpy(src_col).to(device=t.device)
+        use_gather_t = torch.from_numpy(use_gather).to(device=t.device)
+        const_val_t = torch.from_numpy(const_val).to(device=t.device)
+
+        t_pad = torch.cat(
+            [t, torch.zeros((1, NUM_FEATURES_TYPED), dtype=t.dtype, device=t.device)],
+            dim=0,
+        )
+        gathered = t_pad[src_row_t, src_col_t]
+        return torch.where(use_gather_t, gathered, const_val_t)
+
+    @classmethod
+    def from_legacy_tensor(cls, legacy_tensor: torch.Tensor, raw_metadata: Optional[List[Dict[str, Any]]] = None) -> "PlantOrganArray":
+        """Build a typed (N, 40) PlantOrganArray from a legacy (M, 94) tensor.
+
+        This is a convenience wrapper: it writes the legacy tensor to XML and
+        re-parses it with the typed parser, ensuring semantic consistency.
+        """
+        tmp = cls(tensor=legacy_tensor, raw_metadata=raw_metadata or [])
+        xml = tmp._to_xml_string_legacy()
+        return cls._from_xml_string_typed(xml)
+
+    # -------------------------------------------------------------------------
+    # SOFT PARENT HELPERS (work for both layouts)
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _xml_parent_node_to_linear_idx(
+        tensor: torch.Tensor,
+        parent_shoot_id: int,
+        parent_node_xml: int,
+    ) -> int:
+        """Map XML parent_node_index (1-based phytomer index) to a linear node index."""
+        if parent_shoot_id < 0:
+            return -1
+        target_phyt_idx = parent_node_xml - 1 if parent_node_xml > 0 else 0
+        N = tensor.shape[0]
+        for idx in range(N):
+            if tensor.shape[1] == NUM_FEATURES_LEGACY:
+                sid = int(tensor[idx, COL_SHOOT_ID].item())
+                phyt_idx = int(tensor[idx, COL_PHYTOMER_IDX].item())
+            else:
+                sid = int(tensor[idx, T_COL_SHOOT_ID].item())
+                phyt_idx = int(tensor[idx, T_COL_PHYTOMER_IDX].item())
+                if int(tensor[idx, T_COL_ORGAN_TYPE].item()) != ORGAN_INTERNODE:
+                    continue
+            if sid == parent_shoot_id and phyt_idx == target_phyt_idx:
+                return idx
+        for idx in range(N):
+            if tensor.shape[1] == NUM_FEATURES_LEGACY:
+                if int(tensor[idx, COL_SHOOT_ID].item()) == parent_shoot_id:
+                    return idx
+            else:
+                if (int(tensor[idx, T_COL_SHOOT_ID].item()) == parent_shoot_id
+                        and int(tensor[idx, T_COL_ORGAN_TYPE].item()) == ORGAN_INTERNODE):
+                    return idx
+        return 0
+
+    @staticmethod
+    def build_parent_candidates_from_gt(
+        organ_array: "PlantOrganArray",
+        num_candidates: int = 8,
+        seed: int = 42,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Create soft parent candidates from a ground-truth PlantOrganArray.
+
+        Works for both legacy and typed tensors.
+        """
+        cpu_rng = torch.Generator(device="cpu").manual_seed(seed)
+        t = organ_array.tensor
+        N = organ_array.num_nodes
+
+        # Map shoot_id -> list of internode (or phytomer) node indices and first node per shoot
+        shoots_dict: Dict[int, List[int]] = {}
+        for idx in range(N):
+            if t.shape[1] == NUM_FEATURES_TYPED:
+                if int(t[idx, T_COL_ORGAN_TYPE].item()) not in (ORGAN_INTERNODE, ORGAN_SHOOT_META):
+                    continue
+                sid = int(t[idx, T_COL_SHOOT_ID].item())
+            else:
+                sid = int(t[idx, COL_SHOOT_ID].item())
+            shoots_dict.setdefault(sid, []).append(idx)
+
+        sorted_shoot_ids = sorted(shoots_dict.keys())
+        num_shoots = len(sorted_shoot_ids)
+        node_index_to_shoot_first = {}
+        for sid in sorted_shoot_ids:
+            node_index_to_shoot_first[sid] = shoots_dict[sid][0]
+
+        parent_candidates = torch.zeros((num_shoots, num_candidates, 3), dtype=torch.int64)
+        for s_idx, sid in enumerate(sorted_shoot_ids):
+            first_node = node_index_to_shoot_first[sid]
+            if t.shape[1] == NUM_FEATURES_LEGACY:
+                gt_shoot = int(t[first_node, COL_PARENT_SHOOT_ID].item())
+                gt_node_xml = int(t[first_node, COL_PARENT_NODE_IDX].item())
+                gt_pet = int(t[first_node, COL_PARENT_PETIOLE_IDX].item())
+            else:
+                # For typed layout, read parent refs from the SHOOT_META row
+                gt_shoot = int(t[first_node, T_COL_PARENT_SHOOT_ID].item())
+                gt_node_xml = int(t[first_node, T_COL_PARENT_NODE_IDX].item())
+                gt_pet = int(t[first_node, T_COL_PARENT_PETIOLE_IDX].item())
+
+            if gt_shoot < 0:
+                gt_node_linear = 0
+            else:
+                gt_node_linear = PlantOrganArray._xml_parent_node_to_linear_idx(t, gt_shoot, gt_node_xml)
+            parent_candidates[s_idx, 0] = torch.tensor([gt_shoot, gt_node_linear, gt_pet])
+
+            for k in range(1, num_candidates):
+                if torch.rand(1, generator=cpu_rng).item() < 0.5:
+                    rand_shoot = int(torch.randint(min(sorted_shoot_ids), max(sorted_shoot_ids) + 1, (1,), generator=cpu_rng).item())
+                else:
+                    rand_shoot = gt_shoot
+                rand_node = int(torch.randint(0, N, (1,), generator=cpu_rng).item())
+                rand_pet = int(torch.randint(0, 2, (1,), generator=cpu_rng).item())
+                parent_candidates[s_idx, k] = torch.tensor([rand_shoot, rand_node, rand_pet])
+
+        logits = torch.full((num_shoots, num_candidates), -2.0, dtype=torch.float32)
+        logits[:, 0] = 2.0
+        return logits, parent_candidates
+
+    def clone_with_parent_logits(
+        self,
+        parent_logits: torch.Tensor,
+        parent_candidates: torch.Tensor,
+    ) -> "PlantOrganArray":
+        """Return a new PlantOrganArray with the same tensor/metadata but new soft parent representation."""
+        return PlantOrganArray(
+            tensor=self.tensor.clone(),
+            raw_metadata=self.raw_metadata,
+            parent_logits=parent_logits,
+            parent_candidates=parent_candidates,
+        )
+
+
+# =============================================================================
+# SMALL XML PARSING HELPERS FOR TYPED PARSER
+# =============================================================================
+
+def _get_text_default(elem: Optional[ET.Element], tag: str, default: str) -> str:
     child = elem.find(tag) if elem is not None else None
     if child is not None and child.text:
         return child.text
