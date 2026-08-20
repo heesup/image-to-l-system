@@ -28,7 +28,7 @@ from diffusion_based.models.plant_organ_array import (
     COL_PET1_TAPER, COL_PET1_LEN_SEGS, COL_PET1_RAD_SUBDIV, COL_PET1_LFLT_SCALE,
     COL_PET1_LFLT_OFFSET, COL_PET1_NUM_LEAVES,
     COL_PET1_L0_SCALE, COL_PET1_L0_PITCH, COL_PET1_L0_YAW, COL_PET1_L0_ROLL,
-    COL_HAS_BUD, COL_BUD_STATE, COL_BUD_IS_TERMINAL, COL_BUD_FRUIT_SCALE,
+    COL_HAS_BUD, COL_BUD_STATE, COL_BUD_IDX, COL_BUD_IS_TERMINAL, COL_BUD_FRUIT_SCALE,
     COL_PED_LEN, COL_PED_RAD, COL_PED_PITCH, COL_PED_CURV, COL_PED_ROLL,
     COL_NUM_FLOWERS, COL_FLOWER_OFFSET, COL_FL0_PITCH, COL_FL0_YAW, COL_FL0_ROLL, COL_FL0_AZIMUTH, COL_FL0_BASE_SCALE
 )
@@ -1028,8 +1028,21 @@ class HeliosPlantGeometryBuilder:
                                 infl_bend_axis = torch.tensor([1.0, 0.0, 0.0], device=device)
                         infl_bend_axis = infl_bend_axis / torch.linalg.norm(infl_bend_axis)
 
-                        ped_pitch_rad = math.radians(float(ped_pitch_deg.item()))
+                        # Base rotation adjustment from bud index (InputOutput.cpp:2098-2111)
+                        bud_idx = int(row[COL_BUD_IDX].item()) if row.shape[0] > COL_BUD_IDX else 0
+                        if is_terminal_bud:
+                            base_pitch_adj = 0.0
+                        else:
+                            base_pitch_adj = bud_idx * 0.1 * math.pi
+
+                        ped_pitch_rad = math.radians(float(ped_pitch_deg.item())) + base_pitch_adj
                         ped_axis = rotate_vector_about_axis(inode_tip_axis, infl_bend_axis, ped_pitch_rad)
+
+                        # Azimuthal alignment to parent petiole (InputOutput.cpp:1678-1687)
+                        parent_pet_az = -math.atan2(float(curr_pet_axis[1].item()), float(curr_pet_axis[0].item()))
+                        cur_ped_az = -math.atan2(float(ped_axis[1].item()), float(ped_axis[0].item()))
+                        az_rot = cur_ped_az - parent_pet_az
+                        ped_axis = rotate_vector_about_axis(ped_axis, inode_tip_axis, az_rot)
                         ped_axis = ped_axis / (torch.linalg.norm(ped_axis) + 1e-6)
 
                         # Generate segmented curved peduncle vertices (InputOutput.cpp:2186-2214)
@@ -1071,8 +1084,11 @@ class HeliosPlantGeometryBuilder:
 
                     # Flowers & Pods
                     is_bean = (species is not None and "bean" in species.lower())
+                    fl_count = min(max(num_flowers, 1 if (bud_state in [2, 3, 4]) else 0), 4)
+                    fl_offset = float(row[COL_FLOWER_OFFSET].item()) if row.shape[0] > COL_FLOWER_OFFSET else 0.05
+                    fl_offset_clamped = min(fl_offset, 1.0 / (0.5 * fl_count - 1.0) if fl_count > 2 else fl_offset)
 
-                    for fl_i in range(min(max(num_flowers, 1 if (bud_state in [2, 3, 4]) else 0), 4)):
+                    for fl_i in range(fl_count):
                         fl_base_col = COL_FL0_PITCH + fl_i * 5
                         fl_pitch_deg = row[fl_base_col] if fl_base_col < row.shape[0] else torch.tensor(30.0, device=device)
                         fl_yaw_deg = row[fl_base_col + 1] if fl_base_col + 1 < row.shape[0] else torch.tensor(0.0, device=device)
@@ -1083,14 +1099,16 @@ class HeliosPlantGeometryBuilder:
                         if fl_scale <= 1e-4:
                             fl_scale = torch.tensor(0.09, device=device)
 
-                        tot_fl_scale = fl_scale * node_exist
-
                         # Determine if Pod or Flower
                         is_pod = (bud_state == 4)
                         if is_pod:
                             obj_name = "BeanPod.obj" if is_bean else "CowpeaPod.obj"
                             col_mesh = self.COLOR_POD.to(device)
                             organ_type_val = 5 # Pod/Fruit
+                            # In Helios Assets.cpp:410, CowpeaPod is loaded with height=0.75m normalized along Z
+                            # CowpeaPod.obj Z extent is 0.2891m, so prototype scale is 0.75 / 0.2891 = 2.594
+                            pod_proto_scale = 2.594 if not is_bean else 1.0
+                            tot_fl_scale = fl_scale * pod_proto_scale * (fruit_scale if fruit_scale > 0.0 else 1.0) * node_exist
                         else:
                             if is_bean:
                                 obj_name = "BeanFlower_open_white.obj" if bud_state == 3 else "BeanFlower_closed_white.obj"
@@ -1099,6 +1117,7 @@ class HeliosPlantGeometryBuilder:
                                 obj_name = "CowpeaFlower_open_yellow.obj" if bud_state == 3 else "CowpeaFlower_closed_yellow.obj"
                                 col_mesh = self.COLOR_FLOWER.to(device)
                             organ_type_val = 4 # Flower
+                            tot_fl_scale = fl_scale * node_exist
 
                         try:
                             v_fl_b, f_fl_b = self.asset_mgr.get_mesh(obj_name)
@@ -1108,6 +1127,19 @@ class HeliosPlantGeometryBuilder:
                         v_fl_b = v_fl_b.to(device) * tot_fl_scale
                         f_fl_b = f_fl_b.to(device)
 
+                        # Compute flower attachment point along peduncle (InputOutput.cpp:2263-2270)
+                        ind_from_tip = abs(fl_i - (fl_count - 1.0))
+                        if fl_count > 1 and fl_offset_clamped > 0.0 and ind_from_tip > 1e-4 and len(ped_verts_list) > 1:
+                            frac = 1.0 - (ind_from_tip - 0.5) * fl_offset_clamped
+                            frac = max(0.0, min(1.0, frac))
+                            idx_f = frac * (len(ped_verts_list) - 1)
+                            idx_0 = int(math.floor(idx_f))
+                            idx_1 = min(idx_0 + 1, len(ped_verts_list) - 1)
+                            t_interp = idx_f - idx_0
+                            cur_fl_base = ped_verts_list[idx_0] * (1.0 - t_interp) + ped_verts_list[idx_1] * t_interp
+                        else:
+                            cur_fl_base = ped_tip
+
                         # Flower rotation (PlantArchitecture.cpp:2270-2285)
                         pitch_r = math.radians(float(fl_pitch_deg.item()))
                         yaw_r = math.radians(float(fl_yaw_deg.item()))
@@ -1116,7 +1148,7 @@ class HeliosPlantGeometryBuilder:
 
                         R_fl = (
                             rotr_z(az_r, device) @
-                            rotr_y(-pitch_r, device) @
+                            rotr_y(pitch_r, device) @
                             rotr_x(roll_r, device)
                         )
 
@@ -1124,7 +1156,7 @@ class HeliosPlantGeometryBuilder:
                         if abs(yaw_r) > 1e-4:
                             R_yaw = rodrigues_matrix_torch(ped_axis_final, torch.tensor(yaw_r, device=device), device=device)
                             v_fl_rot = (R_yaw @ v_fl_rot.T).T
-                        v_fl = v_fl_rot + ped_tip
+                        v_fl = v_fl_rot + cur_fl_base
 
                         n_fl = compute_face_normals_torch(v_fl, f_fl_b)
                         c_fl = col_mesh.unsqueeze(0).repeat(v_fl.shape[0], 1)
