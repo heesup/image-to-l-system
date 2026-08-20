@@ -83,32 +83,39 @@ def _resolve_xml(rel_or_abs: str) -> str:
 
 
 def render_xml_with_helios_cpp(
-    xml_path: str,
-    name_prefix: str,
+    xml_str: str,
     species: str = "cowpea",
-    output_dir: str = "/tmp/helios_fm_renders",
 ) -> np.ndarray:
-    os.makedirs(output_dir, exist_ok=True)
-    build_dir = os.path.join(REPO_ROOT, "Digital-Crops/projects/syntheticdata_generation/build")
-    cfg_file = os.path.join(REPO_ROOT, f"Digital-Crops/projects/syntheticdata_generation/configs/params_{species}.json")
+    """Renders an XML string with Helios C++ in an isolated temporary directory, loads image into memory, and cleans up immediately."""
+    import tempfile
+    img_out = np.zeros((256, 256, 3), dtype=np.float32)
+    with tempfile.TemporaryDirectory(prefix="helios_render_") as tmp_dir:
+        xml_path = os.path.join(tmp_dir, "plant.xml")
+        with open(xml_path, "w") as f:
+            f.write(xml_str)
 
-    cmd = [
-        "./main",
-        "--renderer", "radiation",
-        "--input-xml", os.path.abspath(xml_path),
-        "--output", output_dir,
-        "-n", name_prefix,
-        "--focus-plant",
-        "-f", cfg_file,
-    ]
-    try:
-        subprocess.run(cmd, cwd=build_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-        cand = os.path.join(output_dir, species, f"{name_prefix}_0000_rad.jpeg")
-        if os.path.exists(cand):
-            return np.array(Image.open(cand).convert("RGB")) / 255.0
-    except Exception as e:
-        print(f"Warning: Helios C++ render failed for {xml_path}: {e}")
-    return np.zeros((256, 256, 3), dtype=np.float32)
+        build_dir = os.path.join(REPO_ROOT, "Digital-Crops/projects/syntheticdata_generation/build")
+        cfg_file = os.path.join(REPO_ROOT, f"Digital-Crops/projects/syntheticdata_generation/configs/params_{species}.json")
+        cmd = [
+            "./main",
+            "--renderer", "radiation",
+            "--input-xml", xml_path,
+            "--output", tmp_dir,
+            "-n", "flow_render",
+            "--focus-plant",
+            "-f", cfg_file,
+        ]
+        try:
+            subprocess.run(cmd, cwd=build_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            cand = os.path.join(tmp_dir, species, "flow_render_0000_rad.jpeg")
+            if not os.path.exists(cand):
+                cand = os.path.join(tmp_dir, species, "flow_render_0000_vis.jpeg")
+            if os.path.exists(cand):
+                with Image.open(cand) as img:
+                    img_out = np.array(img.convert("RGB"), dtype=np.float32) / 255.0
+        except Exception as e:
+            print(f"Warning: Helios C++ render failed: {e}")
+    return img_out
 
 
 def main():
@@ -291,10 +298,7 @@ def main():
         nodes_spec = parser.get_all_organ_nodes()
         plant_age_str = "10" if "010" in dap_tag else ("50" if "050" in dap_tag else "90")
         xml_str = organ_nodes_to_xml(nodes_spec, base_position="0 0 0", plant_age=plant_age_str, plant_id="0")
-        opt_xml_path = os.path.join(tmp_xml_dir, f"fm_{dap_tag}.xml")
-        with open(opt_xml_path, "w") as f:
-            f.write(xml_str)
-        helios_rerender_np = render_xml_with_helios_cpp(opt_xml_path, f"fm_rerender_{dap_tag}", species="cowpea")
+        helios_rerender_np = render_xml_with_helios_cpp(xml_str, species="cowpea")
 
         # Render Columns
         axes[row, 0].imshow(gt_rgb_np); axes[row, 0].set_title(f"{title}\nTarget RGB Condition", fontsize=9, fontweight="bold"); axes[row, 0].axis("off")

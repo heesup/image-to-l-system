@@ -87,13 +87,16 @@ def train_epoch(
             outputs = model(x_t, t, images)
             pred_velocity = outputs["pred_velocity"]
 
-            # Category velocity loss (across all slots: learning active organ types vs empty)
-            loss_cat = F.mse_loss(pred_velocity[:, :, :FM_OT_END], v_target[:, :, :FM_OT_END])
-
-            # Geometry velocity losses (masked to active organ slots)
             active_mask = existence_mask.unsqueeze(-1).float()  # (B, N, 1)
             num_active = max(active_mask.sum(), 1.0)
 
+            # Balanced category loss: active organ classification + existence velocity
+            diff_cat_active = (pred_velocity[:, :, :EMPTY_IDX] - v_target[:, :, :EMPTY_IDX]) ** 2
+            loss_cat_active = (diff_cat_active * active_mask).sum() / (num_active * EMPTY_IDX)
+            loss_empty = F.mse_loss(pred_velocity[:, :, EMPTY_IDX], v_target[:, :, EMPTY_IDX])
+            loss_cat = loss_cat_active * 4.0 + loss_empty * 1.0
+
+            # Geometry velocity losses (masked to active organ slots)
             diff_base = (pred_velocity[:, :, FM_BASE_START:FM_BASE_END] - v_target[:, :, FM_BASE_START:FM_BASE_END]) ** 2
             loss_base = (diff_base * active_mask).sum() / (num_active * 3.0)
 
@@ -103,7 +106,7 @@ def train_epoch(
             diff_scale = (pred_velocity[:, :, FM_SCALE_START:FM_SCALE_END] - v_target[:, :, FM_SCALE_START:FM_SCALE_END]) ** 2
             loss_scale = (diff_scale * active_mask).sum() / (num_active * 3.0)
 
-            loss = 2.0 * loss_cat + 1.0 * loss_base + 1.0 * loss_rot + 3.0 * loss_scale
+            loss = loss_cat + 1.0 * loss_base + 1.0 * loss_rot + 3.0 * loss_scale
 
         optimizer.zero_grad()
         loss.backward()
