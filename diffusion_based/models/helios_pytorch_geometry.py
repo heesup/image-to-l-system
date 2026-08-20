@@ -1050,7 +1050,7 @@ class HeliosPlantGeometryBuilder:
                         tot_fl_scale = fl_scale * node_exist
 
                         # Determine if Pod or Flower
-                        is_pod = (bud_state == 4 or fruit_scale > 0.0)
+                        is_pod = (bud_state == 4)
                         if is_pod:
                             obj_name = "BeanPod.obj" if is_bean else "CowpeaPod.obj"
                             col_mesh = self.COLOR_POD.to(device)

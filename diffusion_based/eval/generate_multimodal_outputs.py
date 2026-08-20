@@ -73,17 +73,18 @@ renderer = HeliosPyTorchRenderer(image_size=IMG_SIZE).to(DEVICE)
 
 
 def depth_colormap(depth_tensor):
-    """Apply plasma colormap to depth map with normalized foreground contrast (closer = brighter)."""
+    """Apply plasma colormap to canopy height (taller/closer = brighter yellow)."""
     d = depth_tensor.detach().cpu().numpy()
     fg_mask = (d > 0.0)
     if not fg_mask.any():
-        return np.zeros((d.shape[0], d.shape[1], 3), dtype=np.float32)
+        return np.zeros((d.shape[0], d.shape[1], 3), dtype=np.float32), 0.0
 
     d_min = d[fg_mask].min()
     d_max = d[fg_mask].max()
+    canopy_h_cm = (d_max - d_min) * 100.0  # height in cm
+
     d_norm = np.zeros_like(d)
     if d_max > d_min:
-        # Normalize so that top/nearest leaves = 1.0 (bright yellow), lower leaves = 0.0 (dark purple)
         d_norm[fg_mask] = (d_max - d[fg_mask]) / (d_max - d_min)
     else:
         d_norm[fg_mask] = 1.0
@@ -91,11 +92,11 @@ def depth_colormap(depth_tensor):
     cmap = plt.get_cmap("plasma")
     rgb = cmap(d_norm)[:, :, :3].astype(np.float32)
     rgb[~fg_mask] = 0.0  # black background where no plant
-    return rgb
+    return rgb, canopy_h_cm
 
 
 def helios_organ_map(masks_path, H, W):
-    """Rasterize Helios COCO polygon masks into a single organ-type color image."""
+    """Rasterize Helios COCO polygon masks into a single organ-type color image with clean white background."""
     data = json.load(open(masks_path))
     src_w = int(data["images"][0].get("width", 720))
     src_h = int(data["images"][0].get("height", 720))
@@ -116,16 +117,16 @@ def helios_organ_map(masks_path, H, W):
             if len(pts) >= 3:
                 draw.polygon(pts, fill=1)
         cat_masks[cat] = np.maximum(cat_masks[cat], np.array(canvas))
-    rgb = np.ones((H, W, 3), dtype=np.float32) * 0.1  # dark background
+    rgb = np.ones((H, W, 3), dtype=np.float32)  # pure white background matching GT
     for cat_id, color in HELIOS_CAT_COLORS.items():
         rgb[cat_masks[cat_id] > 0] = color
     return rgb
 
 
 def organ_buffer_to_rgb(type_buf: torch.Tensor, H: int, W: int) -> np.ndarray:
-    """Map organ type buffer (-1=bg, 0=stem, 1=petiole, 2=leaf, ...) to color image."""
+    """Map organ type buffer (-1=bg, 0=stem, 1=petiole, 2=leaf, ...) to color image with clean white background."""
     buf_np = type_buf.detach().cpu().numpy()
-    rgb = np.ones((H, W, 3), dtype=np.float32) * 0.1  # dark background
+    rgb = np.ones((H, W, 3), dtype=np.float32)  # pure white background
     for ot_id, (hex_col, _) in ORGAN_META.items():
         r = int(hex_col[1:3], 16) / 255.0
         g = int(hex_col[3:5], 16) / 255.0
@@ -153,7 +154,7 @@ col_titles = [
     "Helios C++\nRadiation GT",
     "Helios C++\nOrgan Map GT",
     "PyTorch 40D\nRGB Render",
-    "PyTorch 40D\nDepth Map",
+    "Canopy Height (CHM)\n(taller = brighter)",
     "PyTorch 40D\nForeground Mask",
     "PyTorch 40D\nOrgan-Type Map"
 ]
@@ -249,14 +250,11 @@ for row, (label, xml_path, helios_path, helios_masks_path, helios_cam_path) in e
 
     H, W = IMG_SIZE, IMG_SIZE
     rgb_np = rgb_t.permute(1, 2, 0).detach().cpu().clamp(0, 1).numpy()
-    depth_np = depth_colormap(depth_t)
+    depth_np, canopy_h_cm = depth_colormap(depth_t)
     mask_np = (type_t >= 0).detach().cpu().numpy()
     organ_np = organ_buffer_to_rgb(type_t, H, W)
 
     fg_pct = 100.0 * mask_np.sum() / (H * W)
-    depth_raw = depth_t.detach().cpu().numpy()
-    d_min = float(depth_raw[depth_raw > 0].min()) if (depth_raw > 0).any() else 0
-    d_max = float(depth_raw.max())
 
     # --- Col 2: RGB ---
     ax = ax_row[2]
@@ -267,18 +265,18 @@ for row, (label, xml_path, helios_path, helios_masks_path, helios_cam_path) in e
             fontsize=9, color='white', va='bottom',
             bbox=dict(boxstyle='round,pad=0.2', facecolor='black', alpha=0.6))
 
-    # --- Col 3: Depth ---
+    # --- Col 3: Depth / Canopy Height Model ---
     ax = ax_row[3]
     ax.imshow(depth_np)
     ax.set_facecolor("#0d0d1a")
     ax.axis("off")
-    ax.text(0.03, 0.03, f"Depth: {d_min:.2f}–{d_max:.2f}m", transform=ax.transAxes,
+    ax.text(0.03, 0.03, f"Height: 0–{canopy_h_cm:.1f} cm", transform=ax.transAxes,
             fontsize=9, color='#c3a6e0', va='bottom',
             bbox=dict(boxstyle='round,pad=0.2', facecolor='black', alpha=0.6))
 
     # --- Col 4: Foreground Mask ---
     ax = ax_row[4]
-    mask_display = np.stack([mask_np * 0.2, mask_np * 0.85, mask_np * 0.5], axis=-1)
+    mask_display = np.stack([mask_np * 0.4, mask_np * 0.9, mask_np * 0.6], axis=-1)
     ax.imshow(mask_display)
     ax.set_facecolor("#0d0d1a")
     ax.axis("off")
@@ -299,15 +297,15 @@ for row, (label, xml_path, helios_path, helios_masks_path, helios_cam_path) in e
         meta = ORGAN_META.get(int(ot), ("#AAAAAA", f"Type {ot}"))
         patches.append(mpatches.Patch(color=meta[0], label=meta[1]))
     if patches:
-        leg = ax.legend(handles=patches, loc='lower right',
-                        fontsize=7, framealpha=0.85,
-                        facecolor='#1a1a2e', labelcolor='white',
-                        edgecolor='#444', ncol=1)
+        ax.legend(handles=patches, loc='lower right',
+                  fontsize=7, framealpha=0.85,
+                  facecolor='#1a1a2e', labelcolor='white',
+                  edgecolor='#444', ncol=1)
 
 # Overall title
 fig.suptitle(
-    "Figure 8: Helios C++ Raytrace vs 40D PyTorch Differentiable Multi-Modal Outputs (RGB · Depth · Mask · Semantic Map)",
-    fontsize=14, fontweight='bold', color='white', y=0.995
+    "Figure 8: Helios C++ Raytrace vs 40D PyTorch Differentiable Multi-Modal Outputs (RGB · Canopy Height · Mask · Semantic Map)",
+    fontsize=13, fontweight='bold', color='white', y=0.995
 )
 
 out_path = os.path.join(ASSETS_DIR, "fig8_multimodal_depth_mask.png")
