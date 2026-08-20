@@ -244,18 +244,21 @@ def main():
         # Refines continuous leaf poses and scales directly from the flow-matched prediction
         refined_part = fm_part_gen.clone()
         opt_yaw = torch.zeros(1, device=device, requires_grad=True)
+        opt_global_scale = torch.zeros(1, device=device, requires_grad=True)
         opt_scale = torch.zeros(3, device=device, requires_grad=True)
         opt_delta_base = torch.zeros((512, 3), device=device, requires_grad=True)
 
         optimizer = torch.optim.AdamW([
             {"params": [opt_yaw], "lr": 0.03},
-            {"params": [opt_scale], "lr": 0.02},
-            {"params": [opt_delta_base], "lr": 0.01},
+            {"params": [opt_global_scale], "lr": 0.08},
+            {"params": [opt_scale], "lr": 0.04},
+            {"params": [opt_delta_base], "lr": 0.02},
         ])
-        for _ in range(25):
+        for _ in range(40):
             optimizer.zero_grad()
-            eval_bases = refined_part[:, P_COL_BASE_X:P_COL_BASE_Z + 1] + torch.tanh(opt_delta_base) * 0.03
-            eval_scales = refined_part[:, P_COL_SCALE_X:P_COL_SCALE_Z + 1] * torch.exp(opt_scale * 0.3)
+            g_scale = torch.exp(opt_global_scale)
+            eval_bases = refined_part[:, P_COL_BASE_X:P_COL_BASE_Z + 1] * g_scale + torch.tanh(opt_delta_base) * 0.05
+            eval_scales = refined_part[:, P_COL_SCALE_X:P_COL_SCALE_Z + 1] * torch.exp(opt_scale * 0.3) * g_scale
             p_eval = torch.cat([
                 refined_part[:, :P_COL_BASE_X],
                 eval_bases,
@@ -273,8 +276,9 @@ def main():
             optimizer.step()
 
         with torch.no_grad():
-            eval_bases = refined_part[:, P_COL_BASE_X:P_COL_BASE_Z + 1] + torch.tanh(opt_delta_base) * 0.03
-            eval_scales = refined_part[:, P_COL_SCALE_X:P_COL_SCALE_Z + 1] * torch.exp(opt_scale * 0.3)
+            g_scale = torch.exp(opt_global_scale)
+            eval_bases = refined_part[:, P_COL_BASE_X:P_COL_BASE_Z + 1] * g_scale + torch.tanh(opt_delta_base) * 0.05
+            eval_scales = refined_part[:, P_COL_SCALE_X:P_COL_SCALE_Z + 1] * torch.exp(opt_scale * 0.3) * g_scale
             p_eval = torch.cat([
                 refined_part[:, :P_COL_BASE_X],
                 eval_bases,

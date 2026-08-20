@@ -118,6 +118,8 @@ class FlowMatchingScheduler:
                 v = v + guidance_weight * g_grad
 
             x_t = x_t + v * dt
-            # Keep the organ-type block a valid probability distribution.
-            x_t[..., :FM_OT_END] = F.softmax(x_t[..., :FM_OT_END], dim=-1)
+            # Keep the organ-type block on the valid probability simplex without softmax distortion
+            ot_block = x_t[..., :FM_OT_END].clamp(min=0.0)
+            ot_sum = ot_block.sum(dim=-1, keepdim=True) + 1e-8
+            x_t[..., :FM_OT_END] = ot_block / ot_sum
         return x_t
