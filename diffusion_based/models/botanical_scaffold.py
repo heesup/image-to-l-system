@@ -25,6 +25,10 @@ from diffusion_based.dataset.part_array_dataset import (
     CATEGORY_TO_IDX,
     EMPTY_IDX,
     NUM_ORGAN_CATEGORIES,
+    BASE_SCALE,
+    SCALE_SCALE,
+    CURVATURE_SCALE,
+    PHYLLOTACTIC_SCALE,
     FM_BASE_START,
     FM_BASE_END,
     FM_ROT_START,
@@ -71,8 +75,8 @@ class BotanicalScaffoldGenerator:
     def __init__(
         self,
         max_nodes: int = 2048,
-        canopy_radius: float = 0.35,
-        canopy_height: float = 0.55,
+        canopy_radius: float = 0.55,
+        canopy_height: float = 0.70,
         node_dim: int = FM_NODE_DIM,
     ):
         self.max_nodes = max_nodes
@@ -104,9 +108,9 @@ class BotanicalScaffoldGenerator:
         for _ in range(root_cnt):
             if curr_idx >= self.max_nodes: break
             scaffold[curr_idx, CATEGORY_TO_IDX[ORGAN_ROOT_META]] = 1.0
-            scaffold[curr_idx, FM_BASE_START:FM_BASE_END] = torch.tensor([0.0, 0.0, 0.0])
+            scaffold[curr_idx, FM_BASE_START:FM_BASE_END] = torch.tensor([0.0, 0.0, 0.0]) * BASE_SCALE
             scaffold[curr_idx, FM_ROT_START:FM_ROT_END] = torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
-            scaffold[curr_idx, FM_SCALE_START:FM_SCALE_END] = torch.tensor([0.01, 0.01, 0.01])
+            scaffold[curr_idx, FM_SCALE_START:FM_SCALE_END] = torch.tensor([0.01, 0.01, 0.01]) * SCALE_SCALE
             curr_idx += 1
 
         # B. Shoot Meta (Stem base anchor)
@@ -114,9 +118,9 @@ class BotanicalScaffoldGenerator:
         for i in range(shoot_cnt):
             if curr_idx >= self.max_nodes: break
             scaffold[curr_idx, CATEGORY_TO_IDX[ORGAN_SHOOT_META]] = 1.0
-            scaffold[curr_idx, FM_BASE_START:FM_BASE_END] = torch.tensor([0.0, 0.0, 0.01 * (i + 1)])
+            scaffold[curr_idx, FM_BASE_START:FM_BASE_END] = torch.tensor([0.0, 0.0, 0.01 * (i + 1)]) * BASE_SCALE
             scaffold[curr_idx, FM_ROT_START:FM_ROT_END] = torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
-            scaffold[curr_idx, FM_SCALE_START:FM_SCALE_END] = torch.tensor([0.02, 0.02, 0.02])
+            scaffold[curr_idx, FM_SCALE_START:FM_SCALE_END] = torch.tensor([0.02, 0.02, 0.02]) * SCALE_SCALE
             curr_idx += 1
 
         # C. Internodes (Vertical main stem backbone)
@@ -125,16 +129,16 @@ class BotanicalScaffoldGenerator:
             if curr_idx >= self.max_nodes: break
             frac = (i + 1) / max(1, internode_cnt)
             z_pos = frac * self.canopy_height
-            r_jitter = 0.015 * math.sin(i * 1.5)
+            r_jitter = 0.02 * math.sin(i * 1.5)
             theta = i * GOLDEN_RATIO_ANGLE
             scaffold[curr_idx, CATEGORY_TO_IDX[ORGAN_INTERNODE]] = 1.0
             scaffold[curr_idx, FM_BASE_START:FM_BASE_END] = torch.tensor([
                 r_jitter * math.cos(theta),
                 r_jitter * math.sin(theta),
                 z_pos,
-            ])
+            ]) * BASE_SCALE
             scaffold[curr_idx, FM_ROT_START:FM_ROT_END] = torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
-            scaffold[curr_idx, FM_SCALE_START:FM_SCALE_END] = torch.tensor([0.015, 0.015, self.canopy_height / max(1, internode_cnt)])
+            scaffold[curr_idx, FM_SCALE_START:FM_SCALE_END] = torch.tensor([0.02, 0.02, self.canopy_height / max(1, internode_cnt)]) * SCALE_SCALE
             curr_idx += 1
 
         # D. Petioles & Peduncles (Radial branching arms)
@@ -143,18 +147,18 @@ class BotanicalScaffoldGenerator:
                 if curr_idx >= self.max_nodes: break
                 frac = (i + 1) / max(1, cnt)
                 z_pos = 0.05 + frac * (self.canopy_height - 0.08)
-                r_pos = 0.03 + 0.5 * self.canopy_radius * math.sqrt(frac)
+                r_pos = 0.04 + 0.6 * self.canopy_radius * math.sqrt(frac)
                 theta = i * GOLDEN_RATIO_ANGLE
                 scaffold[curr_idx, CATEGORY_TO_IDX[ot]] = 1.0
                 scaffold[curr_idx, FM_BASE_START:FM_BASE_END] = torch.tensor([
                     r_pos * math.cos(theta),
                     r_pos * math.sin(theta),
                     z_pos,
-                ])
+                ]) * BASE_SCALE
                 # Outward pointing orientation
                 cos_t, sin_t = math.cos(theta), math.sin(theta)
                 scaffold[curr_idx, FM_ROT_START:FM_ROT_END] = torch.tensor([cos_t, sin_t, 0.3, -sin_t, cos_t, 0.0])
-                scaffold[curr_idx, FM_SCALE_START:FM_SCALE_END] = torch.tensor([0.01, 0.01, 0.08])
+                scaffold[curr_idx, FM_SCALE_START:FM_SCALE_END] = torch.tensor([0.015, 0.015, 0.10]) * SCALE_SCALE
                 curr_idx += 1
 
         # E. Leaves (Fibonacci Spiral Canopy Shell)
@@ -163,10 +167,10 @@ class BotanicalScaffoldGenerator:
             if curr_idx >= self.max_nodes: break
             # Vogel's Fibonacci spiral distribution across conical canopy volume
             frac = (i + 0.5) / max(1, leaf_cnt)
-            z_pos = 0.04 + (frac ** 0.8) * (self.canopy_height - 0.05)
+            z_pos = 0.05 + (frac ** 0.75) * (self.canopy_height - 0.06)
             # Conical widening: radius is wider at mid-to-high canopy
             cone_factor = math.sin(frac * math.pi * 0.85)
-            r_pos = 0.05 + self.canopy_radius * (0.3 + 0.7 * cone_factor) * math.sqrt(frac)
+            r_pos = 0.06 + self.canopy_radius * (0.35 + 0.65 * cone_factor) * math.sqrt(frac)
             theta = i * GOLDEN_RATIO_ANGLE
 
             scaffold[curr_idx, CATEGORY_TO_IDX[ORGAN_LEAF]] = 1.0
@@ -174,11 +178,11 @@ class BotanicalScaffoldGenerator:
                 r_pos * math.cos(theta),
                 r_pos * math.sin(theta),
                 z_pos,
-            ])
+            ]) * BASE_SCALE
             # Leaf normal tilt (~45 deg upward-outward)
             cos_t, sin_t = math.cos(theta), math.sin(theta)
             scaffold[curr_idx, FM_ROT_START:FM_ROT_END] = torch.tensor([cos_t, sin_t, 0.707, -sin_t, cos_t, 0.0])
-            scaffold[curr_idx, FM_SCALE_START:FM_SCALE_END] = torch.tensor([0.06, 0.06, 0.002])
+            scaffold[curr_idx, FM_SCALE_START:FM_SCALE_END] = torch.tensor([0.12, 0.12, 0.002]) * SCALE_SCALE
             curr_idx += 1
 
         # F. Reproductive structures (Buds, Flowers, Fruits)
@@ -189,16 +193,16 @@ class BotanicalScaffoldGenerator:
                 if curr_idx >= self.max_nodes: break
                 frac = (i + 1) / max(1, cnt)
                 z_pos = 0.08 + frac * (self.canopy_height - 0.1)
-                r_pos = 0.04 + 0.6 * self.canopy_radius * frac
+                r_pos = 0.05 + 0.65 * self.canopy_radius * frac
                 theta = (i * GOLDEN_RATIO_ANGLE) + 0.5
                 scaffold[curr_idx, CATEGORY_TO_IDX[ot]] = 1.0
                 scaffold[curr_idx, FM_BASE_START:FM_BASE_END] = torch.tensor([
                     r_pos * math.cos(theta),
                     r_pos * math.sin(theta),
                     z_pos,
-                ])
+                ]) * BASE_SCALE
                 scaffold[curr_idx, FM_ROT_START:FM_ROT_END] = torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
-                scaffold[curr_idx, FM_SCALE_START:FM_SCALE_END] = torch.tensor([0.015, 0.015, 0.015])
+                scaffold[curr_idx, FM_SCALE_START:FM_SCALE_END] = torch.tensor([0.02, 0.02, 0.02]) * SCALE_SCALE
                 curr_idx += 1
 
         # Fill any remaining slots with empty-prior background slots
