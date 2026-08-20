@@ -51,25 +51,28 @@ def render_xml_with_helios_cpp(xml_string: str, species: str = "cowpea") -> np.n
 
         build_dir = os.path.join(REPO_ROOT, "Digital-Crops/projects/syntheticdata_generation/build")
         cfg_file = os.path.join(REPO_ROOT, f"Digital-Crops/projects/syntheticdata_generation/configs/params_{species}.json")
-        cmd = [
-            "./main",
-            "--renderer", "radiation",
-            "--input-xml", xml_path,
-            "--output", tmp_dir,
-            "-n", "flow_render",
-            "--focus-plant",
-            "-f", os.path.abspath(cfg_file),
-        ]
-        try:
-            subprocess.run(cmd, cwd=build_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-            cand = os.path.join(tmp_dir, species, "flow_render_0000_rad.jpeg")
-            if not os.path.exists(cand):
-                cand = os.path.join(tmp_dir, species, "flow_render_0000_vis.jpeg")
-            if os.path.exists(cand):
-                with Image.open(cand) as img:
-                    img_out = np.array(img.convert("RGB").resize((256, 256)), dtype=np.float32) / 255.0
-        except Exception as e:
-            print(f"Helios C++ binary render fallback: {e}")
+        for rend in ["radiation", "vis"]:
+            cmd = [
+                "./main",
+                "--renderer", rend,
+                "--input-xml", os.path.abspath(xml_path),
+                "--output", tmp_dir,
+                "-n", "flow_render",
+                "--focus-plant",
+                "-f", os.path.abspath(cfg_file),
+            ]
+            try:
+                subprocess.run(cmd, cwd=build_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+                for cand in [
+                    os.path.join(tmp_dir, species, f"flow_render_0000_{'rad' if rend=='radiation' else 'vis'}.jpeg"),
+                    os.path.join(tmp_dir, f"flow_render_0000_{'rad' if rend=='radiation' else 'vis'}.jpeg"),
+                ]:
+                    if os.path.exists(cand):
+                        with Image.open(cand) as img:
+                            img_out = np.array(img.convert("RGB").resize((256, 256)), dtype=np.float32) / 255.0
+                        return img_out
+            except Exception as e:
+                pass
 
     return img_out
 
@@ -101,7 +104,7 @@ def main():
         print(f"  Parsed 40D Organ Array: shape={arr.tensor.shape} (is_typed={arr.is_typed})")
 
         # 2. Build 3D Mesh using Forward Kinematics Tree
-        mesh = renderer.geo_builder.build_mesh_from_organ_array(arr, device=device)
+        mesh = renderer.geo_builder.build_mesh_from_organ_array(arr, device=device, species=species)
         verts = mesh["vertices"]
         print(f"  Forward Kinematics Mesh: {verts.shape[0]} vertices, {mesh['faces'].shape[0]} faces")
 

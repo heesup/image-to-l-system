@@ -101,6 +101,81 @@ def generate_generic_leaf_mesh_torch(
     return verts, faces_t
 
 
+def generate_sorghum_leaf_mesh_torch(
+    scale: torch.Tensor,
+    aspect_ratio: float = 0.2,
+    midrib_fold_fraction: float = 0.3,
+    longitudinal_curvature: float = -0.3,
+    lateral_curvature: float = -0.3,
+    leaf_buckle_length: float = 0.5,
+    leaf_buckle_angle_deg: float = 50.0,
+    Nx: int = 30,
+    Ny: int = 10,
+    device=torch.device('cpu')
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Generates Helios Sorghum GenericLeafPrototype parametric monocot curved leaf mesh."""
+    if not isinstance(scale, torch.Tensor):
+        scale = torch.tensor(scale, dtype=torch.float32, device=device)
+
+    dx = 1.0 / float(Nx)
+    dy = aspect_ratio / float(Ny)
+
+    verts_grid = []
+    for j in range(Ny + 1):
+        row_verts = []
+        dtheta = 0.0
+        for i in range(Nx + 1):
+            x = float(i) * dx
+            y = float(j) * dy - 0.5 * aspect_ratio
+
+            y_fold = math.cos(0.5 * midrib_fold_fraction * math.pi) * y
+            z_fold = math.sin(0.5 * midrib_fold_fraction * math.pi) * abs(y)
+            z_ycurve = lateral_curvature * ((y / aspect_ratio) ** 4)
+
+            pt = torch.tensor([x, y_fold, z_fold + z_ycurve], dtype=torch.float32, device=device)
+
+            if longitudinal_curvature != 0 and i > 0:
+                dtheta -= math.atan(4.0 * longitudinal_curvature * (x**3) * dx)
+                c, s = math.cos(dtheta), math.sin(dtheta)
+                pt_x = pt[0] * c + pt[2] * s
+                pt_z = -pt[0] * s + pt[2] * c
+                pt = torch.tensor([pt_x, pt[1], pt_z], device=device)
+
+            if leaf_buckle_angle_deg > 0:
+                xf = leaf_buckle_length
+                ang = 0.0
+                if x <= xf and x + dx > xf:
+                    ang = 0.5 * math.radians(leaf_buckle_angle_deg)
+                elif x + dx > xf:
+                    ang = math.radians(leaf_buckle_angle_deg)
+                if ang > 0:
+                    c, s = math.cos(ang), math.sin(ang)
+                    dx_b = pt[0] - xf
+                    pt_x = xf + dx_b * c + pt[2] * s
+                    pt_z = -dx_b * s + pt[2] * c
+                    pt = torch.tensor([pt_x, pt[1], pt_z], device=device)
+
+            row_verts.append(pt * scale)
+        verts_grid.append(row_verts)
+
+    verts = torch.stack([pt for row in verts_grid for pt in row])
+
+    faces = []
+    for j in range(Ny):
+        for i in range(Nx):
+            v00 = j * (Nx + 1) + i
+            v01 = j * (Nx + 1) + (i + 1)
+            v10 = (j + 1) * (Nx + 1) + i
+            v11 = (j + 1) * (Nx + 1) + (i + 1)
+            faces.append([v00, v10, v01])
+            faces.append([v01, v10, v11])
+            faces.append([v00, v01, v10])
+            faces.append([v01, v11, v10])
+
+    faces_t = torch.tensor(faces, dtype=torch.int64, device=device)
+    return verts, faces_t
+
+
 class HeliosAssetManager:
     """Loads and caches Helios OBJ assets for PyTorch rendering."""
     def __init__(self, asset_dir: str = ASSET_DIR):
@@ -397,10 +472,12 @@ class HeliosPlantGeometryBuilder:
         device: torch.device = torch.device('cpu'),
         max_leaves: Optional[int] = None,
         existence_threshold: float = 0.5,
+        species: Optional[str] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Processes PlantOrganArray Tensor (N, 93) with sequential shoot forward kinematics.
         Renders each shoot individually and connects child shoots to parent petiole/node attachments.
+        Supports both dicot (Cowpea, Bean) and monocot (Sorghum, Maize) procedural geometry.
         """
         # If the input uses the typed (N, 40) layout, convert it to the legacy
         # (N, 94) phytomer-slot layout so the existing geometry builder can
@@ -787,7 +864,26 @@ class HeliosPlantGeometryBuilder:
                             # Scale by node existence so absent organs contribute no visible geometry.
                             tot_scale = l_scale * self.leaf_scale_factor * node_exist
 
-                            if self.use_generic_leaves:
+                            is_sorghum = False
+                            if species is not None:
+                                is_sorghum = (species.lower() in ["sorghum", "maize"])
+                            elif num_leaves == 1 and (p_len < 0.05 or p_rad < 1e-4) and l_scale > 0.1:
+                                is_sorghum = True
+
+                            if is_sorghum:
+                                v_lf_b, f_lf_b = generate_sorghum_leaf_mesh_torch(
+                                    scale=tot_scale,
+                                    aspect_ratio=0.2,
+                                    midrib_fold_fraction=0.3,
+                                    longitudinal_curvature=-0.3,
+                                    lateral_curvature=-0.3,
+                                    leaf_buckle_length=0.5,
+                                    leaf_buckle_angle_deg=50.0,
+                                    Nx=30,
+                                    Ny=10,
+                                    device=device
+                                )
+                            elif self.use_generic_leaves:
                                 v_lf_b, f_lf_b = generate_generic_leaf_mesh_torch(scale=tot_scale, aspect_ratio=0.65, Nx=8, Ny=8, device=device)
                             else:
                                 if num_leaves == 1:
