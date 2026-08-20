@@ -220,8 +220,6 @@ def main():
         def _render_fm_state(fm_state_t):
             p = ds.decode_fm(fm_state_t[0])
             p_sharp = p.clone()
-            p_sharp[:, P_COL_SCALE_X:P_COL_SCALE_Z + 1] = p[:, P_COL_SCALE_X:P_COL_SCALE_Z + 1].clamp(0.005, 0.08)
-            p_sharp[:, P_COL_BASE_X:P_COL_BASE_Z + 1] = p[:, P_COL_BASE_X:P_COL_BASE_Z + 1].clamp(-0.15, 0.15)
             p_exist = p[:, P_COL_EXISTENCE].unsqueeze(-1)
             p_sharp[:, P_COL_EXISTENCE] = torch.where(p_exist > 0.45, torch.tensor(1.0, device=device), torch.tensor(0.0, device=device)).squeeze(-1)
             with torch.no_grad():
@@ -249,8 +247,8 @@ def main():
         ])
         for _ in range(25):
             optimizer.zero_grad()
-            eval_bases = (refined_part[:, P_COL_BASE_X:P_COL_BASE_Z + 1] + torch.tanh(opt_delta_base) * 0.03).clamp(-0.15, 0.15)
-            eval_scales = (refined_part[:, P_COL_SCALE_X:P_COL_SCALE_Z + 1] * torch.exp(opt_scale * 0.3)).clamp(0.005, 0.08)
+            eval_bases = refined_part[:, P_COL_BASE_X:P_COL_BASE_Z + 1] + torch.tanh(opt_delta_base) * 0.03
+            eval_scales = refined_part[:, P_COL_SCALE_X:P_COL_SCALE_Z + 1] * torch.exp(opt_scale * 0.3)
             p_eval = torch.cat([
                 refined_part[:, :P_COL_BASE_X],
                 eval_bases,
@@ -288,7 +286,9 @@ def main():
 
         # 4. Re-rendered XML using Helios C++
         # Extract organ hierarchy
-        nodes_spec = gt_arr.nodes if hasattr(gt_arr, "nodes") else []
+        from diffusion_based.models.helios_xml_parser import HeliosXMLParser
+        parser = HeliosXMLParser(xml_path)
+        nodes_spec = parser.get_all_organ_nodes()
         plant_age_str = "10" if "010" in dap_tag else ("50" if "050" in dap_tag else "90")
         xml_str = organ_nodes_to_xml(nodes_spec, base_position="0 0 0", plant_age=plant_age_str, plant_id="0")
         opt_xml_path = os.path.join(tmp_xml_dir, f"fm_{dap_tag}.xml")

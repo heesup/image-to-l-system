@@ -26,7 +26,9 @@ if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
 from diffusion_based.dataset.part_array_dataset import (
-    PartArrayDataset, FM_OT_END, EMPTY_IDX, FM_BASE_START, FM_NODE_DIM,
+    PartArrayDataset, FM_OT_END, EMPTY_IDX, FM_NODE_DIM,
+    FM_BASE_START, FM_BASE_END, FM_ROT_START, FM_ROT_END,
+    FM_SCALE_START, FM_SCALE_END,
 )
 from diffusion_based.models.part_flow_matching import PartFlowMatchingModel
 from diffusion_based.training.flow_matching import FlowMatchingScheduler
@@ -88,12 +90,20 @@ def train_epoch(
             # Category velocity loss (across all slots: learning active organ types vs empty)
             loss_cat = F.mse_loss(pred_velocity[:, :, :FM_OT_END], v_target[:, :, :FM_OT_END])
 
-            # Geometry velocity loss (masked to active organ slots: base, rot, scale, curv, phyllo)
+            # Geometry velocity losses (masked to active organ slots)
             active_mask = existence_mask.unsqueeze(-1).float()  # (B, N, 1)
-            diff_geom = (pred_velocity[:, :, FM_BASE_START:] - v_target[:, :, FM_BASE_START:]) ** 2
-            loss_geom = (diff_geom * active_mask).sum() / max(active_mask.sum() * (FM_NODE_DIM - FM_BASE_START), 1.0)
+            num_active = max(active_mask.sum(), 1.0)
 
-            loss = loss_cat + 2.0 * loss_geom
+            diff_base = (pred_velocity[:, :, FM_BASE_START:FM_BASE_END] - v_target[:, :, FM_BASE_START:FM_BASE_END]) ** 2
+            loss_base = (diff_base * active_mask).sum() / (num_active * 3.0)
+
+            diff_rot = (pred_velocity[:, :, FM_ROT_START:FM_ROT_END] - v_target[:, :, FM_ROT_START:FM_ROT_END]) ** 2
+            loss_rot = (diff_rot * active_mask).sum() / (num_active * 6.0)
+
+            diff_scale = (pred_velocity[:, :, FM_SCALE_START:FM_SCALE_END] - v_target[:, :, FM_SCALE_START:FM_SCALE_END]) ** 2
+            loss_scale = (diff_scale * active_mask).sum() / (num_active * 3.0)
+
+            loss = 2.0 * loss_cat + 1.0 * loss_base + 1.0 * loss_rot + 3.0 * loss_scale
 
         optimizer.zero_grad()
         loss.backward()
@@ -108,7 +118,7 @@ def train_epoch(
         count += B
 
         if (batch_idx + 1) % 25 == 0 or (batch_idx + 1) == num_batches:
-            print(f"  [Epoch {epoch:02d}] Step {batch_idx+1:03d}/{num_batches:03d} | Loss: {loss.item():.4f} (Cat: {loss_cat.item():.4f}, Geom: {loss_geom.item():.4f})", flush=True)
+            print(f"  [Epoch {epoch:02d}] Step {batch_idx+1:03d}/{num_batches:03d} | Loss: {loss.item():.4f} (Cat: {loss_cat.item():.4f}, Base: {loss_base.item():.4f}, Scale: {loss_scale.item():.4f})", flush=True)
 
     return {"loss": total_loss / max(count, 1), "global_step": global_step}
 
