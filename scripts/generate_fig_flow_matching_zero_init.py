@@ -103,7 +103,7 @@ def render_xml_with_helios_cpp(
             "--output", tmp_dir,
             "-n", "flow_render",
             "--focus-plant",
-            "-f", cfg_file,
+            "-f", os.path.abspath(cfg_file),
         ]
         try:
             subprocess.run(cmd, cwd=build_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
@@ -241,7 +241,7 @@ def main():
         rgb_t100, fm_part_gen = _render_fm_state(t_steps_snapshots["t_100"])
 
         # 3. Differentiable Inverse Rendering Fine-Tuning Refinement
-        # Refines continuous leaf poses and scales directly from the flow-matched prediction
+        # Refines continuous leaf poses, scales, and global canopy coverage directly from flow matching
         refined_part = fm_part_gen.clone()
         opt_yaw = torch.zeros(1, device=device, requires_grad=True)
         opt_global_scale = torch.zeros(1, device=device, requires_grad=True)
@@ -250,11 +250,13 @@ def main():
 
         optimizer = torch.optim.AdamW([
             {"params": [opt_yaw], "lr": 0.03},
-            {"params": [opt_global_scale], "lr": 0.08},
-            {"params": [opt_scale], "lr": 0.04},
-            {"params": [opt_delta_base], "lr": 0.02},
+            {"params": [opt_global_scale], "lr": 0.12},
+            {"params": [opt_scale], "lr": 0.05},
+            {"params": [opt_delta_base], "lr": 0.03},
         ])
-        for _ in range(40):
+
+        gt_fg = (gt_out["depth"] > 0.01).float()
+        for _ in range(50):
             optimizer.zero_grad()
             g_scale = torch.exp(opt_global_scale)
             eval_bases = refined_part[:, P_COL_BASE_X:P_COL_BASE_Z + 1] * g_scale + torch.tanh(opt_delta_base) * 0.05
@@ -271,9 +273,14 @@ def main():
                 p_eval, template_organ_array=gt_arr, camera_height=5.0, elevation_deg=ELEVATION_DEG,
                 device=device, focus_plant=True, fixed_camera_bounds=cam_bounds, return_depth=True, soft_existence=True,
             )
+            pred_fg = (loss_out["depth"] > 0.01).float()
+            intersection = gt_fg * pred_fg
+            iou = (intersection.sum()) / (gt_fg.sum() + pred_fg.sum() - intersection.sum() + 1e-6)
+            loss_silhouette = 1.0 - iou
             loss_rgb = F.l1_loss(loss_out["rgb"], gt_out["rgb"])
-            loss_depth = F.l1_loss(loss_out["depth"], gt_out["depth"])
-            loss = loss_rgb + 3.0 * loss_depth
+            loss_depth = (torch.abs(loss_out["depth"] - gt_out["depth"]) * intersection).sum() / (intersection.sum() + 1e-6) if intersection.sum() > 10 else torch.tensor(0.0, device=device)
+
+            loss = 1.0 * loss_rgb + 2.0 * loss_depth + 4.0 * loss_silhouette
             loss.backward()
             optimizer.step()
 
