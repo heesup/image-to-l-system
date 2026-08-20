@@ -269,9 +269,11 @@ def main():
 
             loss_out = renderer.render_part_tensor_multimodal(
                 p_eval, template_organ_array=gt_arr, camera_height=5.0, elevation_deg=ELEVATION_DEG,
-                device=device, focus_plant=True, fixed_camera_bounds=cam_bounds, soft_existence=True,
+                device=device, focus_plant=True, fixed_camera_bounds=cam_bounds, return_depth=True, soft_existence=True,
             )
-            loss = F.l1_loss(loss_out["rgb"], gt_out["rgb"])
+            loss_rgb = F.l1_loss(loss_out["rgb"], gt_out["rgb"])
+            loss_depth = F.l1_loss(loss_out["depth"], gt_out["depth"])
+            loss = loss_rgb + 3.0 * loss_depth
             loss.backward()
             optimizer.step()
 
@@ -305,13 +307,13 @@ def main():
             if idx < p_np.shape[0]:
                 exist_val = float(p_np[idx, P_COL_EXISTENCE])
                 scale_val = float(p_np[idx, P_COL_SCALE_X])
-                if exist_val < 0.35:
+                if exist_val < 0.40:
                     if "leaf_scale" in node._xml_params:
-                        node._xml_params["leaf_scale"] = "0.0001"
-                    if "internode_length" in node._xml_params:
-                        node._xml_params["internode_length"] = "0.0001"
+                        node._xml_params["leaf_scale"] = "0.00001"
                     if "petiole_length" in node._xml_params:
                         node._xml_params["petiole_length"] = "0.0001"
+                    if "internode_length" in node._xml_params:
+                        node._xml_params["internode_length"] = "0.0001"
                 else:
                     if "leaf_scale" in node._xml_params and scale_val > 1e-4:
                         node._xml_params["leaf_scale"] = f"{scale_val:.4f}"
