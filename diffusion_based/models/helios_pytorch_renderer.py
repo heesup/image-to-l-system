@@ -33,7 +33,7 @@ def compute_focus_plant_camera(
     """
     device = verts.device
 
-    # Bounding Box of plant vertices matching Helios C++ main.cpp
+    # 1. 3D Bounding Box of plant vertices matching Helios C++ main.cpp:1715-1730
     if verts.shape[0] > 0:
         bb_min_x = float(verts[:, 0].min().item())
         bb_max_x = float(verts[:, 0].max().item())
@@ -42,47 +42,30 @@ def compute_focus_plant_camera(
         bb_min_z = float(verts[:, 2].min().item())
         bb_max_z = float(verts[:, 2].max().item())
 
-        canopy_center = torch.tensor([
+        plant_center = torch.tensor([
             (bb_min_x + bb_max_x) * 0.5,
             (bb_min_y + bb_max_y) * 0.5,
             (bb_min_z + bb_max_z) * 0.5
         ], device=device, dtype=torch.float32)
-
-        span_x = (bb_max_x - bb_min_x) * 1.05
-        span_y = (bb_max_y - bb_min_y) * 1.05
-        max_span = max(span_x, span_y, 0.05)
     else:
-        canopy_center = torch.tensor([0.0, 0.0, 0.0], device=device, dtype=torch.float32)
-        max_span = 1.0
+        bb_min_x = bb_min_y = bb_min_z = -0.5
+        bb_max_x = bb_max_y = bb_max_z = 0.5
+        plant_center = torch.tensor([0.0, 0.0, 0.0], device=device, dtype=torch.float32)
 
-    # Helios C++ Camera Spherical Positioning Math (main.cpp line 265-270)
+    # 2. Camera spherical positioning from plant center matching Helios C++ main.cpp:1730-1747
     az_rad = math.radians(azimuth_deg)
     el_rad = math.radians(elevation_deg)
-
-    if hfov_override_deg is not None:
-        hfov_rad = math.radians(hfov_override_deg)
-    elif focus_plant:
-        # Auto-fit FOV to plant bounding box + 5% margin matching Helios C++ calculateFOV(max_span, cam_h)
-        half_span = max_span * 0.5
-        hfov_rad = 2.0 * math.atan(half_span / max(camera_height, 1e-3))
-        hfov_rad = max(hfov_rad, math.radians(2.0))
-    else:
-        # Default fixed HFOV
-        hfov_rad = math.radians(45.0)
-
     dist = camera_height / max(math.sin(el_rad), 1e-3)
 
-    # Helios C++ camera position: (center_x + dist*sin(az), center_y - dist*cos(az), cam_z)
-    cam_x = canopy_center[0] + dist * math.cos(el_rad) * math.sin(az_rad)
-    cam_y = canopy_center[1] - dist * math.cos(el_rad) * math.cos(az_rad)
-    cam_z = canopy_center[2] + dist * math.sin(el_rad)
+    cam_x = plant_center[0] + dist * math.cos(el_rad) * math.sin(az_rad)
+    cam_y = plant_center[1] - dist * math.cos(el_rad) * math.cos(az_rad)
+    cam_z = plant_center[2] + dist * math.sin(el_rad)
 
     eye = torch.tensor([cam_x, cam_y, cam_z], device=device, dtype=torch.float32)
-    target = torch.tensor([canopy_center[0], canopy_center[1], 0.0], device=device, dtype=torch.float32)
+    target = plant_center.clone()
 
-    # Camera Up Vector matching Helios Top View vs Angled View
     if abs(elevation_deg - 90.0) < 1e-2:
-        up = torch.tensor([0.0, 1.0, 0.0], device=device, dtype=torch.float32) # Top View UP is +Y
+        up = torch.tensor([0.0, 1.0, 0.0], device=device, dtype=torch.float32)
     else:
         up = torch.tensor([0.0, 0.0, 1.0], device=device, dtype=torch.float32)
 
@@ -103,6 +86,53 @@ def compute_focus_plant_camera(
     view_mat = torch.eye(4, device=device, dtype=torch.float32)
     view_mat[:3, :3] = R_view
     view_mat[:3, 3] = t_view
+
+    # 3. Compute HFOV / VFOV matching Helios C++ main.cpp:1748-1793
+    if hfov_override_deg is not None:
+        hfov_rad = math.radians(hfov_override_deg)
+    elif focus_plant and (bb_max_x > bb_min_x) and (bb_max_y > bb_min_y):
+        # Project all 8 3D bounding box corners into camera basis
+        xs = [bb_min_x, bb_max_x]
+        ys = [bb_min_y, bb_max_y]
+        zs = [bb_min_z, bb_max_z]
+        min_vx, max_vx = float('inf'), float('-inf')
+        min_vy, max_vy = float('inf'), float('-inf')
+
+        eye_np = eye.detach().cpu().numpy()
+        x_axis_np = x_axis.detach().cpu().numpy()
+        y_axis_np = y_axis.detach().cpu().numpy()
+        z_axis_np = z_axis.detach().cpu().numpy()
+
+        for px in xs:
+            for py in ys:
+                for pz in zs:
+                    dx = px - eye_np[0]
+                    dy = py - eye_np[1]
+                    dz = pz - eye_np[2]
+                    vx = dx * x_axis_np[0] + dy * x_axis_np[1] + dz * x_axis_np[2]
+                    vy = dx * y_axis_np[0] + dy * y_axis_np[1] + dz * y_axis_np[2]
+                    vz = dx * z_axis_np[0] + dy * z_axis_np[1] + dz * z_axis_np[2]
+                    zneg = max(-vz, 1e-4)
+                    proj_x = vx / zneg
+                    proj_y = vy / zneg
+                    min_vx = min(min_vx, proj_x)
+                    max_vx = max(max_vx, proj_x)
+                    min_vy = min(min_vy, proj_y)
+                    max_vy = max(max_vy, proj_y)
+
+        # +20% margin matching Helios C++ main.cpp:1778
+        half_ext_x = max(abs(min_vx), abs(max_vx)) * 1.20
+        half_ext_y = max(abs(min_vy), abs(max_vy)) * 1.20
+        half_ext_x = max(half_ext_x, 1e-4)
+        half_ext_y = max(half_ext_y, 1e-4)
+
+        hfov_r = 2.0 * math.atan(half_ext_x)
+        vfov_r = 2.0 * math.atan(half_ext_y)
+        if vfov_r > hfov_r * aspect_ratio:
+            hfov_r = vfov_r / aspect_ratio
+        hfov_rad = max(hfov_r, math.radians(0.1))
+    else:
+        hfov_rad = math.radians(45.0)
 
     tan_half_fov = math.tan(hfov_rad / 2.0)
     f_x = 1.0 / tan_half_fov
