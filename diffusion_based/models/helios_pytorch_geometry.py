@@ -269,6 +269,9 @@ def rotate_vector_about_axis(vec: torch.Tensor, axis: torch.Tensor, angle_rad: t
         return vec.clone()
     axis = axis / axis_norm
 
+    if not isinstance(angle_rad, torch.Tensor):
+        angle_rad = torch.tensor(angle_rad, dtype=vec.dtype, device=vec.device)
+
     # Clamp angle magnitude to avoid the unstable 1-cos(a) near 2*pi multiple,
     # and wrap via angle sign so sin/cos are always finite.
     angle_safe = angle_rad
@@ -998,6 +1001,8 @@ class HeliosPlantGeometryBuilder:
                 num_flowers = int(row[COL_NUM_FLOWERS].item()) if row.shape[0] > COL_NUM_FLOWERS else 0
                 ped_len = row[COL_PED_LEN] if row.shape[0] > COL_PED_LEN else torch.tensor(0.0, device=device)
                 ped_rad = row[COL_PED_RAD] if row.shape[0] > COL_PED_RAD else torch.tensor(0.0, device=device)
+                ped_pitch_deg = row[COL_PED_PITCH] if row.shape[0] > COL_PED_PITCH else torch.tensor(20.0, device=device)
+                ped_curv_deg = row[COL_PED_CURV] if row.shape[0] > COL_PED_CURV else torch.tensor(0.0, device=device)
 
                 # Geometry only exists if bud is active in flowering/fruiting state (InputOutput.cpp:2118):
                 # BUD_FLOWER_CLOSED=2, BUD_FLOWER_OPEN=3, BUD_FRUITING=4.
@@ -1011,17 +1016,48 @@ class HeliosPlantGeometryBuilder:
                         ped_base = inode_line[0].clone()
 
                     ped_tip = ped_base.clone()
+                    ped_axis_final = inode_tip_axis.clone()
+
                     if ped_len > 1e-4 and ped_rad > 1e-5:
-                        if 0 in pet_axes_stored:
-                            ped_axis = inode_tip_axis * 0.85 + pet_axes_stored[0] * 0.15
-                        else:
-                            ped_axis = inode_tip_axis * 0.85 + prev_petiole_axis * 0.15
+                        # Initial peduncle axis and bending axis (InputOutput.cpp:1635-1690)
+                        curr_pet_axis = pet_axes_stored[0] if 0 in pet_axes_stored else prev_petiole_axis
+                        infl_bend_axis = torch.linalg.cross(prev_internode_axis, curr_pet_axis)
+                        if torch.linalg.norm(infl_bend_axis) < 1e-4:
+                            infl_bend_axis = torch.linalg.cross(inode_tip_axis, z_axis)
+                            if torch.linalg.norm(infl_bend_axis) < 1e-4:
+                                infl_bend_axis = torch.tensor([1.0, 0.0, 0.0], device=device)
+                        infl_bend_axis = infl_bend_axis / torch.linalg.norm(infl_bend_axis)
+
+                        ped_pitch_rad = math.radians(float(ped_pitch_deg.item()))
+                        ped_axis = rotate_vector_about_axis(inode_tip_axis, infl_bend_axis, ped_pitch_rad)
                         ped_axis = ped_axis / (torch.linalg.norm(ped_axis) + 1e-6)
-                        ped_tip = ped_base + ped_axis * ped_len
-                        ped_line = torch.stack([ped_base, ped_tip], dim=0)
+
+                        # Generate segmented curved peduncle vertices (InputOutput.cpp:2186-2214)
+                        Ndiv_ped = 5
+                        dr_ped = (ped_len * node_exist) / float(Ndiv_ped)
+                        curv_val = float(ped_curv_deg.item())
+
+                        ped_verts_list = [ped_base.clone()]
+                        step_p = ped_base.clone()
+                        for seg_i in range(Ndiv_ped):
+                            if abs(curv_val) > 0.0:
+                                h_bend = torch.linalg.cross(ped_axis, z_axis)
+                                h_norm = torch.linalg.norm(h_bend)
+                                if h_norm > 1e-4:
+                                    h_bend = h_bend / h_norm
+                                    theta_curv = math.radians(curv_val * float(dr_ped.item()))
+                                    ped_axis = rotate_vector_about_axis(ped_axis, h_bend, theta_curv)
+                                    ped_axis = ped_axis / (torch.linalg.norm(ped_axis) + 1e-6)
+                            step_p = step_p + dr_ped * ped_axis
+                            ped_verts_list.append(step_p)
+
+                        ped_line = torch.stack(ped_verts_list, dim=0)
+                        ped_tip = ped_verts_list[-1].clone()
+                        ped_axis_final = ped_axis.clone()
+
                         v_ped, f_ped, n_ped, c_ped = generate_cone_tube_mesh_torch(
                             ped_line,
-                            torch.tensor([ped_rad, ped_rad], device=device),
+                            torch.full((ped_line.shape[0],), float(ped_rad.item()), device=device),
                             self.COLOR_PEDUNCLE.to(device),
                             self.tube_radial_subdivisions
                         )
@@ -1072,7 +1108,7 @@ class HeliosPlantGeometryBuilder:
                         v_fl_b = v_fl_b.to(device) * tot_fl_scale
                         f_fl_b = f_fl_b.to(device)
 
-                        # Flower rotation (InputOutput.cpp:2245-2248)
+                        # Flower rotation (PlantArchitecture.cpp:2270-2285)
                         pitch_r = math.radians(float(fl_pitch_deg.item()))
                         yaw_r = math.radians(float(fl_yaw_deg.item()))
                         roll_r = math.radians(float(fl_roll_deg.item()))
@@ -1080,12 +1116,14 @@ class HeliosPlantGeometryBuilder:
 
                         R_fl = (
                             rotr_z(az_r, device) @
-                            rotr_z(yaw_r, device) @
                             rotr_y(-pitch_r, device) @
                             rotr_x(roll_r, device)
                         )
 
                         v_fl_rot = (R_fl @ v_fl_b.T).T
+                        if abs(yaw_r) > 1e-4:
+                            R_yaw = rodrigues_matrix_torch(ped_axis_final, torch.tensor(yaw_r, device=device), device=device)
+                            v_fl_rot = (R_yaw @ v_fl_rot.T).T
                         v_fl = v_fl_rot + ped_tip
 
                         n_fl = compute_face_normals_torch(v_fl, f_fl_b)
