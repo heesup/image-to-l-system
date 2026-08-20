@@ -292,10 +292,26 @@ def main():
         iou_val = float(foreground_iou(_to_tensor(refined_rgb_np, device), _to_tensor(gt_rgb_np, device)).item())
 
         # 4. Re-rendered XML using Helios C++
-        # Extract organ hierarchy
+        # Update node geometry from the flow-matched & refined 3D prediction
         from diffusion_based.models.helios_xml_parser import HeliosXMLParser
         parser = HeliosXMLParser(xml_path)
         nodes_spec = parser.get_all_organ_nodes()
+        p_np = p_eval.detach().cpu().numpy()
+        for idx, node in enumerate(nodes_spec):
+            if idx < p_np.shape[0]:
+                exist_val = float(p_np[idx, P_COL_EXISTENCE])
+                scale_val = float(p_np[idx, P_COL_SCALE_X])
+                if exist_val < 0.35:
+                    if "leaf_scale" in node._xml_params:
+                        node._xml_params["leaf_scale"] = "0.0001"
+                    if "internode_length" in node._xml_params:
+                        node._xml_params["internode_length"] = "0.0001"
+                    if "petiole_length" in node._xml_params:
+                        node._xml_params["petiole_length"] = "0.0001"
+                else:
+                    if "leaf_scale" in node._xml_params and scale_val > 1e-4:
+                        node._xml_params["leaf_scale"] = f"{scale_val:.4f}"
+
         plant_age_str = "10" if "010" in dap_tag else ("50" if "050" in dap_tag else "90")
         xml_str = organ_nodes_to_xml(nodes_spec, base_position="0 0 0", plant_age=plant_age_str, plant_id="0")
         helios_rerender_np = render_xml_with_helios_cpp(xml_str, species="cowpea")
