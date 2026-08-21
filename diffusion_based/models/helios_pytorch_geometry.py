@@ -231,11 +231,18 @@ def generate_sorghum_leaf_mesh_torch(
     return verts, faces_t
 
 
+TEXTURE_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "Digital-Crops", "libs", "Helios", "plugins", "plantarchitecture", "assets", "textures")
+)
+
+
 class HeliosAssetManager:
-    """Loads and caches Helios OBJ assets for PyTorch rendering."""
-    def __init__(self, asset_dir: str = ASSET_DIR):
+    """Loads and caches Helios OBJ assets and alpha-masked GenericLeaf meshes for PyTorch rendering."""
+    def __init__(self, asset_dir: str = ASSET_DIR, texture_dir: str = TEXTURE_DIR):
         self.asset_dir = asset_dir
+        self.texture_dir = texture_dir
         self.cache: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}
+        self.generic_cache: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}
 
     def get_mesh(self, name: str) -> Tuple[torch.Tensor, torch.Tensor]:
         if name not in self.cache:
@@ -245,6 +252,87 @@ class HeliosAssetManager:
             self.cache[name] = load_obj_file(path)
         v, f = self.cache[name]
         return v.clone(), f.clone()
+
+    def get_generic_leaf_mesh(
+        self,
+        texture_name: str,
+        Nx: int = 16,
+        Ny: int = 16,
+        aspect_ratio: float = 0.7,
+        midrib_fold_fraction: float = 0.2,
+        longitudinal_curvature: float = -0.2,
+        lateral_curvature: float = -0.4,
+        device: torch.device = torch.device('cpu')
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Builds and caches Helios GenericLeafPrototype mesh with texture alpha-mask cutout."""
+        cache_key = f"{texture_name}_{Nx}_{Ny}_{aspect_ratio}_{midrib_fold_fraction}_{longitudinal_curvature}_{lateral_curvature}"
+        if cache_key not in self.generic_cache:
+            dx = 1.0 / float(Nx)
+            dy = aspect_ratio / float(Ny)
+
+            verts_grid = []
+            for j in range(Ny + 1):
+                row_verts = []
+                dtheta = 0.0
+                for i in range(Nx + 1):
+                    x = float(i) * dx
+                    y = float(j) * dy - 0.5 * aspect_ratio
+
+                    y_fold = math.cos(0.5 * midrib_fold_fraction * math.pi) * y
+                    z_fold = math.sin(0.5 * midrib_fold_fraction * math.pi) * abs(y)
+                    z_xcurve = longitudinal_curvature * (x ** 4)
+                    z_ycurve = lateral_curvature * ((y / aspect_ratio) ** 4)
+
+                    pt = [x, y_fold, z_fold + z_ycurve]
+                    if longitudinal_curvature != 0.0 and i > 0:
+                        dtheta -= math.atan(4.0 * longitudinal_curvature * (x ** 3) * dx)
+                        c, s = math.cos(dtheta), math.sin(dtheta)
+                        pt_x = pt[0] * c + pt[2] * s
+                        pt_z = -pt[0] * s + pt[2] * c
+                        pt = [pt_x, pt[1], pt_z]
+                    row_verts.append(pt)
+                verts_grid.append(row_verts)
+
+            verts_list = [pt for row in verts_grid for pt in row]
+            v_tensor = torch.tensor(verts_list, dtype=torch.float32)
+
+            tex_path = os.path.join(self.texture_dir, texture_name)
+            faces_list = []
+            if os.path.exists(tex_path):
+                from PIL import Image as PILImage
+                img = PILImage.open(tex_path)
+                alpha = np.array(img)[:, :, 3] / 255.0
+                H_tex, W_tex = alpha.shape
+
+                for j in range(Ny):
+                    for i in range(Nx):
+                        u_c = (i + 0.5) * dx
+                        v_c = (j + 0.5) * dy / aspect_ratio
+                        tx = max(0, min(W_tex - 1, int(u_c * (W_tex - 1))))
+                        ty = max(0, min(H_tex - 1, int((1.0 - v_c) * (H_tex - 1))))
+
+                        if alpha[ty, tx] > 0.35:
+                            idx0 = j * (Nx + 1) + i
+                            idx1 = j * (Nx + 1) + (i + 1)
+                            idx2 = (j + 1) * (Nx + 1) + (i + 1)
+                            idx3 = (j + 1) * (Nx + 1) + i
+                            faces_list.append([idx0, idx1, idx2])
+                            faces_list.append([idx0, idx2, idx3])
+            else:
+                for j in range(Ny):
+                    for i in range(Nx):
+                        idx0 = j * (Nx + 1) + i
+                        idx1 = j * (Nx + 1) + (i + 1)
+                        idx2 = (j + 1) * (Nx + 1) + (i + 1)
+                        idx3 = (j + 1) * (Nx + 1) + i
+                        faces_list.append([idx0, idx1, idx2])
+                        faces_list.append([idx0, idx2, idx3])
+
+            f_tensor = torch.tensor(faces_list, dtype=torch.int64)
+            self.generic_cache[cache_key] = (v_tensor, f_tensor)
+
+        v_cached, f_cached = self.generic_cache[cache_key]
+        return v_cached.clone().to(device), f_cached.clone().to(device)
 
 
 def rotr_x(angle_rad: torch.Tensor, device=torch.device('cpu')) -> torch.Tensor:
@@ -954,17 +1042,28 @@ class HeliosPlantGeometryBuilder:
                                     device=device
                                 )
                             elif eff_leaf_mode == "generic":
-                                # Exact Helios GenericLeafPrototype parametric mesh (Assets.cpp:45-160)
-                                v_lf_b, f_lf_b = generate_generic_leaf_mesh_torch(
-                                    scale=tot_scale,
+                                # Exact Helios GenericLeafPrototype with texture alpha mask cutout (matching Helios OptiX / Radiation raytracer)
+                                if num_leaves == 1:
+                                    tex_name = "CowpeaLeaf_unifoliate_centered.png"
+                                else:
+                                    if lf_i == 0:
+                                        tex_name = "CowpeaLeaf_left_centered.png"
+                                    elif lf_i == 1:
+                                        tex_name = "CowpeaLeaf_tip_centered.png"
+                                    else:
+                                        tex_name = "CowpeaLeaf_right_centered.png"
+
+                                v_lf_b, f_lf_b = self.asset_mgr.get_generic_leaf_mesh(
+                                    texture_name=tex_name,
+                                    Nx=16,
+                                    Ny=16,
                                     aspect_ratio=0.7,
                                     midrib_fold_fraction=0.2,
                                     longitudinal_curvature=-0.2,
                                     lateral_curvature=-0.4,
-                                    Nx=6,
-                                    Ny=6,
                                     device=device
                                 )
+                                v_lf_b = v_lf_b * tot_scale
                             else:
                                 if num_leaves == 1:
                                     obj_name = "CowpeaLeaf_unifoliate.obj"
