@@ -171,7 +171,7 @@ for row, (label, xml_path, helios_path, helios_masks_path, helios_cam_path) in e
         continue
 
     arr = PlantOrganArray.from_xml_file(xml_path)
-    mesh = renderer.geo_builder.build_mesh_from_organ_array(arr, device=DEVICE, species="cowpea")
+    mesh = renderer.geo_builder.build_mesh_from_organ_array(arr, device=DEVICE, species="cowpea", leaf_mode="generic")
 
     # Read exact camera parameters
     cam_h = 5.0
