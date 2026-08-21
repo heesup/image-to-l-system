@@ -1,15 +1,15 @@
 """
-Accurate Empirical Benchmark: Actual Helios C++ Binary Execution vs PyTorch Part-Centric Direct Renderer (DAP 1-100).
+Accurate Empirical Benchmark: Actual Helios C++ Binary Execution vs PyTorch 40D Typed OrganArray Renderer (DAP 1-100).
 
 Directly runs and benchmarks:
   1. Actual Helios C++ binary (main --renderer radiation) across DAPs (1-100)
-  2. PyTorch part-centric direct assembly (Forward & Backward passes)
-  3. End-to-end XML -> part tensor -> Image wall-clock time
+  2. PyTorch 40D Typed OrganArray direct assembly (Forward & Backward passes)
+  3. End-to-end XML -> 40D Typed Tensor -> Image wall-clock time
   4. Real Speedup Factor across plant growth timeline (vs Helios C++)
 
 Outputs:
   - docs/results/assets/fig1_helios_vs_torch_rendering_benchmark.png
-  - diffusion_based/eval/benchmark_cache_14d.json
+  - diffusion_based/eval/benchmark_cache_40d.json
 """
 
 import os
@@ -37,8 +37,8 @@ MAIN_BIN = os.path.join(BUILD_DIR, "main")
 PARAMS_FILE = os.path.join(BUILD_DIR, "params.json")
 
 
-def benchmark_accurate_dap(force_recompute=True):
-    cache_file = os.path.join(repo_root, "diffusion_based", "eval", "benchmark_cache_14d.json")
+def benchmark_accurate_dap(force_recompute=False):
+    cache_file = os.path.join(repo_root, "diffusion_based", "eval", "benchmark_cache_40d.json")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Running Real Empirical Benchmark on {device}...")
 
@@ -50,12 +50,12 @@ def benchmark_accurate_dap(force_recompute=True):
         "organ_count": [],
         "triangle_count": [],
         "helios_time_sec": [],
-        "torch_14d_fwd_sec": [],
-        "torch_14d_bwd_sec": [],
-        "xml_to_14d_sec": [],
-        "render_14d_sec": [],
-        "end_to_end_14d_sec": [],
-        "speedup_14d_vs_helios": [],
+        "torch_40d_fwd_sec": [],
+        "torch_40d_bwd_sec": [],
+        "xml_to_40d_sec": [],
+        "render_40d_sec": [],
+        "end_to_end_40d_sec": [],
+        "speedup_40d_vs_helios": [],
     }
 
     # Load baseline Helios C++ cache if available
@@ -105,7 +105,7 @@ def benchmark_accurate_dap(force_recompute=True):
         if xml_path is None or not os.path.exists(xml_path):
             continue
 
-        # 3. End-to-end XML -> 40D OrganArray -> Image timing
+        # 3. End-to-end XML -> 40D Typed OrganArray -> Image timing
         t0 = time.time()
         organ_array = PlantOrganArray.from_xml_file(xml_path)
         t_xml_to_40d = time.time() - t0
@@ -121,7 +121,7 @@ def benchmark_accurate_dap(force_recompute=True):
         t_end_to_end = t_xml_to_40d + t_render_40d
 
         mesh_dict = renderer.geo_builder.build_mesh_from_organ_array(
-            organ_array, device=device, species="cowpea"
+            organ_array, device=device, species="cowpea", leaf_mode="generic"
         )
         tri_count = mesh_dict["faces"].shape[0]
         organ_count = organ_array.tensor.shape[0]
@@ -165,12 +165,12 @@ def benchmark_accurate_dap(force_recompute=True):
         results["organ_count"].append(organ_count)
         results["triangle_count"].append(tri_count)
         results["helios_time_sec"].append(helios_sec)
-        results["torch_14d_fwd_sec"].append(torch_40d_fwd)
-        results["torch_14d_bwd_sec"].append(torch_40d_bwd)
-        results["xml_to_14d_sec"].append(t_xml_to_40d)
-        results["render_14d_sec"].append(t_render_40d)
-        results["end_to_end_14d_sec"].append(t_end_to_end)
-        results["speedup_14d_vs_helios"].append(speedup_helios)
+        results["torch_40d_fwd_sec"].append(torch_40d_fwd)
+        results["torch_40d_bwd_sec"].append(torch_40d_bwd)
+        results["xml_to_40d_sec"].append(t_xml_to_40d)
+        results["render_40d_sec"].append(t_render_40d)
+        results["end_to_end_40d_sec"].append(t_end_to_end)
+        results["speedup_40d_vs_helios"].append(speedup_helios)
 
         print(f"DAP {dap:03d} (Organs={organ_count:4d}, Tris={tri_count:6d}): "
               f"Helios C++={helios_sec:5.2f}s | "
@@ -191,9 +191,9 @@ def benchmark_accurate_dap(force_recompute=True):
 
     # Panel 1: Execution Time in Seconds (Raw linear time axis)
     axes[0, 0].plot(daps, results["helios_time_sec"], "o-", color="#d62728", linewidth=2.5, label="Helios C++ Binary (Raytracing)")
-    axes[0, 0].plot(daps, results["end_to_end_14d_sec"], "s-", color="#ff7f0e", linewidth=2.2, label="PyTorch 40D E2E (XML -> 40D -> Image)")
-    axes[0, 0].plot(daps, results["torch_14d_bwd_sec"], "v-", color="#9467bd", linewidth=2.2, label="PyTorch 40D Forward + Backward")
-    axes[0, 0].plot(daps, results["torch_14d_fwd_sec"], "*-", color="#2ca02c", linewidth=2.8, label="PyTorch 40D Forward Pass")
+    axes[0, 0].plot(daps, results["end_to_end_40d_sec"], "s-", color="#ff7f0e", linewidth=2.2, label="PyTorch 40D E2E (XML -> 40D -> Image)")
+    axes[0, 0].plot(daps, results["torch_40d_bwd_sec"], "v-", color="#9467bd", linewidth=2.2, label="PyTorch 40D Forward + Backward")
+    axes[0, 0].plot(daps, results["torch_40d_fwd_sec"], "*-", color="#2ca02c", linewidth=2.8, label="PyTorch 40D Forward Pass")
     axes[0, 0].set_ylim(bottom=0, top=max(results["helios_time_sec"]) * 1.15)
     axes[0, 0].set_xlabel("Plant Age (Days After Planting / DAP)", fontsize=11, fontweight="bold")
     axes[0, 0].set_ylabel("Execution Time per Frame (seconds, linear)", fontsize=11, fontweight="bold")
@@ -202,8 +202,8 @@ def benchmark_accurate_dap(force_recompute=True):
     axes[0, 0].legend(fontsize=9, loc="upper left")
 
     # Panel 2: End-to-End Breakdown (ms, raw linear time axis)
-    axes[0, 1].plot(daps, np.array(results["xml_to_14d_sec"]) * 1000, "o-", color="#1f77b4", linewidth=2.2, label="XML -> 40D Organ Tensor")
-    axes[0, 1].plot(daps, np.array(results["render_14d_sec"]) * 1000, "s-", color="#2ca02c", linewidth=2.2, label="40D Tensor -> Image Render")
+    axes[0, 1].plot(daps, np.array(results["xml_to_40d_sec"]) * 1000, "o-", color="#1f77b4", linewidth=2.2, label="XML -> 40D Organ Tensor")
+    axes[0, 1].plot(daps, np.array(results["render_40d_sec"]) * 1000, "s-", color="#2ca02c", linewidth=2.2, label="40D Tensor -> Image Render")
     axes[0, 1].set_xlabel("Plant Age (Days After Planting / DAP)", fontsize=11, fontweight="bold")
     axes[0, 1].set_ylabel("Time (milliseconds, linear)", fontsize=11, fontweight="bold")
     axes[0, 1].set_title("40D Differentiable End-to-End Breakdown (Linear Scale)", fontsize=12, fontweight="bold")
@@ -212,20 +212,20 @@ def benchmark_accurate_dap(force_recompute=True):
 
     # Panel 3: Speedup Factor (LOG SCALE on Y-axis as requested)
     axes[1, 0].set_yscale("log")
-    axes[1, 0].plot(daps, results["speedup_14d_vs_helios"], "D-", color="#1f77b4", linewidth=2.5, label="PyTorch 40D vs Helios C++ Speedup")
-    axes[1, 0].fill_between(daps, results["speedup_14d_vs_helios"], 1.0, color="#1f77b4", alpha=0.12)
-    axes[1, 0].set_ylim(bottom=1.0, top=max(results["speedup_14d_vs_helios"]) * 2.0)
+    axes[1, 0].plot(daps, results["speedup_40d_vs_helios"], "D-", color="#1f77b4", linewidth=2.5, label="PyTorch 40D vs Helios C++ Speedup")
+    axes[1, 0].fill_between(daps, results["speedup_40d_vs_helios"], 1.0, color="#1f77b4", alpha=0.12)
+    axes[1, 0].set_ylim(bottom=1.0, top=max(results["speedup_40d_vs_helios"]) * 2.0)
     axes[1, 0].yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, _: f"{int(y)}x" if y >= 1 else f"{y:.1f}x"))
     axes[1, 0].set_xlabel("Plant Age (Days After Planting / DAP)", fontsize=11, fontweight="bold")
     axes[1, 0].set_ylabel("Speedup Factor vs Helios C++ (Log Scale, x-fold)", fontsize=11, fontweight="bold", color="#1f77b4")
     axes[1, 0].set_title("PyTorch Hardware Acceleration Speedup (Log Scale)", fontsize=12, fontweight="bold")
     axes[1, 0].grid(True, which="both", linestyle="--", alpha=0.4)
 
-    max_idx = np.argmax(results["speedup_14d_vs_helios"])
+    max_idx = np.argmax(results["speedup_40d_vs_helios"])
     axes[1, 0].annotate(
-        f"Peak Speedup: {results['speedup_14d_vs_helios'][max_idx]:.1f}x\n(DAP {daps[max_idx]})",
-        xy=(daps[max_idx], results["speedup_14d_vs_helios"][max_idx]),
-        xytext=(daps[max_idx] + 10, results["speedup_14d_vs_helios"][max_idx] * 0.55),
+        f"Peak Speedup: {results['speedup_40d_vs_helios'][max_idx]:.1f}x\n(DAP {daps[max_idx]})",
+        xy=(daps[max_idx], results["speedup_40d_vs_helios"][max_idx]),
+        xytext=(daps[max_idx] + 10, results["speedup_40d_vs_helios"][max_idx] * 0.55),
         arrowprops=dict(facecolor="black", shrink=0.08, width=1.5, headwidth=6),
         fontweight="bold", fontsize=9,
     )
@@ -245,7 +245,7 @@ def benchmark_accurate_dap(force_recompute=True):
     plt.savefig(out_png, dpi=200)
     plt.close()
 
-    print(f"\n[OK] Saved updated part-centric benchmark figure to: {out_png}")
+    print(f"\n[OK] Saved updated 40D typed benchmark figure to: {out_png}")
     return results
 
 
