@@ -63,43 +63,97 @@ def load_obj_file(filepath: str) -> Tuple[torch.Tensor, torch.Tensor]:
 
 def generate_generic_leaf_mesh_torch(
     scale: torch.Tensor,
-    aspect_ratio: float = 0.65,
-    Nx: int = 8,
-    Ny: int = 8,
+    aspect_ratio: float = 0.7,
+    midrib_fold_fraction: float = 0.2,
+    longitudinal_curvature: float = -0.2,
+    lateral_curvature: float = -0.4,
+    petiole_roll: float = 0.0,
+    wave_period: float = 0.0,
+    wave_amplitude: float = 0.0,
+    Nx: int = 6,
+    Ny: Optional[int] = None,
     device=torch.device('cpu')
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Generates Helios GenericLeafPrototype parametric curved leaf mesh."""
+    """Generates exact Helios C++ GenericLeafPrototype parametric curved leaf mesh (Assets.cpp:45-160)."""
     if not isinstance(scale, torch.Tensor):
         scale = torch.tensor(scale, dtype=torch.float32, device=device)
 
-    width = scale * aspect_ratio
-    xs = torch.linspace(0, 1.0, Nx + 1, device=device)
-    ys = torch.linspace(-0.5, 0.5, Ny + 1, device=device)
+    if Ny is None:
+        Ny = int(math.ceil(aspect_ratio * float(Nx)))
+        if Ny % 2 != 0:
+            Ny += 1
 
-    grid_x, grid_y = torch.meshgrid(xs, ys, indexing='ij')
+    dx = 1.0 / float(Nx)
+    dy = aspect_ratio / float(Ny)
 
-    curve_x = torch.sin(math.pi * grid_x)
-    curve_y = torch.cos(math.pi * grid_y)
-    grid_z = -0.15 * curve_x * curve_y
+    verts_grid = []
+    for j in range(Ny + 1):
+        row_verts = []
+        dtheta = 0.0
+        for i in range(Nx + 1):
+            x = float(i) * dx
+            y = float(j) * dy - 0.5 * aspect_ratio
 
-    pts_x = grid_x * scale
-    pts_y = grid_y * width
-    pts_z = grid_z * scale
+            # midrib leaf folding (Assets.cpp:69-70)
+            y_fold = math.cos(0.5 * midrib_fold_fraction * math.pi) * y
+            z_fold = math.sin(0.5 * midrib_fold_fraction * math.pi) * abs(y)
 
-    verts = torch.stack([pts_x, pts_y, pts_z], dim=-1).reshape(-1, 3)
+            # x-curvature & y-curvature (Assets.cpp:72-76)
+            z_xcurve = longitudinal_curvature * (x ** 4)
+            z_ycurve = lateral_curvature * ((y / aspect_ratio) ** 4)
 
-    faces = []
-    for i in range(Nx):
-        for j in range(Ny):
-            v0 = i * (Ny + 1) + j
-            v1 = i * (Ny + 1) + j + 1
-            v2 = (i + 1) * (Ny + 1) + j
-            v3 = (i + 1) * (Ny + 1) + j + 1
-            faces.append([v0, v2, v1])
-            faces.append([v1, v2, v3])
+            # petiole roll (Assets.cpp:78-83)
+            z_petiole = 0.0
+            if petiole_roll != 0.0:
+                sign_pr = petiole_roll / abs(petiole_roll)
+                z_petiole = min(0.1, petiole_roll * ((7.0 * y / aspect_ratio) ** 4) * math.exp(-70.0 * x)) - 0.01 * sign_pr
 
-    faces_t = torch.tensor(faces, dtype=torch.int64, device=device)
-    return verts, faces_t
+            # wave displacement (Assets.cpp:89-93)
+            z_wave = 0.0
+            if wave_period > 0.0 and wave_amplitude > 0.0:
+                wave_phase = (x + wave_period * float(j >= 0.5 * Ny)) * math.pi / wave_period
+                z_wave = 2.0 * abs(y) * wave_amplitude * math.sin(wave_phase)
+
+            pt = torch.tensor([x, y_fold, z_fold + z_ycurve + z_petiole], dtype=torch.float32, device=device)
+            rot_angle = 0.0
+
+            # longitudinal curvature rotation about (0, 1, 0) (Assets.cpp:99-103)
+            if longitudinal_curvature != 0.0 and i > 0:
+                dtheta -= math.atan(4.0 * longitudinal_curvature * (x ** 3) * dx)
+                c, s = math.cos(dtheta), math.sin(dtheta)
+                pt_x = pt[0] * c + pt[2] * s
+                pt_z = -pt[0] * s + pt[2] * c
+                pt = torch.tensor([pt_x, pt[1], pt_z], dtype=torch.float32, device=device)
+                rot_angle += dtheta
+
+            # apply wave along rotated leaf-surface normal (Assets.cpp:118-122)
+            if z_wave != 0.0:
+                pt_x = pt[0] + z_wave * math.sin(rot_angle)
+                pt_z = pt[2] + z_wave * math.cos(rot_angle)
+                pt = torch.tensor([pt_x, pt[1], pt_z], dtype=torch.float32, device=device)
+
+            row_verts.append(pt * scale)
+        verts_grid.append(row_verts)
+
+    verts_list = []
+    for j in range(Ny + 1):
+        for i in range(Nx + 1):
+            verts_list.append(verts_grid[j][i])
+    verts_t = torch.stack(verts_list, dim=0)
+
+    faces_list = []
+    for j in range(Ny):
+        for i in range(Nx):
+            idx0 = j * (Nx + 1) + i
+            idx1 = j * (Nx + 1) + (i + 1)
+            idx2 = (j + 1) * (Nx + 1) + (i + 1)
+            idx3 = (j + 1) * (Nx + 1) + i
+            # Match Helios triangle winding (Assets.cpp:142-150)
+            faces_list.append([idx0, idx1, idx2])
+            faces_list.append([idx0, idx2, idx3])
+
+    faces_t = torch.tensor(faces_list, dtype=torch.int64, device=device)
+    return verts_t, faces_t
 
 
 def generate_sorghum_leaf_mesh_torch(
@@ -457,11 +511,19 @@ def generate_cone_tube_mesh_torch(
 class HeliosPlantGeometryBuilder:
     """Builds complete PyTorch 3D plant meshes directly from PlantOrganArray Tensor (N, 93)."""
 
-    def __init__(self, asset_manager: Optional[HeliosAssetManager] = None, use_generic_leaves: bool = False, leaf_scale_factor: float = 1.0, tube_radial_subdivisions: int = 4):
+    def __init__(
+        self,
+        asset_manager: Optional[HeliosAssetManager] = None,
+        use_generic_leaves: bool = True,
+        leaf_mode: str = "generic",
+        leaf_scale_factor: float = 1.0,
+        tube_radial_subdivisions: int = 4
+    ):
         if asset_manager is None:
             asset_manager = HeliosAssetManager()
         self.asset_mgr = asset_manager
-        self.use_generic_leaves = use_generic_leaves
+        self.leaf_mode = leaf_mode.lower() if leaf_mode is not None else ("generic" if use_generic_leaves else "obj")
+        self.use_generic_leaves = (self.leaf_mode == "generic")
         self.leaf_scale_factor = leaf_scale_factor
         self.tube_radial_subdivisions = tube_radial_subdivisions
 
@@ -479,12 +541,14 @@ class HeliosPlantGeometryBuilder:
         max_leaves: Optional[int] = None,
         existence_threshold: float = 0.5,
         species: Optional[str] = None,
+        leaf_mode: Optional[str] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Processes PlantOrganArray Tensor (N, 93) with sequential shoot forward kinematics.
         Renders each shoot individually and connects child shoots to parent petiole/node attachments.
         Supports both dicot (Cowpea, Bean) and monocot (Sorghum, Maize) procedural geometry.
         """
+        eff_leaf_mode = leaf_mode.lower() if leaf_mode is not None else self.leaf_mode
         # If the input uses the typed (N, 40) layout, convert it to the legacy
         # (N, 94) phytomer-slot layout so the existing geometry builder can
         # consume it unchanged. This keeps rendering pixel-identical while
@@ -889,8 +953,18 @@ class HeliosPlantGeometryBuilder:
                                     Ny=10,
                                     device=device
                                 )
-                            elif self.use_generic_leaves:
-                                v_lf_b, f_lf_b = generate_generic_leaf_mesh_torch(scale=tot_scale, aspect_ratio=0.65, Nx=8, Ny=8, device=device)
+                            elif eff_leaf_mode == "generic":
+                                # Exact Helios GenericLeafPrototype parametric mesh (Assets.cpp:45-160)
+                                v_lf_b, f_lf_b = generate_generic_leaf_mesh_torch(
+                                    scale=tot_scale,
+                                    aspect_ratio=0.7,
+                                    midrib_fold_fraction=0.2,
+                                    longitudinal_curvature=-0.2,
+                                    lateral_curvature=-0.4,
+                                    Nx=6,
+                                    Ny=6,
+                                    device=device
+                                )
                             else:
                                 if num_leaves == 1:
                                     obj_name = "CowpeaLeaf_unifoliate.obj"
@@ -907,9 +981,8 @@ class HeliosPlantGeometryBuilder:
                                 except FileNotFoundError:
                                     continue
 
-                                v_lf_b = v_lf_b.to(device)
+                                v_lf_b = v_lf_b.to(device) * tot_scale
                                 f_lf_b = f_lf_b.to(device)
-                                v_lf_b = v_lf_b * tot_scale
 
                             # Helios leaf rotations (InputOutput.cpp:1966-1999), roll -> pitch -> yaw -> azimuth.
                             asin_pz = torch.asin(torch.clamp(pet_tip_axis[2], -1.0, 1.0))
