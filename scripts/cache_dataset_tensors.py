@@ -30,8 +30,6 @@ CACHE_DIR = os.path.join(REPO_ROOT, "dataset/cache")
 def process_single_sample(args):
     xml_path, jpeg_path, prefix, cache_dir = args
     out_pt = os.path.join(cache_dir, f"{prefix}.pt")
-    if os.path.exists(out_pt):
-        return True
 
     try:
         # 1. Parse XML to PlantOrganArray

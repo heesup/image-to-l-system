@@ -26,6 +26,7 @@ import os
 import math
 import glob
 import torch
+import torch.nn.functional as F
 import numpy as np
 import xml.etree.ElementTree as ET
 from typing import List, Tuple, Dict, Any, Optional
@@ -214,12 +215,47 @@ ORGAN_LEAF = 4
 ORGAN_BUD = 5
 ORGAN_PEDUNCLE = 6
 ORGAN_FLOWER = 7
-NUM_ORGAN_TYPES = 8
+ORGAN_FRUIT = 8
+ORGAN_FLOWER_CLOSED = 9
+ORGAN_BUD_ABORTED = 10
+NUM_ORGAN_TYPES = 11
+
+# =============================================================================
+# PART TENSOR 16D COLUMN CONSTANTS
+# =============================================================================
+P_COL_ORGAN_TYPE = 0
+P_COL_BASE_X = 1
+P_COL_BASE_Y = 2
+P_COL_BASE_Z = 3
+P_COL_ROT_0 = 4
+P_COL_ROT_1 = 5
+P_COL_ROT_2 = 6
+P_COL_ROT_3 = 7
+P_COL_ROT_4 = 8
+P_COL_ROT_5 = 9
+P_COL_SCALE_X = 10
+P_COL_SCALE_Y = 11
+P_COL_SCALE_Z = 12
+P_COL_EXISTENCE = 13
+P_COL_CURVATURE = 14
+P_COL_PHYLLOTACTIC_ANGLE = 15
+NUM_FEATURES = 16
+NUM_FEATURES_PART = 16
 
 
 # =============================================================================
 # SMALL HELPERS
 # =============================================================================
+
+def rotation_6d_to_matrix(d6: torch.Tensor) -> torch.Tensor:
+    """Converts 6D rotation representation (Zhou et al. CVPR 2019) to (..., 3, 3) rotation matrix."""
+    a1, a2 = d6[..., :3], d6[..., 3:]
+    b1 = F.normalize(a1, dim=-1)
+    b2 = a2 - (b1 * a2).sum(dim=-1, keepdim=True) * b1
+    b2 = F.normalize(b2, dim=-1)
+    b3 = torch.cross(b1, b2, dim=-1)
+    return torch.stack((b1, b2, b3), dim=-2)
+
 
 def _fmt(val: float) -> str:
     """Formats float for exact XML strings."""
@@ -1496,14 +1532,16 @@ class PlantOrganArray:
                     lf_idx = _to_int(t[idx, T_COL_CHILD_INDEX])
                     leaf_base_col = COL_PET0_L0_SCALE if pet_i == 0 else COL_PET1_L0_SCALE
                     cur_col = leaf_base_col + lf_idx * 4
-                    set_cell(row_i, cur_col, idx, T_COL_SCALE)
-                    set_cell(row_i, cur_col + 1, idx, T_COL_PITCH)
-                    set_cell(row_i, cur_col + 2, idx, T_COL_YAW)
-                    set_cell(row_i, cur_col + 3, idx, T_COL_ROLL)
+                    if cur_col + 3 < NUM_FEATURES_LEGACY:
+                        set_cell(row_i, cur_col, idx, T_COL_SCALE)
+                        set_cell(row_i, cur_col + 1, idx, T_COL_PITCH)
+                        set_cell(row_i, cur_col + 2, idx, T_COL_YAW)
+                        set_cell(row_i, cur_col + 3, idx, T_COL_ROLL)
                     base_col = COL_PET0_LEN if pet_i == 0 else COL_PET1_LEN
-                    const_val[row_i, base_col + 10] = max(
-                        const_val[row_i, base_col + 10], float(lf_idx + 1)
-                    )
+                    if base_col + 10 < NUM_FEATURES_LEGACY:
+                        const_val[row_i, base_col + 10] = max(
+                            const_val[row_i, base_col + 10], float(lf_idx + 1)
+                        )
                 elif ot == ORGAN_BUD:
                     const_val[row_i, COL_HAS_BUD] = 1.0
                     set_cell(row_i, COL_BUD_STATE, idx, T_COL_BUD_STATE)
@@ -1520,11 +1558,12 @@ class PlantOrganArray:
                 elif ot == ORGAN_FLOWER:
                     fl_idx = _to_int(t[idx, T_COL_CHILD_INDEX])
                     fl_base_col = COL_FL0_PITCH + fl_idx * 5
-                    set_cell(row_i, fl_base_col, idx, T_COL_PITCH)
-                    set_cell(row_i, fl_base_col + 1, idx, T_COL_YAW)
-                    set_cell(row_i, fl_base_col + 2, idx, T_COL_ROLL)
-                    set_cell(row_i, fl_base_col + 3, idx, T_COL_FLOWER_AZIMUTH)
-                    set_cell(row_i, fl_base_col + 4, idx, T_COL_SCALE)
+                    if fl_base_col + 4 < NUM_FEATURES_LEGACY:
+                        set_cell(row_i, fl_base_col, idx, T_COL_PITCH)
+                        set_cell(row_i, fl_base_col + 1, idx, T_COL_YAW)
+                        set_cell(row_i, fl_base_col + 2, idx, T_COL_ROLL)
+                        set_cell(row_i, fl_base_col + 3, idx, T_COL_FLOWER_AZIMUTH)
+                        set_cell(row_i, fl_base_col + 4, idx, T_COL_SCALE)
                     const_val[row_i, COL_NUM_FLOWERS] = max(
                         const_val[row_i, COL_NUM_FLOWERS], float(fl_idx + 1)
                     )
@@ -1557,6 +1596,49 @@ class PlantOrganArray:
         tmp = cls(tensor=legacy_tensor, raw_metadata=raw_metadata or [])
         xml = tmp._to_xml_string_legacy()
         return cls._from_xml_string_typed(xml)
+
+    def to_part_tensor(self, device: Optional[torch.device] = None) -> torch.Tensor:
+        """
+        Converts this PlantOrganArray into canonical 16D Part Tensor on the given device.
+        (organ_type, base_x, base_y, base_z, rot6d_0..5, scale_x, scale_y, scale_z, existence, curvature, phyllotaxis).
+        """
+        t = self.tensor.to(device=device) if device is not None else self.tensor
+        N = t.shape[0]
+        out = torch.zeros((N, NUM_FEATURES_PART), dtype=torch.float32, device=t.device)
+
+        if t.shape[1] == NUM_FEATURES_TYPED:
+            out[:, P_COL_ORGAN_TYPE] = t[:, T_COL_ORGAN_TYPE]
+            out[:, P_COL_BASE_X:P_COL_BASE_Z + 1] = t[:, T_COL_BASE_X:T_COL_BASE_Z + 1]
+
+            pitch_r = torch.deg2rad(t[:, T_COL_PITCH])
+            yaw_r = torch.deg2rad(t[:, T_COL_YAW])
+            roll_r = torch.deg2rad(t[:, T_COL_ROLL])
+
+            cp, sp = torch.cos(pitch_r), torch.sin(pitch_r)
+            cy, sy = torch.cos(yaw_r), torch.sin(yaw_r)
+            cr, sr = torch.cos(roll_r), torch.sin(roll_r)
+
+            r1_x = cy * cp
+            r1_y = sy * cp
+            r1_z = -sp
+            r2_x = cy * sp * sr - sy * cr
+            r2_y = sy * sp * sr + cy * cr
+            r2_z = cp * sr
+
+            out[:, P_COL_ROT_0] = r1_x
+            out[:, P_COL_ROT_1] = r1_y
+            out[:, P_COL_ROT_2] = r1_z
+            out[:, P_COL_ROT_3] = r2_x
+            out[:, P_COL_ROT_4] = r2_y
+            out[:, P_COL_ROT_5] = r2_z
+
+            out[:, P_COL_SCALE_X] = t[:, T_COL_RADIUS]
+            out[:, P_COL_SCALE_Y] = t[:, T_COL_RADIUS]
+            out[:, P_COL_SCALE_Z] = t[:, T_COL_LENGTH]
+            out[:, P_COL_EXISTENCE] = t[:, T_COL_EXISTENCE]
+            out[:, P_COL_CURVATURE] = t[:, T_COL_CURVATURE]
+            out[:, P_COL_PHYLLOTACTIC_ANGLE] = t[:, T_COL_PHYLLOTACTIC_ANGLE]
+        return out
 
     # -------------------------------------------------------------------------
     # SOFT PARENT HELPERS (work for both layouts)

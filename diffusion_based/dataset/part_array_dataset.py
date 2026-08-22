@@ -215,6 +215,17 @@ class PartArrayDataset(Dataset):
                 try:
                     data = torch.load(cache_path, map_location="cpu", weights_only=False)
                     if isinstance(data, dict) and "image" in data and "nodes" in data:
+                        if "dap" not in data:
+                            dap = 30.0
+                            if "dap" in sample["prefix"]:
+                                try:
+                                    import re
+                                    m = re.search(r"dap(\d+)", sample["prefix"])
+                                    if m:
+                                        dap = float(m.group(1))
+                                except Exception:
+                                    pass
+                            data["dap"] = torch.tensor(dap, dtype=torch.float32)
                         return data
                 except Exception:
                     pass
@@ -265,13 +276,22 @@ class PartArrayDataset(Dataset):
             existence_mask = (nodes[:, EMPTY_IDX] < 0.5).float()
 
             num_nodes = torch.tensor(N, dtype=torch.long)
-            self._tensor_cache[cache_key] = (nodes, existence_mask, num_nodes)
+        dap = 30.0
+        if "dap" in sample["prefix"]:
+            try:
+                import re
+                m = re.search(r"dap(\d+)", sample["prefix"])
+                if m:
+                    dap = float(m.group(1))
+            except Exception:
+                pass
 
         return {
             "image": image_tensor,
             "nodes": nodes,
             "existence_mask": existence_mask,
             "num_nodes": num_nodes,
+            "dap": torch.tensor(dap, dtype=torch.float32),
             "xml_path": sample["xml"],
             "prefix": sample["prefix"],
         }

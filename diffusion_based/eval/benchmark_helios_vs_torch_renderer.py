@@ -56,6 +56,10 @@ def benchmark_accurate_dap(force_recompute=False):
         "render_40d_sec": [],
         "end_to_end_40d_sec": [],
         "speedup_40d_vs_helios": [],
+        "stage_to_legacy_sec": [],
+        "stage_build_mesh_sec": [],
+        "stage_camera_sec": [],
+        "stage_rasterize_sec": [],
     }
 
     # Load baseline Helios C++ cache if available
@@ -161,6 +165,49 @@ def benchmark_accurate_dap(force_recompute=False):
 
         speedup_helios = helios_sec / max(torch_40d_fwd, 1e-4)
 
+        # Stage-level profiling: where does the forward pass spend its time?
+        #   to_legacy  : typed (N,40) -> legacy (M,94) conversion
+        #   build_mesh : forward-kinematics geometry construction
+        #   camera     : focus-plant camera / FOV computation
+        #   rasterize  : nvdiffrast rasterize + interpolate + composite
+        from diffusion_based.models.helios_pytorch_renderer import compute_focus_plant_camera
+        t0 = time.time()
+        _ = organ_array.to_legacy_tensor_diff()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        stage_to_legacy = time.time() - t0
+
+        t0 = time.time()
+        _mesh = renderer.geo_builder.build_mesh_from_organ_array(
+            organ_array, device=device, existence_threshold=0.5
+        )
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        stage_build_mesh = time.time() - t0
+
+        t0 = time.time()
+        _ = compute_focus_plant_camera(
+            _mesh["vertices"], _mesh.get("organ_types", None), 0.0, 90.0, 5.0,
+            aspect_ratio=1.0, focus_plant=True, hfov_override_deg=None,
+        )
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        stage_camera = time.time() - t0
+
+        t0 = time.time()
+        _ = renderer.forward(
+            _mesh, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0,
+            background="ground", focus_plant=True,
+        )
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        stage_rasterize = time.time() - t0
+
+        results["stage_to_legacy_sec"].append(stage_to_legacy)
+        results["stage_build_mesh_sec"].append(stage_build_mesh)
+        results["stage_camera_sec"].append(stage_camera)
+        results["stage_rasterize_sec"].append(stage_rasterize)
+
         results["dap"].append(dap)
         results["organ_count"].append(organ_count)
         results["triangle_count"].append(tri_count)
@@ -179,6 +226,10 @@ def benchmark_accurate_dap(force_recompute=False):
               f"40D->img={t_render_40d*1000:5.1f}ms | "
               f"E2E={t_end_to_end*1000:5.1f}ms | "
               f"Speedup={speedup_helios:5.1f}x vs Helios")
+        print(f"        stages: to_legacy={stage_to_legacy*1000:5.1f}ms "
+              f"build_mesh={stage_build_mesh*1000:5.1f}ms "
+              f"camera={stage_camera*1000:5.1f}ms "
+              f"rasterize={stage_rasterize*1000:5.1f}ms")
 
     with open(cache_file, "w") as f:
         json.dump(results, f, indent=2)

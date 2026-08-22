@@ -37,12 +37,17 @@ side_by_side_*.png
 train_*.pid
 generate_dataset.log
 dataset/helios_data/
+dataset/helios_data*
+dataset/cache/
+dataset/cache_cowpea_100k/
+dataset/cache*/
 notebooks/output*
 diffusion_based/eval/output/*
+diffusion_based/eval/roundtrip_outputs/
 slurm_scripts/logs/*
 slurm-*.out
+logs/
 
 # Runtime benchmark caches
 diffusion_based/eval/benchmark_cache*.json
 docs/results/assets/*_metrics.json
-dataset/helios_data*

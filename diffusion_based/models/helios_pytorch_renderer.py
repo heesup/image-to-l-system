@@ -160,6 +160,7 @@ class HeliosPyTorchRenderer(nn.Module):
         self.geo_builder = HeliosPlantGeometryBuilder()
         self.COLOR_GROUND = torch.tensor([0.72, 0.62, 0.50], dtype=torch.float32)
         self._glctx = None
+        self._mesh_cache: Dict = {}
 
     def _get_nvdiffrast_context(self, device):
         if self._glctx is None:
@@ -539,9 +540,11 @@ class HeliosPyTorchRenderer(nn.Module):
         differentiable: bool = False,
         focus_plant: bool = True,
         existence_threshold: float = 0.5,
+        use_cache: bool = False,
     ) -> torch.Tensor:
-        mesh_dict = self.geo_builder.build_mesh_from_organ_array(
-            organ_array, device=device, existence_threshold=existence_threshold
+        mesh_dict = self._build_mesh_cached(
+            organ_array, device=device, existence_threshold=existence_threshold,
+            differentiable=differentiable, use_cache=use_cache,
         )
         return self.forward(
             mesh_dict,
@@ -551,4 +554,91 @@ class HeliosPyTorchRenderer(nn.Module):
             background=background,
             differentiable=differentiable,
             focus_plant=focus_plant
+        )
+
+    def _build_mesh_cached(
+        self,
+        organ_array,
+        device: torch.device,
+        existence_threshold: float,
+        differentiable: bool,
+        use_cache: bool = False,
+    ) -> Dict[str, torch.Tensor]:
+        """Build the mesh, optionally reusing a cached result when the input is unchanged.
+
+        The differentiable path always rebuilds so autograd gradients flow back
+        to the typed tensor. When ``use_cache`` is enabled on the
+        non-differentiable path, the built mesh is cached keyed by the tensor's
+        data pointer + version counter, which is cheap to check and invalidates
+        automatically whenever the tensor is mutated. This is useful for
+        multi-view rendering of the same plant (e.g. many camera angles), where
+        rebuilding geometry per view is wasteful.
+        """
+        if differentiable or not use_cache:
+            return self.geo_builder.build_mesh_from_organ_array(
+                organ_array, device=device, existence_threshold=existence_threshold
+            )
+
+        t = organ_array.tensor
+        key = (t.data_ptr(), t._version, existence_threshold, str(device))
+        cached = self._mesh_cache.get(key)
+        if cached is not None:
+            return cached
+
+        mesh_dict = self.geo_builder.build_mesh_from_organ_array(
+            organ_array, device=device, existence_threshold=existence_threshold
+        )
+        self._mesh_cache = {key: mesh_dict}
+        return mesh_dict
+
+    def render_part_tensor(
+        self,
+        part_tensor: torch.Tensor,
+        azimuth_deg: float = 0.0,
+        elevation_deg: float = 90.0,
+        camera_height: float = 5.0,
+        background: str = "ground",
+        device: torch.device = torch.device('cpu'),
+        differentiable: bool = False,
+        focus_plant: bool = True,
+        existence_threshold: float = 0.5,
+        hfov_override_deg: Optional[float] = None,
+    ) -> torch.Tensor:
+        """Directly renders a 16D (or 26D) part tensor on GPU with zero XML overhead."""
+        mesh_dict = self.geo_builder.build_mesh_from_part_tensor(
+            part_tensor, device=device, existence_threshold=existence_threshold
+        )
+        return self.forward(
+            mesh_dict,
+            azimuth_deg=azimuth_deg,
+            elevation_deg=elevation_deg,
+            camera_height=camera_height,
+            background=background,
+            differentiable=differentiable,
+            focus_plant=focus_plant,
+            hfov_override_deg=hfov_override_deg,
+        )
+
+    def render_part_depth(
+        self,
+        part_tensor: torch.Tensor,
+        azimuth_deg: float = 0.0,
+        elevation_deg: float = 90.0,
+        camera_height: float = 5.0,
+        device: torch.device = torch.device('cpu'),
+        focus_plant: bool = True,
+        existence_threshold: float = 0.5,
+        hfov_override_deg: Optional[float] = None,
+    ) -> torch.Tensor:
+        """Directly renders depth map from a 16D (or 26D) part tensor on GPU."""
+        mesh_dict = self.geo_builder.build_mesh_from_part_tensor(
+            part_tensor, device=device, existence_threshold=existence_threshold
+        )
+        return self.render_depth(
+            mesh_dict,
+            azimuth_deg=azimuth_deg,
+            elevation_deg=elevation_deg,
+            camera_height=camera_height,
+            focus_plant=focus_plant,
+            hfov_override_deg=hfov_override_deg,
         )

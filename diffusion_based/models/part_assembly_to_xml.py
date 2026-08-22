@@ -350,11 +350,11 @@ class PartAssemblyToXMLConverter:
 
         # 4. Serialize to Helios XML
         lines = ['<?xml version="1.0" encoding="UTF-8"?>', '<helios>']
-        lines.append(f'\t<plant_instance id="{plant_id}">')
+        lines.append(f'\t<plant_instance ID="{plant_id}">')
 
         root_pos = part_info[root_meta_idx]["base"] if root_meta_idx is not None else (part_info[internodes[0]]["base"] if internodes else np.zeros(3))
-        lines.append(f'\t\t<plant_base_position>{_fmt(root_pos[0])};{_fmt(root_pos[1])};{_fmt(root_pos[2])}</plant_base_position>')
-        lines.append(f'\t\t<plant_type>{plant_type}</plant_type>')
+        lines.append(f'\t\t<base_position> {_fmt(root_pos[0])} {_fmt(root_pos[1])} {_fmt(root_pos[2])} </base_position>')
+        lines.append(f'\t\t<plant_age> 20 </plant_age>')
 
         for s_idx, shoot_inodes in enumerate(shoots):
             p_shoot_id = -1 if s_idx == 0 else 0
@@ -365,13 +365,13 @@ class PartAssemblyToXMLConverter:
                 if parent_i is not None and parent_i in internodes:
                     p_node_idx = internodes.index(parent_i)
 
-            lines.append(f'\t\t<shoot shoot_id="{s_idx}">')
-            lines.append(f'\t\t\t<parent_shoot_id>{p_shoot_id}</parent_shoot_id>')
-            lines.append(f'\t\t\t<parent_node_index>{p_node_idx}</parent_node_index>')
-            lines.append('\t\t\t<shoot_type_label>vegetative</shoot_type_label>')
-            lines.append('\t\t\t<shoot_base_pitch>0</shoot_base_pitch>')
-            lines.append('\t\t\t<shoot_base_roll>0</shoot_base_roll>')
-            lines.append('\t\t\t<shoot_base_yaw>0</shoot_base_yaw>')
+            shoot_label = "unifoliate" if s_idx == 0 else "trifoliate"
+            lines.append(f'\t\t<shoot ID="{s_idx}">')
+            lines.append(f'\t\t\t<shoot_type_label> {shoot_label} </shoot_type_label>')
+            lines.append(f'\t\t\t<parent_shoot_ID> {p_shoot_id} </parent_shoot_ID>')
+            lines.append(f'\t\t\t<parent_node_index> {p_node_idx} </parent_node_index>')
+            lines.append(f'\t\t\t<parent_petiole_index> 0 </parent_petiole_index>')
+            lines.append(f'\t\t\t<base_rotation> 0 0 0 </base_rotation>')
 
             prev_dir = np.array([0.0, 0.0, 1.0])
             for node_i, inode_idx in enumerate(shoot_inodes):
@@ -438,8 +438,9 @@ class PartAssemblyToXMLConverter:
                             R_rel = p_info["R"].T @ lf_info["R"]
                             r_rad, p_rad, az_rad = _matrix_to_euler_xyz(R_rel)
 
+                            leaf_sz = max(lf_info["sz"], lf_info["sx"], 0.02)
                             lines.append('\t\t\t\t\t\t<leaf>')
-                            lines.append(f'\t\t\t\t\t\t\t<leaf_scale>{_fmt(lf_info["sx"])}</leaf_scale>')
+                            lines.append(f'\t\t\t\t\t\t\t<leaf_scale>{_fmt(leaf_sz)}</leaf_scale>')
                             lines.append(f'\t\t\t\t\t\t\t<leaf_pitch>{_fmt(math.degrees(p_rad))}</leaf_pitch>')
                             lines.append(f'\t\t\t\t\t\t\t<leaf_yaw>{_fmt(math.degrees(az_rad))}</leaf_yaw>')
                             lines.append(f'\t\t\t\t\t\t\t<leaf_roll>{_fmt(math.degrees(r_rad))}</leaf_roll>')
