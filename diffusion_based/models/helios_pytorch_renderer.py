@@ -3,11 +3,15 @@ Differentiable PyTorch Renderer for Helios Plant Architecture.
 Matches Helios C++ camera positioning, spherical azimuth/elevation rotation, and --focus-plant HFOV auto-fitting.
 """
 
+import os
 import math
 import torch
 import torch.nn as nn
 from typing import Dict, Tuple, Optional
 from diffusion_based.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
+
+if "TORCH_CUDA_ARCH_LIST" not in os.environ:
+    os.environ["TORCH_CUDA_ARCH_LIST"] = "7.0;7.5;8.0;8.6;8.9;9.0+PTX"
 
 try:
     import nvdiffrast.torch as dr
@@ -65,7 +69,8 @@ def compute_focus_plant_camera(
     target = plant_center.clone()
 
     if abs(elevation_deg - 90.0) < 1e-2:
-        up = torch.tensor([0.0, 1.0, 0.0], device=device, dtype=torch.float32)
+        # Match Helios C++ coordinate system at nadir (top-down view)
+        up = torch.tensor([-1.0, 0.0, 0.0], device=device, dtype=torch.float32)
     else:
         up = torch.tensor([0.0, 0.0, 1.0], device=device, dtype=torch.float32)
 
@@ -541,7 +546,9 @@ class HeliosPyTorchRenderer(nn.Module):
         focus_plant: bool = True,
         existence_threshold: float = 0.5,
         use_cache: bool = False,
+        hfov_override_deg: Optional[float] = None,
     ) -> torch.Tensor:
+        """Directly renders an RGB image from a PlantOrganArray (40D typed layout or 94D legacy layout)."""
         mesh_dict = self._build_mesh_cached(
             organ_array, device=device, existence_threshold=existence_threshold,
             differentiable=differentiable, use_cache=use_cache,
@@ -553,7 +560,8 @@ class HeliosPyTorchRenderer(nn.Module):
             camera_height=camera_height,
             background=background,
             differentiable=differentiable,
-            focus_plant=focus_plant
+            focus_plant=focus_plant,
+            hfov_override_deg=hfov_override_deg,
         )
 
     def _build_mesh_cached(

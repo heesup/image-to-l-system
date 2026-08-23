@@ -56,7 +56,7 @@ class CanonicalCowpeaDiTLargeModel(nn.Module):
     """
     def __init__(
         self,
-        max_slots: int = 512,
+        max_slots: int = 4096,
         node_dim: int = 26,
         image_size: int = 128,
         patch_size: int = 8,
@@ -138,6 +138,21 @@ class CanonicalCowpeaDiTLargeModel(nn.Module):
         nn.init.constant_(self.vel_head.weight, 0.0)
         nn.init.constant_(self.vel_head.bias, 0.0)
 
+    def _get_slot_pos_embed(self, n_slots: int, device: torch.device) -> torch.Tensor:
+        """Returns slot positional embedding up to n_slots with dynamic sinusoidal fallback if n_slots > max_slots."""
+        if n_slots <= self.max_slots:
+            return self.slot_pos_embed[:, :n_slots, :]
+        # For canopies larger than max_slots, blend learned embedding with sinusoidal continuation
+        learned = self.slot_pos_embed
+        half_dim = self.embed_dim // 2
+        freqs = torch.exp(
+            -math.log(10000.0) * torch.arange(start=0, end=half_dim, dtype=torch.float32, device=device) / half_dim
+        )
+        extra_pos = torch.arange(start=self.max_slots, end=n_slots, dtype=torch.float32, device=device).unsqueeze(1)
+        args = extra_pos * freqs.unsqueeze(0)
+        extra_sinusoidal = torch.cat([torch.cos(args), torch.sin(args)], dim=-1).unsqueeze(0)
+        return torch.cat([learned, extra_sinusoidal], dim=1)
+
     def forward(
         self,
         x_t: torch.Tensor,
@@ -156,6 +171,7 @@ class CanonicalCowpeaDiTLargeModel(nn.Module):
         key_padding_mask: (B, N_slots) - True for empty padding slots
         """
         B, N, _ = x_t.shape
+        device = x_t.device
 
         # 1. Encode RGB Image with 16-layer ViT
         patch_tokens = self.patch_embed(images) + self.img_pos_embed
@@ -173,8 +189,9 @@ class CanonicalCowpeaDiTLargeModel(nn.Module):
 
         memory = torch.cat([cond_token, memory], dim=1) # (B, 1 + num_patches, embed_dim)
 
-        # 3. Project Target Tokens
-        tgt = self.node_in_proj(x_t) + self.slot_pos_embed[:, :N, :] # (B, N, embed_dim)
+        # 3. Project Target Tokens & Add Scalable Positional Embeddings
+        pos_emb = self._get_slot_pos_embed(N, device)
+        tgt = self.node_in_proj(x_t) + pos_emb
 
         # 4. Decode with Dynamic Variable-Length Masking
         dec_out = self.decoder(

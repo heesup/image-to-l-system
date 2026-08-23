@@ -51,3 +51,7 @@ logs/
 # Runtime benchmark caches
 diffusion_based/eval/benchmark_cache*.json
 docs/results/assets/*_metrics.json
+wandb/
+scratch/
+diffusion_based/eval/test_*.png
+diffusion_based/eval/test_*.py

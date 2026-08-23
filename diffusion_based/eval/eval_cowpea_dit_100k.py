@@ -79,7 +79,7 @@ def main():
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
 
     model = CanonicalCowpeaDiTLargeModel(
-        max_slots=512,
+        max_slots=4096,
         node_dim=26,
         image_size=128,
         patch_size=8,

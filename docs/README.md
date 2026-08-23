@@ -18,11 +18,15 @@
 
 ---
 
-## 🔴 Ongoing (현재 진행 중)
+## 🔴 Ongoing (Active & Handover)
 
-### → [`ongoing/20260821_cowpea_100k_dit_large_handoff.md`](ongoing/20260821_cowpea_100k_dit_large_handoff.md)
-**Cowpea 100K 데이터셋 생성 + 229M DiT-Large 학습 핸드오프 (2026-08-21)**  
-다음 Agent는 이 문서부터 읽을 것. 현재 실행 중인 SLURM Job Array(100K GPU 렌더 생성), 모델 아키텍처, 다음 학습 명령어 포함.
+### → [`ongoing/20260823_differentiable_renderer_helios_alignment_and_roundtrip_report.md`](ongoing/20260823_differentiable_renderer_helios_alignment_and_roundtrip_report.md)
+**Differentiable Renderer Alignment, COCO Internode Masking & Lossless XML Round-Trip Report (2026-08-23)**  
+Latest active document. Details the dynamic gravitropic curvature alignment, child shoot reference frame fixing, COCO internode `"shoot"` mask export in C++ `main.cpp`, PyTorch mask threshold fix (`type_buf >= 0`), 100% lossless XML round-trip benchmark ($0.00\text{ mm}$ vertex error), and full renderer hardcoding audit.
+
+### → [`ongoing/20260822_dataset_pipeline_multigpu_sharding_update.md`](ongoing/20260822_dataset_pipeline_multigpu_sharding_update.md)
+**Helios Dataset Pipeline Consolidation, Multi-Arch CUDA 209 Fix & Self-Healing SLURM Sharding (2026-08-22)**  
+Details the CUDA 209 resolution, 100-seed Helios C++ XML generation, SLURM faulty GPU detection & tarpit locking, decoupled 100K GPU tensor sharding engine, and next execution commands.
 
 ---
 
@@ -54,6 +58,14 @@
 | `todo/roadmap.md` | 장기 로드맵 |
 | `todo/15_loss_reduction_strategies.md` | 15가지 손실 감소 전략 목록 |
 | `todo/2026-08-14-pytorch-renderer-optimization.md` | PyTorch 렌더러 최적화 계획 |
+
+---
+
+## 📝 Misc (Notes & Analysis)
+
+| File | Content |
+|------|---------|
+| [`misc/20260822_cluster_power_cost_estimate.md`](misc/20260822_cluster_power_cost_estimate.md) | Cluster power draw (~8.1 kW) and cloud equivalent cost (~$41.87/hr) during 40-job cowpea sharding run |
 
 ---
 

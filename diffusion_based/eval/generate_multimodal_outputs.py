@@ -1,6 +1,6 @@
 """
 Visualize render_multimodal() outputs: RGB, Depth, Foreground Mask, Organ-Type Map.
-Produces fig8_multimodal_depth_mask.png using the typed 40D PlantOrganArray and PyTorch Differentiable Renderer.
+Produces fig8_multimodal_depth_mask.png using the canonical 16D (26D) Part Tensor and PyTorch Differentiable Renderer.
 """
 import os
 import sys
@@ -25,7 +25,7 @@ from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 # Config
 # -----------------------------------------------------------------------
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-IMG_SIZE = 256
+IMG_SIZE = 512
 ASSETS_DIR = os.path.join(repo_root, "docs", "results", "assets")
 os.makedirs(ASSETS_DIR, exist_ok=True)
 
@@ -153,10 +153,10 @@ plt.subplots_adjust(wspace=0.06, hspace=0.18)
 col_titles = [
     "Helios C++\nRadiation GT",
     "Helios C++\nOrgan Map GT",
-    "PyTorch 40D\nRGB Render",
+    "PyTorch 16D (26D)\nRGB Render",
     "Canopy Height (CHM)\n(taller = brighter)",
-    "PyTorch 40D\nForeground Mask",
-    "PyTorch 40D\nOrgan-Type Map"
+    "PyTorch 16D (26D)\nForeground Mask",
+    "PyTorch 16D (26D)\nOrgan-Type Map"
 ]
 col_colors = ["#ff9999", "#ff9999", "#70d6ff", "#c3a6e0", "#88d8c0", "#ffd166"]
 
@@ -304,12 +304,12 @@ for row, (label, xml_path, helios_path, helios_masks_path, helios_cam_path) in e
 
 # Overall title
 fig.suptitle(
-    "Figure 8: Helios C++ Raytrace vs 40D PyTorch Differentiable Multi-Modal Outputs (RGB · Canopy Height · Mask · Semantic Map)",
+    "Figure 8: Helios C++ Raytrace vs 16D / 26D PyTorch Differentiable Multi-Modal Outputs (RGB · Canopy Height · Mask · Semantic Map)",
     fontsize=13, fontweight='bold', color='white', y=0.995
 )
 
 out_path = os.path.join(ASSETS_DIR, "fig8_multimodal_depth_mask.png")
-plt.savefig(out_path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+plt.savefig(out_path, dpi=200, bbox_inches="tight", facecolor=fig.get_facecolor())
 plt.close(fig)
 print(f"Saved: {out_path}")
 print("DONE")
