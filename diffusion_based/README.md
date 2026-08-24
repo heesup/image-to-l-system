@@ -1,71 +1,85 @@
 # Diffusion-Based 3D Plant Architecture Reconstruction
 
-This module implements a **15D organ-typed graph diffusion model** that reconstructs a 3D botanical structure from a single RGB plant image.
+**26D Organ-Vector Flow Matching** — reconstructs 3D cowpea plant architecture from a single RGB image across the entire lifecycle (DAP 1–100).
 
 ---
 
-## Node Representation (15D)
+## Active Pipeline: 232M DiT-Large Flow Matching
 
-| Dim | Meaning |
-|-----|---------|
-| 0-2 | `x, y, z` base position |
-| 3   | `length` / scale |
-| 4   | `radius` / thickness |
-| 5-7 | `pitch, yaw, roll` (degrees) |
-| 8-11| one-hot organ type: `[internode, petiole, leaf, floral_bud]` |
-| 12  | `shoot_id` |
-| 13  | `phytomer_idx` |
-| 14  | `existence` confidence |
+| Component | File | Description |
+|-----------|------|-------------|
+| **Model** | `models/canonical_cowpea_dit_large.py` | 232M DiT-Large (ViT-16L encoder + Decoder-12L, embed=768, max_slots=4096) |
+| **Geometry** | `models/helios_pytorch_geometry.py` | 26D organ array → 3D mesh builder (kinematics, gravitropic curvature) |
+| **Renderer** | `models/helios_pytorch_renderer.py` | Multi-modal GPU rasterizer via nvdiffrast (RGB + Depth + Mask + Organ Map) |
+| **Parser** | `models/helios_xml_parser.py` | Helios XML → `PlantOrganArray` tensor |
+| **Core** | `models/plant_organ_array.py` | 26D organ array data structure, normalization, serialization |
+| **XML Export** | `models/part_assembly_to_xml.py` | `PlantOrganArray` → Helios XML reconstruction |
+| **Dataset** | `dataset/cowpea_shard_dataset.py` | Streaming `.pt` shard loader with dynamic collation |
+| **Sharding** | `dataset/generate_tensor_shards.py` | XML → GPU render → 26D `.pt` tensor shards |
+| **Training** | `training/train_cowpea_dit_100k_ddp.py` | 2×H100 DDP training with W&B logging |
+| **Eval** | `eval/eval_cowpea_dit_100k.py` | Full lifespan 6-column benchmark |
+| **Metrics** | `eval/metrics.py` | Masked SSIM, FG-IoU, Chamfer Distance |
 
 ---
 
-## Key Components
+## 26D Node Vector Encoding
 
-- **`models/graph_diffuser_3d.py`**: Vision-conditioned transformer decoder with O(N·k) k-NN self-attention, sparse parent prediction, organ-type head, and DAP-budget head.
-- **`models/differentiable_renderer_3d.py`**: Differentiable 2D renderer matching Helios `PlantArchitecture` camera/projection.
-- **`models/plant_geometry_3d.py`**: Explicit 3D geometry generator from 15D organ graphs / Helios XML. Outputs PLY point clouds and supports a fully-differentiable PyTorch point-cloud sampler.
-- **`models/pointcloud_loss_3d.py`**: Differentiable Chamfer 3D loss and PLY loader for target point clouds.
-- **`training/train_diffusion_3d.py`**: DDPM training loop with multi-objective graph losses and optional 3D point-cloud Chamfer loss against a target PLY.
-- **`eval/compare_xml_helios_3d.py`**: Compare Helios-generated PLY with XML-derived point cloud using Chamfer distance.
-- **`dataset/helios_dataset.py` / `helios_xml_parser.py`**: Load Helios `*_vis.jpeg` + `*_plant_*.xml` + `*_params.json` pairs and parse them into 15D tensors.
+Each plant organ is a **512 slots × 26D** tensor:
+
+```
+Dim  0–11:  One-hot organ type (12 classes)
+             0=Root Meta, 1=Shoot Meta, 2=Internode, 3=Petiole,
+             4=Leaf, 5=Bud, 6=Peduncle, 7=Flower, 8=Fruit/Pod,
+             9=Flower Closed, 10=Bud Aborted, 11=Empty
+Dim 12–14:  Base position (x, y, z) / 20.0
+Dim 15–20:  6D continuous rotation (R₆D, Gram-Schmidt SO(3))
+Dim 21–23:  Scale (sx, sy, sz) / 50.0
+Dim     24: Curvature / 100.0
+Dim     25: Phyllotactic angle / 180.0
+```
 
 ---
 
 ## Quick Start
 
-### Train
+### Train (2×H100 DDP)
 
 ```bash
-# 3D point-cloud supervised training
-python diffusion_based/training/train_diffusion_3d.py \
-    --data-dir Digital-Crops/projects/syntheticdata_generation/build/output \
-    --epochs 200 \
-    --batch-size 2 \
-    --pc-loss 1.0 \
-    --target-ply data/gaussian_splat/2025-06-17-bed1tier2plant1.ply \
-    --pc-samples 1024
+sbatch slurm_scripts/train_cowpea_dit_h100_ddp.sh
 ```
 
-### Render a parsed plant graph
+### Train (Single GPU)
 
-See `differentiable_renderer_3d.py::DifferentiablePlantRenderer3D.forward`:
+```bash
+python diffusion_based/training/train_cowpea_dit_100k.py \
+    --epochs 60 --batch-size 32 --lr 2e-4 \
+    --cache-dir dataset/helios_data/cowpea_shard
+```
 
-```python
-renderer = DifferentiablePlantRenderer3D(image_size=720).cuda()
-img = renderer(nodes_15d, parent_indices, cam_azimuth_deg=0.0,
-               focus_plant=True, camera_params={'camera_height': 1.0, ...},
-               background='ground')
+### Evaluate
+
+```bash
+python diffusion_based/eval/eval_cowpea_dit_100k.py
 ```
 
 ---
 
-## macOS / Local Dev Notes
+## Dataset
 
-- Data generation requires the `Digital-Crops` Helios build (Linux/GPU). On a Mac, copy a pre-generated `build/output/` dataset.
-- The model/renderer run on CPU or MPS; use smaller `--batch-size` / `--image-size` if memory is limited.
+| Path | Content | Count |
+|------|---------|-------|
+| `dataset/helios_data/cowpea/` | Raw Helios C++ XML templates | 10,000 (100 seeds × 100 DAPs) |
+| `dataset/helios_data/cowpea_shard/` | 26D GPU tensor shards | 100,000 samples |
 
 ---
 
-## Status
+## Legacy
 
-Implemented and functional. The 3D point-cloud supervision path is new; validate the XML-derived geometry against Helios-generated PLYs with `eval/compare_xml_helios_3d.py` before relying on the Chamfer training loss.
+Superseded code (40D, 14D, 15D, 5D representations) is preserved in `*/legacy/` subdirectories:
+
+- `models/legacy/` — Old model architectures
+- `training/legacy/` — Old training scripts
+- `dataset/legacy/` — Old dataset formats
+- `eval/legacy/` — Old evaluation scripts
+- `legacy/README_15d_legacy.md` — Original 15D README
+- `legacy/README_TECHNICAL_5d_legacy.md` — Original 5D technical design

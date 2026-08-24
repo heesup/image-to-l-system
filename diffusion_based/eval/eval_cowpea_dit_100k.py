@@ -69,27 +69,48 @@ def chamfer_distance(p1: torch.Tensor, p2: torch.Tensor, max_pts: int = 2048) ->
 
 
 def main():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Evaluating 150M DiT-Large Cowpea Model on {device}...")
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--checkpoint", type=str, default=None)
+    parser.add_argument("--device", type=str, default=None)
+    args = parser.parse_args()
 
-    ckpt_path = os.path.join(repo_root, "diffusion_based", "checkpoints", "fm", "cowpea_dit_large_150m.pt")
-    if not os.path.exists(ckpt_path):
-        ckpt_path = os.path.join(repo_root, "diffusion_based", "checkpoints", "fm", "test_large.pt")
+    device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
+    print(f"Evaluating 232M DiT-Large Cowpea Model on {device}...")
 
+    if args.checkpoint and os.path.exists(args.checkpoint):
+        ckpt_path = args.checkpoint
+    else:
+        candidates = [
+            os.path.join(repo_root, "diffusion_based", "checkpoints", "fm", "cowpea_dit_large_2xh100_ddp.pt"),
+            os.path.join(repo_root, "diffusion_based", "checkpoints", "fm", "cowpea_dit_large_150m.pt"),
+            os.path.join(repo_root, "diffusion_based", "checkpoints", "fm", "test_large.pt"),
+        ]
+        ckpt_path = next((c for c in candidates if os.path.exists(c)), None)
+        if ckpt_path is None:
+            raise FileNotFoundError("No checkpoint found.")
+
+    print(f"Loading checkpoint from: {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+    state_dict = ckpt["model_state_dict"]
+
+    # Detect max_slots and embed_dim from state_dict
+    pos_shape = state_dict.get("slot_pos_embed", torch.zeros(1, 4096, 768)).shape
+    max_slots = pos_shape[1] if len(pos_shape) > 1 else 4096
+    embed_dim = pos_shape[2] if len(pos_shape) > 2 else 768
 
     model = CanonicalCowpeaDiTLargeModel(
-        max_slots=4096,
+        max_slots=max_slots,
         node_dim=26,
         image_size=128,
         patch_size=8,
-        embed_dim=768,
+        embed_dim=embed_dim,
         encoder_layers=16,
         decoder_layers=12,
         num_heads=16,
         dropout=0.0,
     ).to(device)
-    model.load_state_dict(ckpt["model_state_dict"])
+    model.load_state_dict(state_dict)
     model.eval()
 
     renderer = HeliosPyTorchRenderer(image_size=256).to(device)
@@ -137,6 +158,8 @@ def main():
         rgb_gt = renderer(mesh_gt, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, background="white", focus_plant=True)
         depth_gt = renderer.render_depth(mesh_gt, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, focus_plant=True)
 
+        seg_gt = renderer.render_organ_segmentation(mesh_gt, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, focus_plant=True)
+        seg_gt_np = seg_gt.detach().cpu().permute(1, 2, 0).numpy().clip(0, 1)
         mask_gt = (depth_gt > 1e-4).float().cpu().numpy()
         rgb_gt_np = rgb_gt.detach().cpu().permute(1, 2, 0).numpy().clip(0, 1)
         d_gt_norm, fg_gt = normalize_depth_for_vis(depth_gt)
@@ -178,15 +201,21 @@ def main():
         arr_gen = PlantOrganArray.from_xml_string(xml_str)
         mesh_gen = renderer.geo_builder.build_mesh_from_organ_array(arr_gen, device=device)
 
-        # 5. Render Generated 3D Mesh & Depth
+        # 5. Render Generated 3D Mesh, Depth & Organ Segmentation
         depth_gen = renderer.render_depth(mesh_gen, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, focus_plant=True)
         rgb_gen = renderer(mesh_gen, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, background="white", focus_plant=True)
+        seg_gen = renderer.render_organ_segmentation(mesh_gen, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, focus_plant=True)
 
         mask_gen = (depth_gen > 1e-4).float().cpu().numpy()
         rgb_gen_np = rgb_gen.detach().cpu().permute(1, 2, 0).numpy().clip(0, 1)
+        seg_gen_np = seg_gen.detach().cpu().permute(1, 2, 0).numpy().clip(0, 1)
         d_gen_norm, fg_gen = normalize_depth_for_vis(depth_gen)
 
         # 6. Compute Depth Shape Error Map & Metrics
+        # True physical botanical canopy height in Z-axis (cm)
+        h_gt_cm = (mesh_gt['vertices'][:, 2].max() - mesh_gt['vertices'][:, 2].min()).item() * 100.0 if mesh_gt['vertices'].shape[0] > 0 else 0.0
+        h_gen_cm = (mesh_gen['vertices'][:, 2].max() - mesh_gen['vertices'][:, 2].min()).item() * 100.0 if mesh_gen['vertices'].shape[0] > 0 else 0.0
+
         fg_union = fg_gt | fg_gen
         depth_err_map = np.zeros_like(d_gt_norm)
         depth_err_map[fg_union] = np.abs(d_gt_norm[fg_union] - d_gen_norm[fg_union])
@@ -205,24 +234,47 @@ def main():
             "slots": n_slots
         })
 
+        import matplotlib.patches as mpatches
+        ORGAN_LEGEND_MAP = {
+            0: ("#8B4513", "Stem/Internode"),
+            1: ("#E68026", "Petiole"),
+            2: ("#228B22", "Leaf"),
+            3: ("#9ACD32", "Peduncle"),
+            4: ("#FFD700", "Flower"),
+            5: ("#E63333", "Pod/Fruit"),
+        }
+
         # Plot 6 columns
-        axes[row_idx, 0].imshow(img_np)
-        axes[row_idx, 0].set_title(f"{tc['name']}\nInput RGB Condition", color="white", fontsize=11, fontweight="bold")
+        # Col 1: PyTorch Differentiable RGB Input (GT)
+        axes[row_idx, 0].imshow(rgb_gt_np)
+        axes[row_idx, 0].set_title(f"{tc['name']}\nDiff RGB Input ({arr_gt.num_nodes} organs)", color="#4ADE80", fontsize=10, fontweight="bold")
+        axes[row_idx, 0].text(0.03, 0.03, f"N={arr_gt.num_nodes}", transform=axes[row_idx, 0].transAxes, fontsize=8, color='white', va='bottom', bbox=dict(boxstyle='round,pad=0.2', facecolor='black', alpha=0.7))
 
-        axes[row_idx, 1].imshow(rgb_gt_np)
-        axes[row_idx, 1].set_title(f"Ground Truth 3D Mesh\n(Verts: {mesh_gt['vertices'].shape[0]})", color="#38BDF8", fontsize=11, fontweight="bold")
+        # Col 2: PyTorch Differentiable Depth Input (GT)
+        axes[row_idx, 1].imshow(d_gt_norm, cmap="plasma")
+        axes[row_idx, 1].set_title("Diff Depth Input", color="#22D3EE", fontsize=10, fontweight="bold")
+        axes[row_idx, 1].text(0.03, 0.03, f"Height: 0–{h_gt_cm:.1f} cm", transform=axes[row_idx, 1].transAxes, fontsize=8, color='#22D3EE', va='bottom', bbox=dict(boxstyle='round,pad=0.2', facecolor='black', alpha=0.7))
 
-        axes[row_idx, 2].imshow(d_gt_norm, cmap="plasma")
-        axes[row_idx, 2].set_title("GT 3D Depth Shape\n(Canopy Height Map)", color="#38BDF8", fontsize=11, fontweight="bold")
+        # Col 3: PyTorch Differentiable Organ Segmentation Mask Input (GT)
+        axes[row_idx, 2].imshow(seg_gt_np)
+        axes[row_idx, 2].set_title("Diff Organ Seg Input", color="#A78BFA", fontsize=10, fontweight="bold")
+        patches = [mpatches.Patch(color=c, label=l) for ot, (c, l) in ORGAN_LEGEND_MAP.items()]
+        axes[row_idx, 2].legend(handles=patches, loc='lower right', fontsize=6, framealpha=0.85, facecolor='#0D1117', labelcolor='white', edgecolor='#334155', ncol=1)
 
+        # Col 4: Generated PyTorch Differentiable RGB
         axes[row_idx, 3].imshow(rgb_gen_np)
-        axes[row_idx, 3].set_title(f"DiT-Large (Slots: {n_slots})\nMask IoU: {iou:.3f} | Chamfer: {chamfer:.4f}", color="#34D399", fontsize=11, fontweight="bold")
+        axes[row_idx, 3].set_title(f"Gen Diff RGB\nIoU: {iou:.3f} | CD: {chamfer:.3f}", color="#60A5FA", fontsize=10, fontweight="bold")
+        axes[row_idx, 3].text(0.03, 0.03, f"N={arr_gen.num_nodes} ({vert_count}v)", transform=axes[row_idx, 3].transAxes, fontsize=8, color='white', va='bottom', bbox=dict(boxstyle='round,pad=0.2', facecolor='black', alpha=0.7))
 
+        # Col 5: Generated PyTorch Differentiable Depth
         axes[row_idx, 4].imshow(d_gen_norm, cmap="plasma")
-        axes[row_idx, 4].set_title("Generated 3D Depth Shape\n(Predicted Height Map)", color="#34D399", fontsize=11, fontweight="bold")
+        axes[row_idx, 4].set_title("Gen Diff Depth", color="#F472B6", fontsize=10, fontweight="bold")
+        axes[row_idx, 4].text(0.03, 0.03, f"Height: 0–{h_gen_cm:.1f} cm", transform=axes[row_idx, 4].transAxes, fontsize=8, color='#F472B6', va='bottom', bbox=dict(boxstyle='round,pad=0.2', facecolor='black', alpha=0.7))
 
-        axes[row_idx, 5].imshow(depth_err_map, cmap="inferno")
-        axes[row_idx, 5].set_title(f"Depth Shape Error (|GT-Gen|)\nDepth MAE: {depth_mae:.3f}", color="#F87171", fontsize=11, fontweight="bold")
+        # Col 6: Generated PyTorch Differentiable Organ Segmentation Mask
+        axes[row_idx, 5].imshow(seg_gen_np)
+        axes[row_idx, 5].set_title("Gen Diff Organ Seg", color="#FB923C", fontsize=10, fontweight="bold")
+        axes[row_idx, 5].legend(handles=patches, loc='lower right', fontsize=6, framealpha=0.85, facecolor='#0D1117', labelcolor='white', edgecolor='#334155', ncol=1)
 
     for ax in axes.flat:
         ax.set_xticks([])

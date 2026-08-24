@@ -1288,6 +1288,10 @@ class HeliosPlantGeometryBuilder:
                     ped_tip = ped_base.clone()
                     ped_axis_final = inode_tip_axis.clone()
 
+                    ped_verts_list = [ped_base.clone()]
+                    ped_tip = ped_base.clone()
+                    ped_axis_final = inode_tip_axis.clone()
+
                     if ped_len > 1e-4 and ped_rad > 1e-5:
                         # Initial peduncle axis and bending axis (InputOutput.cpp:1635-1690)
                         curr_pet_axis = pet_axes_stored[0] if 0 in pet_axes_stored else prev_petiole_axis

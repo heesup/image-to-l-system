@@ -44,6 +44,7 @@ dataset/cache*/
 notebooks/output*
 diffusion_based/eval/output/*
 diffusion_based/eval/roundtrip_outputs/
+diffusion_based/eval/debug_outputs/
 slurm_scripts/logs/*
 slurm-*.out
 logs/

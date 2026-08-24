@@ -10,7 +10,7 @@ from typing import List, Dict, Any, Tuple, Optional
 
 import torch
 from torch.utils.data import Dataset
-from diffusion_based.dataset.part_array_dataset import FM_NODE_DIM, EMPTY_IDX
+from diffusion_based.dataset.part_array_dataset import FM_NODE_DIM, EMPTY_IDX, canonical_sort_nodes
 
 
 class PlantShardDataset(Dataset):
@@ -123,11 +123,15 @@ class PlantShardDataset(Dataset):
             sample = torch.load(f_path, map_location="cpu", weights_only=False)
 
         # Standardize keys
-        image = sample["image"]
-        nodes = sample["nodes"]
+        image = sample["image"].float()
+        nodes = sample["nodes"].float()
         dap = sample["dap"] if "dap" in sample else torch.tensor(30.0)
         num_organs = sample["num_organs"] if "num_organs" in sample else (sample.get("num_nodes", torch.tensor(50)))
         exist = sample["existence_mask"] if "existence_mask" in sample else (nodes[:, EMPTY_IDX] < 0.5)
+
+        # Apply Canonical Botanical Slot Sorting (Deterministic Slot Ordering)
+        nodes, exist = canonical_sort_nodes(nodes, exist)
+        num_organs = torch.tensor(int(exist.sum().item()))
 
         return {
             "image": image,

@@ -7,6 +7,7 @@ import os
 import sys
 import glob
 import math
+import json
 import argparse
 from datetime import datetime
 from typing import Optional, List, Dict, Any
@@ -112,7 +113,7 @@ def render_and_log_debug_images(
     if not eval_samples:
         return
     raw_model.eval()
-    fig, axes = plt.subplots(len(eval_samples), 4, figsize=(16, 3.8 * len(eval_samples)))
+    fig, axes = plt.subplots(len(eval_samples), 6, figsize=(22, 3.8 * len(eval_samples)))
     if len(eval_samples) == 1:
         axes = np.expand_dims(axes, 0)
     fig.patch.set_facecolor("#080C14")
@@ -131,6 +132,7 @@ def render_and_log_debug_images(
             cam_el = float(cam_data.get("acquisition_properties", {}).get("camera_angle_deg", 90.0))
             cam_hfov = 2.0 * math.degrees(math.atan((s_w * 0.5) / max(f_len, 1e-3)))
 
+        # 1. Ground Truth 3D Mesh & Differentiable Renderings (Col 1, 2, 3)
         arr_gt = PlantOrganArray.from_xml_file(sc["xml"])
         mesh_gt = renderer.geo_builder.build_mesh_from_organ_array(arr_gt, device=device)
         rgb_gt = renderer.render_mesh(
@@ -139,6 +141,20 @@ def render_and_log_debug_images(
         )
         rgb_gt_np = rgb_gt.detach().cpu().permute(1, 2, 0).numpy().clip(0, 1)
 
+        depth_gt = renderer.render_depth(
+            mesh_gt, azimuth_deg=0.0, elevation_deg=cam_el, camera_height=cam_h,
+            focus_plant=(cam_hfov is None), hfov_override_deg=cam_hfov, image_size=128
+        )
+        depth_gt_np = depth_gt.detach().cpu().numpy()
+        d_gt_norm = (depth_gt_np - depth_gt_np.min()) / (depth_gt_np.max() - depth_gt_np.min() + 1e-6)
+
+        seg_gt = renderer.render_organ_segmentation(
+            mesh_gt, azimuth_deg=0.0, elevation_deg=cam_el, camera_height=cam_h,
+            focus_plant=(cam_hfov is None), hfov_override_deg=cam_hfov, image_size=128
+        )
+        seg_gt_np = seg_gt.detach().cpu().permute(1, 2, 0).numpy().clip(0, 1)
+
+        # 2. Input Image & Model Inference
         pil_img = Image.open(sc["img"]).convert("RGB").resize((128, 128))
         img_np = np.array(pil_img) / 255.0
         img_t = torch.tensor(img_np, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0).to(device)
@@ -160,7 +176,9 @@ def render_and_log_debug_images(
 
         ot_probs = torch.softmax(x_gen[:, :FM_OT_END], dim=-1)
         exist_prob = 1.0 - ot_probs[:, EMPTY_IDX]
+        active_n = int((exist_prob >= 0.30).sum().item())
 
+        # 3. Generated 3D Mesh & Differentiable Renderings (Col 4, 5, 6)
         try:
             mesh_gen = renderer.geo_builder.build_mesh_from_part_tensor(x_gen, device=device, existence_threshold=0.30)
             rgb_gen = renderer.render_mesh(
@@ -168,32 +186,58 @@ def render_and_log_debug_images(
                 background="white", focus_plant=(cam_hfov is None), hfov_override_deg=cam_hfov, image_size=128
             )
             rgb_gen_np = rgb_gen.detach().cpu().permute(1, 2, 0).numpy().clip(0, 1)
+
             depth_gen = renderer.render_depth(
                 mesh_gen, azimuth_deg=0.0, elevation_deg=cam_el, camera_height=cam_h,
                 focus_plant=(cam_hfov is None), hfov_override_deg=cam_hfov, image_size=128
             )
-            depth_np = depth_gen.detach().cpu().numpy()
-            d_norm = (depth_np - depth_np.min()) / (depth_np.max() - depth_np.min() + 1e-6)
+            depth_gen_np = depth_gen.detach().cpu().numpy()
+            d_gen_norm = (depth_gen_np - depth_gen_np.min()) / (depth_gen_np.max() - depth_gen_np.min() + 1e-6)
+
+            seg_gen = renderer.render_organ_segmentation(
+                mesh_gen, azimuth_deg=0.0, elevation_deg=cam_el, camera_height=cam_h,
+                focus_plant=(cam_hfov is None), hfov_override_deg=cam_hfov, image_size=128
+            )
+            seg_gen_np = seg_gen.detach().cpu().permute(1, 2, 0).numpy().clip(0, 1)
         except Exception as e:
             rgb_gen_np = np.zeros((128, 128, 3))
-            d_norm = np.zeros((128, 128))
+            d_gen_norm = np.zeros((128, 128))
+            seg_gen_np = np.zeros((128, 128, 3))
 
-        axes[row_idx, 0].imshow(img_np)
-        axes[row_idx, 0].set_title(f"{sc['name']} Input RGB", color="white", fontsize=11)
+        # Col 1: PyTorch Differentiable RGB Input (GT)
+        axes[row_idx, 0].imshow(rgb_gt_np)
+        axes[row_idx, 0].set_title(f"{sc['name']}\nDiff RGB Input ({gt_count})", color="#4ADE80", fontsize=10, fontweight="bold")
         axes[row_idx, 0].axis("off")
 
-        axes[row_idx, 1].imshow(rgb_gt_np)
-        axes[row_idx, 1].set_title(f"GT 3D Mesh ({gt_count} organs)", color="#4ADE80", fontsize=11)
+        # Col 2: PyTorch Differentiable Depth Input (GT)
+        axes[row_idx, 1].imshow(d_gt_norm, cmap="plasma")
+        axes[row_idx, 1].set_title("Diff Depth Input", color="#22D3EE", fontsize=10, fontweight="bold")
         axes[row_idx, 1].axis("off")
 
-        active_n = int((exist_prob >= 0.30).sum().item())
-        axes[row_idx, 2].imshow(rgb_gen_np)
-        axes[row_idx, 2].set_title(f"Generated 3D ({active_n} organs)", color="#60A5FA", fontsize=11)
+        # Col 3: PyTorch Differentiable Organ Segmentation Mask Input (GT)
+        axes[row_idx, 2].imshow(seg_gt_np)
+        axes[row_idx, 2].set_title("Diff Organ Seg Input", color="#A78BFA", fontsize=10, fontweight="bold")
         axes[row_idx, 2].axis("off")
 
-        axes[row_idx, 3].imshow(d_norm, cmap="plasma")
-        axes[row_idx, 3].set_title("Generated 3D Depth", color="#F472B6", fontsize=11)
+        # Col 4: Generated PyTorch Differentiable RGB
+        axes[row_idx, 3].imshow(rgb_gen_np)
+        axes[row_idx, 3].set_title(f"Gen Diff RGB\n({active_n} organs)", color="#60A5FA", fontsize=10, fontweight="bold")
         axes[row_idx, 3].axis("off")
+
+        # Col 5: Generated PyTorch Differentiable Depth
+        axes[row_idx, 4].imshow(d_gen_norm, cmap="plasma")
+        axes[row_idx, 4].set_title("Gen Diff Depth", color="#F472B6", fontsize=10, fontweight="bold")
+        axes[row_idx, 4].axis("off")
+
+        # Col 6: Generated PyTorch Differentiable Organ Segmentation Mask
+        axes[row_idx, 5].imshow(seg_gen_np)
+        axes[row_idx, 5].set_title("Gen Diff Organ Seg", color="#FB923C", fontsize=10, fontweight="bold")
+        axes[row_idx, 5].axis("off")
+
+    for ax in axes.flat:
+        for spine in ax.spines.values():
+            spine.set_color("#334155")
+            spine.set_linewidth(1.2)
 
     plt.tight_layout()
     if WANDB_AVAILABLE and wandb.run is not None:
@@ -360,7 +404,7 @@ def train():
 
                     active_weights = torch.where(exist_mask.unsqueeze(-1) > 0.5, 1.0, 0.15)
                     loss_v = (active_weights * (v_pred.float() - u_t) ** 2).mean()
-                    loss_count = 0.01 * F.mse_loss(pred_counts.squeeze(), gt_counts.squeeze())
+                    loss_count = 0.5 * F.smooth_l1_loss(pred_counts.squeeze() / 100.0, gt_counts.squeeze() / 100.0)
 
                     # Every N-step Differentiable Depth Regularization (Hybrid Multimodal Backprop)
                     loss_render = torch.tensor(0.0, device=device)

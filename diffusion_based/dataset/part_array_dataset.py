@@ -17,7 +17,7 @@ Normalization (fixed, hand-tuned to unit-ish scale for flow matching):
 
 import os
 import glob
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 
 import torch
 import torch.nn.functional as F
@@ -81,6 +81,81 @@ FM_SCALE_END = FM_ROT_END + 3
 FM_CURV_IDX = FM_SCALE_END
 FM_PHYLLO_IDX = FM_SCALE_END + 1
 FM_NODE_DIM = FM_SCALE_END + 2
+
+
+def canonical_sort_nodes(
+    nodes: torch.Tensor,
+    existence_mask: Optional[torch.Tensor] = None
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Sorts 26D plant organ node slots into a deterministic canonical botanical order.
+    
+    Order:
+      1. Active vs Empty (Active nodes first, Empty padding slots last)
+      2. Organ Type Botanical Hierarchy:
+         - Root / Shoot Meta (anchors)
+         - Internodes (Stem skeleton, sorted bottom -> top along base_z)
+         - Petioles (Branch / leaf stalks, sorted bottom -> top along base_z)
+         - Leaves (Photosynthetic blades, sorted bottom -> top, then azimuth angle)
+         - Peduncles / Buds (Axillary reproductive nodes)
+         - Flowers / Fruits (Flowers / Pods)
+      3. Z-height (base_z: height above soil)
+      4. Azimuth angle (atan2(base_y, base_x) in [-pi, pi])
+    
+    Args:
+        nodes: (N, 26) tensor of organ nodes
+        existence_mask: optional (N,) boolean tensor
+    Returns:
+        sorted_nodes: (N, 26) canonically ordered tensor
+        sorted_mask: (N,) canonically ordered boolean mask
+    """
+    if nodes.ndim != 2 or nodes.shape[0] <= 1:
+        if existence_mask is None:
+            existence_mask = nodes[:, EMPTY_IDX] < 0.5
+        return nodes, existence_mask
+
+    N = nodes.shape[0]
+    device = nodes.device
+
+    ot_onehot = nodes[:, :FM_OT_END]  # (N, 12)
+    ot_idx = ot_onehot.argmax(dim=-1)  # (N,)
+
+    # Determine active vs empty slots directly from nodes (and match mask if same shape)
+    is_active = (ot_idx != EMPTY_IDX) & (ot_onehot[:, EMPTY_IDX] < 0.5)
+    if existence_mask is not None and existence_mask.shape[0] == N:
+        is_active = is_active & existence_mask
+
+    rank_map = torch.tensor([
+        0,   # 0: Root Meta
+        1,   # 1: Shoot Meta
+        2,   # 2: Internode
+        3,   # 3: Petiole
+        4,   # 4: Leaf
+        5,   # 5: Bud
+        6,   # 6: Peduncle
+        7,   # 7: Flower
+        8,   # 8: Fruit
+        7,   # 9: Flower Closed
+        5,   # 10: Bud Aborted
+        999  # 11: Empty
+    ], dtype=torch.float32, device=device)
+
+    cat_ranks = rank_map[ot_idx]
+    cat_ranks = torch.where(is_active, cat_ranks, torch.tensor(999.0, device=device))
+
+    base_x = nodes[:, FM_BASE_START]
+    base_y = nodes[:, FM_BASE_START + 1]
+    base_z = nodes[:, FM_BASE_START + 2]
+    azimuth = torch.atan2(base_y, base_x)
+
+    import math as _math
+    sort_keys = cat_ranks * 10000.0 + base_z * 10.0 + (azimuth / (2.0 * _math.pi))
+    sort_indices = torch.argsort(sort_keys)
+
+    sorted_nodes = nodes[sort_indices]
+    sorted_mask = is_active[sort_indices]
+
+    return sorted_nodes, sorted_mask
 
 
 class PartArrayDataset(Dataset):

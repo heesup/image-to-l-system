@@ -33,7 +33,7 @@ DAP_MAX=100
 SEEDS=100
 TOTAL_SAMPLES=100000
 SHARD_SIZE=100
-IMAGE_SIZE=128
+IMAGE_SIZE=512
 MAX_SLOTS=4096
 WORKERS_PER_NODE=4
 PARTITION="low"
@@ -332,6 +332,7 @@ if [[ "${RUN_SHARDS}" == true ]]; then
         --shard-size ${SHARD_SIZE} \\
         --image-size ${IMAGE_SIZE} \\
         --max-slots ${MAX_SLOTS} \\
+        --max-templates 30 \\
         --device cuda
 
     SHARD_STATUS=\$?

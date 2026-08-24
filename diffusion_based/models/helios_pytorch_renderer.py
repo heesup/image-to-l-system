@@ -189,6 +189,7 @@ class HeliosPyTorchRenderer(nn.Module):
         differentiable: bool = False,
         focus_plant: bool = True,
         hfov_override_deg: Optional[float] = None,
+        include_depth: bool = False,
     ) -> torch.Tensor:
         verts = mesh_dict['vertices']     # (V, 3)
         faces = mesh_dict['faces']        # (F, 3)
@@ -206,6 +207,8 @@ class HeliosPyTorchRenderer(nn.Module):
                 bg = torch.ones((3, H, W), device=device)
             else:
                 bg = torch.zeros((3, H, W), device=device)
+            if include_depth:
+                bg = torch.cat([bg, torch.zeros((1, H, W), device=device)], dim=0)
             return bg
 
         # Camera Matrices matching Helios C++ --focus-plant
@@ -240,32 +243,53 @@ class HeliosPyTorchRenderer(nn.Module):
         # Fast nvdiffrast rasterization path
         glctx = self._get_nvdiffrast_context(device)
         if _HAS_NVDIFFRAST and glctx is not None:
-            mvp = proj_mat @ view_mat  # (4, 4)
-            v_hom = torch.cat([verts, torch.ones((verts.shape[0], 1), device=device)], dim=-1)
-            v_clip = (v_hom @ mvp.T).contiguous()  # (V, 4), row-vector convention matching nvdiffrast
+            with torch.amp.autocast('cuda', enabled=False):
+                mvp = (proj_mat @ view_mat).float()  # (4, 4)
+                v_hom = torch.cat([verts.float(), torch.ones((verts.shape[0], 1), device=device, dtype=torch.float32)], dim=-1)
+                v_clip = (v_hom @ mvp.T).contiguous()  # (V, 4), row-vector convention matching nvdiffrast
 
-            # nvdiffrast rasterize expects int32 faces
-            faces_i32 = faces.to(torch.int32)
-            rast_out, _ = dr.rasterize(
-                glctx, v_clip.unsqueeze(0), faces_i32, resolution=(H, W), grad_db=False
-            )  # (1, H, W, 4)
+                # nvdiffrast rasterize expects int32 faces
+                faces_i32 = faces.to(torch.int32)
+                rast_out, _ = dr.rasterize(
+                    glctx, v_clip.unsqueeze(0), faces_i32, resolution=(H, W), grad_db=False
+                )  # (1, H, W, 4)
 
-            # Interpolate shaded colors
-            shaded_colors_b = shaded_colors.unsqueeze(0).contiguous()  # (1, V, 3)
-            rgb_rast, _ = dr.interpolate(shaded_colors_b, rast_out, faces_i32)
-            # (1, H, W, 3)
+                mask = rast_out[..., 3:4] > 0  # (1, H, W, 1)
 
-            # Background composite
-            mask = rast_out[..., 3:4] > 0  # (1, H, W, 1)
-            if background == "ground":
-                bg = self.COLOR_GROUND.to(device).view(1, 1, 1, 3)
-            elif background == "white":
-                bg = torch.ones((1, 1, 1, 3), device=device)
-            else:
-                bg = torch.zeros((1, 1, 1, 3), device=device)
+                if include_depth:
+                    # 4-Channel Unified Interpolation (RGB 3ch + Canopy Depth 1ch)
+                    v_cam_f = (view_mat.float() @ v_hom.T).T
+                    depth_verts = (-v_cam_f[:, 2:3]).float().clamp(min=0.0)  # (V, 1)
+                    rgbd_attrs = torch.cat([shaded_colors.float(), depth_verts], dim=-1).unsqueeze(0).contiguous()  # (1, V, 4)
+                    rgbd_rast, _ = dr.interpolate(rgbd_attrs, rast_out, faces_i32)  # (1, H, W, 4)
 
-            rgb_out = torch.where(mask, rgb_rast, bg)
-            return rgb_out.squeeze(0).permute(2, 0, 1).flip(1)  # (3, H, W); match Helios row-0 = bottom
+                    if background == "ground":
+                        bg_rgb = self.COLOR_GROUND.to(device=device, dtype=torch.float32).view(1, 1, 1, 3)
+                    elif background == "white":
+                        bg_rgb = torch.ones((1, 1, 1, 3), device=device, dtype=torch.float32)
+                    else:
+                        bg_rgb = torch.zeros((1, 1, 1, 3), device=device, dtype=torch.float32)
+                    bg_depth = torch.zeros((1, 1, 1, 1), device=device, dtype=torch.float32)
+                    bg = torch.cat([bg_rgb, bg_depth], dim=-1)
+
+                    rgbd_out = torch.where(mask, rgbd_rast, bg)
+                    return rgbd_out.squeeze(0).permute(2, 0, 1).flip(1)  # (4, H, W); match Helios row-0 = bottom
+
+                # Standard 3-Channel RGB
+                shaded_colors_b = shaded_colors.float().unsqueeze(0).contiguous()  # (1, V, 3)
+                rgb_rast, _ = dr.interpolate(shaded_colors_b, rast_out, faces_i32)
+                # (1, H, W, 3)
+
+                # Background composite
+                if background == "ground":
+                    bg = self.COLOR_GROUND.to(device=device, dtype=torch.float32).view(1, 1, 1, 3)
+                elif background == "white":
+                    bg = torch.ones((1, 1, 1, 3), device=device, dtype=torch.float32)
+                else:
+                    bg = torch.zeros((1, 1, 1, 3), device=device, dtype=torch.float32)
+
+                rgb_out = torch.where(mask, rgb_rast, bg)
+                return rgb_out.squeeze(0).permute(2, 0, 1).flip(1)  # (3, H, W); match Helios row-0 = bottom
 
         # Fallback: original slow PyTorch CPU/GPU loop rasterizer
         z_buffer = torch.full((H, W), 1e9, dtype=torch.float32, device=device)
@@ -388,23 +412,24 @@ class HeliosPyTorchRenderer(nn.Module):
         # Fast nvdiffrast organ-type buffer
         glctx = self._get_nvdiffrast_context(device)
         if _HAS_NVDIFFRAST and glctx is not None:
-            mvp = proj_mat @ view_mat
-            v_hom = torch.cat([verts, torch.ones((verts.shape[0], 1), device=device)], dim=-1)
-            v_clip = (v_hom @ mvp.T).contiguous()
-            faces_i32 = faces.to(torch.int32)
-            rast_out, _ = dr.rasterize(
-                glctx, v_clip.unsqueeze(0), faces_i32, resolution=(H, W), grad_db=False
-            )
+            with torch.amp.autocast('cuda', enabled=False):
+                mvp = (proj_mat @ view_mat).float()
+                v_hom = torch.cat([verts.float(), torch.ones((verts.shape[0], 1), device=device, dtype=torch.float32)], dim=-1)
+                v_clip = (v_hom @ mvp.T).contiguous()
+                faces_i32 = faces.to(torch.int32)
+                rast_out, _ = dr.rasterize(
+                    glctx, v_clip.unsqueeze(0), faces_i32, resolution=(H, W), grad_db=False
+                )
 
-            # Per-vertex organ type: all three vertices of a face share the same type
-            organ_types_b = organ_types.unsqueeze(0).unsqueeze(-1).float().contiguous()  # (1, V, 1)
-            type_rast, _ = dr.interpolate(organ_types_b, rast_out, faces_i32)
-            type_rast = type_rast.squeeze(0).squeeze(-1)  # (H, W)
+                # Per-vertex organ type: all three vertices of a face share the same type
+                organ_types_b = organ_types.float().unsqueeze(0).unsqueeze(-1).contiguous()  # (1, V, 1)
+                type_rast, _ = dr.interpolate(organ_types_b, rast_out, faces_i32)
+                type_rast = type_rast.squeeze(0).squeeze(-1)  # (H, W)
 
-            mask = rast_out[0, ..., 3] > 0  # (H, W)
-            type_buffer = torch.full((H, W), -1, dtype=torch.int64, device=device)
-            type_buffer[mask] = torch.round(type_rast[mask]).to(torch.int64)
-            return type_buffer.flip(0)  # match Helios row-0 = bottom
+                mask = rast_out[0, ..., 3] > 0  # (H, W)
+                type_buffer = torch.full((H, W), -1, dtype=torch.int64, device=device)
+                type_buffer[mask] = torch.round(type_rast[mask]).to(torch.int64)
+                return type_buffer.flip(0)  # match Helios row-0 = bottom
 
         # Fallback: original slow PyTorch CPU/GPU loop
         type_buffer = torch.full((H, W), -1, dtype=torch.int64, device=device)
@@ -480,6 +505,7 @@ class HeliosPyTorchRenderer(nn.Module):
         focus_plant: bool = True,
         image_size: Optional[int] = None,
         hfov_override_deg: Optional[float] = None,
+        include_depth: bool = False,
     ) -> torch.Tensor:
         """Helper alias for forward."""
         return self.forward(
@@ -491,6 +517,7 @@ class HeliosPyTorchRenderer(nn.Module):
             differentiable=differentiable,
             focus_plant=focus_plant,
             hfov_override_deg=hfov_override_deg,
+            include_depth=include_depth,
         )
 
     def render_depth(
@@ -518,21 +545,100 @@ class HeliosPyTorchRenderer(nn.Module):
 
         glctx = self._get_nvdiffrast_context(device)
         if _HAS_NVDIFFRAST and glctx is not None:
-            mvp = proj_mat @ view_mat
-            v_hom = torch.cat([verts, torch.ones((verts.shape[0], 1), device=device)], dim=-1)
-            v_clip = (v_hom @ mvp.T).contiguous()
-            faces_i32 = faces.to(torch.int32)
-            rast_out, _ = dr.rasterize(glctx, v_clip.unsqueeze(0), faces_i32, resolution=(H, W), grad_db=False)
+            with torch.amp.autocast('cuda', enabled=False):
+                mvp = (proj_mat @ view_mat).float()
+                v_hom = torch.cat([verts.float(), torch.ones((verts.shape[0], 1), device=device, dtype=torch.float32)], dim=-1)
+                v_clip = (v_hom @ mvp.T).contiguous()
+                faces_i32 = faces.to(torch.int32)
+                rast_out, _ = dr.rasterize(glctx, v_clip.unsqueeze(0), faces_i32, resolution=(H, W), grad_db=False)
 
-            v_cam = (view_mat @ v_hom.T).T
-            depth_verts = (-v_cam[:, 2:3]).unsqueeze(0).contiguous()
-            depth_rast, _ = dr.interpolate(depth_verts, rast_out, faces_i32)
-            depth_map = depth_rast.squeeze(0).squeeze(-1)
-            mask = rast_out[0, ..., 3] > 0
-            depth_map = torch.where(mask, depth_map, torch.zeros_like(depth_map))
-            return depth_map.flip(0)
+                v_cam = (view_mat.float() @ v_hom.T).T
+                depth_verts = (-v_cam[:, 2:3]).float().unsqueeze(0).contiguous()
+                depth_rast, _ = dr.interpolate(depth_verts, rast_out, faces_i32)
+                depth_map = depth_rast.squeeze(0).squeeze(-1)
+                mask = rast_out[0, ..., 3] > 0
+                depth_map = torch.where(mask, depth_map, torch.zeros_like(depth_map))
+                return depth_map.flip(0)
 
         return torch.zeros((H, W), dtype=torch.float32, device=device)
+
+    def render_mask(
+        self,
+        mesh_dict: Dict[str, torch.Tensor],
+        azimuth_deg: float = 0.0,
+        elevation_deg: float = 90.0,
+        camera_height: float = 5.0,
+        focus_plant: bool = True,
+        image_size: Optional[int] = None,
+        hfov_override_deg: Optional[float] = None,
+    ) -> torch.Tensor:
+        """Renders binary foreground mask (1.0 for plant, 0.0 for background)."""
+        depth = self.render_depth(
+            mesh_dict=mesh_dict,
+            azimuth_deg=azimuth_deg,
+            elevation_deg=elevation_deg,
+            camera_height=camera_height,
+            focus_plant=focus_plant,
+            image_size=image_size,
+            hfov_override_deg=hfov_override_deg,
+        )
+        return (depth > 1e-4).float()
+
+    def render_organ_segmentation(
+        self,
+        mesh_dict: Dict[str, torch.Tensor],
+        azimuth_deg: float = 0.0,
+        elevation_deg: float = 90.0,
+        camera_height: float = 5.0,
+        focus_plant: bool = True,
+        image_size: Optional[int] = None,
+        hfov_override_deg: Optional[float] = None,
+        background_rgb: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> torch.Tensor:
+        """
+        Renders an RGB semantic organ segmentation image (3, H, W) colored by botanical organ category.
+        Uses render_organ_type_buffer and maps organ IDs to distinct RGB colors:
+          - Internode (2): Brown [180, 110, 50]
+          - Petiole (3): Orange [240, 140, 40]
+          - Leaf (4): Vibrant Forest Green [40, 200, 60]
+          - Bud (5): Cyan [50, 220, 240]
+          - Peduncle (6): Lime [180, 220, 50]
+          - Flower (7, 9): Pink / Magenta [255, 100, 180]
+          - Fruit (8): Red [220, 40, 40]
+        """
+        type_buf = self.render_organ_type_buffer(
+            mesh_dict=mesh_dict,
+            azimuth_deg=azimuth_deg,
+            elevation_deg=elevation_deg,
+            camera_height=camera_height,
+            focus_plant=focus_plant,
+            image_size=image_size,
+            hfov_override_deg=hfov_override_deg,
+        )  # (H, W) tensor of organ IDs, -1 for background
+
+        H, W = type_buf.shape
+        device = type_buf.device
+
+        # Color palette: index matching HeliosPyTorchGeometry
+        # 0: Stem/Internode, 1: Petiole, 2: Leaf, 3: Peduncle, 4: Flower, 5: Pod/Fruit, 6: Bud
+        color_lut = torch.tensor([
+            [0.55, 0.27, 0.07],  # 0: Stem/Internode (Brown #8B4513)
+            [0.90, 0.50, 0.15],  # 1: Petiole (Orange #E68026)
+            [0.13, 0.65, 0.18],  # 2: Leaf (Vibrant Forest Green #228B22)
+            [0.60, 0.80, 0.20],  # 3: Peduncle (Lime #9ACD32)
+            [1.00, 0.84, 0.00],  # 4: Flower (Yellow #FFD700)
+            [0.90, 0.20, 0.20],  # 5: Pod/Fruit (Red #E63333)
+            [0.20, 0.85, 0.95],  # 6: Bud (Cyan #33D9F2)
+        ], dtype=torch.float32, device=device)
+
+        bg = torch.tensor(background_rgb, dtype=torch.float32, device=device).view(1, 1, 3)
+        seg_rgb = bg.expand(H, W, 3).clone()
+
+        fg_mask = type_buf >= 0
+        valid_types = type_buf.clamp(min=0, max=len(color_lut) - 1)
+        seg_rgb[fg_mask] = color_lut[valid_types[fg_mask]]
+
+        return seg_rgb.permute(2, 0, 1)  # (3, H, W)
 
     def render_organ_array(
         self,
