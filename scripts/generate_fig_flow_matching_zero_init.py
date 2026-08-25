@@ -46,7 +46,6 @@ from diffusion_based.models.plant_organ_array import (
     P_COL_CURVATURE, P_COL_PHYLLOTACTIC_ANGLE,
     ORGAN_LEAF, rotation_6d_to_matrix,
 )
-from diffusion_based.models.helios_xml_parser import organ_nodes_to_xml
 from diffusion_based.eval.metrics import masked_ssim, foreground_iou
 
 ELEVATION_DEG = 89.88

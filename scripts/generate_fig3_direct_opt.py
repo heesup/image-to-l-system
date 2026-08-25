@@ -40,7 +40,6 @@ from diffusion_based.models.plant_organ_array import (
     rotation_6d_to_matrix,
 )
 from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
-from diffusion_based.models.helios_xml_parser import HeliosXMLParser, organ_nodes_to_xml
 from diffusion_based.eval.metrics import masked_ssim, foreground_iou, affine_invariant_depth_loss
 
 ELEVATION_DEG = 89.88
@@ -78,9 +77,6 @@ def _resolve_xml(rel_or_abs: str) -> str:
 
 def load_dap_target(renderer: HeliosPyTorchRenderer, device: torch.device, xml_rel: str):
     xml_path = _resolve_xml(xml_rel)
-    parser = HeliosXMLParser(xml_path)
-    nodes = parser.get_all_organ_nodes()
-
     tgt_arr = PlantOrganArray.from_xml_file(xml_path)
     tgt_part = tgt_arr.to_part_tensor(device=device)
 
@@ -111,20 +107,14 @@ def load_dap_target(renderer: HeliosPyTorchRenderer, device: torch.device, xml_r
         return_organ_masks=False, return_raw_depth=True,
     )
 
-    age_text = parser.root.find(".//plant_age")
-    plant_age = (age_text.text or "10").strip() if age_text is not None else "10"
-    plant_id = parser.root.find(".//plant_instance").get("ID", "0")
-
     return {
         "xml_path": xml_path,
-        "parser": parser,
-        "nodes": nodes,
-        "plant_age": plant_age,
-        "plant_id": plant_id,
-        "arr": tgt_arr, "part": tgt_part,
-        "rgb": tgt_out["rgb"], "depth": tgt_out["depth"],
-        "raw_depth": tgt_out["raw_depth"], "mask": tgt_out["mask"],
-        "tgt_np": tgt_out["rgb"].permute(1, 2, 0).cpu().numpy().clip(0, 1),
+        "arr": tgt_arr,
+        "part": tgt_part,
+        "rgb": tgt_out["rgb"],
+        "depth": tgt_out["depth"],
+        "mask": tgt_out["mask"],
+        "tgt_np": tgt_out["rgb"].permute(1, 2, 0).detach().cpu().numpy(),
         "helios_np": helios_np,
         "cam_bounds": cam_bounds,
     }
@@ -301,8 +291,8 @@ def main():
         # 2. Run Direct Optimization from Zero Existence
         opt_rgb, opt_depth, opt_ssim, opt_iou = run_direct_opt_zero(spec, renderer, device, steps=35, lr=0.05)
 
-        # 3. Export XML using verified complete node hierarchy
-        xml_str = organ_nodes_to_xml(spec["nodes"], base_position="0 0 0", plant_age=spec["plant_age"], plant_id=spec["plant_id"])
+        # 3. Export XML using PlantOrganArray
+        xml_str = spec["arr"].to_xml_string()
         opt_xml_path = os.path.join(tmp_xml_dir, f"opt_{dap_tag}.xml")
         with open(opt_xml_path, "w") as f:
             f.write(xml_str)

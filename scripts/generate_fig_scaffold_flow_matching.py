@@ -50,7 +50,6 @@ from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 from diffusion_based.models.botanical_scaffold import BotanicalScaffoldGenerator
 from diffusion_based.models.part_flow_matching import PartFlowMatchingModel
 from diffusion_based.training.flow_matching import FlowMatchingScheduler
-from diffusion_based.models.helios_xml_parser import organ_nodes_to_xml
 from diffusion_based.eval.metrics import masked_ssim, foreground_iou
 
 ELEVATION_DEG = 90.0
