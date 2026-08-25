@@ -98,16 +98,20 @@ $$\mathbf{p}_i = [\text{OrganType}_i, \mathbf{b}_i^{(x, y, z)}, \mathbf{r}_i^{(0
 
 ---
 
-## ⚡ Empirical Rendering Speed Benchmark (GPU $512 \times 512$)
+## ⚡ Empirical Rendering Performance & Scaling Benchmark (GPU $512 \times 512$)
 
-| Stage | Organ Count | Helios C++ Binary (Raytracing) | 40D Tree Kinematics (PyTorch) | 14D Direct Assembly (PyTorch) | 14D Speedup vs Helios C++ |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **DAP 10** | 94 | $7,540.0\text{ ms}$ | $73.6\text{ ms}$ | **$39.6\text{ ms}$** | **$190\times$ faster** |
-| **DAP 30** | 541 | $8,920.0\text{ ms}$ | $414.1\text{ ms}$ | **$219.8\text{ ms}$** | **$40\times$ faster** |
-| **DAP 50** | 1,158 | $10,170.0\text{ ms}$ | $889.8\text{ ms}$ | **$475.7\text{ ms}$** | **$21\times$ faster** |
-| **DAP 100** | 1,569 | $18,990.0\text{ ms}$ | $1,567.7\text{ ms}$ | **$697.0\text{ ms}$** | **$27\times$ faster** |
+| Plant Growth Stage (DAP) | Organ Count ($N$) | Triangles ($F$) | ① 16D Vectorized Mesh Build | ② GPU Rasterizer ($512\times 512$) | ③ Total 16D Rendering Latency | ④ Differentiable Pass (Fwd+Bwd) | ⑤ Helios C++ (Raytracing) | 16D Speedup Factor |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **DAP 1** (Seedling) | 22 | 15,596 | `4.38 ms` | `2.83 ms` | **`7.20 ms`** | `15.36 ms` | $7.66\text{ s}$ | **`1,063x`** |
+| **DAP 5** (Early) | 36 | 27,278 | `3.98 ms` | `2.64 ms` | **`6.61 ms`** | `12.53 ms` | $7.69\text{ s}$ | **`1,163x`** |
+| **DAP 10** (Vegetative) | 72 | 56,483 | `3.92 ms` | `2.78 ms` | **`6.70 ms`** | `12.60 ms` | $7.54\text{ s}$ | **`1,126x`** |
+| **DAP 30** (Branching) | 444 | 360,215 | `3.96 ms` | `5.33 ms` | **`9.29 ms`** | `16.05 ms` | $8.92\text{ s}$ | **`960x`** |
+| **DAP 50** (Canopy) | 1,458 | 1,201,319 | `4.78 ms` | `11.67 ms` | **`16.46 ms`** | `23.79 ms` | $10.17\text{ s}$ | **`618x`** |
+| **DAP 70** (Flowering) | 2,250 | 1,889,891 | `6.09 ms` | `19.66 ms` | **`25.75 ms`** | `35.68 ms` | $13.74\text{ s}$ | **`534x`** |
+| **DAP 90** (Podding) | 2,496 | 2,246,766 | `6.22 ms` | `22.87 ms` | **`29.09 ms`** | `37.83 ms` | $18.03\text{ s}$ | **`620x`** |
+| **DAP 100** (Mature Canopy) | 2,546 | 2,326,966 | `6.24 ms` | `23.72 ms` | **`29.96 ms`** | `38.61 ms` | $18.99\text{ s}$ | **`634x`** |
 
-> **Key takeaway**: 14D Direct Rendering bypasses hierarchical joint evaluations, delivering **~2.2x faster PyTorch rendering** and **up to 190x speedup over Helios C++**.
+> **Key takeaway**: Fully vectorized 16D Part Assembly delivers **`6.6ms ~ 29.9ms` real-time GPU rendering** across all developmental stages (scaling up to 2.33 million polygons), achieving **up to `1,163x` end-to-end acceleration over Helios C++ OptiX raytracing**.
 
 ---
 

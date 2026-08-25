@@ -21,6 +21,14 @@
 
 ---
 
+### → [`results/20260825_direct_optimization_cowpea_dap10_report.md`](results/20260825_direct_optimization_cowpea_dap10_report.md)
+**16D Part Assembly Direct Optimization & Multi-Modal Reconstruction Report (2026-08-25)**
+Empirical validation of continuous soft-existence direct optimization, multi-modal supervision (RGB, Depth, Mask, Semantic Segmentation), 16D fully-vectorized GPU mesh builder achieving 6.6ms~29.9ms real-time rendering (`1,163x` acceleration over Helios C++ OptiX raytracer), and deprecation of legacy tree kinematics.
+
+### → [`ongoing/20260824_helios_xml_roundtrip_fix_and_ground_clipping_report.md`](ongoing/20260824_helios_xml_roundtrip_fix_and_ground_clipping_report.md)
+**Helios XML Round-Trip Invariance, Subsurface Geometry & Ground Clipping Fix (2026-08-24)**
+Technical report on resolving ground collision pruning discrepancy, inflorescence/peduncle XML serialization idempotency, and `--no-ground` / `--ground-clipping` CLI flags for 100% exact botanical reconstruction.
+
 ### → [`ongoing/20260823_vlm_scaffold_dit_architecture_and_training_report.md`](ongoing/20260823_vlm_scaffold_dit_architecture_and_training_report.md)
 **VLM-Scaffold-DiT: 2-Stage Neural Coarse-to-Fine Vision Diffusion Report (2026-08-23)**
 Comprehensive technical report on the 2-Stage Neural Coarse-to-Fine framework: Stage 1 DETR-style Set Predictor with learnable slot queries, Stage 2 Bridge Flow Matching DiT, variable-slot batch processing via key-padding masks, hierarchical differentiable rendering losses, and active 2× H100 DDP training execution (`Job ID: 37866768`).
@@ -87,11 +95,16 @@ Gravitropic curvature alignment, child shoot reference frame fixing, COCO intern
 
 | 파일 | 내용 |
 |------|------|
+| [`results/20260825_direct_optimization_cowpea_dap10_report.md`](results/20260825_direct_optimization_cowpea_dap10_report.md) | **Cowpea DAP 10 Direct Optimization & Differentiable PyTorch Renderer Verification Report** (RGB+Depth multi-modal inverse optimization, DAP 1 seedling growth trajectory, random seed recovery, modality ablation, 4 publication figures) |
 | `results/15_strategies_benchmark_report.md` | 14D 기준 15가지 전략 벤치마크 결과 (Historical) |
+| `results/assets/fig_dap10_direct_opt_growth_trajectory.png` | DAP 1 Seedling → DAP 10 Mature Canopy 성장 최적화 궤적 Figure |
+| `results/assets/fig_dap10_direct_opt_random_seed_trajectory.png` | Random Seed / Perturbed Pose → DAP 10 Target 수렴 궤적 Figure |
+| `results/assets/fig_dap10_multimodal_ablation_comparison.png` | RGB vs Depth vs Multi-Modal Supervision 비교 Figure |
+| `results/assets/fig_dap10_convergence_curves.png` | Loss, mSSIM, IoU, 3D Chamfer, Depth MAE 정량 수렴 곡선 Figure |
 | `results/assets/fig_helios_xml_vs_differentiable_render_alignment.png` | 5-Column Helios vs PyTorch 정렬 벤치마크 |
 | `results/assets/fig_pure_noise_flow_matching.png` | 73M DiT: 순수 노이즈→생성 평가 |
 | `results/assets/fig_canonical_cowpea_dap10_30.png` | 73M DiT: DAP 10-30 생성 결과 |
-| `results/assets/fig_*` | 각종 실험 결과 figure (36 images) |
+| `results/assets/fig_*` | 각종 실험 결과 figure (40+ images) |
 
 ---
 

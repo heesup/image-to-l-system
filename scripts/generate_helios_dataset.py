@@ -68,6 +68,7 @@ def render_one(job_args):
         "--renderer", renderer,
         "--save-xml",
         "--focus-plant",
+        "--ground-occlusion", "false",
         "--plant-type", plant_type,
         "-n", name,
         "--dap", str(dap),

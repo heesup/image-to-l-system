@@ -1601,44 +1601,15 @@ class PlantOrganArray:
         """
         Converts this PlantOrganArray into canonical 16D Part Tensor on the given device.
         (organ_type, base_x, base_y, base_z, rot6d_0..5, scale_x, scale_y, scale_z, existence, curvature, phyllotaxis).
+        Evaluates forward kinematics tree to ensure correct 3D world positions and orientations.
         """
         t = self.tensor.to(device=device) if device is not None else self.tensor
-        N = t.shape[0]
-        out = torch.zeros((N, NUM_FEATURES_PART), dtype=torch.float32, device=t.device)
+        if t.shape[1] == NUM_FEATURES_PART:
+            return t
 
-        if t.shape[1] == NUM_FEATURES_TYPED:
-            out[:, P_COL_ORGAN_TYPE] = t[:, T_COL_ORGAN_TYPE]
-            out[:, P_COL_BASE_X:P_COL_BASE_Z + 1] = t[:, T_COL_BASE_X:T_COL_BASE_Z + 1]
-
-            pitch_r = torch.deg2rad(t[:, T_COL_PITCH])
-            yaw_r = torch.deg2rad(t[:, T_COL_YAW])
-            roll_r = torch.deg2rad(t[:, T_COL_ROLL])
-
-            cp, sp = torch.cos(pitch_r), torch.sin(pitch_r)
-            cy, sy = torch.cos(yaw_r), torch.sin(yaw_r)
-            cr, sr = torch.cos(roll_r), torch.sin(roll_r)
-
-            r1_x = cy * cp
-            r1_y = sy * cp
-            r1_z = -sp
-            r2_x = cy * sp * sr - sy * cr
-            r2_y = sy * sp * sr + cy * cr
-            r2_z = cp * sr
-
-            out[:, P_COL_ROT_0] = r1_x
-            out[:, P_COL_ROT_1] = r1_y
-            out[:, P_COL_ROT_2] = r1_z
-            out[:, P_COL_ROT_3] = r2_x
-            out[:, P_COL_ROT_4] = r2_y
-            out[:, P_COL_ROT_5] = r2_z
-
-            out[:, P_COL_SCALE_X] = t[:, T_COL_RADIUS]
-            out[:, P_COL_SCALE_Y] = t[:, T_COL_RADIUS]
-            out[:, P_COL_SCALE_Z] = t[:, T_COL_LENGTH]
-            out[:, P_COL_EXISTENCE] = t[:, T_COL_EXISTENCE]
-            out[:, P_COL_CURVATURE] = t[:, T_COL_CURVATURE]
-            out[:, P_COL_PHYLLOTACTIC_ANGLE] = t[:, T_COL_PHYLLOTACTIC_ANGLE]
-        return out
+        from diffusion_based.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
+        builder = HeliosPlantGeometryBuilder()
+        return builder.extract_part_tensor(self, device=device or t.device)
 
     # -------------------------------------------------------------------------
     # SOFT PARENT HELPERS (work for both layouts)

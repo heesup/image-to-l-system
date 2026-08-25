@@ -72,27 +72,22 @@ ORGAN_META = {
 renderer = HeliosPyTorchRenderer(image_size=IMG_SIZE).to(DEVICE)
 
 
-def depth_colormap(depth_tensor):
-    """Apply plasma colormap to canopy height (taller/closer = brighter yellow)."""
+def depth_to_canopy_height_cm(depth_tensor):
+    """
+    Convert depth tensor (Z_world in physical meters) to masked Canopy Height in cm.
+    Taller/higher canopy elements (larger Z) have larger cm values.
+    """
     d = depth_tensor.detach().cpu().numpy()
-    fg_mask = (d > 0.0)
+    fg_mask = (d > 1e-4)
     if not fg_mask.any():
-        return np.zeros((d.shape[0], d.shape[1], 3), dtype=np.float32), 0.0
+        return np.ma.masked_all_like(d), 0.0, 0.0
 
-    d_min = d[fg_mask].min()
-    d_max = d[fg_mask].max()
-    canopy_h_cm = (d_max - d_min) * 100.0  # height in cm
+    d_cm = d * 100.0
+    min_h_cm = float(d_cm[fg_mask].min())
+    max_h_cm = float(d_cm[fg_mask].max())
 
-    d_norm = np.zeros_like(d)
-    if d_max > d_min:
-        d_norm[fg_mask] = (d_max - d[fg_mask]) / (d_max - d_min)
-    else:
-        d_norm[fg_mask] = 1.0
-
-    cmap = plt.get_cmap("plasma")
-    rgb = cmap(d_norm)[:, :, :3].astype(np.float32)
-    rgb[~fg_mask] = 0.0  # black background where no plant
-    return rgb, canopy_h_cm
+    masked_d_cm = np.ma.masked_where(~fg_mask, d_cm)
+    return masked_d_cm, min_h_cm, max_h_cm
 
 
 def helios_organ_map(masks_path, H, W):
@@ -171,7 +166,7 @@ for row, (label, xml_path, helios_path, helios_masks_path, helios_cam_path) in e
         continue
 
     arr = PlantOrganArray.from_xml_file(xml_path)
-    mesh = renderer.geo_builder.build_mesh_from_organ_array(arr, device=DEVICE, species="cowpea", leaf_mode="generic")
+    mesh = renderer.geo_builder.build_mesh_from_organ_array(arr, device=DEVICE, species="cowpea")
 
     # Read exact camera parameters
     cam_h = 5.0
@@ -217,40 +212,32 @@ for row, (label, xml_path, helios_path, helios_masks_path, helios_cam_path) in e
     ax.set_facecolor("#0d0d1a")
     ax.axis("off")
 
-    # Render multimodal PyTorch outputs
-    rgb_t = renderer.render_mesh(
+    # Render multimodal PyTorch outputs via unified forward(..., include_depth=True) with focus_plant=True
+    rgbd_t = renderer.forward(
         mesh,
         azimuth_deg=0.0,
         elevation_deg=cam_el,
         camera_height=cam_h,
         background="ground",
         differentiable=False,
-        focus_plant=(cam_hfov is None),
-        hfov_override_deg=cam_hfov,
+        focus_plant=True,
         image_size=IMG_SIZE,
+        include_depth=True,
     )
-    depth_t = renderer.render_depth(
-        mesh,
-        azimuth_deg=0.0,
-        elevation_deg=cam_el,
-        camera_height=cam_h,
-        focus_plant=(cam_hfov is None),
-        hfov_override_deg=cam_hfov,
-        image_size=IMG_SIZE,
-    )
+    rgb_t = rgbd_t[:3]
+    depth_t = rgbd_t[3]
     type_t = renderer.render_organ_type_buffer(
         mesh,
         azimuth_deg=0.0,
         elevation_deg=cam_el,
         camera_height=cam_h,
-        focus_plant=(cam_hfov is None),
-        hfov_override_deg=cam_hfov,
+        focus_plant=True,
         image_size=IMG_SIZE,
     )
 
     H, W = IMG_SIZE, IMG_SIZE
     rgb_np = rgb_t.permute(1, 2, 0).detach().cpu().clamp(0, 1).numpy()
-    depth_np, canopy_h_cm = depth_colormap(depth_t)
+    masked_h_cm, min_h_cm, max_h_cm = depth_to_canopy_height_cm(depth_t)
     mask_np = (type_t >= 0).detach().cpu().numpy()
     organ_np = organ_buffer_to_rgb(type_t, H, W)
 
@@ -267,12 +254,21 @@ for row, (label, xml_path, helios_path, helios_masks_path, helios_cam_path) in e
 
     # --- Col 3: Depth / Canopy Height Model ---
     ax = ax_row[3]
-    ax.imshow(depth_np)
+    cmap = plt.get_cmap("magma").copy()
+    cmap.set_bad(color="#0d0d1a")
+    vmax_cm = max(1.0, float(math.ceil(max_h_cm)))
+    im_depth = ax.imshow(masked_h_cm, cmap=cmap, vmin=0.0, vmax=vmax_cm)
     ax.set_facecolor("#0d0d1a")
     ax.axis("off")
-    ax.text(0.03, 0.03, f"Height: 0–{canopy_h_cm:.1f} cm", transform=ax.transAxes,
-            fontsize=9, color='#c3a6e0', va='bottom',
-            bbox=dict(boxstyle='round,pad=0.2', facecolor='black', alpha=0.6))
+
+    cbar = plt.colorbar(im_depth, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("Height (cm)", fontsize=9, fontweight="bold", color="#c3a6e0")
+    cbar.ax.tick_params(labelsize=8, colors="#e0e0e0")
+    cbar.outline.set_edgecolor("#555555")
+
+    ax.text(0.03, 0.03, f"Height: 0–{max_h_cm:.1f} cm", transform=ax.transAxes,
+            fontsize=9, color='#ffffff', va='bottom',
+            bbox=dict(boxstyle='round,pad=0.2', facecolor='black', alpha=0.7))
 
     # --- Col 4: Foreground Mask ---
     ax = ax_row[4]

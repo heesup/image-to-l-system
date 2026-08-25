@@ -5,9 +5,10 @@ Matches Helios C++ camera positioning, spherical azimuth/elevation rotation, and
 
 import os
 import math
+import warnings
 import torch
 import torch.nn as nn
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, Any
 from diffusion_based.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
 
 if "TORCH_CUDA_ARCH_LIST" not in os.environ:
@@ -30,7 +31,8 @@ def compute_focus_plant_camera(
     near: float = 0.01,
     far: float = 100.0,
     focus_plant: bool = True,
-    hfov_override_deg: Optional[float] = None
+    hfov_override_deg: Optional[float] = None,
+    fixed_camera_bounds: Optional[Dict[str, Any]] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, float]:
     """
     Computes camera view matrix and projection matrix matching Helios C++ init_camera & --focus-plant math.
@@ -38,7 +40,17 @@ def compute_focus_plant_camera(
     device = verts.device
 
     # 1. 3D Bounding Box of plant vertices matching Helios C++ main.cpp:1715-1730
-    if verts.shape[0] > 0:
+    if fixed_camera_bounds is not None:
+        b_min = fixed_camera_bounds["min"]
+        b_max = fixed_camera_bounds["max"]
+        bb_min_x, bb_min_y, bb_min_z = float(b_min[0]), float(b_min[1]), float(b_min[2])
+        bb_max_x, bb_max_y, bb_max_z = float(b_max[0]), float(b_max[1]), float(b_max[2])
+        plant_center = torch.tensor([
+            (bb_min_x + bb_max_x) * 0.5,
+            (bb_min_y + bb_max_y) * 0.5,
+            (bb_min_z + bb_max_z) * 0.5
+        ], device=device, dtype=torch.float32)
+    elif verts.shape[0] > 0:
         bb_min_x = float(verts[:, 0].min().item())
         bb_max_x = float(verts[:, 0].max().item())
         bb_min_y = float(verts[:, 1].min().item())
@@ -68,22 +80,21 @@ def compute_focus_plant_camera(
     eye = torch.tensor([cam_x, cam_y, cam_z], device=device, dtype=torch.float32)
     target = plant_center.clone()
 
-    if abs(elevation_deg - 90.0) < 1e-2:
-        # Match Helios C++ coordinate system at nadir (top-down view)
-        up = torch.tensor([-1.0, 0.0, 0.0], device=device, dtype=torch.float32)
-    else:
-        up = torch.tensor([0.0, 0.0, 1.0], device=device, dtype=torch.float32)
-
     z_axis = eye - target
     z_axis = z_axis / (torch.linalg.norm(z_axis) + 1e-8)
 
-    x_axis = torch.linalg.cross(up, z_axis)
-    if torch.linalg.norm(x_axis) < 1e-6:
-        x_axis = torch.tensor([1.0, 0.0, 0.0], device=device)
+    if elevation_deg >= 89.0:
+        # Match Helios C++ top-down view (+Y is Screen UP, +X is Screen RIGHT)
+        x_axis = torch.tensor([1.0, 0.0, 0.0], device=device, dtype=torch.float32)
+        y_axis = torch.tensor([0.0, 1.0, 0.0], device=device, dtype=torch.float32)
     else:
-        x_axis = x_axis / torch.linalg.norm(x_axis)
-
-    y_axis = torch.linalg.cross(z_axis, x_axis)
+        up = torch.tensor([0.0, 0.0, 1.0], device=device, dtype=torch.float32)
+        x_axis = torch.linalg.cross(up, z_axis)
+        if torch.linalg.norm(x_axis) < 1e-6:
+            x_axis = torch.tensor([1.0, 0.0, 0.0], device=device)
+        else:
+            x_axis = x_axis / torch.linalg.norm(x_axis)
+        y_axis = torch.linalg.cross(z_axis, x_axis)
 
     R_view = torch.stack([x_axis, y_axis, z_axis])
     t_view = -R_view @ eye
@@ -190,6 +201,8 @@ class HeliosPyTorchRenderer(nn.Module):
         focus_plant: bool = True,
         hfov_override_deg: Optional[float] = None,
         include_depth: bool = False,
+        fixed_camera_bounds: Optional[Dict[str, Any]] = None,
+        image_size: Optional[int] = None,
     ) -> torch.Tensor:
         verts = mesh_dict['vertices']     # (V, 3)
         faces = mesh_dict['faces']        # (F, 3)
@@ -198,7 +211,7 @@ class HeliosPyTorchRenderer(nn.Module):
         organ_types = mesh_dict.get('organ_types', None)
 
         device = verts.device
-        H = W = self.image_size
+        H = W = image_size if image_size is not None else self.image_size
 
         if verts.shape[0] == 0 or faces.shape[0] == 0:
             if background == "ground":
@@ -214,7 +227,8 @@ class HeliosPyTorchRenderer(nn.Module):
         # Camera Matrices matching Helios C++ --focus-plant
         view_mat, proj_mat, _ = compute_focus_plant_camera(
             verts, organ_types, azimuth_deg, elevation_deg, camera_height,
-            aspect_ratio=1.0, focus_plant=focus_plant, hfov_override_deg=hfov_override_deg
+            aspect_ratio=1.0, focus_plant=focus_plant, hfov_override_deg=hfov_override_deg,
+            fixed_camera_bounds=fixed_camera_bounds,
         )
 
         # Transform Vertices to Camera & NDC Space
@@ -257,10 +271,10 @@ class HeliosPyTorchRenderer(nn.Module):
                 mask = rast_out[..., 3:4] > 0  # (1, H, W, 1)
 
                 if include_depth:
-                    # 4-Channel Unified Interpolation (RGB 3ch + Canopy Depth 1ch)
-                    v_cam_f = (view_mat.float() @ v_hom.T).T
-                    depth_verts = (-v_cam_f[:, 2:3]).float().clamp(min=0.0)  # (V, 1)
-                    rgbd_attrs = torch.cat([shaded_colors.float(), depth_verts], dim=-1).unsqueeze(0).contiguous()  # (1, V, 4)
+                    # 4-Channel Unified Interpolation (RGB 3ch + Physical Canopy Height Model (CHM) 1ch)
+                    # Physical height in meters above ground level (Z_world >= 0.0)
+                    chm_verts = torch.clamp(verts[:, 2:3].float(), min=0.0)  # (V, 1) in physical meters
+                    rgbd_attrs = torch.cat([shaded_colors.float(), chm_verts], dim=-1).unsqueeze(0).contiguous()  # (1, V, 4)
                     rgbd_rast, _ = dr.interpolate(rgbd_attrs, rast_out, faces_i32)  # (1, H, W, 4)
 
                     if background == "ground":
@@ -269,7 +283,7 @@ class HeliosPyTorchRenderer(nn.Module):
                         bg_rgb = torch.ones((1, 1, 1, 3), device=device, dtype=torch.float32)
                     else:
                         bg_rgb = torch.zeros((1, 1, 1, 3), device=device, dtype=torch.float32)
-                    bg_depth = torch.zeros((1, 1, 1, 1), device=device, dtype=torch.float32)
+                    bg_depth = torch.zeros((1, 1, 1, 1), device=device, dtype=torch.float32)  # Ground level = 0.0m
                     bg = torch.cat([bg_rgb, bg_depth], dim=-1)
 
                     rgbd_out = torch.where(mask, rgbd_rast, bg)
@@ -372,6 +386,7 @@ class HeliosPyTorchRenderer(nn.Module):
         focus_plant: bool = True,
         image_size: Optional[int] = None,
         hfov_override_deg: Optional[float] = None,
+        fixed_camera_bounds: Optional[Dict[str, Any]] = None,
     ) -> torch.Tensor:
         """
         Rasterize an organ-type ID buffer (H, W) using the same camera/projection as RGB.
@@ -389,7 +404,8 @@ class HeliosPyTorchRenderer(nn.Module):
 
         view_mat, proj_mat, _ = compute_focus_plant_camera(
             verts, organ_types, azimuth_deg, elevation_deg, camera_height,
-            aspect_ratio=1.0, focus_plant=focus_plant, hfov_override_deg=hfov_override_deg
+            aspect_ratio=1.0, focus_plant=focus_plant, hfov_override_deg=hfov_override_deg,
+            fixed_camera_bounds=fixed_camera_bounds,
         )
 
         v_hom = torch.cat([verts, torch.ones((verts.shape[0], 1), device=device)], dim=-1)
@@ -501,11 +517,13 @@ class HeliosPyTorchRenderer(nn.Module):
         elevation_deg: float = 90.0,
         camera_height: float = 5.0,
         background: str = "ground",
+        light_dir: Optional[torch.Tensor] = None,
         differentiable: bool = False,
         focus_plant: bool = True,
         image_size: Optional[int] = None,
         hfov_override_deg: Optional[float] = None,
         include_depth: bool = False,
+        fixed_camera_bounds: Optional[Dict[str, Any]] = None,
     ) -> torch.Tensor:
         """Helper alias for forward."""
         return self.forward(
@@ -514,10 +532,13 @@ class HeliosPyTorchRenderer(nn.Module):
             elevation_deg=elevation_deg,
             camera_height=camera_height,
             background=background,
+            light_dir=light_dir,
             differentiable=differentiable,
             focus_plant=focus_plant,
             hfov_override_deg=hfov_override_deg,
             include_depth=include_depth,
+            fixed_camera_bounds=fixed_camera_bounds,
+            image_size=image_size,
         )
 
     def render_depth(
@@ -529,6 +550,7 @@ class HeliosPyTorchRenderer(nn.Module):
         focus_plant: bool = True,
         image_size: Optional[int] = None,
         hfov_override_deg: Optional[float] = None,
+        fixed_camera_bounds: Optional[Dict[str, Any]] = None,
     ) -> torch.Tensor:
         verts = mesh_dict['vertices'].detach()
         faces = mesh_dict['faces'].detach()
@@ -540,7 +562,8 @@ class HeliosPyTorchRenderer(nn.Module):
 
         view_mat, proj_mat, _ = compute_focus_plant_camera(
             verts, mesh_dict.get('organ_types', None), azimuth_deg, elevation_deg, camera_height,
-            aspect_ratio=1.0, focus_plant=focus_plant, hfov_override_deg=hfov_override_deg
+            aspect_ratio=1.0, focus_plant=focus_plant, hfov_override_deg=hfov_override_deg,
+            fixed_camera_bounds=fixed_camera_bounds,
         )
 
         glctx = self._get_nvdiffrast_context(device)
@@ -571,6 +594,7 @@ class HeliosPyTorchRenderer(nn.Module):
         focus_plant: bool = True,
         image_size: Optional[int] = None,
         hfov_override_deg: Optional[float] = None,
+        fixed_camera_bounds: Optional[Dict[str, Any]] = None,
     ) -> torch.Tensor:
         """Renders binary foreground mask (1.0 for plant, 0.0 for background)."""
         depth = self.render_depth(
@@ -581,6 +605,7 @@ class HeliosPyTorchRenderer(nn.Module):
             focus_plant=focus_plant,
             image_size=image_size,
             hfov_override_deg=hfov_override_deg,
+            fixed_camera_bounds=fixed_camera_bounds,
         )
         return (depth > 1e-4).float()
 
@@ -594,17 +619,10 @@ class HeliosPyTorchRenderer(nn.Module):
         image_size: Optional[int] = None,
         hfov_override_deg: Optional[float] = None,
         background_rgb: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+        fixed_camera_bounds: Optional[Dict[str, Any]] = None,
     ) -> torch.Tensor:
         """
         Renders an RGB semantic organ segmentation image (3, H, W) colored by botanical organ category.
-        Uses render_organ_type_buffer and maps organ IDs to distinct RGB colors:
-          - Internode (2): Brown [180, 110, 50]
-          - Petiole (3): Orange [240, 140, 40]
-          - Leaf (4): Vibrant Forest Green [40, 200, 60]
-          - Bud (5): Cyan [50, 220, 240]
-          - Peduncle (6): Lime [180, 220, 50]
-          - Flower (7, 9): Pink / Magenta [255, 100, 180]
-          - Fruit (8): Red [220, 40, 40]
         """
         type_buf = self.render_organ_type_buffer(
             mesh_dict=mesh_dict,
@@ -614,13 +632,13 @@ class HeliosPyTorchRenderer(nn.Module):
             focus_plant=focus_plant,
             image_size=image_size,
             hfov_override_deg=hfov_override_deg,
+            fixed_camera_bounds=fixed_camera_bounds,
         )  # (H, W) tensor of organ IDs, -1 for background
 
         H, W = type_buf.shape
         device = type_buf.device
 
         # Color palette: index matching HeliosPyTorchGeometry
-        # 0: Stem/Internode, 1: Petiole, 2: Leaf, 3: Peduncle, 4: Flower, 5: Pod/Fruit, 6: Bud
         color_lut = torch.tensor([
             [0.55, 0.27, 0.07],  # 0: Stem/Internode (Brown #8B4513)
             [0.90, 0.50, 0.15],  # 1: Petiole (Orange #E68026)
@@ -647,27 +665,67 @@ class HeliosPyTorchRenderer(nn.Module):
         elevation_deg: float = 90.0,
         camera_height: float = 5.0,
         background: str = "ground",
+        light_dir: Optional[torch.Tensor] = None,
         device: torch.device = torch.device('cpu'),
         differentiable: bool = False,
         focus_plant: bool = True,
         existence_threshold: float = 0.5,
         use_cache: bool = False,
         hfov_override_deg: Optional[float] = None,
+        include_depth: bool = False,
+        fixed_camera_bounds: Optional[Dict[str, Any]] = None,
+        image_size: Optional[int] = None,
+        use_legacy_tree_kinematics: bool = False,
     ) -> torch.Tensor:
-        """Directly renders an RGB image from a PlantOrganArray (40D typed layout or 94D legacy layout)."""
-        mesh_dict = self._build_mesh_cached(
-            organ_array, device=device, existence_threshold=existence_threshold,
-            differentiable=differentiable, use_cache=use_cache,
+        """
+        .. deprecated:: 2026.08
+            `render_organ_array` is deprecated. Use :meth:`render_part_tensor` with 16D Part Assembly
+            for 1000x faster fully vectorized GPU rendering.
+
+        Directly renders an RGB (or RGBD) image from a PlantOrganArray by delegating to 16D part assembly.
+        """
+        warnings.warn(
+            "`render_organ_array` is deprecated and will be removed in future versions. "
+            "Please use `render_part_tensor(part_tensor)` with 16D Part Assembly representation.",
+            DeprecationWarning,
+            stacklevel=2,
         )
-        return self.forward(
-            mesh_dict,
+        if use_legacy_tree_kinematics:
+            mesh_dict = self._build_mesh_cached(
+                organ_array, device=device, existence_threshold=existence_threshold,
+                differentiable=differentiable, use_cache=use_cache,
+            )
+            return self.forward(
+                mesh_dict,
+                azimuth_deg=azimuth_deg,
+                elevation_deg=elevation_deg,
+                camera_height=camera_height,
+                background=background,
+                light_dir=light_dir,
+                differentiable=differentiable,
+                focus_plant=focus_plant,
+                hfov_override_deg=hfov_override_deg,
+                include_depth=include_depth,
+                fixed_camera_bounds=fixed_camera_bounds,
+                image_size=image_size,
+            )
+
+        part_tensor = organ_array.to_part_tensor(device=device)
+        return self.render_part_tensor(
+            part_tensor,
             azimuth_deg=azimuth_deg,
             elevation_deg=elevation_deg,
             camera_height=camera_height,
             background=background,
+            light_dir=light_dir,
+            device=device,
             differentiable=differentiable,
             focus_plant=focus_plant,
+            existence_threshold=existence_threshold,
             hfov_override_deg=hfov_override_deg,
+            include_depth=include_depth,
+            fixed_camera_bounds=fixed_camera_bounds,
+            image_size=image_size,
         )
 
     def _build_mesh_cached(
@@ -678,16 +736,7 @@ class HeliosPyTorchRenderer(nn.Module):
         differentiable: bool,
         use_cache: bool = False,
     ) -> Dict[str, torch.Tensor]:
-        """Build the mesh, optionally reusing a cached result when the input is unchanged.
-
-        The differentiable path always rebuilds so autograd gradients flow back
-        to the typed tensor. When ``use_cache`` is enabled on the
-        non-differentiable path, the built mesh is cached keyed by the tensor's
-        data pointer + version counter, which is cheap to check and invalidates
-        automatically whenever the tensor is mutated. This is useful for
-        multi-view rendering of the same plant (e.g. many camera angles), where
-        rebuilding geometry per view is wasteful.
-        """
+        """Build the mesh, optionally reusing a cached result when the input is unchanged."""
         if differentiable or not use_cache:
             return self.geo_builder.build_mesh_from_organ_array(
                 organ_array, device=device, existence_threshold=existence_threshold
@@ -712,15 +761,21 @@ class HeliosPyTorchRenderer(nn.Module):
         elevation_deg: float = 90.0,
         camera_height: float = 5.0,
         background: str = "ground",
+        light_dir: Optional[torch.Tensor] = None,
         device: torch.device = torch.device('cpu'),
         differentiable: bool = False,
         focus_plant: bool = True,
         existence_threshold: float = 0.5,
+        soft_existence: bool = False,
         hfov_override_deg: Optional[float] = None,
+        include_depth: bool = False,
+        fixed_camera_bounds: Optional[Dict[str, Any]] = None,
+        image_size: Optional[int] = None,
     ) -> torch.Tensor:
         """Directly renders a 16D (or 26D) part tensor on GPU with zero XML overhead."""
         mesh_dict = self.geo_builder.build_mesh_from_part_tensor(
-            part_tensor, device=device, existence_threshold=existence_threshold
+            part_tensor, device=device, existence_threshold=existence_threshold,
+            soft_existence=soft_existence,
         )
         return self.forward(
             mesh_dict,
@@ -728,9 +783,13 @@ class HeliosPyTorchRenderer(nn.Module):
             elevation_deg=elevation_deg,
             camera_height=camera_height,
             background=background,
+            light_dir=light_dir,
             differentiable=differentiable,
             focus_plant=focus_plant,
             hfov_override_deg=hfov_override_deg,
+            include_depth=include_depth,
+            fixed_camera_bounds=fixed_camera_bounds,
+            image_size=image_size,
         )
 
     def render_part_depth(
@@ -742,11 +801,15 @@ class HeliosPyTorchRenderer(nn.Module):
         device: torch.device = torch.device('cpu'),
         focus_plant: bool = True,
         existence_threshold: float = 0.5,
+        soft_existence: bool = False,
         hfov_override_deg: Optional[float] = None,
+        fixed_camera_bounds: Optional[Dict[str, Any]] = None,
+        image_size: Optional[int] = None,
     ) -> torch.Tensor:
         """Directly renders depth map from a 16D (or 26D) part tensor on GPU."""
         mesh_dict = self.geo_builder.build_mesh_from_part_tensor(
-            part_tensor, device=device, existence_threshold=existence_threshold
+            part_tensor, device=device, existence_threshold=existence_threshold,
+            soft_existence=soft_existence,
         )
         return self.render_depth(
             mesh_dict,
@@ -755,4 +818,7 @@ class HeliosPyTorchRenderer(nn.Module):
             camera_height=camera_height,
             focus_plant=focus_plant,
             hfov_override_deg=hfov_override_deg,
+            fixed_camera_bounds=fixed_camera_bounds,
+            image_size=image_size,
         )
+

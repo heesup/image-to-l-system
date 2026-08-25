@@ -1,0 +1,45 @@
+{
+  "target": {
+    "species": "cowpea",
+    "dap": 10,
+    "organs": 94,
+    "mesh_vertices": 11474,
+    "mesh_triangles": 10756
+  },
+  "experiments": {
+    "dap1_growth_multimodal": {
+      "initial_mssim": 0.4555961489677429,
+      "final_mssim": 0.5001974701881409,
+      "initial_iou": 0.14276942610740662,
+      "final_iou": 0.5523395538330078,
+      "initial_chamfer_mm": 18.135364400222898,
+      "final_chamfer_mm": 4.399638622999191,
+      "initial_depth_mae_mm": 45.58361694216728,
+      "final_depth_mae_mm": 13.737617060542107,
+      "mean_step_time_ms": 414.23458099365234
+    },
+    "random_seed_multimodal": {
+      "initial_mssim": 0.45027732849121094,
+      "final_mssim": 0.5541006922721863,
+      "initial_iou": 0.34890300035476685,
+      "final_iou": 0.32399383187294006,
+      "initial_chamfer_mm": 7.617764407768846,
+      "final_chamfer_mm": 9.106829529628158,
+      "initial_depth_mae_mm": 22.026635706424713,
+      "final_depth_mae_mm": 7.9505182802677155,
+      "mean_step_time_ms": 309.40638065338135
+    },
+    "random_seed_rgb_only": {
+      "final_mssim": 0.6086397767066956,
+      "final_iou": 0.2160080075263977,
+      "final_chamfer_mm": 10.921176988631487,
+      "final_depth_mae_mm": 18.09626631438732
+    },
+    "random_seed_depth_only": {
+      "final_mssim": 0.46495044231414795,
+      "final_iou": 0.290909081697464,
+      "final_chamfer_mm": 7.587069878354669,
+      "final_depth_mae_mm": 6.4843446016311646
+    }
+  }
+}
