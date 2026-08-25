@@ -1,5 +1,8 @@
 # Image-to-L-System: Project Status Report
-> **Date**: 2026-08-23 · **Representation**: 26D Organ Vectors · **Active Model**: 232M DiT-Large Flow Matching
+> **Date**: 2026-08-23 (updated 2026-08-25) · **Representation**: 26D Organ Vectors · **Active Model**: 232M DiT-Large Flow Matching
+
+> [!NOTE]
+> **2026-08-25 Update**: 16D Part Assembly GPU mesh builder fully vectorized (1,163x speedup over Helios C++). `helios_xml_parser.py` removed. `render_organ_array()` deprecated. See [`20260825_16d_part_assembly_renderer_overhaul_report.md`](20260825_16d_part_assembly_renderer_overhaul_report.md).
 
 ---
 
@@ -76,11 +79,10 @@ Dim     25: Phyllotactic angle / 180.0
 |------|------|--------|
 | [canonical_cowpea_dit_large.py](file:///home/lion397/codes/image-to-l-system/diffusion_based/models/canonical_cowpea_dit_large.py) | **232M DiT-Large** (ViT-16L + Decoder-12L, max_slots=4096) | 232.43M |
 | [canonical_cowpea_dit.py](file:///home/lion397/codes/image-to-l-system/diffusion_based/models/canonical_cowpea_dit.py) | 73M DiT (60 epoch baseline, superseded) | 73M |
-| [helios_pytorch_geometry.py](file:///home/lion397/codes/image-to-l-system/diffusion_based/models/helios_pytorch_geometry.py) | 26D → 3D mesh builder (kinematics, gravitropic curvature) | — |
-| [helios_pytorch_renderer.py](file:///home/lion397/codes/image-to-l-system/diffusion_based/models/helios_pytorch_renderer.py) | Multi-modal nvdiffrast GPU rasterizer (RGB + Depth + Mask) | — |
-| [helios_xml_parser.py](file:///home/lion397/codes/image-to-l-system/diffusion_based/models/helios_xml_parser.py) | Helios XML → PlantOrganArray parser | — |
-| [plant_organ_array.py](file:///home/lion397/codes/image-to-l-system/diffusion_based/models/plant_organ_array.py) | 26D organ array data structure & serialization | — |
-| [part_assembly_to_xml.py](file:///home/lion397/codes/image-to-l-system/diffusion_based/models/part_assembly_to_xml.py) | PlantOrganArray → Helios XML reconstruction | — |
+| [helios_pytorch_geometry.py](file:///home/lion397/codes/image-to-l-system/diffusion_based/models/helios_pytorch_geometry.py) | 16D/26D → 3D mesh builder; fully vectorized `torch.bmm` GPU assembly + `extract_part_tensor()` FK bridge | — |
+| [helios_pytorch_renderer.py](file:///home/lion397/codes/image-to-l-system/diffusion_based/models/helios_pytorch_renderer.py) | Multi-modal nvdiffrast GPU rasterizer (RGB + CHM Depth + Mask + Semantic); `render_organ_array()` deprecated | — |
+| [plant_organ_array.py](file:///home/lion397/codes/image-to-l-system/diffusion_based/models/plant_organ_array.py) | 40D organ array: XML ↔ 40D ↔ 16D unification; `to_part_tensor()`, `to_xml_string()`, `from_xml_file()` | — |
+| ~~helios_xml_parser.py~~ | ~~Helios XML → OrganNode3D legacy parser~~ | ❌ **Deleted 2026-08-25** |
 
 ### Dataset
 
@@ -227,7 +229,7 @@ Covers Helios renderer handover (Aug 11), plant organ arrays (Aug 12), refactori
 
 ### Medium-Term
 7. **Canonical slot ordering** — sort by organ_type for training stability (noted in handoff doc)
-8. **Renderer vectorization** — batch tube/leaf mesh construction (Phase 2 of [optimization plan](file:///home/lion397/codes/image-to-l-system/docs/todo/2026-08-14-pytorch-renderer-optimization.md))
+8. ~~**Renderer vectorization**~~ — ✅ **Done 2026-08-25**: `build_mesh_from_part_tensor()` fully vectorized via `torch.bmm`; DAP 100 mesh build: 6.2 ms
 9. **Multi-species expansion** — extend 26D pipeline to sorghum, bean
 
 ---
@@ -240,10 +242,9 @@ image-to-l-system/
 │   ├── models/
 │   │   ├── canonical_cowpea_dit_large.py   # 232M DiT-Large architecture
 │   │   ├── plant_organ_array.py            # 26D organ array core
-│   │   ├── helios_pytorch_geometry.py      # 26D → 3D mesh (kinematics)
-│   │   ├── helios_pytorch_renderer.py      # nvdiffrast GPU rasterizer
-│   │   ├── helios_xml_parser.py            # XML → PlantOrganArray
-│   │   └── part_assembly_to_xml.py         # PlantOrganArray → XML
+│   │   ├── helios_pytorch_geometry.py      # 16D/26D → 3D mesh (vectorized GPU bmm)
+│   │   ├── helios_pytorch_renderer.py      # nvdiffrast GPU rasterizer (multi-modal)
+│   │   └── plant_organ_array.py            # XML ↔ 40D ↔ 16D unified data structure
 │   ├── dataset/
 │   │   ├── cowpea_shard_dataset.py         # PlantShardDataset (streaming)
 │   │   ├── generate_tensor_shards.py       # XML → GPU render → .pt shards

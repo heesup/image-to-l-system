@@ -1,7 +1,7 @@
 # Image-to-L-System: Project Documentation
 
 **프로젝트**: 단일 RGB 이미지 → 3D 식물 장기 파라미터 배열 예측 Flow Matching 모델
-**활성 표현**: 26D Organ Vector (512 slots × 26D)
+**활성 표현**: 16D Part Tensor (GPU-native) + 26D Organ Vector (DiT-Large training)
 **활성 모델**: 232M DiT-Large Flow Matching (2×H100 DDP)
 **클러스터**: UC Davis Farm HPC | **학습 노드**: `gpu-10-58` (2× H100 SXM5)
 
@@ -21,9 +21,13 @@
 
 ---
 
+### → [`ongoing/20260825_16d_part_assembly_renderer_overhaul_report.md`](ongoing/20260825_16d_part_assembly_renderer_overhaul_report.md)
+**16D Part Assembly GPU Renderer Overhaul Report (2026-08-25)**
+Canonical pipeline architecture (XML→40D→16D→Mesh→Render), fully vectorized `torch.bmm` GPU mesh builder (1,163x vs Helios C++), `extract_part_tensor()` forward-kinematic bridge, deprecation of `render_organ_array()`, removal of `helios_xml_parser.py`, root-cause analysis of broken renders, Helios C++ submodule XML reload fixes.
+
 ### → [`results/20260825_direct_optimization_cowpea_dap10_report.md`](results/20260825_direct_optimization_cowpea_dap10_report.md)
-**16D Part Assembly Direct Optimization & Multi-Modal Reconstruction Report (2026-08-25)**
-Empirical validation of continuous soft-existence direct optimization, multi-modal supervision (RGB, Depth, Mask, Semantic Segmentation), 16D fully-vectorized GPU mesh builder achieving 6.6ms~29.9ms real-time rendering (`1,163x` acceleration over Helios C++ OptiX raytracer), and deprecation of legacy tree kinematics.
+**16D Direct Optimization: Cowpea DAP 10 Benchmark (2026-08-25)**
+Empirical validation of continuous soft-existence direct optimization with multi-modal supervision (RGB, Depth, Mask, Semantic Segmentation) across 15 strategies.
 
 ### → [`ongoing/20260824_helios_xml_roundtrip_fix_and_ground_clipping_report.md`](ongoing/20260824_helios_xml_roundtrip_fix_and_ground_clipping_report.md)
 **Helios XML Round-Trip Invariance, Subsurface Geometry & Ground Clipping Fix (2026-08-24)**
