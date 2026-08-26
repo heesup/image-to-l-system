@@ -168,18 +168,17 @@ for row, (label, xml_path, helios_path, helios_masks_path, helios_cam_path) in e
     arr = PlantOrganArray.from_xml_file(xml_path)
     mesh = renderer.geo_builder.build_mesh_from_organ_array(arr, device=DEVICE, species="cowpea")
 
-    # Read exact camera parameters
+    # Read exact camera height/elevation from the camera JSON. The exact-GT renders
+    # use focus-plant auto-FOV (Helios fits the plant bbox into the frame), so we
+    # deliberately ignore the recorded telephoto focal_length and use focus_plant=True.
     cam_h = 5.0
     cam_el = 90.0
     cam_hfov = None
     if os.path.exists(helios_cam_path):
         with open(helios_cam_path, "r") as f:
             cam_data = json.load(f)
-        f_len = cam_data.get("camera_properties", {}).get("focal_length", 50.0)
-        s_w = cam_data.get("camera_properties", {}).get("sensor_width", 35.0)
         cam_h = float(cam_data.get("acquisition_properties", {}).get("camera_height_m", 5.0))
         cam_el = float(cam_data.get("acquisition_properties", {}).get("camera_angle_deg", 90.0))
-        cam_hfov = 2.0 * math.degrees(math.atan((s_w * 0.5) / max(f_len, 1e-3)))
 
     # --- Col 0: Helios C++ GT ---
     ax = ax_row[0]
@@ -212,7 +211,7 @@ for row, (label, xml_path, helios_path, helios_masks_path, helios_cam_path) in e
     ax.set_facecolor("#0d0d1a")
     ax.axis("off")
 
-    # Render multimodal PyTorch outputs via unified forward(..., include_depth=True) with focus_plant=True
+    # Render multimodal PyTorch outputs via unified forward(..., include_depth=True) with exact camera FoV
     rgbd_t = renderer.forward(
         mesh,
         azimuth_deg=0.0,
@@ -220,7 +219,8 @@ for row, (label, xml_path, helios_path, helios_masks_path, helios_cam_path) in e
         camera_height=cam_h,
         background="ground",
         differentiable=False,
-        focus_plant=True,
+        focus_plant=(cam_hfov is None),
+        hfov_override_deg=cam_hfov,
         image_size=IMG_SIZE,
         include_depth=True,
     )
@@ -231,7 +231,8 @@ for row, (label, xml_path, helios_path, helios_masks_path, helios_cam_path) in e
         azimuth_deg=0.0,
         elevation_deg=cam_el,
         camera_height=cam_h,
-        focus_plant=True,
+        focus_plant=(cam_hfov is None),
+        hfov_override_deg=cam_hfov,
         image_size=IMG_SIZE,
     )
 

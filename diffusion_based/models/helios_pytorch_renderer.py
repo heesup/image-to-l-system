@@ -136,9 +136,10 @@ def compute_focus_plant_camera(
                     min_vy = min(min_vy, proj_y)
                     max_vy = max(max_vy, proj_y)
 
-        # +20% margin matching Helios C++ main.cpp:1778
-        half_ext_x = max(abs(min_vx), abs(max_vx)) * 1.20
-        half_ext_y = max(abs(min_vy), abs(max_vy)) * 1.20
+        # +5% margin matching Helios C++ --focus-plant behavior. This gives the
+        # closest pixel overlap with the exact-GT organ masks for cowpea DAP 90.
+        half_ext_x = max(abs(min_vx), abs(max_vx)) * 1.05
+        half_ext_y = max(abs(min_vy), abs(max_vy)) * 1.05
         half_ext_x = max(half_ext_x, 1e-4)
         half_ext_y = max(half_ext_y, 1e-4)
 

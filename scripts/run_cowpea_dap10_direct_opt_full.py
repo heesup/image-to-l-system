@@ -19,6 +19,7 @@ from PIL import Image
 
 import torch
 import torch.nn.functional as F
+from typing import Tuple, Optional
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
@@ -45,6 +46,65 @@ def _depth_colormap(depth_np: np.ndarray) -> np.ndarray:
     rgb = cmap(depth_np)[:, :, :3].astype(np.float32)
     rgb[depth_np <= 0] = 0.0
     return rgb
+
+
+def _get_centroid(verts: np.ndarray, organ_types: Optional[np.ndarray] = None,
+                  organ_id: Optional[int] = None) -> Optional[np.ndarray]:
+    """Return centroid of all vertices or of a specific organ type."""
+    if verts is None or verts.shape[0] == 0:
+        return None
+    if organ_types is not None and organ_id is not None:
+        mask = organ_types == organ_id
+        if mask.sum() == 0:
+            return None
+        return verts[mask].mean(axis=0)
+    return verts.mean(axis=0)
+
+
+def _plot_3d_side_overlay(ax, verts_gt: np.ndarray, verts_pred: np.ndarray,
+                          organ_types_gt: Optional[np.ndarray] = None,
+                          organ_types_pred: Optional[np.ndarray] = None,
+                          xlim: Optional[Tuple[float, float]] = None,
+                          zlim: Optional[Tuple[float, float]] = None,
+                          draw_gradient: bool = False,
+                          subsample: int = 1):
+    """Plot target (red) vs. prediction (blue) vertex point clouds in the x-z plane."""
+    v_gt = verts_gt[::subsample] * 100.0
+    v_pred = verts_pred[::subsample] * 100.0
+    ax.scatter(v_gt[:, 0], v_gt[:, 2], c="red", s=2, alpha=0.22, label="Target", rasterized=True)
+    ax.scatter(v_pred[:, 0], v_pred[:, 2], c="blue", s=2, alpha=0.45, label="Reconstructed", rasterized=True)
+    ax.set_xlabel("X (cm)", fontsize=8)
+    ax.set_ylabel("Z (cm)", fontsize=8)
+    ax.tick_params(labelsize=7)
+    if xlim is not None:
+        ax.set_xlim(xlim)
+    if zlim is not None:
+        ax.set_ylim(zlim)
+
+    if draw_gradient:
+        c_cent = _get_centroid(verts_pred, organ_types_pred)
+        t_cent = _get_centroid(verts_gt, organ_types_gt)
+        if c_cent is not None and t_cent is not None:
+            dx = (t_cent[0] - c_cent[0]) * 100.0
+            dz = (t_cent[2] - c_cent[2]) * 100.0
+            norm = math.hypot(dx, dz) + 1e-9
+            if norm > 1.0:
+                ax.annotate(
+                    "",
+                    xy=(c_cent[0] * 100.0 + dx * 0.95, c_cent[2] * 100.0 + dz * 0.95),
+                    xytext=(c_cent[0] * 100.0, c_cent[2] * 100.0),
+                    arrowprops=dict(arrowstyle="-|>", color="darkgreen", lw=2.0,
+                                    connectionstyle="arc3,rad=0.05"),
+                )
+                ax.text(
+                    0.98, 0.98, "Chamfer\ngradient",
+                    transform=ax.transAxes,
+                    fontsize=8, color="darkgreen", fontweight="bold",
+                    ha="right", va="top",
+                    bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="darkgreen", alpha=0.85),
+                )
+
+    ax.legend(fontsize=7, loc="upper right")
 
 
 def compute_chamfer_distance_mm(verts_pred: torch.Tensor, verts_gt: torch.Tensor) -> float:
@@ -94,6 +154,7 @@ def load_dap10_target(renderer: HeliosPyTorchRenderer, device: torch.device):
         "arr": arr,
         "mesh": mesh,
         "verts": verts,
+        "organ_types": mesh.get("organ_types"),
         "cam_bounds": cam_bounds,
         "rgb": top_rgb,
         "depth": top_raw_depth,
@@ -277,6 +338,8 @@ def run_botanical_direct_opt(
                     "err_np": err_np,
                     "oblique_rgb_np": rgbd_oblique[:3].permute(1, 2, 0).cpu().numpy().clip(0, 1),
                     "oblique_depth_np": rgbd_oblique[3].cpu().numpy(),
+                    "verts": mesh_eval["vertices"].detach().cpu().numpy(),
+                    "organ_types": mesh_eval.get("organ_types").detach().cpu().numpy() if mesh_eval.get("organ_types") is not None else None,
                     "ssim": mssim_val,
                     "iou": iou_val,
                     "chamfer_mm": cd_mm,
@@ -311,19 +374,33 @@ def generate_growth_trajectory_figure(target_spec: dict, snapshots: dict, histor
     # -------------------------------------------------------------------------
     # PART I: HERO SHOWCASE (Final Optimized Result vs Ground Truth Target)
     # -------------------------------------------------------------------------
-    gs_top = gridspec.GridSpecFromSubplotSpec(1, 6, subplot_spec=outer[0], wspace=0.08)
+    gs_top = gridspec.GridSpecFromSubplotSpec(1, 6, subplot_spec=outer[0], wspace=0.10)
 
     snap_final = snapshots[steps[-1]]
     final_depth_cm = np.ma.masked_where(snap_final["depth_np"] <= 1e-4, snap_final["depth_np"] * 100.0)
     tgt_depth_cm = np.ma.masked_where(target_spec["depth_np"] <= 1e-4, target_spec["depth_np"] * 100.0)
+
+    # Common 3D side-view limits from the union of target and final reconstruction.
+    verts_gt = target_spec["verts"].detach().cpu().numpy()
+    verts_pred = snap_final["verts"]
+    org_gt = target_spec.get("organ_types")
+    org_pred = snap_final.get("organ_types")
+    if org_gt is not None:
+        org_gt = org_gt.detach().cpu().numpy() if hasattr(org_gt, "detach") else org_gt
+    if org_pred is not None:
+        org_pred = org_pred.detach().cpu().numpy() if hasattr(org_pred, "detach") else org_pred
+    xs = np.concatenate([verts_gt[:, 0], verts_pred[:, 0]]) * 100.0
+    zs = np.concatenate([verts_gt[:, 2], verts_pred[:, 2]]) * 100.0
+    x_margin = (xs.max() - xs.min()) * 0.08
+    z_margin = (zs.max() - zs.min()) * 0.08
+    side_xlim = (xs.min() - x_margin, xs.max() + x_margin)
+    side_zlim = (max(0.0, zs.min() - z_margin), zs.max() + z_margin)
 
     hero_items = [
         ("Final Reconstructed Plant (Step 49)\nDifferentiable RGB", snap_final["rgb_np"], "rgb", None),
         ("Helios Ground Truth (DAP 10)\nReference Target RGB", target_spec["rgb_np"], "rgb", None),
         ("Final Reconstructed Depth\nCanopy Height (cm)", final_depth_cm, "depth", vmax_cm),
         ("Helios Ground Truth Depth\nReference Canopy Height (cm)", tgt_depth_cm, "depth", vmax_cm),
-        ("Final 3D Oblique View (45°)\nReconstructed Architecture", snap_final["oblique_rgb_np"], "rgb", None),
-        ("Helios Ground Truth 3D (45°)\nReference 3D Architecture", target_spec["oblique_rgb_np"], "rgb", None),
     ]
 
     for i, (title, img_data, mode, v_max) in enumerate(hero_items):
@@ -338,6 +415,31 @@ def generate_growth_trajectory_figure(target_spec: dict, snapshots: dict, histor
         title_color = "darkgreen" if "Ground Truth" in title else "navy"
         ax.set_title(title, fontsize=10, fontweight="bold", pad=5, color=title_color)
         ax.axis("off")
+
+    # 3D x-z point-cloud overlay: target vs. final reconstruction.
+    ax_overlay = fig.add_subplot(gs_top[0, 4])
+    _plot_3d_side_overlay(
+        ax_overlay, verts_gt, verts_pred,
+        organ_types_gt=org_gt, organ_types_pred=org_pred,
+        xlim=side_xlim, zlim=side_zlim,
+        draw_gradient=True,
+        subsample=4,
+    )
+    ax_overlay.set_title("Final 3D Overlay (x-z)\nTarget vs. Reconstructed", fontsize=10, fontweight="bold", color="navy", pad=5)
+    ax_overlay.set_aspect("equal", adjustable="box")
+
+    # Zoomed leaf-tip panel.
+    ax_zoom = fig.add_subplot(gs_top[0, 5])
+    _plot_3d_side_overlay(
+        ax_zoom, verts_gt, verts_pred,
+        organ_types_gt=org_gt, organ_types_pred=org_pred,
+        xlim=(side_xlim[0] * 0.45, side_xlim[1] * 0.45),
+        zlim=(side_zlim[1] * 0.55, side_zlim[1] * 0.95),
+        draw_gradient=False,
+        subsample=4,
+    )
+    ax_zoom.set_title("Zoom: Leaf Tip\nPoint-Cloud Alignment", fontsize=10, fontweight="bold", color="navy", pad=5)
+    ax_zoom.set_aspect("equal", adjustable="box")
 
     # -------------------------------------------------------------------------
     # PART II: OPTIMIZATION TRAJECTORY PROGRESSION (5 Steps + Dedicated Colorbar)
@@ -435,6 +537,18 @@ def generate_growth_trajectory_figure(target_spec: dict, snapshots: dict, histor
     ax_b3.set_ylabel("Depth MAE (mm)", fontsize=9.5)
     ax_b3.grid(True, alpha=0.3)
     ax_b3.legend(fontsize=8.0, loc="upper right")
+
+    caption = (
+        "Figure 1: Direct inverse optimization grows a DAP 1 cowpea seedling into the mature DAP 10 structure. "
+        "The top row compares the final reconstructed plant (RGB, metric depth) against the Helios ground-truth target, "
+        "and shows the final 3D vertex Chamfer alignment in a side-view x-z point-cloud overlay (red = target, blue = reconstructed). "
+        "The green arrow indicates the Chamfer-gradient direction from the reconstructed centroid toward the target. "
+        "The zoomed leaf-tip panel highlights the point-cloud overlap after convergence. "
+        "The middle section shows the RGB, depth, and oblique-view trajectory across optimization steps. "
+        "The bottom curves show multi-modal loss, silhouette IoU / mSSIM, 3D Chamfer distance, and canopy depth MAE."
+    )
+    fig.text(0.5, 0.01, caption, ha="center", va="bottom", fontsize=10,
+             bbox=dict(boxstyle="round,pad=0.4", facecolor="#fff8dc", edgecolor="#999999", alpha=0.95))
 
     plt.suptitle("Figure 1: Direct Inverse Optimization Trajectory from DAP 1 Seedling to Mature Cowpea DAP 10 Structure", fontsize=15, fontweight="bold", y=0.965)
     plt.savefig(out_path, dpi=160, bbox_inches="tight")

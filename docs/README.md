@@ -7,7 +7,20 @@
 
 ---
 
-## 폴더 구조
+## Repository & Docs Structure
+
+### 📂 Repository Root Layout
+
+| 디렉토리 | 설명 | 상태 |
+|----------|------|------|
+| `diffusion_based/` | **핵심 활성 파이프라인**: 40D XML 브릿지, 16D Part Tensor GPU 렌더러, 26D DiT 학습/평가 | ✅ Active |
+| `archive/` | **통합 아카이브**: 과거 Track-A(15D), 14D, 40D VAE, 94D 및 디버그 스크립트 모음 ([`archive/README.md`](../archive/README.md)) | 📦 Archived |
+| `dataset/helios_data/` | 10K XML 원본 및 100K `.pt` GPU 샤드 데이터셋 | ✅ Active |
+| `slurm_scripts/` | 2×H100 DDP 분산 학습 및 데이터 생성 SLURM 배치 스크립트 | ✅ Active |
+| `Digital-Crops/` | Helios C++ 시뮬레이션 엔진 서브모듈 | ✅ Active |
+| `docs/` | 프로젝트 전반 설계 및 진행 문서 | 📄 Documentation |
+
+### 📚 Docs 폴더 구조
 
 | 폴더 | 용도 |
 |------|------|
@@ -21,9 +34,13 @@
 
 ---
 
+### → [`ongoing/20260826_helios_flower_peduncle_pod_alignment_and_cleanup_report.md`](ongoing/20260826_helios_flower_peduncle_pod_alignment_and_cleanup_report.md)
+**16D/26D Differentiable Renderer Alignment, Flower/Peduncle/Pod Integration & Handover Report (2026-08-26)**
+Comprehensive handover on repository reorganization, removal of 94D intermediate layout, 0-indexed parent node bug fix ($0.06\ \mu\text{m}$ leaflet error), flower scaling & mesh prototype calibration, peduncle dormant bud filtering, and pod (fruit type 8) batch mesh integration guide.
+
 ### → [`ongoing/20260825_16d_part_assembly_renderer_overhaul_report.md`](ongoing/20260825_16d_part_assembly_renderer_overhaul_report.md)
 **16D Part Assembly GPU Renderer Overhaul Report (2026-08-25)**
-Canonical pipeline architecture (XML→40D→16D→Mesh→Render), fully vectorized `torch.bmm` GPU mesh builder (1,163x vs Helios C++), `extract_part_tensor()` forward-kinematic bridge, deprecation of `render_organ_array()`, removal of `helios_xml_parser.py`, root-cause analysis of broken renders, Helios C++ submodule XML reload fixes.
+Canonical pipeline architecture (XML→40D→16D→Mesh→Render), direct 40D `extract_part_tensor()` forward-kinematic bridge (no 94D intermediary), fully vectorized `torch.bmm` GPU mesh builder (1,163x vs Helios C++), removal of legacy 94D parser/writer, root-cause analysis of broken renders, Helios C++ submodule XML reload fixes.
 
 ### → [`results/20260825_direct_optimization_cowpea_dap10_report.md`](results/20260825_direct_optimization_cowpea_dap10_report.md)
 **16D Direct Optimization: Cowpea DAP 10 Benchmark (2026-08-25)**
@@ -100,6 +117,7 @@ Gravitropic curvature alignment, child shoot reference frame fixing, COCO intern
 | 파일 | 내용 |
 |------|------|
 | [`results/20260825_direct_optimization_cowpea_dap10_report.md`](results/20260825_direct_optimization_cowpea_dap10_report.md) | **Cowpea DAP 10 Direct Optimization & Differentiable PyTorch Renderer Verification Report** (RGB+Depth multi-modal inverse optimization, DAP 1 seedling growth trajectory, random seed recovery, modality ablation, 4 publication figures) |
+| `results/minimal_direct_opt_chamfer_leaf_outward.md` | **Minimal 3-Organ Direct Optimization: Chamfer Pulls Leaf Outward** — focused reproduction notes for `scripts/minimal_direct_opt_depth_chamfer_demo.py` |
 | `results/15_strategies_benchmark_report.md` | 14D 기준 15가지 전략 벤치마크 결과 (Historical) |
 | `results/assets/fig_dap10_direct_opt_growth_trajectory.png` | DAP 1 Seedling → DAP 10 Mature Canopy 성장 최적화 궤적 Figure |
 | `results/assets/fig_dap10_direct_opt_random_seed_trajectory.png` | Random Seed / Perturbed Pose → DAP 10 Target 수렴 궤적 Figure |
@@ -108,6 +126,7 @@ Gravitropic curvature alignment, child shoot reference frame fixing, COCO intern
 | `results/assets/fig_helios_xml_vs_differentiable_render_alignment.png` | 5-Column Helios vs PyTorch 정렬 벤치마크 |
 | `results/assets/fig_pure_noise_flow_matching.png` | 73M DiT: 순수 노이즈→생성 평가 |
 | `results/assets/fig_canonical_cowpea_dap10_30.png` | 73M DiT: DAP 10-30 생성 결과 |
+| `results/assets/minimal_direct_opt_depth_chamfer_demo.png` | **Minimal 3-organ direct optimization**: 3D Chamfer gradient pulls a leaf outward (petiole pitch 10° → 60°) |
 | `results/assets/fig_*` | 각종 실험 결과 figure (40+ images) |
 
 ---

@@ -34,8 +34,7 @@ from diffusion_based.models.plant_organ_array import (
     COL_NUM_FLOWERS, COL_FLOWER_OFFSET, COL_FL0_PITCH, COL_FL0_YAW, COL_FL0_ROLL, COL_FL0_AZIMUTH, COL_FL0_BASE_SCALE,
     COL_FL1_PITCH, COL_FL1_YAW, COL_FL1_ROLL, COL_FL1_AZIMUTH,
     COL_FL2_PITCH, COL_FL2_YAW, COL_FL2_ROLL, COL_FL2_AZIMUTH,
-    COL_FL3_PITCH, COL_FL3_YAW, COL_FL3_ROLL, COL_FL3_AZIMUTH,
-    ORGAN_ROOT_META, T_COL_ORGAN_TYPE, T_COL_BASE_X, T_COL_BASE_Y, T_COL_BASE_Z
+    COL_FL3_PITCH, COL_FL3_YAW, COL_FL3_ROLL, COL_FL3_AZIMUTH
 )
 
 
@@ -565,17 +564,6 @@ def _make_straight_tube_prototype(n_seg: int, n_rad: int, device: torch.device) 
     return verts_t, faces_t
 
 
-def _rotation_from_forward_vector(fwd_z: torch.Tensor, up_x: torch.Tensor) -> torch.Tensor:
-    z = F.normalize(fwd_z, dim=-1, eps=1e-6)
-    x = torch.linalg.cross(up_x, z)
-    if torch.linalg.norm(x) < 1e-6:
-        x = torch.tensor([1.0, 0.0, 0.0], device=fwd_z.device)
-    else:
-        x = F.normalize(x, dim=-1, eps=1e-6)
-    y = torch.linalg.cross(z, x)
-    return torch.stack([x, y, z], dim=-1)
-
-
 def generate_cone_tube_mesh_torch(
     centerline: torch.Tensor, # (N, 3)
     radii: torch.Tensor,      # (N,)
@@ -670,7 +658,7 @@ class HeliosPlantGeometryBuilder:
         self.COLOR_LEAF = torch.tensor([0.25, 0.62, 0.18], dtype=torch.float32)
         self.COLOR_PEDUNCLE = torch.tensor([0.55, 0.52, 0.25], dtype=torch.float32)
         self.COLOR_FLOWER = torch.tensor([0.98, 0.85, 0.15], dtype=torch.float32)
-        self.COLOR_POD = torch.tensor([0.96, 0.92, 0.48], dtype=torch.float32)
+        self.COLOR_POD = torch.tensor([0.85, 0.65, 0.13], dtype=torch.float32)
 
     def build_mesh_from_organ_array(
         self,
@@ -695,19 +683,8 @@ class HeliosPlantGeometryBuilder:
         # differentiable conversion so image-loss gradients can flow all the
         # way back to the typed tensor.
         if organ_array.is_typed:
-            t_typed = organ_array.tensor
-            ot = t_typed[:, T_COL_ORGAN_TYPE].long()
-            root_idx = (ot == ORGAN_ROOT_META).nonzero(as_tuple=False)
-            if root_idx.numel() > 0:
-                r0 = root_idx[0, 0]
-                bp_x = t_typed[r0, T_COL_BASE_X].item()
-                bp_y = t_typed[r0, T_COL_BASE_Y].item()
-                bp_z = t_typed[r0, T_COL_BASE_Z].item()
-                meta_bp = {"raw_bp": f"{bp_x} {bp_y} {bp_z}"}
-            else:
-                meta_bp = {"raw_bp": "0 0 0"}
             legacy_tensor = organ_array.to_legacy_tensor_diff()
-            organ_array = PlantOrganArray(legacy_tensor, raw_metadata=[meta_bp])
+            organ_array = PlantOrganArray(legacy_tensor, raw_metadata=[])
 
         t = organ_array.tensor.to(device)
         existence = organ_array.existence.to(device).clamp(0.0, 1.0)
@@ -796,18 +773,6 @@ class HeliosPlantGeometryBuilder:
                     f"parent_logits has {num_shoots_k} shoots but organ_array has {len(sorted_shoot_ids)} shoots"
                 )
 
-        # Extract root base_position from raw_metadata if available
-        root_base_pos = torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32, device=device)
-        if hasattr(organ_array, "raw_metadata") and organ_array.raw_metadata and len(organ_array.raw_metadata) > 0:
-            raw_bp = organ_array.raw_metadata[0].get("raw_bp", None)
-            if raw_bp is not None:
-                try:
-                    bp_floats = [float(x) for x in raw_bp.strip().split()]
-                    if len(bp_floats) >= 3:
-                        root_base_pos = torch.tensor(bp_floats[:3], dtype=torch.float32, device=device)
-                except Exception:
-                    pass
-
         def compute_shoot_base(sid: int, first_row: torch.Tensor, first_idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
             """Compute shoot base position, internode axis, and petiole axis.
 
@@ -836,15 +801,12 @@ class HeliosPlantGeometryBuilder:
                 if weights.sum() < 1e-8 or weights.isnan().any():
                     weights = torch.zeros_like(weights)
                     weights[0] = 1.0
-                # Compute effective candidate tip positions (default [0,0,0] for invalid)
-                cand_node_clamped = cand_node.clamp(min=0, max=N - 1)
-                cand_tip = node_tip_positions[cand_node_clamped].detach()  # (K, 3)
 
-                logits = parent_logits[s_idx]  # (K,)
-                # Mask out invalid candidates with large negative value
-                masked_logits = torch.where(valid_mask > 0.5, logits, torch.tensor(-1e9, device=device))
-                weights = torch.softmax(masked_logits, dim=-1)  # (K,)
-
+                # Candidate shoot IDs may be arbitrary. Build a mapping from (shoot_id, node_idx) -> node tensor index.
+                # We precomputed node_tip_positions etc. by loop order, keyed by linear node index n_idx.
+                # Detach candidate geometric features so gradient only flows through the selection weights,
+                # making soft-parent topology optimization stable. The candidate anchors are fixed per step.
+                cand_tip = node_tip_positions[cand_node].detach()          # (K, 3)
                 cand_axis = node_internode_axes[cand_node].detach()      # (K, 3)
 
                 # Petiole axis: requested petiole index may not exist on the candidate node.
@@ -860,7 +822,7 @@ class HeliosPlantGeometryBuilder:
                 )
                 cand_has_pet = torch.where(cand_has_pet > 0.5, cand_has_pet, has_pet0)
 
-                shoot_base_pos = root_base_pos + (weights.unsqueeze(-1) * cand_tip).sum(dim=0)
+                shoot_base_pos = (weights.unsqueeze(-1) * cand_tip).sum(dim=0)
                 # Use weighted axis directly; downstream rotate_vector_about_axis normalizes internally.
                 parent_internode_axis = (weights.unsqueeze(-1) * cand_axis).sum(dim=0)
                 parent_petiole_axis = (weights.unsqueeze(-1) * cand_pet_axis).sum(dim=0)
@@ -871,7 +833,7 @@ class HeliosPlantGeometryBuilder:
 
                 # Negative candidate shoot_id means root (same as hard logic)
                 if cand_shoot[weights.argmax()].item() < 0:
-                    shoot_base_pos = root_base_pos.clone()
+                    shoot_base_pos = torch.tensor([0.0, 0.0, 0.0], device=device)
                     parent_internode_axis = torch.tensor([0.0, 0.0, 1.0], device=device)
                     parent_petiole_axis = torch.tensor([0.0, -1.0, 0.0], device=device)
                 return shoot_base_pos, parent_internode_axis, parent_petiole_axis
@@ -881,7 +843,7 @@ class HeliosPlantGeometryBuilder:
             parent_petiole_index = parent_pet_arr[first_idx]
 
             if parent_sid < 0 or (parent_sid, parent_node_idx) not in node_output_info:
-                shoot_base_pos = root_base_pos.clone()
+                shoot_base_pos = torch.tensor([0.0, 0.0, 0.0], device=device)
                 parent_internode_axis = torch.tensor([0.0, 0.0, 1.0], device=device)
                 parent_petiole_axis = torch.tensor([0.0, -1.0, 0.0], device=device)
             else:
@@ -1058,14 +1020,11 @@ class HeliosPlantGeometryBuilder:
                                     num_leaves, leaf_cols, lflt_scale, lflt_offset, petiole_index):
                     nonlocal rendered_leaf_groups, vert_offset
                     pet_pitch_rad = p_pitch_deg * deg2rad
-                    # Step 5 & 6: Start with internode axis and apply pitch about petiole_rot_axis (InputOutput.cpp:1608-1611)
                     pet_axis = rotate_vector_about_axis(i_axis, petiole_rot_axis, torch.abs(pet_pitch_rad))
                     pet_rot_ax = petiole_rot_axis.clone()
-                    # Step 7: Apply phyllotactic rotation (for non-first phytomers, InputOutput.cpp:1614-1617)
                     if p_idx_in_shoot != 0 and inode_phyllo_rad != 0.0:
                         pet_axis = rotate_vector_about_axis(pet_axis, i_axis, inode_phyllo_rad)
                         pet_rot_ax = rotate_vector_about_axis(pet_rot_ax, i_axis, inode_phyllo_rad)
-                    # Step 8: Apply bud rotation for multi-petiole nodes (InputOutput.cpp:1620-1625)
                     if petiole_index > 0:
                         petioles_per_internode = 2.0 if has_pet1_arr[n_idx] > 0 else 1.0
                         budrot = torch.tensor(petiole_index * 2.0 * math.pi / petioles_per_internode, device=device)
@@ -1315,11 +1274,9 @@ class HeliosPlantGeometryBuilder:
                 ped_pitch_deg = row[COL_PED_PITCH] if row.shape[0] > COL_PED_PITCH else torch.tensor(20.0, device=device)
                 ped_curv_deg = row[COL_PED_CURV] if row.shape[0] > COL_PED_CURV else torch.tensor(0.0, device=device)
 
-                # Geometry only exists if bud is active in flowering/fruiting state AND flowers/pods actually exist:
-                # BUD_FLOWER_CLOSED=2, BUD_FLOWER_OPEN=3, BUD_FRUITING=4, MATURE_POD=5.
-                is_pod = (bud_state in [4, 5])
-                is_flower = (bud_state in [2, 3])
-                is_active_flower = (is_pod or is_flower) and (num_flowers > 0)
+                # Geometry only exists if bud is active in flowering/fruiting state (InputOutput.cpp:2118):
+                # BUD_FLOWER_CLOSED=2, BUD_FLOWER_OPEN=3, BUD_FRUITING=4.
+                is_active_flower = (bud_state in [2, 3, 4])
 
                 if is_active_flower and node_exist > existence_threshold:
                     is_terminal_bud = (row[COL_BUD_IS_TERMINAL] > 0.5) if row.shape[0] > COL_BUD_IS_TERMINAL else False
@@ -1346,11 +1303,10 @@ class HeliosPlantGeometryBuilder:
                         infl_bend_axis = infl_bend_axis / torch.linalg.norm(infl_bend_axis)
 
                         # Base rotation adjustment from bud index (InputOutput.cpp:2098-2111)
-                        bud_idx = bud_idx_arr[n_idx]
-                        if is_terminal_bud:
-                            base_pitch_adj = 0.0
-                        else:
-                            base_pitch_adj = bud_idx * 0.1 * math.pi
+                        # NOTE: The XML-stored peduncle pitch already includes any bud-index offset
+                        # applied during Helios growth; adding an extra heuristic here over-rotates
+                        # non-terminal peduncles and breaks GT alignment.
+                        base_pitch_adj = 0.0
 
                         ped_pitch_rad = math.radians(ped_pitch_arr[n_idx]) + base_pitch_adj
                         ped_axis = rotate_vector_about_axis(inode_tip_axis, infl_bend_axis, ped_pitch_rad)
@@ -1363,7 +1319,7 @@ class HeliosPlantGeometryBuilder:
                         ped_axis = ped_axis / (torch.linalg.norm(ped_axis) + 1e-6)
 
                         # Generate segmented curved peduncle vertices (InputOutput.cpp:2186-2214)
-                        Ndiv_ped = 5
+                        Ndiv_ped = 6
                         dr_ped = (ped_len * node_exist) / float(Ndiv_ped)
                         curv_val = ped_curv_arr[n_idx]
 
@@ -1401,7 +1357,7 @@ class HeliosPlantGeometryBuilder:
 
                     # Flowers & Pods
                     is_bean = (species is not None and "bean" in species.lower())
-                    fl_count = min(num_flowers, 4)
+                    fl_count = min(max(num_flowers, 1 if (bud_state in [2, 3, 4]) else 0), 4)
                     fl_offset = fl_offset_arr[n_idx]
                     fl_offset_clamped = min(fl_offset, 1.0 / (0.5 * fl_count - 1.0) if fl_count > 2 else fl_offset)
 
@@ -1416,15 +1372,15 @@ class HeliosPlantGeometryBuilder:
                         if fl_scale <= 1e-4:
                             fl_scale = torch.tensor(0.09, device=device)
 
-                        # Determine if Pod or Flower (bud_state 4: immature pod, bud_state 5: mature pod)
-                        is_pod = (bud_state in [4, 5])
+                        # Determine if Pod or Flower
+                        is_pod = (bud_state == 4)
                         if is_pod:
                             obj_name = "BeanPod.obj" if is_bean else "CowpeaPod.obj"
                             col_mesh = self.COLOR_POD.to(device)
                             organ_type_val = 5 # Pod/Fruit
-                            # In Helios Assets.cpp:410, CowpeaPod is loaded with normalized height=0.75m
-                            # CowpeaPod.obj longest extent (X) is 0.8665m, so prototype scale is 0.75 / 0.8665 = 0.8655
-                            pod_proto_scale = 0.8655 if not is_bean else 1.0
+                            # In Helios Assets.cpp:410, CowpeaPod is loaded with height=0.75m normalized along Z
+                            # CowpeaPod.obj Z extent is 0.2891m, so prototype scale is 0.75 / 0.2891 = 2.594
+                            pod_proto_scale = 2.594 if not is_bean else 1.0
                             tot_fl_scale = fl_scale * pod_proto_scale * (fruit_scale if fruit_scale > 0.0 else 1.0) * node_exist
                         else:
                             if is_bean:
@@ -1515,12 +1471,10 @@ class HeliosPlantGeometryBuilder:
         part_tensor: torch.Tensor,
         device: torch.device = torch.device('cpu'),
         existence_threshold: float = 0.5,
-        soft_existence: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """
         Directly builds 3D meshes from a canonical 16D (or 26D) part tensor on GPU.
-        Fully vectorized with zero Python per-organ loops.
-        Supports continuous soft_existence for smooth gradient backpropagation during direct optimization.
+        Zero XML serialization overhead.
         """
         p = part_tensor.to(device)
         if p.ndim == 1:
@@ -1542,25 +1496,15 @@ class HeliosPlantGeometryBuilder:
             scale = p[:, 10:13]
             exist = p[:, 13] if D > 13 else torch.ones(N, device=device)
 
-        if soft_existence:
-            active_mask = torch.ones(N, dtype=torch.bool, device=device)
-            eff_scales = scale * exist.clamp(min=0.001).unsqueeze(-1)
-        else:
-            active_mask = (exist > existence_threshold)
-            eff_scales = scale
-
-        if not active_mask.any():
-            empty3 = torch.zeros((0, 3), dtype=torch.float32, device=device)
-            empty_f = torch.zeros((0, 3), dtype=torch.int64, device=device)
-            empty_o = torch.zeros((0,), dtype=torch.int64, device=device)
-            return {'vertices': empty3, 'faces': empty_f, 'normals': empty3, 'colors': empty3, 'organ_types': empty_o}
-
-        # Gram-Schmidt 6D to 3x3 rotation matrices (N, 3, 3)
+        # Gram-Schmidt 6D to 3x3 rotation matrices
         u = rot_6d[:, :3]
         v = rot_6d[:, 3:6]
-        r1 = F.normalize(u, dim=-1, eps=1e-6)
+        u_norm = torch.linalg.norm(u, dim=-1, keepdim=True).clamp(min=1e-6)
+        r1 = u / u_norm
         dot = (r1 * v).sum(dim=-1, keepdim=True)
-        r2 = F.normalize(v - dot * r1, dim=-1, eps=1e-6)
+        v_ortho = v - dot * r1
+        v_norm = torch.linalg.norm(v_ortho, dim=-1, keepdim=True).clamp(min=1e-6)
+        r2 = v_ortho / v_norm
         r3 = torch.linalg.cross(r1, r2)
         R_mats = torch.stack([r1, r2, r3], dim=-1)
 
@@ -1571,160 +1515,74 @@ class HeliosPlantGeometryBuilder:
         all_organs = []
         vert_offset = 0
 
-        # -------------------------------------------------------------
-        # 1. BATCH LEAFLETS (Organ Type 4: Leaf)
-        # -------------------------------------------------------------
-        leaf_mask = active_mask & (ot == 4)
-        if leaf_mask.any():
-            v_proto, f_proto = self.asset_mgr.get_mesh_device("CowpeaLeaf_tip_highres.obj", device)
-            n_proto = compute_face_normals_torch(v_proto, f_proto)
+        v_leaf_proto, f_leaf_proto = self.asset_mgr.get_mesh_device("CowpeaLeaf_tip_highres.obj", device)
+        n_leaf_proto = compute_face_normals_torch(v_leaf_proto, f_leaf_proto)
 
-            M_leaf = leaf_mask.sum().item()
-            R_l = R_mats[leaf_mask]
-            pos_l = base_pos[leaf_mask]
-            s_l = eff_scales[leaf_mask].clamp(min=1e-4)
+        active_indices = torch.where(exist > existence_threshold)[0]
 
-            # Batched scaling, rotation, and translation: (M, V, 3)
-            v_scaled = v_proto.unsqueeze(0).expand(M_leaf, -1, -1) * s_l.unsqueeze(1)
-            v_rot = torch.bmm(v_scaled, R_l.transpose(1, 2)) + pos_l.unsqueeze(1)
-            n_rot = torch.bmm(n_proto.unsqueeze(0).expand(M_leaf, -1, -1), R_l.transpose(1, 2))
+        for idx in active_indices:
+            organ_type_val = ot[idx].item()
+            pos = base_pos[idx]
+            R = R_mats[idx]
+            s = scale[idx].clamp(min=1e-3)
 
-            V_l = v_proto.shape[0]
-            f_offsets = (torch.arange(M_leaf, device=device) * V_l).unsqueeze(1).unsqueeze(2)
-            f_batch = (f_proto.unsqueeze(0) + f_offsets).reshape(-1, 3) + vert_offset
+            if organ_type_val == 4:  # Leaf
+                v_cur = (R @ (v_leaf_proto * s).T).T + pos
+                f_cur = f_leaf_proto + vert_offset
+                n_cur = (R @ n_leaf_proto.T).T
+                c_cur = self.COLOR_LEAF.to(device).unsqueeze(0).repeat(v_cur.shape[0], 1)
+                o_cur = torch.full((v_cur.shape[0],), 2, dtype=torch.int64, device=device)
+            elif organ_type_val == 3:  # Petiole (slender tube)
+                p_tip = pos + R[:, 2] * s[2].clamp(min=1e-3)
+                centerline = torch.stack([pos, p_tip], dim=0)
+                pet_rad = (s[0] * 0.06).clamp(min=0.0008, max=0.0035)
+                radii = torch.stack([pet_rad, pet_rad * 0.8], dim=0)
+                v_cur, f_cur, n_cur, c_cur = generate_cone_tube_mesh_torch(
+                    centerline=centerline, radii=radii, color=self.COLOR_STEM.to(device), radial_subdivisions=6
+                )
+                f_cur = f_cur + vert_offset
+                o_cur = torch.full((v_cur.shape[0],), 1, dtype=torch.int64, device=device)
+            elif organ_type_val == 2:  # Internode (stem tube)
+                p_tip = pos + R[:, 2] * s[2].clamp(min=1e-3)
+                centerline = torch.stack([pos, p_tip], dim=0)
+                inode_rad = (s[0] * 0.09).clamp(min=0.0015, max=0.006)
+                radii = torch.stack([inode_rad, inode_rad * 0.85], dim=0)
+                v_cur, f_cur, n_cur, c_cur = generate_cone_tube_mesh_torch(
+                    centerline=centerline, radii=radii, color=self.COLOR_STEM.to(device), radial_subdivisions=6
+                )
+                f_cur = f_cur + vert_offset
+                o_cur = torch.full((v_cur.shape[0],), 0, dtype=torch.int64, device=device)
+            elif organ_type_val == 8:  # Fruit/Pod
+                try:
+                    v_pod, f_pod = self.asset_mgr.get_mesh_device("CowpeaPod.obj", device)
+                    v_cur = (R @ (v_pod * s).T).T + pos
+                    f_cur = f_pod + vert_offset
+                    n_cur = compute_face_normals_torch(v_cur, f_pod)
+                    c_cur = self.COLOR_POD.to(device).unsqueeze(0).repeat(v_cur.shape[0], 1)
+                    o_cur = torch.full((v_cur.shape[0],), 5, dtype=torch.int64, device=device)
+                except Exception:
+                    continue
+            elif organ_type_val == 7 or organ_type_val == 9:  # Flower
+                try:
+                    v_fl, f_fl = self.asset_mgr.get_mesh_device("CowpeaFlower_open_yellow.obj", device)
+                    v_cur = (R @ (v_fl * s).T).T + pos
+                    f_cur = f_fl + vert_offset
+                    n_cur = compute_face_normals_torch(v_cur, f_fl)
+                    c_cur = self.COLOR_FLOWER.to(device).unsqueeze(0).repeat(v_cur.shape[0], 1)
+                    o_cur = torch.full((v_cur.shape[0],), 4, dtype=torch.int64, device=device)
+                except Exception:
+                    continue
+            elif organ_type_val in (0, 1, 5, 10):  # Meta nodes or Buds (skip or small)
+                continue
+            else:
+                continue
 
-            v_flat = v_rot.reshape(-1, 3)
-            n_flat = n_rot.reshape(-1, 3)
-            c_flat = self.COLOR_LEAF.to(device).unsqueeze(0).expand(v_flat.shape[0], -1)
-            o_flat = torch.full((v_flat.shape[0],), 2, dtype=torch.int64, device=device)
-
-            all_verts.append(v_flat)
-            all_faces.append(f_batch)
-            all_normals.append(n_flat)
-            all_colors.append(c_flat)
-            all_organs.append(o_flat)
-            vert_offset += v_flat.shape[0]
-
-        # -------------------------------------------------------------
-        # 2. BATCH TUBES (Organ Type 2: Internode, Organ Type 3: Petiole)
-        # -------------------------------------------------------------
-        tube_mask = active_mask & ((ot == 3) | (ot == 2))
-        if tube_mask.any():
-            n_rad = 6
-            proto_v, proto_f = _make_straight_tube_prototype(1, n_rad, device)
-
-            M_tube = tube_mask.sum().item()
-            R_t = R_mats[tube_mask]
-            pos_t = base_pos[tube_mask]
-            s_t = eff_scales[tube_mask]
-            ot_t = ot[tube_mask]
-
-            lengths = s_t[:, 2].clamp(min=1e-4)
-            is_inode = (ot_t == 2)
-            radii_0 = torch.where(is_inode, (s_t[:, 0] * 0.09).clamp(0.001, 0.006), (s_t[:, 0] * 0.06).clamp(0.0005, 0.0035))
-            radii_1 = torch.where(is_inode, radii_0 * 0.85, radii_0 * 0.8)
-
-            V_t = proto_v.shape[0]
-            # Clean out-of-place differentiable vertex scaling for straight tubes
-            xy_0 = proto_v[:n_rad, :2].unsqueeze(0) * radii_0.unsqueeze(1).unsqueeze(2)
-            z_0 = torch.zeros((M_tube, n_rad, 1), dtype=proto_v.dtype, device=device)
-            v_ring0 = torch.cat([xy_0, z_0], dim=-1)
-
-            xy_1 = proto_v[n_rad:, :2].unsqueeze(0) * radii_1.unsqueeze(1).unsqueeze(2)
-            z_1 = lengths.unsqueeze(1).unsqueeze(2).expand(M_tube, n_rad, 1)
-            v_ring1 = torch.cat([xy_1, z_1], dim=-1)
-
-            v_scaled = torch.cat([v_ring0, v_ring1], dim=1)
-
-            v_rot = torch.bmm(v_scaled, R_t.transpose(1, 2)) + pos_t.unsqueeze(1)
-            v_flat = v_rot.reshape(-1, 3)
-
-            f_offsets = (torch.arange(M_tube, device=device) * V_t).unsqueeze(1).unsqueeze(2)
-            f_batch = (proto_f.unsqueeze(0) + f_offsets).reshape(-1, 3) + vert_offset
-
-            n_flat = compute_face_normals_torch(v_flat, f_batch - vert_offset)
-            c_flat = self.COLOR_STEM.to(device).unsqueeze(0).expand(v_flat.shape[0], -1)
-            o_types = torch.where(is_inode, torch.tensor(0, device=device), torch.tensor(1, device=device))
-            o_flat = o_types.unsqueeze(1).expand(-1, V_t).reshape(-1)
-
-            all_verts.append(v_flat)
-            all_faces.append(f_batch)
-            all_normals.append(n_flat)
-            all_colors.append(c_flat)
-            all_organs.append(o_flat)
-            vert_offset += v_flat.shape[0]
-
-        # -------------------------------------------------------------
-        # 3. BATCH PODS / FRUITS (Organ Type 8)
-        # -------------------------------------------------------------
-        pod_mask = active_mask & (ot == 8)
-        if pod_mask.any():
-            try:
-                v_pod_proto, f_pod_proto = self.asset_mgr.get_mesh_device("CowpeaPod.obj", device)
-                n_pod_proto = compute_face_normals_torch(v_pod_proto, f_pod_proto)
-
-                M_pod = pod_mask.sum().item()
-                R_p = R_mats[pod_mask]
-                pos_p = base_pos[pod_mask]
-                s_p = eff_scales[pod_mask].clamp(min=1e-4)
-
-                v_scaled = v_pod_proto.unsqueeze(0).expand(M_pod, -1, -1) * s_p.unsqueeze(1)
-                v_rot = torch.bmm(v_scaled, R_p.transpose(1, 2)) + pos_p.unsqueeze(1)
-                n_rot = torch.bmm(n_pod_proto.unsqueeze(0).expand(M_pod, -1, -1), R_p.transpose(1, 2))
-
-                V_p = v_pod_proto.shape[0]
-                f_offsets = (torch.arange(M_pod, device=device) * V_p).unsqueeze(1).unsqueeze(2)
-                f_batch = (f_pod_proto.unsqueeze(0) + f_offsets).reshape(-1, 3) + vert_offset
-
-                v_flat = v_rot.reshape(-1, 3)
-                n_flat = n_rot.reshape(-1, 3)
-                c_flat = self.COLOR_POD.to(device).unsqueeze(0).expand(v_flat.shape[0], -1)
-                o_flat = torch.full((v_flat.shape[0],), 5, dtype=torch.int64, device=device)
-
-                all_verts.append(v_flat)
-                all_faces.append(f_batch)
-                all_normals.append(n_flat)
-                all_colors.append(c_flat)
-                all_organs.append(o_flat)
-                vert_offset += v_flat.shape[0]
-            except Exception:
-                pass
-
-        # -------------------------------------------------------------
-        # 4. BATCH FLOWERS (Organ Type 7, 9)
-        # -------------------------------------------------------------
-        fl_mask = active_mask & ((ot == 7) | (ot == 9))
-        if fl_mask.any():
-            try:
-                v_fl_proto, f_fl_proto = self.asset_mgr.get_mesh_device("CowpeaFlower_open_yellow.obj", device)
-                n_fl_proto = compute_face_normals_torch(v_fl_proto, f_fl_proto)
-
-                M_fl = fl_mask.sum().item()
-                R_f = R_mats[fl_mask]
-                pos_f = base_pos[fl_mask]
-                s_f = eff_scales[fl_mask].clamp(min=1e-4)
-
-                v_scaled = v_fl_proto.unsqueeze(0).expand(M_fl, -1, -1) * s_f.unsqueeze(1)
-                v_rot = torch.bmm(v_scaled, R_f.transpose(1, 2)) + pos_f.unsqueeze(1)
-                n_rot = torch.bmm(n_fl_proto.unsqueeze(0).expand(M_fl, -1, -1), R_f.transpose(1, 2))
-
-                V_f = v_fl_proto.shape[0]
-                f_offsets = (torch.arange(M_fl, device=device) * V_f).unsqueeze(1).unsqueeze(2)
-                f_batch = (f_fl_proto.unsqueeze(0) + f_offsets).reshape(-1, 3) + vert_offset
-
-                v_flat = v_rot.reshape(-1, 3)
-                n_flat = n_rot.reshape(-1, 3)
-                c_flat = self.COLOR_FLOWER.to(device).unsqueeze(0).expand(v_flat.shape[0], -1)
-                o_flat = torch.full((v_flat.shape[0],), 4, dtype=torch.int64, device=device)
-
-                all_verts.append(v_flat)
-                all_faces.append(f_batch)
-                all_normals.append(n_flat)
-                all_colors.append(c_flat)
-                all_organs.append(o_flat)
-                vert_offset += v_flat.shape[0]
-            except Exception:
-                pass
+            all_verts.append(v_cur)
+            all_faces.append(f_cur)
+            all_normals.append(n_cur)
+            all_colors.append(c_cur)
+            all_organs.append(o_cur)
+            vert_offset += v_cur.shape[0]
 
         if not all_verts:
             empty3 = torch.zeros((0, 3), dtype=torch.float32, device=device)
@@ -1737,282 +1595,5 @@ class HeliosPlantGeometryBuilder:
             'faces': torch.cat(all_faces, dim=0),
             'normals': torch.cat(all_normals, dim=0),
             'colors': torch.cat(all_colors, dim=0),
-            'organ_types': torch.cat(all_organs, dim=0),
+            'organ_types': torch.cat(all_organs, dim=0)
         }
-
-    def extract_part_tensor(
-        self,
-        organ_array,
-        device: torch.device = torch.device('cpu'),
-        existence_threshold: float = 0.5,
-    ) -> torch.Tensor:
-        """
-        Extracts canonical 16D Part Tensor with exact 3D world positions and 6D rotations
-        by evaluating forward kinematics tree traversal.
-        """
-        if organ_array.tensor.shape[1] == 16:
-            return organ_array.tensor.to(device)
-
-        if organ_array.tensor.shape[1] == 40:
-            t = organ_array.to_legacy_tensor().to(device)
-        else:
-            t = organ_array.tensor.to(device)
-
-        deg2rad = math.pi / 180.0
-        COL_PLANT_ID = 0
-        COL_SHOOT_ID = 1
-        COL_PARENT_SHOOT_ID = 2
-        COL_PARENT_NODE_IDX = 3
-        COL_SHOOT_ROT_PITCH = 4
-        COL_SHOOT_ROT_YAW = 5
-        COL_SHOOT_ROT_ROLL = 6
-        COL_PHYTOMER_IDX = 7
-        COL_INODE_LEN = 8
-        COL_INODE_RAD = 9
-        COL_INODE_PITCH = 10
-        COL_INODE_PHYLLO_ANG = 11
-        COL_CURV_PERT_0 = 14
-        COL_CURV_PERT_1 = 15
-        COL_HAS_PET1 = 18
-        COL_PET0_LEN = 19
-        COL_PET0_RAD = 20
-        COL_PET0_PITCH = 21
-        COL_PET0_CURV = 22
-        COL_PET0_SCALE = 23
-        COL_PET0_NUM_LEAVES = 29
-        COL_PET0_L0_SCALE = 30
-        COL_PET0_L0_PITCH = 31
-        COL_PET0_L0_YAW = 32
-        COL_PET0_L0_ROLL = 33
-        COL_PET1_LEN = 42
-        COL_PET1_RAD = 43
-        COL_PET1_PITCH = 44
-        COL_PET1_CURV = 45
-        COL_PET1_SCALE = 46
-        COL_PET1_NUM_LEAVES = 52
-        COL_PET1_L0_SCALE = 53
-        COL_PET1_L0_PITCH = 54
-        COL_PET1_L0_YAW = 55
-        COL_PET1_L0_ROLL = 56
-        COL_HAS_BUD = 65
-        COL_BUD_STATE = 66
-        COL_BUD_FRUIT_SCALE = 70
-        COL_PED_LEN = 71
-        COL_PED_RAD = 72
-        COL_FLOWER_PITCH = 77
-        COL_FLOWER_YAW = 78
-        COL_FLOWER_ROLL = 79
-        COL_FLOWER_AZ = 80
-        COL_POD_SCALE = 84
-        COL_POD_PITCH = 85
-        COL_POD_YAW = 86
-        COL_POD_ROLL = 87
-        COL_POD_AZ = 88
-        COL_EXISTENCE = 93
-
-        N = t.shape[0]
-        if N == 0:
-            return torch.zeros((0, 16), dtype=torch.float32, device=device)
-
-        # Group by shoots
-        shoots_dict = {}
-        phytomer_arr = [0] * N
-        existence = [1.0] * N
-
-        for idx in range(N):
-            row = t[idx]
-            sid = int(row[COL_SHOOT_ID].item()) if row[COL_SHOOT_ID].item() >= 0 else 0
-            if sid not in shoots_dict:
-                shoots_dict[sid] = []
-            shoots_dict[sid].append(idx)
-            phytomer_arr[idx] = int(row[COL_PHYTOMER_IDX].item())
-            existence[idx] = float(row[COL_EXISTENCE].item()) if row.shape[0] > COL_EXISTENCE else 1.0
-
-        sorted_shoot_ids = sorted(shoots_dict.keys())
-        stored_shoot_contexts = {}
-
-        def compute_shoot_base(sid, first_row, first_idx):
-            if sid == 0:
-                return torch.zeros(3, device=device), torch.tensor([0.0, 0.0, 1.0], device=device), torch.tensor([1.0, 0.0, 0.0], device=device)
-            psid = int(first_row[COL_PARENT_SHOOT_ID].item())
-            pn_xml = int(first_row[COL_PARENT_NODE_IDX].item())
-            p_linear_idx = PlantOrganArray._xml_parent_node_to_linear_idx(t, psid, pn_xml)
-            if p_linear_idx in stored_shoot_contexts:
-                ctx = stored_shoot_contexts[p_linear_idx]
-                return ctx["shoot_base"], ctx["parent_internode_axis"], ctx["parent_petiole_axis"]
-            return torch.zeros(3, device=device), torch.tensor([0.0, 0.0, 1.0], device=device), torch.tensor([1.0, 0.0, 0.0], device=device)
-
-        parts = []
-
-        for sid in sorted_shoot_ids:
-            node_indices = shoots_dict[sid]
-            first_row = t[node_indices[0]]
-
-            base_pitch_rad = first_row[COL_SHOOT_ROT_PITCH] * deg2rad
-            base_yaw_rad = first_row[COL_SHOOT_ROT_YAW] * deg2rad
-            base_roll_rad = first_row[COL_SHOOT_ROT_ROLL] * deg2rad
-
-            shoot_base_pos, parent_internode_axis, parent_petiole_axis = compute_shoot_base(sid, first_row, node_indices[0])
-            curr_pos = shoot_base_pos.clone()
-            prev_internode_axis = parent_internode_axis
-            prev_petiole_axis = parent_petiole_axis
-            z_axis = torch.tensor([0.0, 0.0, 1.0], device=device)
-
-            for p_idx_in_shoot, n_idx in enumerate(node_indices):
-                row = t[n_idx]
-                node_exist = existence[n_idx]
-                if node_exist < existence_threshold:
-                    continue
-
-                petiole_rot_axis = torch.linalg.cross(prev_internode_axis, prev_petiole_axis)
-                if torch.linalg.norm(petiole_rot_axis) < 1e-6:
-                    petiole_rot_axis = torch.tensor([1.0, 0.0, 0.0], device=device)
-                else:
-                    petiole_rot_axis = petiole_rot_axis / torch.linalg.norm(petiole_rot_axis)
-
-                inode_pitch_rad = row[COL_INODE_PITCH] * deg2rad
-                inode_phyllo_rad = row[COL_INODE_PHYLLO_ANG] * deg2rad
-
-                i_axis = prev_internode_axis.clone()
-                if p_idx_in_shoot == 0:
-                    if inode_pitch_rad != 0.0:
-                        i_axis = rotate_vector_about_axis(i_axis, petiole_rot_axis, 0.5 * inode_pitch_rad)
-                    if base_roll_rad != 0.0:
-                        petiole_rot_axis = rotate_vector_about_axis(petiole_rot_axis, prev_internode_axis, base_roll_rad)
-                        i_axis = rotate_vector_about_axis(i_axis, prev_internode_axis, base_roll_rad)
-                    if base_pitch_rad != 0.0:
-                        base_pitch_axis = -1.0 * torch.linalg.cross(prev_internode_axis, prev_petiole_axis)
-                        if torch.linalg.norm(base_pitch_axis) > 1e-6:
-                            base_pitch_axis = base_pitch_axis / torch.linalg.norm(base_pitch_axis)
-                            i_axis = rotate_vector_about_axis(i_axis, base_pitch_axis, base_pitch_rad)
-                            petiole_rot_axis = rotate_vector_about_axis(petiole_rot_axis, base_pitch_axis, base_pitch_rad)
-                    if base_yaw_rad != 0.0:
-                        i_axis = rotate_vector_about_axis(i_axis, prev_internode_axis, base_yaw_rad)
-                        petiole_rot_axis = rotate_vector_about_axis(petiole_rot_axis, prev_internode_axis, base_yaw_rad)
-                else:
-                    i_axis = rotate_vector_about_axis(i_axis, petiole_rot_axis, inode_pitch_rad)
-                    i_axis = rotate_vector_about_axis(i_axis, prev_internode_axis, inode_phyllo_rad)
-                    petiole_rot_axis = rotate_vector_about_axis(petiole_rot_axis, prev_internode_axis, inode_phyllo_rad)
-
-                inode_len = row[COL_INODE_LEN]
-                inode_rad = row[COL_INODE_RAD]
-
-                # Internode Part (Organ Type 2)
-                if inode_len > 1e-4:
-                    R_in = _rotation_from_forward_vector(i_axis, petiole_rot_axis)
-                    r6d_in = torch.cat([R_in[:, 0], R_in[:, 1]], dim=0)
-                    part_in = torch.tensor([
-                        2.0, curr_pos[0].item(), curr_pos[1].item(), curr_pos[2].item(),
-                        r6d_in[0].item(), r6d_in[1].item(), r6d_in[2].item(),
-                        r6d_in[3].item(), r6d_in[4].item(), r6d_in[5].item(),
-                        inode_rad.item(), inode_rad.item(), inode_len.item(),
-                        node_exist, 0.0, inode_phyllo_rad.item()
-                    ], device=device)
-                    parts.append(part_in)
-
-                inode_tip = curr_pos + i_axis * inode_len
-                stored_shoot_contexts[n_idx] = {
-                    "shoot_base": inode_tip,
-                    "parent_internode_axis": i_axis,
-                    "parent_petiole_axis": petiole_rot_axis,
-                }
-
-                # Petioles & Leaves
-                pet_configs = [(0, COL_PET0_LEN, COL_PET0_RAD, COL_PET0_PITCH, COL_PET0_CURV, COL_PET0_SCALE, COL_PET0_NUM_LEAVES, COL_PET0_L0_SCALE)]
-                if row[COL_HAS_PET1] > 0.5:
-                    pet_configs.append((1, COL_PET1_LEN, COL_PET1_RAD, COL_PET1_PITCH, COL_PET1_CURV, COL_PET1_SCALE, COL_PET1_NUM_LEAVES, COL_PET1_L0_SCALE))
-
-                for pet_i, p_len_col, p_rad_col, p_pitch_col, p_curv_col, p_scale_col, p_nl_col, p_l0_col in pet_configs:
-                    pet_len = row[p_len_col]
-                    pet_rad = row[p_rad_col]
-                    if pet_len < 1e-4:
-                        continue
-                    pet_pitch_rad = row[p_pitch_col] * deg2rad
-                    p_axis = rotate_vector_about_axis(i_axis, petiole_rot_axis, pet_pitch_rad)
-                    if pet_i == 1:
-                        p_axis = -1.0 * p_axis
-
-                    pet_base = inode_tip
-                    R_pet = _rotation_from_forward_vector(p_axis, petiole_rot_axis)
-                    r6d_pet = torch.cat([R_pet[:, 0], R_pet[:, 1]], dim=0)
-
-                    # Petiole Part (Organ Type 3)
-                    part_pet = torch.tensor([
-                        3.0, pet_base[0].item(), pet_base[1].item(), pet_base[2].item(),
-                        r6d_pet[0].item(), r6d_pet[1].item(), r6d_pet[2].item(),
-                        r6d_pet[3].item(), r6d_pet[4].item(), r6d_pet[5].item(),
-                        pet_rad.item(), pet_rad.item(), pet_len.item(),
-                        node_exist, 0.0, 0.0
-                    ], device=device)
-                    parts.append(part_pet)
-
-                    pet_tip = pet_base + p_axis * pet_len
-                    num_leaves = int(row[p_nl_col].item())
-                    cls_val = row[p_scale_col].clamp(min=1e-4)
-
-                    # Leaflets (Organ Type 4)
-                    for lf_i in range(min(num_leaves, 3)):
-                        base_lf_col = p_l0_col + lf_i * 4
-                        lf_scale = row[base_lf_col] * cls_val * 0.025
-                        if lf_scale < 1e-4:
-                            continue
-                        lf_pitch = row[base_lf_col + 1] * deg2rad
-                        lf_yaw = row[base_lf_col + 2] * deg2rad
-                        lf_roll = row[base_lf_col + 3] * deg2rad
-
-                        R_lf = R_pet @ rotr_z(lf_yaw, device) @ rotr_y(lf_pitch, device) @ rotr_x(lf_roll, device)
-                        r6d_lf = torch.cat([R_lf[:, 0], R_lf[:, 1]], dim=0)
-
-                        part_lf = torch.tensor([
-                            4.0, pet_tip[0].item(), pet_tip[1].item(), pet_tip[2].item(),
-                            r6d_lf[0].item(), r6d_lf[1].item(), r6d_lf[2].item(),
-                            r6d_lf[3].item(), r6d_lf[4].item(), r6d_lf[5].item(),
-                            lf_scale.item(), lf_scale.item(), lf_scale.item(),
-                            node_exist, 0.0, 0.0
-                        ], device=device)
-                        parts.append(part_lf)
-
-                # Flowers (Organ Type 4 / 7)
-                if row[COL_HAS_BUD] > 0.5:
-                    fl_state = int(row[COL_BUD_STATE].item())
-                    if fl_state == 5:  # Open flower
-                        fl_pitch = row[COL_FLOWER_PITCH] * deg2rad
-                        fl_yaw = row[COL_FLOWER_YAW] * deg2rad
-                        fl_roll = row[COL_FLOWER_ROLL] * deg2rad
-                        fl_scale = row[COL_BUD_FRUIT_SCALE].clamp(min=1e-4) * 0.015
-
-                        R_fl = rotr_z(fl_yaw, device) @ rotr_y(fl_pitch, device) @ rotr_x(fl_roll, device)
-                        r6d_fl = torch.cat([R_fl[:, 0], R_fl[:, 1]], dim=0)
-
-                        part_fl = torch.tensor([
-                            7.0, inode_tip[0].item(), inode_tip[1].item(), inode_tip[2].item(),
-                            r6d_fl[0].item(), r6d_fl[1].item(), r6d_fl[2].item(),
-                            r6d_fl[3].item(), r6d_fl[4].item(), r6d_fl[5].item(),
-                            fl_scale.item(), fl_scale.item(), fl_scale.item(),
-                            node_exist, 0.0, 0.0
-                        ], device=device)
-                        parts.append(part_fl)
-
-                curr_pos = inode_tip
-                prev_internode_axis = i_axis
-
-        if not parts:
-            return torch.zeros((0, 16), dtype=torch.float32, device=device)
-
-        return torch.stack(parts, dim=0)
-
-    # Backward compatibility alias
-    def build_mesh_from_part_array(
-        self,
-        part_tensor: torch.Tensor,
-        template_organ_array: Optional[Any] = None,
-        device: torch.device = torch.device('cpu'),
-        use_kinematics_tree: bool = False,
-        soft_existence: bool = False,
-    ) -> Dict[str, torch.Tensor]:
-        """Alias for build_mesh_from_part_tensor with optional kinematics tree template."""
-        if use_kinematics_tree and template_organ_array is not None:
-            return self.build_mesh_from_organ_array(template_organ_array, device=device)
-        return self.build_mesh_from_part_tensor(part_tensor, device=device, soft_existence=soft_existence)
-
-

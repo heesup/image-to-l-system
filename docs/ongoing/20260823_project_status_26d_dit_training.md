@@ -2,7 +2,7 @@
 > **Date**: 2026-08-23 (updated 2026-08-25) · **Representation**: 26D Organ Vectors · **Active Model**: 232M DiT-Large Flow Matching
 
 > [!NOTE]
-> **2026-08-25 Update**: 16D Part Assembly GPU mesh builder fully vectorized (1,163x speedup over Helios C++). `helios_xml_parser.py` removed. `render_organ_array()` deprecated. See [`20260825_16d_part_assembly_renderer_overhaul_report.md`](20260825_16d_part_assembly_renderer_overhaul_report.md).
+> **2026-08-25 Update**: 16D Part Assembly GPU mesh builder fully vectorized (1,163x speedup over Helios C++). Direct XML → 40D → 16D pipeline established without 94D intermediate; legacy 94D parser/writer removed. All scattered legacy/scratch directories consolidated into top-level `archive/` ([`archive/README.md`](../../archive/README.md)). See [`20260825_16d_part_assembly_renderer_overhaul_report.md`](20260825_16d_part_assembly_renderer_overhaul_report.md).
 
 ---
 

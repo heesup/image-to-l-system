@@ -127,7 +127,7 @@ Below is the comprehensive 3-tier visualization showing the hero comparison (Fin
 
 ![Figure 1: DAP 1 Growth Optimization Trajectory](file:///home/lion397/codes/image-to-l-system/docs/results/assets/fig_dap10_direct_opt_growth_trajectory.png)
 
-*Figure 1: Direct Inverse Optimization Trajectory from DAP 1 Seedling to Mature Cowpea DAP 10 Structure. Top Hero Section: Side-by-side comparison of Final Reconstructed Plant (Step 49) vs Helios Reference Target across Top-down RGB, Calibrated Metric Depth (0–8 cm with horizontal colorbars), and 3D Oblique View ($45^\circ$). Middle Section: Optimization Trajectory across Steps 0, 5, 15, 30, 49. Bottom Section: Quantitative Loss, Silhouette IoU/mSSIM, 3D Chamfer Distance (mm), and Depth MAE (mm) Dynamics.*
+*Figure 1: Direct Inverse Optimization Trajectory from DAP 1 Seedling to Mature Cowpea DAP 10 Structure. Top Hero Section: Side-by-side comparison of Final Reconstructed Plant (Step 49) vs Helios Reference Target across Top-down RGB and Calibrated Metric Depth (0–8 cm with horizontal colorbars). The rightmost hero panels now show a side-view x-z 3D point-cloud overlay (red = target, blue = reconstructed) with the residual Chamfer-gradient arrow, plus a zoomed leaf-tip alignment panel. Middle Section: Optimization Trajectory across Steps 0, 5, 15, 30, 49. Bottom Section: Quantitative Loss, Silhouette IoU/mSSIM, 3D Chamfer Distance (mm), and Depth MAE (mm) Dynamics.*
 
 ---
 

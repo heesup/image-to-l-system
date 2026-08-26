@@ -31,24 +31,30 @@ os.makedirs(ASSETS_DIR, exist_ok=True)
 xml_path = os.path.join(EXACT_GT_DIR, "rad_dap090_0000_plant_0000.xml")
 helios_rgb_path = os.path.join(EXACT_GT_DIR, "rad_dap090_0000_rad.jpeg")
 helios_masks_path = os.path.join(EXACT_GT_DIR, "rad_dap090_0000_masks.json")
-helios_cam_path = os.path.join(EXACT_GT_DIR, "rad_dap090_0000_camera_params.json")
+helios_cam_path = os.path.join(EXACT_GT_DIR, "rad_dap090_0000_camera.json")
+helios_cam_legacy_path = os.path.join(EXACT_GT_DIR, "rad_dap090_0000_camera_params.json")
 
 print("Loading DAP 90 plant XML and Helios Ground Truth...")
 arr = PlantOrganArray.from_xml_file(xml_path)
 renderer = HeliosPyTorchRenderer(image_size=IMG_SIZE).to(DEVICE)
 mesh = renderer.geo_builder.build_mesh_from_organ_array(arr, device=DEVICE, species="cowpea")
 
-# Read exact camera parameters
+# Read exact camera parameters. The Helios exact-GT renders use focus-plant auto-FOV
+# (matching compute_focus_plant_camera), so we only force a fixed HFOV if an explicit
+# legacy *_camera_params.json file is present.
 cam_h = 5.0
 cam_el = 90.0
 cam_hfov = None
 if os.path.exists(helios_cam_path):
     with open(helios_cam_path, "r") as f:
         cam_data = json.load(f)
-    f_len = cam_data.get("camera_properties", {}).get("focal_length", 50.0)
-    s_w = cam_data.get("camera_properties", {}).get("sensor_width", 35.0)
     cam_h = float(cam_data.get("acquisition_properties", {}).get("camera_height_m", 5.0))
     cam_el = float(cam_data.get("acquisition_properties", {}).get("camera_angle_deg", 90.0))
+if os.path.exists(helios_cam_legacy_path):
+    with open(helios_cam_legacy_path, "r") as f:
+        cam_data = json.load(f)
+    f_len = cam_data.get("camera_properties", {}).get("focal_length", 50.0)
+    s_w = cam_data.get("camera_properties", {}).get("sensor_width", 35.0)
     cam_hfov = 2.0 * math.degrees(math.atan((s_w * 0.5) / max(f_len, 1e-3)))
 
 # Extract Helios GT masks
