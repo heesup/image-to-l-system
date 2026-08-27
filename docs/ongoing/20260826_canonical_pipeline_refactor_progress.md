@@ -160,7 +160,7 @@ Remaining gaps are thin-tube positional precision (1–2 px), not scale.
 
 ### 8.6 Helios → 17D → Helios round-trip
 
-`PlantOrganArray.from_xml_file → to_part_tensor (M==N, dormant PED existence 0) → PartAssemblyToXMLConverter → Helios main --input-xml --focus-plant` verified `DAP050 1158→1158 (163 dormant) DAP090 1558→1558 (131 dormant)`, `shoots 11/11`, `Helios rc 0`, mean abs diff `DAP050 0.039 DAP090 0.055` (dormant PED cull + bbox, vs `0.0049` for 40D→XML without cull, OptiX noise `~0.005`). `fig_flower_pod_mask_comparison.png:147-185` col1 now `PyTorch 17D` (was `40D`).
+`PlantOrganArray.from_xml_file → to_part_tensor (M==N, dormant PED existence 0) → PartAssemblyToXMLConverter → Helios main --input-xml --focus-plant` verified `DAP050 1158→1158 (163 dormant) DAP090 1558→1558 (131 dormant)`, `shoots 11/11`, `Helios rc 0`, mean abs diff `DAP050 0.039 DAP090 0.055` (dormant PED cull + bbox, vs `0.0049` for 40D→XML without cull, OptiX noise `~0.005`). `fig_flower_pod_mask_comparison.png:147-185` col1 now `PyTorch 17D` (was `40D`). **Round-trip figure:** `docs/results/assets/fig_helios_17d_roundtrip.png` (6-col `GT Helios | PT 17D | Depth | Mask | RT Helios | Diff` for `DAP050/090` exact_gt, `M==N` 1158/1558) and legacy `fig_40d_helios_render_comparison.png` (baseline `Aug 20`).
 
 ### 8.7 Benchmark
 
