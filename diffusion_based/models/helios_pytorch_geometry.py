@@ -784,14 +784,14 @@ class HeliosPlantGeometryBuilder:
         def _make_row_rot(organ_type_int: int, pos: torch.Tensor, R: torch.Tensor,
                           scale: torch.Tensor, exist_val: torch.Tensor,
                           bud_state: float = 0.0, curv: float = 0.0,
-                          phyllo: float = 0.0) -> torch.Tensor:
+                          phyllo: float = 0.0, clamp_scale: bool = True) -> torch.Tensor:
             """Build one 17D part-tensor row from a full 3x3 rotation matrix R."""
             rot6d = torch.cat([R[:, 0], R[:, 1]], dim=0)
             row = torch.zeros(NUM_FEATURES_PART, device=device)
             row[P_COL_ORGAN_TYPE] = float(organ_type_int)
             row[P_COL_BASE_X:P_COL_BASE_X + 3] = pos
             row[P_COL_ROT_0:P_COL_ROT_0 + 6] = rot6d
-            row[P_COL_SCALE_X:P_COL_SCALE_X + 3] = scale.clamp(min=1e-6)
+            row[P_COL_SCALE_X:P_COL_SCALE_X + 3] = scale.clamp(min=1e-6) if clamp_scale else scale
             row[P_COL_EXISTENCE] = exist_val.clamp(0.0, 1.0)
             row[P_COL_BUD_STATE] = bud_state
             row[P_COL_CURVATURE] = curv
@@ -1381,6 +1381,7 @@ class HeliosPlantGeometryBuilder:
                             bud_state=fl_roll_deg,
                             curv=fl_az_deg,
                             phyllo=fl_scale,
+                            clamp_scale=False,
                         ))
 
                 # Update parent context
