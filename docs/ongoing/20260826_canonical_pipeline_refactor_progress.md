@@ -173,7 +173,21 @@ Fixes in `extract_part_tensor` (helios_pytorch_geometry.py):
 Fixes in `PartAssemblyToXMLConverter` (part_assembly_to_xml.py):
 - `parent_shoot_ID`/`parent_node_index`/`parent_petiole_index` read directly from shoot_meta `scale` (not `cKDTree` `inode_parent`), fixing branch-topology drift (`internode 21` base `Δ0.03` → `0`).
 
-Result (re-render both GT and RT XML with the same `--focus-plant -f params.json`): `DAP050 mean abs diff 0.00396`, `DAP090 0.02398` (vs `0.21` before; OptiX noise `~0.005`), Python FK position diff `max 0.0`. The earlier `0.21` "col1 vs col5" gap was the exact_gt `rad_dap*_rad.jpeg` camera (`focal_length 228mm` fixed FOV) vs the `--focus-plant` re-render — the geometry itself was already faithful after the fixes above. `fig_flower_pod_mask_comparison.png:147-185` col1 now `PyTorch 17D`. **Round-trip figure:** `docs/results/assets/fig_helios_17d_roundtrip.png` regenerated with a consistent camera (`GT XML | PT 17D | Depth | Mask | RT XML | diff`).
+### 8.6.1 Final round-trip fixes (2026-08-27, all organs IoU 1.0)
+
+Two remaining bugs were found by comparing **GT-XML masks vs RT-XML masks** (same `--fov 8.78` camera, the real round-trip test — the earlier `0.004` diff was GT-XML vs RT-XML with the *same wrong camera*, so it was a weak test):
+
+1. **Pod scale** (`26d6a5b`): the RT XML wrote the pre-scaled pod size (`fl_scale*pod_proto_scale*fruit_scale`) as `flower_base_scale` with `current_fruit_scale_factor=1`, so Helios re-rendered pods 2.6x too large (pod mask IoU `0.12`). Fix: store raw `flower_base_scale` in the flower row `phyllo` col and `current_fruit_scale_factor` in the bud row `scale_x`; converter writes them back. Pod IoU `0.12 → 0.95`.
+2. **Flower orientation** (`e43707c`): `_make_row_rot` clamped `scale` to `min=1e-6`, corrupting **negative flower pitch** (GT `flower_pitch=-43.9°` → `0.000001°` in RT XML), so Helios re-rendered flowers pointing up instead of down (flower mask IoU `0.38`). Fix: added `clamp_scale` param, pass `False` for flower rows. Flower IoU `0.38 → 1.00`.
+
+**Result (GT-XML vs RT-XML masks, same `--fov 8.78` camera):**
+
+| DAP | internode | petiole | leaf | floral_bud | flower | pod |
+|-----|-----------|---------|------|------------|--------|-----|
+| 050 | 1.00 | 1.00 | 1.00 | — | — | — |
+| 090 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+
+All organs round-trip at **IoU 1.0000**; RGB mean abs diff `DAP050 0.00446`, `DAP090 0.00571` (OptiX noise). This was a **known unsolved problem** in prior docs (`20260826_helios_flower_peduncle_pod_alignment_and_cleanup_report.md` §4: "Exact pod transforms were sampled during original GT generation and lost"; `20260826_canonical_pipeline_refactor_progress.md` §7.5: flower IoU 0.139, pod 0.035). **Round-trip figure:** `docs/results/assets/fig_helios_17d_roundtrip.png` regenerated (`GT XML | PT 17D | Depth | Mask | RT XML | diff`, same `fov 8.78` camera).
 
 ### 8.7 Benchmark
 
