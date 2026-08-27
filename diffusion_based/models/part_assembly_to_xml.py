@@ -314,6 +314,8 @@ class PartAssemblyToXMLConverter:
                     bud_state_by_inode[grp["internode"]] = bs
             peduncle_infls = {grp["peduncle"]: grp["flowers"] + grp["fruits"]
                               for grp in phytomer_groups if grp["peduncle"] is not None}
+            peduncle_bud = {grp["peduncle"]: grp["bud"]
+                            for grp in phytomer_groups if grp["peduncle"] is not None and grp["bud"] is not None}
             # Build inode_tip_pos for shoot serialization (still needed)
             inode_tip_pos = {}
             for grp in phytomer_groups:
@@ -409,12 +411,15 @@ class PartAssemblyToXMLConverter:
         # This fixes the round-trip because the parser places flowers on the
         # curved peduncle line while the straight-line cKDTree lookup drifts.
         peduncle_infls = {pd: [] for pd in peduncles}
+        peduncle_bud = {}
         for grp in phytomer_groups:
             pd_idx = grp.get("peduncle")
             if pd_idx is None:
                 continue
             peduncle_infls[pd_idx].extend(grp.get("flowers", []))
             peduncle_infls[pd_idx].extend(grp.get("fruits", []))
+            if grp.get("bud") is not None:
+                peduncle_bud[pd_idx] = grp["bud"]
 
         # 4. Serialize to Helios XML
         lines = ['<?xml version="1.0" encoding="UTF-8"?>', '<helios>']
@@ -562,7 +567,10 @@ class PartAssemblyToXMLConverter:
                                 lines.append('\t\t\t\t\t\t\t<parent_index>0</parent_index>')
                                 lines.append('\t\t\t\t\t\t\t<bud_index>0</bud_index>')
                                 lines.append('\t\t\t\t\t\t\t<is_terminal>0</is_terminal>')
-                                lines.append('\t\t\t\t\t\t\t<current_fruit_scale_factor>1</current_fruit_scale_factor>')
+                                # current_fruit_scale_factor stored in bud row scale_x
+                                bud_idx = peduncle_bud.get(pd_idx)
+                                fruit_scale = float(part_info[bud_idx]["sx"]) if bud_idx is not None else 1.0
+                                lines.append(f'\t\t\t\t\t\t\t<current_fruit_scale_factor>{_fmt(fruit_scale)}</current_fruit_scale_factor>')
                                 lines.append('\t\t\t\t\t\t\t<peduncle>')
                                 lines.append(f'\t\t\t\t\t\t\t\t<length>{_fmt(pd_info["sz"])}</length>')
                                 lines.append(f'\t\t\t\t\t\t\t\t<radius>{_fmt(pd_info["sx"])}</radius>')
@@ -577,18 +585,19 @@ class PartAssemblyToXMLConverter:
                                     for fl_idx in infls:
                                         fl_info = part_info[fl_idx]
                                         # Original flower Euler angles stored in scale_y/z (pitch/yaw),
-                                        # bud_state (roll), curvature (azimuth) for exact round-trip.
+                                        # bud_state (roll), curvature (azimuth); raw flower_base_scale in phyllo.
                                         fl_pitch = float(fl_info["sy"])
                                         fl_yaw = float(fl_info["sz"])
                                         fl_roll = float(fl_info.get("pitch_deg", 0.0))
                                         fl_az = float(fl_info["curvature"])
+                                        fl_base_scale = float(fl_info["phyllotactic_angle"])
 
                                         lines.append('\t\t\t\t\t\t\t\t<flower>')
                                         lines.append(f'\t\t\t\t\t\t\t\t\t<flower_pitch>{_fmt(fl_pitch)}</flower_pitch>')
                                         lines.append(f'\t\t\t\t\t\t\t\t\t<flower_yaw>{_fmt(fl_yaw)}</flower_yaw>')
                                         lines.append(f'\t\t\t\t\t\t\t\t\t<flower_roll>{_fmt(fl_roll)}</flower_roll>')
                                         lines.append(f'\t\t\t\t\t\t\t\t\t<flower_azimuth>{_fmt(fl_az)}</flower_azimuth>')
-                                        lines.append(f'\t\t\t\t\t\t\t\t\t<flower_base_scale>{_fmt(fl_info["sx"])}</flower_base_scale>')
+                                        lines.append(f'\t\t\t\t\t\t\t\t\t<flower_base_scale>{_fmt(fl_base_scale)}</flower_base_scale>')
                                         lines.append('\t\t\t\t\t\t\t\t</flower>')
                                     lines.append('\t\t\t\t\t\t\t</inflorescence>')
                                 lines.append('\t\t\t\t\t\t</floral_bud>')

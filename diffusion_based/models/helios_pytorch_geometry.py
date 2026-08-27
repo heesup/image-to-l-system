@@ -1194,12 +1194,13 @@ class HeliosPlantGeometryBuilder:
 
                 # Emit bud row (ORGAN_BUD / ORGAN_BUD_ABORTED) so the XML converter
                 # can reconstruct bud_state and floral_bud blocks via record order.
+                # Store current_fruit_scale_factor in scale_x for faithful round-trip.
                 if bud_i is not None:
                     bud_organ = ORGAN_BUD_ABORTED if bud_state == 5 else ORGAN_BUD
                     rows.append(_make_row(
                         bud_organ, curr_pos, inode_tip_axis,
                         up_hint=petiole_rot_axis,
-                        scale=torch.zeros(3, device=device),
+                        scale=torch.tensor([fruit_scale, 0.0, 0.0], device=device),
                         exist_val=node_exist,
                         bud_state=float(bud_state),
                     ))
@@ -1368,7 +1369,7 @@ class HeliosPlantGeometryBuilder:
                         s_tens = torch.tensor(tot_fl_scale, device=device)
                         # Store original flower pitch/yaw/roll/azimuth (deg) so the XML
                         # round-trip writes exact angles (Helios Euler convention is lossy
-                        # to invert from R_fl).
+                        # to invert from R_fl). Store raw flower_base_scale in phyllo.
                         rows.append(_make_row_rot(
                             organ_type_int, cur_fl_base, R_fl,
                             scale=torch.stack([
@@ -1379,6 +1380,7 @@ class HeliosPlantGeometryBuilder:
                             exist_val=node_exist,
                             bud_state=fl_roll_deg,
                             curv=fl_az_deg,
+                            phyllo=fl_scale,
                         ))
 
                 # Update parent context
