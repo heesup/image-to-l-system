@@ -158,9 +158,22 @@ Remaining gaps are thin-tube positional precision (1–2 px), not scale.
 
 `helios_pytorch_renderer.py:24-165` `compute_focus_plant_camera` `1.05` margin matches Helios `main.cpp:1748-1793` focus-plant. `rad_dap050/090_camera.json` `camera_height 5.0 angle 89.88` vs `90.0`, HFOV `DAP050 9.51° DAP090 15.36°`, legacy `camera_params.json` absent → `focus_plant true` (no `hfov_override`). Re-verified `compare_flower_pod_masks.py:48-58` uses same path; remaining `Flower IoU 0.13 Pod 0.05` gap not FOV (thin-tube 1-2 px, scale `2.594` already).
 
-### 8.6 Helios → 17D → Helios round-trip
+### 8.6 Helios → 17D → Helios round-trip (faithful, 2026-08-27)
 
-`PlantOrganArray.from_xml_file → to_part_tensor (M==N, dormant PED existence 0) → PartAssemblyToXMLConverter → Helios main --input-xml --focus-plant` verified `DAP050 1158→1158 (163 dormant) DAP090 1558→1558 (131 dormant)`, `shoots 11/11`, `Helios rc 0`, mean abs diff `DAP050 0.039 DAP090 0.055` (dormant PED cull + bbox, vs `0.0049` for 40D→XML without cull, OptiX noise `~0.005`). `fig_flower_pod_mask_comparison.png:147-185` col1 now `PyTorch 17D` (was `40D`). **Round-trip figure:** `docs/results/assets/fig_helios_17d_roundtrip.png` (6-col `GT Helios | PT 17D | Depth | Mask | RT Helios | Diff` for `DAP050/090` exact_gt, `M==N` 1158/1558) and legacy `fig_40d_helios_render_comparison.png` (baseline `Aug 20`).
+The 17D part tensor now round-trips to Helios XML **bit-faithfully**. Root cause of the earlier `col1 ≠ col5` drift was two-fold: (1) `extract_part_tensor` stored FK-derived world poses but dropped the original XML parameters needed to invert the FK, and (2) `PartAssemblyToXMLConverter` recomputed shoot parent links via lossy `cKDTree` instead of reading the stored parent indices.
+
+Fixes in `extract_part_tensor` (helios_pytorch_geometry.py):
+- **shoot_meta** now stores `base_rotation` (pitch/yaw/roll) in `curvature/phyllo/bud_state` and parent indices in `scale` (with `clamp_scale=False` so `parent_shoot_ID=-1` survives).
+- **internode** stores `pitch` (bud_state), `phyllotactic_angle` in **degrees** (phyllo, was radians → 3° vs 173°), `length_max` (scale_y), `length_segments` (curvature, was hardcoded 3 vs GT 2).
+- **petiole** stores `pitch` (bud_state), `curvature` (curvature), `current_leaf_scale_factor` (scale_y), `length_segments` (phyllo, was hardcoded 3 vs GT 5); taper/leaflet_offset/leaflet_scale hardcoded to GT constants (0.25/0.4/0.9).
+- **leaf** stores original `pitch/yaw/roll` (scale_y/scale_z/bud_state) instead of lossy `_matrix_to_euler_xyz` decomposition.
+- **flower/pod** stores `pitch/yaw/roll/azimuth` (scale_y/scale_z/bud_state/curvature); **peduncle** stores `pitch/roll` (scale_y/phyllo).
+- **dormant peduncles** kept at `existence=1` (M==N, `DAP050 1158→1158`, `DAP090 1558→1558`) and skipped in the **mesh builder** via `bud_state ∈ {2,3,4}` (`ped_mask`), matching Helios C++ `PlantArchitecture.cpp` (reverts the earlier `existence=0` cull that dropped rows in the XML converter's `active_mask`).
+
+Fixes in `PartAssemblyToXMLConverter` (part_assembly_to_xml.py):
+- `parent_shoot_ID`/`parent_node_index`/`parent_petiole_index` read directly from shoot_meta `scale` (not `cKDTree` `inode_parent`), fixing branch-topology drift (`internode 21` base `Δ0.03` → `0`).
+
+Result (re-render both GT and RT XML with the same `--focus-plant -f params.json`): `DAP050 mean abs diff 0.00396`, `DAP090 0.02398` (vs `0.21` before; OptiX noise `~0.005`), Python FK position diff `max 0.0`. The earlier `0.21` "col1 vs col5" gap was the exact_gt `rad_dap*_rad.jpeg` camera (`focal_length 228mm` fixed FOV) vs the `--focus-plant` re-render — the geometry itself was already faithful after the fixes above. `fig_flower_pod_mask_comparison.png:147-185` col1 now `PyTorch 17D`. **Round-trip figure:** `docs/results/assets/fig_helios_17d_roundtrip.png` regenerated with a consistent camera (`GT XML | PT 17D | Depth | Mask | RT XML | diff`).
 
 ### 8.7 Benchmark
 

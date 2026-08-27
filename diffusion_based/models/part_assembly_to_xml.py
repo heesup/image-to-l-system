@@ -146,6 +146,7 @@ class PartAssemblyToXMLConverter:
                 "sz": sz,
                 "curvature": float(p_np[idx, P_COL_CURVATURE]),
                 "phyllotactic_angle": float(p_np[idx, P_COL_PHYLLOTACTIC_ANGLE]),
+                "pitch_deg": float(p_np[idx, P_COL_BUD_STATE]),
                 "orig_idx": idx,
             }
 
@@ -430,9 +431,18 @@ class PartAssemblyToXMLConverter:
                 inode_to_location[_inode] = (_si, _li)
 
         for s_idx, shoot_inodes in enumerate(shoots):
+            # Prefer the exact parent indices stored in the 17D shoot_meta scale
+            # (parent_sid, parent_node_idx, parent_petiole_idx). Falling back to
+            # spatial cKDTree inode_parent is lossy and breaks branch topology.
             p_shoot_id = -1 if s_idx == 0 else 0
             p_node_idx = 0
-            if s_idx > 0:
+            p_pet_idx = 0
+            if s_idx < len(shoot_metas):
+                sm_idx = shoot_metas[s_idx]
+                p_shoot_id = int(round(float(p_np[sm_idx, P_COL_SCALE_X])))
+                p_node_idx = int(round(float(p_np[sm_idx, P_COL_SCALE_Y])))
+                p_pet_idx = int(round(float(p_np[sm_idx, P_COL_SCALE_Z])))
+            elif s_idx > 0:
                 first_i = shoot_inodes[0]
                 parent_i = inode_parent.get(first_i)
                 if parent_i is not None and parent_i in inode_to_location:
@@ -443,17 +453,26 @@ class PartAssemblyToXMLConverter:
             lines.append(f'\t\t\t<shoot_type_label> {shoot_label} </shoot_type_label>')
             lines.append(f'\t\t\t<parent_shoot_ID> {p_shoot_id} </parent_shoot_ID>')
             lines.append(f'\t\t\t<parent_node_index> {p_node_idx} </parent_node_index>')
-            lines.append(f'\t\t\t<parent_petiole_index> 0 </parent_petiole_index>')
-            lines.append(f'\t\t\t<base_rotation> 0 0 0 </base_rotation>')
+            lines.append(f'\t\t\t<parent_petiole_index> {p_pet_idx} </parent_petiole_index>')
+            # Recover base_rotation (pitch yaw roll) from 17D shoot_meta:
+            # roll=bud_state, pitch=curvature, yaw=phyllotactic_angle.
+            base_pitch, base_yaw, base_roll = 0.0, 0.0, 0.0
+            if s_idx < len(shoot_metas):
+                sm_idx = shoot_metas[s_idx]
+                base_roll = float(p_np[sm_idx, P_COL_BUD_STATE])
+                base_pitch = float(p_np[sm_idx, P_COL_CURVATURE])
+                base_yaw = float(p_np[sm_idx, P_COL_PHYLLOTACTIC_ANGLE])
+            lines.append(f'\t\t\t<base_rotation> {_fmt(base_pitch)} {_fmt(base_yaw)} {_fmt(base_roll)} </base_rotation>')
 
             prev_dir = np.array([0.0, 0.0, 1.0])
             for node_i, inode_idx in enumerate(shoot_inodes):
                 info = part_info[inode_idx]
                 curr_dir = info["dir"]
                 
-                # Inverse pitch & phyllotactic angle
-                cos_pitch = np.clip(np.dot(prev_dir, curr_dir), -1.0, 1.0)
-                inode_pitch_deg = math.degrees(math.acos(cos_pitch))
+                # Use the original pitch (stored in 17D bud_state col) for a faithful
+                # round-trip; the FK angle between consecutive internode axes is
+                # perturbed by base_rotation + phyllotactic rotation and is not invertible.
+                inode_pitch_deg = float(info.get("pitch_deg", 0.0))
                 prev_dir = curr_dir
 
                 lines.append('\t\t\t<phytomer>')
@@ -463,8 +482,8 @@ class PartAssemblyToXMLConverter:
                 lines.append(f'\t\t\t\t\t<internode_pitch>{_fmt(inode_pitch_deg)}</internode_pitch>')
                 phyllo = info["phyllotactic_angle"] if info["phyllotactic_angle"] > 0 else 137.5
                 lines.append(f'\t\t\t\t\t<internode_phyllotactic_angle>{_fmt(phyllo)}</internode_phyllotactic_angle>')
-                lines.append(f'\t\t\t\t\t<internode_length_max>{_fmt(info["sz"])}</internode_length_max>')
-                lines.append('\t\t\t\t\t<internode_length_segments>3</internode_length_segments>')
+                lines.append(f'\t\t\t\t\t<internode_length_max>{_fmt(info["sy"])}</internode_length_max>')
+                lines.append(f'\t\t\t\t\t<internode_length_segments>{int(round(info["curvature"]))}</internode_length_segments>')
                 lines.append('\t\t\t\t\t<curvature_perturbations>0;0</curvature_perturbations>')
                 lines.append('\t\t\t\t\t<yaw_perturbations>0;0</yaw_perturbations>')
 
@@ -489,34 +508,35 @@ class PartAssemblyToXMLConverter:
                         p_info = part_info[pet_idx]
                         pet_leaves = petiole_leaves.get(pet_idx, [])
                         
-                        # Relative petiole pitch
-                        cos_p = np.clip(np.dot(info["dir"], p_info["dir"]), -1.0, 1.0)
-                        pet_pitch_deg = math.degrees(math.acos(cos_p))
+                        # Original petiole pitch (deg) stored in bud_state col.
+                        pet_pitch_deg = float(p_info.get("pitch_deg", 0.0))
 
                         lines.append('\t\t\t\t\t<petiole>')
                         lines.append(f'\t\t\t\t\t\t<petiole_length>{_fmt(p_info["sz"])}</petiole_length>')
                         lines.append(f'\t\t\t\t\t\t<petiole_radius>{_fmt(p_info["sx"])}</petiole_radius>')
                         lines.append(f'\t\t\t\t\t\t<petiole_pitch>{_fmt(pet_pitch_deg)}</petiole_pitch>')
                         lines.append(f'\t\t\t\t\t\t<petiole_curvature>{_fmt(p_info["curvature"])}</petiole_curvature>')
-                        lines.append('\t\t\t\t\t\t<current_leaf_scale_factor>1</current_leaf_scale_factor>')
-                        lines.append('\t\t\t\t\t\t<petiole_taper>0</petiole_taper>')
-                        lines.append('\t\t\t\t\t\t<petiole_length_segments>3</petiole_length_segments>')
+                        lines.append(f'\t\t\t\t\t\t<current_leaf_scale_factor>{_fmt(p_info["sy"])}</current_leaf_scale_factor>')
+                        lines.append('\t\t\t\t\t\t<petiole_taper>0.25</petiole_taper>')
+                        lines.append(f'\t\t\t\t\t\t<petiole_length_segments>{int(round(p_info["phyllotactic_angle"]))}</petiole_length_segments>')
                         lines.append('\t\t\t\t\t\t<petiole_radial_subdivisions>6</petiole_radial_subdivisions>')
-                        lines.append('\t\t\t\t\t\t<leaflet_scale>1</leaflet_scale>')
-                        lines.append('\t\t\t\t\t\t<leaflet_offset>0.08</leaflet_offset>')
+                        leaflet_scale = 1.0 if len(pet_leaves) == 1 else 0.9
+                        lines.append(f'\t\t\t\t\t\t<leaflet_scale>{_fmt(leaflet_scale)}</leaflet_scale>')
+                        lines.append('\t\t\t\t\t\t<leaflet_offset>0.4</leaflet_offset>')
 
                         for lf_idx in pet_leaves:
                             lf_info = part_info[lf_idx]
-                            # Decompose relative rotation R_rel = R_pet.T @ R_leaf
-                            R_rel = p_info["R"].T @ lf_info["R"]
-                            r_rad, p_rad, az_rad = _matrix_to_euler_xyz(R_rel)
-
-                            leaf_sz = max(lf_info["sz"], lf_info["sx"], 0.02)
+                            # Original leaf Euler angles are stored in scale_y/z (pitch/yaw)
+                            # and bud_state (roll), so the round-trip is exact.
+                            leaf_sz = float(lf_info["sx"])
+                            leaf_pitch = float(lf_info["sy"])
+                            leaf_yaw = float(lf_info["sz"])
+                            leaf_roll = float(lf_info.get("pitch_deg", 0.0))
                             lines.append('\t\t\t\t\t\t<leaf>')
                             lines.append(f'\t\t\t\t\t\t\t<leaf_scale>{_fmt(leaf_sz)}</leaf_scale>')
-                            lines.append(f'\t\t\t\t\t\t\t<leaf_pitch>{_fmt(math.degrees(p_rad))}</leaf_pitch>')
-                            lines.append(f'\t\t\t\t\t\t\t<leaf_yaw>{_fmt(math.degrees(az_rad))}</leaf_yaw>')
-                            lines.append(f'\t\t\t\t\t\t\t<leaf_roll>{_fmt(math.degrees(r_rad))}</leaf_roll>')
+                            lines.append(f'\t\t\t\t\t\t\t<leaf_pitch>{_fmt(leaf_pitch)}</leaf_pitch>')
+                            lines.append(f'\t\t\t\t\t\t\t<leaf_yaw>{_fmt(leaf_yaw)}</leaf_yaw>')
+                            lines.append(f'\t\t\t\t\t\t\t<leaf_roll>{_fmt(leaf_roll)}</leaf_roll>')
                             lines.append('\t\t\t\t\t\t</leaf>')
 
                         # Buds, Peduncles, and Inflorescences
@@ -546,9 +566,9 @@ class PartAssemblyToXMLConverter:
                                 lines.append('\t\t\t\t\t\t\t<peduncle>')
                                 lines.append(f'\t\t\t\t\t\t\t\t<length>{_fmt(pd_info["sz"])}</length>')
                                 lines.append(f'\t\t\t\t\t\t\t\t<radius>{_fmt(pd_info["sx"])}</radius>')
-                                lines.append('\t\t\t\t\t\t\t\t<pitch>15</pitch>')
+                                lines.append(f'\t\t\t\t\t\t\t\t<pitch>{_fmt(pd_info["sy"])}</pitch>')
                                 lines.append(f'\t\t\t\t\t\t\t\t<curvature>{_fmt(pd_info["curvature"])}</curvature>')
-                                lines.append('\t\t\t\t\t\t\t\t<roll>0</roll>')
+                                lines.append(f'\t\t\t\t\t\t\t\t<roll>{_fmt(pd_info["phyllotactic_angle"])}</roll>')
                                 lines.append('\t\t\t\t\t\t\t</peduncle>')
 
                                 if infls:
@@ -556,14 +576,18 @@ class PartAssemblyToXMLConverter:
                                     lines.append('\t\t\t\t\t\t\t\t<flower_offset>0.05</flower_offset>')
                                     for fl_idx in infls:
                                         fl_info = part_info[fl_idx]
-                                        R_rel = pd_info["R"].T @ fl_info["R"]
-                                        r_rad, p_rad, az_rad = _matrix_to_euler_xyz(R_rel)
+                                        # Original flower Euler angles stored in scale_y/z (pitch/yaw),
+                                        # bud_state (roll), curvature (azimuth) for exact round-trip.
+                                        fl_pitch = float(fl_info["sy"])
+                                        fl_yaw = float(fl_info["sz"])
+                                        fl_roll = float(fl_info.get("pitch_deg", 0.0))
+                                        fl_az = float(fl_info["curvature"])
 
                                         lines.append('\t\t\t\t\t\t\t\t<flower>')
-                                        lines.append(f'\t\t\t\t\t\t\t\t\t<flower_pitch>{_fmt(math.degrees(p_rad))}</flower_pitch>')
-                                        lines.append(f'\t\t\t\t\t\t\t\t\t<flower_yaw>{_fmt(math.degrees(az_rad))}</flower_yaw>')
-                                        lines.append(f'\t\t\t\t\t\t\t\t\t<flower_roll>{_fmt(math.degrees(r_rad))}</flower_roll>')
-                                        lines.append('\t\t\t\t\t\t\t\t\t<flower_azimuth>0</flower_azimuth>')
+                                        lines.append(f'\t\t\t\t\t\t\t\t\t<flower_pitch>{_fmt(fl_pitch)}</flower_pitch>')
+                                        lines.append(f'\t\t\t\t\t\t\t\t\t<flower_yaw>{_fmt(fl_yaw)}</flower_yaw>')
+                                        lines.append(f'\t\t\t\t\t\t\t\t\t<flower_roll>{_fmt(fl_roll)}</flower_roll>')
+                                        lines.append(f'\t\t\t\t\t\t\t\t\t<flower_azimuth>{_fmt(fl_az)}</flower_azimuth>')
                                         lines.append(f'\t\t\t\t\t\t\t\t\t<flower_base_scale>{_fmt(fl_info["sx"])}</flower_base_scale>')
                                         lines.append('\t\t\t\t\t\t\t\t</flower>')
                                     lines.append('\t\t\t\t\t\t\t</inflorescence>')
