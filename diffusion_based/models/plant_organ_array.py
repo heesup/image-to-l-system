@@ -237,10 +237,11 @@ P_COL_SCALE_X = 10
 P_COL_SCALE_Y = 11
 P_COL_SCALE_Z = 12
 P_COL_EXISTENCE = 13
-P_COL_CURVATURE = 14
-P_COL_PHYLLOTACTIC_ANGLE = 15
-NUM_FEATURES = 16
-NUM_FEATURES_PART = 16
+P_COL_BUD_STATE = 14
+P_COL_CURVATURE = 15
+P_COL_PHYLLOTACTIC_ANGLE = 16
+NUM_FEATURES = 17
+NUM_FEATURES_PART = 17
 
 
 # =============================================================================
@@ -1311,7 +1312,16 @@ class PlantOrganArray:
         This is a lossy grouping operation: per-organ rows are grouped back into
         phytomer slots. It is provided only for compatibility with code that has
         not yet migrated to the typed layout.
+
+        DEPRECATED: the rendering pipeline no longer uses the legacy 94D layout.
         """
+        import warnings
+        warnings.warn(
+            "to_legacy_tensor is deprecated. The rendering pipeline uses the typed (N, 40) "
+            "layout and the canonical 16D part tensor.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if self.is_legacy:
             return self.tensor.clone()
 
@@ -1445,7 +1455,16 @@ class PlantOrganArray:
         gradients flow back to the continuous columns. Cells that are pure
         constants (existence flags, petiole/leaf/flower counts, ...) are baked
         as non-differentiable constants. Returns a legacy (M, 94) tensor.
+
+        DEPRECATED: the rendering pipeline no longer uses the legacy 94D layout.
         """
+        import warnings
+        warnings.warn(
+            "to_legacy_tensor_diff is deprecated. The rendering pipeline uses the typed "
+            "(N, 40) layout and the canonical 16D part tensor.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         t = self.tensor
         N = self.num_nodes
 

@@ -739,8 +739,8 @@ class HeliosPyTorchRenderer(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         """Build the mesh, optionally reusing a cached result when the input is unchanged."""
         if differentiable or not use_cache:
-            return self.geo_builder.build_mesh_from_organ_array(
-                organ_array, device=device, existence_threshold=existence_threshold
+            return self.geo_builder.build_mesh_from_part_tensor(
+                organ_array.to_part_tensor(device=device), device=device, existence_threshold=existence_threshold
             )
 
         t = organ_array.tensor
@@ -749,8 +749,8 @@ class HeliosPyTorchRenderer(nn.Module):
         if cached is not None:
             return cached
 
-        mesh_dict = self.geo_builder.build_mesh_from_organ_array(
-            organ_array, device=device, existence_threshold=existence_threshold
+        mesh_dict = self.geo_builder.build_mesh_from_part_tensor(
+            organ_array.to_part_tensor(device=device), device=device, existence_threshold=existence_threshold
         )
         self._mesh_cache = {key: mesh_dict}
         return mesh_dict

@@ -131,7 +131,7 @@ def load_dap10_target(renderer: HeliosPyTorchRenderer, device: torch.device):
         raise FileNotFoundError(f"Missing {xml_path}")
 
     arr = PlantOrganArray.from_xml_file(xml_path)
-    mesh = renderer.geo_builder.build_mesh_from_organ_array(arr, device=device, species="cowpea")
+    mesh = renderer.geo_builder.build_mesh_from_part_tensor(arr.to_part_tensor(device=device), device=device)
     verts = mesh["vertices"]
     cam_bounds = {
         "min": verts.min(dim=0)[0].tolist(),
@@ -269,7 +269,7 @@ def run_botanical_direct_opt(
         t_eval[:, T_COL_EXISTENCE] = (init_tensor[:, T_COL_EXISTENCE] + delta_exist).clamp(0.01, 1.0)
 
         arr_eval = PlantOrganArray(t_eval, raw_metadata=target_spec["arr"].raw_metadata)
-        mesh_eval = renderer.geo_builder.build_mesh_from_organ_array(arr_eval, device=device, species="cowpea")
+        mesh_eval = renderer.geo_builder.build_mesh_from_part_tensor(arr_eval.to_part_tensor(device=device), device=device)
 
         rgbd_eval = renderer.forward(
             mesh_eval, elevation_deg=ELEVATION_DEG, focus_plant=True, fixed_camera_bounds=cam_bounds, include_depth=True,

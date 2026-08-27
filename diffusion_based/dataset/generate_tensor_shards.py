@@ -174,7 +174,7 @@ def generate_shards(
             nodes_26d[:num_nodes][act, FM_PHYLLO_IDX] = part_16d[:num_nodes][act, 15] / PHYLLOTACTIC_SCALE
 
             # Pre-build GPU Mesh
-            mesh = renderer.geo_builder.build_mesh_from_organ_array(arr, device=device)
+            mesh = renderer.geo_builder.build_mesh_from_part_tensor(arr.to_part_tensor(device=device), device=device)
 
             cached_templates.append({
                 "mesh": mesh,

@@ -2,7 +2,7 @@
 Autonomous Part Assembly to Helios XML Converter (Ultra-Fast Vectorized).
 
 Reconstructs a fully valid, standalone Helios XML plant architecture document
-from an unorganized (N, 14) spatial part tensor without requiring any original
+from an unorganized (N, 16/17) spatial part tensor without requiring any original
 XML template.
 
 Pipeline:
@@ -28,6 +28,7 @@ from diffusion_based.models.plant_organ_array import (
     P_COL_SCALE_Y,
     P_COL_SCALE_Z,
     P_COL_EXISTENCE,
+    P_COL_BUD_STATE,
     P_COL_CURVATURE,
     P_COL_PHYLLOTACTIC_ANGLE,
     ORGAN_ROOT_META,
@@ -67,7 +68,7 @@ def _matrix_to_euler_xyz(R: np.ndarray) -> Tuple[float, float, float]:
 
 
 class PartAssemblyToXMLConverter:
-    """Autonomous converter from (N, 14) part tensor to Helios XML."""
+    """Autonomous converter from (N, 16/17) part tensor to Helios XML."""
 
     def __init__(self, connectivity_tolerance: float = 0.08):
         self.tol = connectivity_tolerance
@@ -79,7 +80,7 @@ class PartAssemblyToXMLConverter:
         plant_type: str = "cowpea",
         existence_threshold: float = 0.5,
     ) -> str:
-        """Converts (N, 14) part tensor to a valid Helios XML string."""
+        """Converts (N, 16/17) part tensor to a valid Helios XML string."""
         p_np = part_tensor.detach().cpu().numpy()
         N = p_np.shape[0]
 
@@ -132,7 +133,7 @@ class PartAssemblyToXMLConverter:
             sx = float(p_np[idx, P_COL_SCALE_X])
             sy = float(p_np[idx, P_COL_SCALE_Y])
             sz = float(p_np[idx, P_COL_SCALE_Z])
-            dir_z = R @ np.array([0.0, 0.0, 1.0])
+            dir_z = R @ np.array([0.0, 1.0, 0.0])
             tip = base + dir_z * sz
             part_info[idx] = {
                 "ot": int(round(p_np[idx, P_COL_ORGAN_TYPE])),
@@ -208,88 +209,152 @@ class PartAssemblyToXMLConverter:
             # Fallback for empty plant
             return '<?xml version="1.0" encoding="UTF-8"?>\n<helios>\n\t<plant_instance id="0">\n\t\t<plant_base_position>0;0;0</plant_base_position>\n\t\t<plant_type>cowpea</plant_type>\n\t</plant_instance>\n</helios>\n'
 
-        # 2. Reconstruct Stem / Shoot Graph from Internodes using cKDTree
-        # Sort internodes by base Z height
-        internodes.sort(key=lambda i: part_info[i]["base"][2])
-        inode_children = {i: [] for i in internodes}
-        inode_parent = {i: None for i in internodes}
+        # 2. Reconstruct Stem / Shoot Graph.
+        # If the part tensor carries shoot meta (record-order grouping), use it
+        # for faithful topology; otherwise fall back to spatial cKDTree.
+        if shoot_metas:
+            shoot_groups: Dict[int, List[int]] = {}
+            for grp in phytomer_groups:
+                sid = grp["shoot_id"]
+                shoot_groups.setdefault(sid, []).append(grp["internode"])
+            shoots = [shoot_groups[sid] for sid in sorted(shoot_groups.keys())]
+            inode_parent = {i: None for i in internodes}
+            inode_children: Dict[int, List[int]] = {i: [] for i in internodes}
+            for s_idx, sh in enumerate(shoots):
+                if s_idx == 0:
+                    continue
+                first_base = part_info[sh[0]]["base"]
+                best_parent = None
+                best_dist = float("inf")
+                for cand_sid, cand_sh in enumerate(shoots[:s_idx]):
+                    for cand_inode in cand_sh:
+                        d = float(np.linalg.norm(part_info[cand_inode]["tip"] - first_base))
+                        if d < best_dist and d < self.tol:
+                            best_dist = d
+                            best_parent = cand_inode
+                if best_parent is not None:
+                    inode_parent[sh[0]] = best_parent
+                    inode_children[best_parent].append(sh[0])
+        else:
+            # Fallback: spatial cKDTree (lossy)
+            internodes.sort(key=lambda i: part_info[i]["base"][2])
+            inode_children = {i: [] for i in internodes}
+            inode_parent = {i: None for i in internodes}
 
-        inode_tips = np.array([part_info[i]["tip"] for i in internodes])
-        inode_tree = cKDTree(inode_tips)
+            inode_tips = np.array([part_info[i]["tip"] for i in internodes])
+            inode_tree = cKDTree(inode_tips)
 
-        for i in internodes:
-            i_base = part_info[i]["base"]
-            dists, idxs = inode_tree.query(i_base, k=min(5, len(internodes)))
-            if not isinstance(dists, np.ndarray):
-                dists, idxs = [dists], [idxs]
-            for d, idx_cand in zip(dists, idxs):
-                p_cand = internodes[idx_cand]
-                if p_cand != i and d < self.tol:
-                    inode_parent[i] = p_cand
-                    inode_children[p_cand].append(i)
-                    break
+            for i in internodes:
+                i_base = part_info[i]["base"]
+                dists, idxs = inode_tree.query(i_base, k=min(5, len(internodes)))
+                if not isinstance(dists, np.ndarray):
+                    dists, idxs = [dists], [idxs]
+                for d, idx_cand in zip(dists, idxs):
+                    p_cand = internodes[idx_cand]
+                    if p_cand != i and d < self.tol:
+                        inode_parent[i] = p_cand
+                        inode_children[p_cand].append(i)
+                        break
 
-        root_inodes = [i for i in internodes if inode_parent[i] is None]
-        if not root_inodes:
-            root_inodes = [internodes[0]]
+            root_inodes = [i for i in internodes if inode_parent[i] is None]
+            if not root_inodes:
+                root_inodes = [internodes[0]]
 
-        shoots: List[List[int]] = []
-        visited = set()
+            shoots: List[List[int]] = []
+            visited = set()
 
-        def trace_shoot(start_inode: int) -> List[int]:
-            path = []
-            curr = start_inode
-            while curr is not None and curr not in visited:
-                visited.add(curr)
-                path.append(curr)
-                children = inode_children.get(curr, [])
-                if not children:
-                    break
-                curr_dir = part_info[curr]["dir"]
-                child_scores = [np.dot(curr_dir, part_info[c]["dir"]) for c in children]
-                best_c_idx = int(np.argmax(child_scores))
-                for ci, c in enumerate(children):
-                    if ci != best_c_idx and c not in visited:
-                        branch_path = trace_shoot(c)
-                        if branch_path:
-                            shoots.append(branch_path)
-                curr = children[best_c_idx]
-            return path
+            def trace_shoot(start_inode: int) -> List[int]:
+                path = []
+                curr = start_inode
+                while curr is not None and curr not in visited:
+                    visited.add(curr)
+                    path.append(curr)
+                    children = inode_children.get(curr, [])
+                    if not children:
+                        break
+                    curr_dir = part_info[curr]["dir"]
+                    child_scores = [np.dot(curr_dir, part_info[c]["dir"]) for c in children]
+                    best_c_idx = int(np.argmax(child_scores))
+                    for ci, c in enumerate(children):
+                        if ci != best_c_idx and c not in visited:
+                            branch_path = trace_shoot(c)
+                            if branch_path:
+                                shoots.append(branch_path)
+                    curr = children[best_c_idx]
+                return path
 
-        for r in root_inodes:
-            main_path = trace_shoot(r)
-            if main_path:
-                shoots.insert(0, main_path)
+            for r in root_inodes:
+                main_path = trace_shoot(r)
+                if main_path:
+                    shoots.insert(0, main_path)
 
-        for i in internodes:
-            if i not in visited:
-                p = trace_shoot(i)
-                if p:
-                    shoots.append(p)
+            for i in internodes:
+                if i not in visited:
+                    p = trace_shoot(i)
+                    if p:
+                        shoots.append(p)
 
-        # 3. Associate Petioles, Leaves, Peduncles, Flowers using cKDTree
-        phytomer_parts = {i: {"petioles": [], "peduncles": []} for i in internodes}
-
-        # Compute internode tips as the base of the next internode in the same
-        # shoot whenever possible. This matches the forward-kinematics parser,
-        # which places bud/peduncle bases at the curved internode tip (= next
-        # internode base), and fixes XML round-trip association.
-        inode_tip_pos = {}
-        for shoot_inodes in shoots:
-            for k, inode_idx in enumerate(shoot_inodes):
-                if k + 1 < len(shoot_inodes):
-                    inode_tip_pos[inode_idx] = part_info[shoot_inodes[k + 1]]["base"]
+        # 3. Associate Petioles, Leaves, Peduncles, Flowers.
+        # If the part tensor carries shoot meta (record-order grouping), use it
+        # for faithful phytomer-level association; otherwise fall back to cKDTree.
+        if shoot_metas:
+            phytomer_parts = {grp["internode"]: {"petioles": [p["idx"] for p in grp["petioles"]],
+                                                  "peduncles": ([grp["peduncle"]] if grp["peduncle"] is not None else [])}
+                              for grp in phytomer_groups}
+            petiole_leaves = {p["idx"]: p["leaves"] for grp in phytomer_groups for p in grp["petioles"]}
+            bud_state_by_inode = {}
+            for grp in phytomer_groups:
+                if grp["bud"] is not None:
+                    bidx = grp["bud"]
+                    try:
+                        bs = int(round(float(p_np[bidx, P_COL_BUD_STATE])))
+                    except Exception:
+                        bs = 1
+                    bud_state_by_inode[grp["internode"]] = bs
+            peduncle_infls = {grp["peduncle"]: grp["flowers"] + grp["fruits"]
+                              for grp in phytomer_groups if grp["peduncle"] is not None}
+            # Build inode_tip_pos for shoot serialization (still needed)
+            inode_tip_pos = {}
+            for grp in phytomer_groups:
+                # Find shoot grouping for this internode
+                sid = grp["shoot_id"]
+                # Tip is next internode base in same shoot, or own tip
+                # Find next group in same shoot
+                same_shoot = [g for g in phytomer_groups if g["shoot_id"] == sid]
+                idx_in_shoot = next((k for k, g in enumerate(same_shoot) if g["internode"] == grp["internode"]), -1)
+                if idx_in_shoot >= 0 and idx_in_shoot + 1 < len(same_shoot):
+                    inode_tip_pos[grp["internode"]] = part_info[same_shoot[idx_in_shoot + 1]["internode"]]["base"]
                 else:
-                    inode_tip_pos[inode_idx] = part_info[inode_idx]["tip"]
-        # Include any unvisited internodes as a fallback
-        for inode_idx in internodes:
-            inode_tip_pos.setdefault(inode_idx, part_info[inode_idx]["tip"])
+                    inode_tip_pos[grp["internode"]] = part_info[grp["internode"]]["tip"]
+            for inode_idx in internodes:
+                inode_tip_pos.setdefault(inode_idx, part_info[inode_idx]["tip"])
+            # Reuse for petiole/peduncle cKDTree fallback not needed — already associated
+            # Create dummy trees for serialization that expects them
+            inode_tips = np.array([inode_tip_pos[i] for i in internodes])
+            inode_tip_tree = cKDTree(inode_tips)
+        else:
+            phytomer_parts = {i: {"petioles": [], "peduncles": []} for i in internodes}
 
-        # Associate Petioles to closest internode tip (petiole base == internode tip)
-        inode_tips = np.array([inode_tip_pos[i] for i in internodes])
-        inode_tip_tree = cKDTree(inode_tips)
+            # Compute internode tips as the base of the next internode in the same
+            # shoot whenever possible. This matches the forward-kinematics parser,
+            # which places bud/peduncle bases at the curved internode tip (= next
+            # internode base), and fixes XML round-trip association.
+            inode_tip_pos = {}
+            for shoot_inodes in shoots:
+                for k, inode_idx in enumerate(shoot_inodes):
+                    if k + 1 < len(shoot_inodes):
+                        inode_tip_pos[inode_idx] = part_info[shoot_inodes[k + 1]]["base"]
+                    else:
+                        inode_tip_pos[inode_idx] = part_info[inode_idx]["tip"]
+            # Include any unvisited internodes as a fallback
+            for inode_idx in internodes:
+                inode_tip_pos.setdefault(inode_idx, part_info[inode_idx]["tip"])
 
-        if petioles:
+            # Associate Petioles to closest internode tip (petiole base == internode tip)
+            inode_tips = np.array([inode_tip_pos[i] for i in internodes])
+            inode_tip_tree = cKDTree(inode_tips)
+
+        if not shoot_metas and petioles:
             pet_bases = np.array([part_info[p]["base"] for p in petioles])
             _, nearest_inodes = inode_tip_tree.query(pet_bases)
             if not isinstance(nearest_inodes, np.ndarray):
@@ -299,20 +364,21 @@ class PartAssemblyToXMLConverter:
                 phytomer_parts[best_inode]["petioles"].append(p_idx)
 
         # Associate Leaves to closest petiole tip
-        petiole_leaves = {p: [] for p in petioles}
-        if leaves and petioles:
-            pet_tips = np.array([part_info[p]["tip"] for p in petioles])
-            pet_tree = cKDTree(pet_tips)
-            leaf_bases = np.array([part_info[l]["base"] for l in leaves])
-            _, nearest_pets = pet_tree.query(leaf_bases)
-            if not isinstance(nearest_pets, np.ndarray):
-                nearest_pets = [nearest_pets]
-            for l_idx, p_local_idx in zip(leaves, nearest_pets):
-                best_pet = petioles[p_local_idx]
-                petiole_leaves[best_pet].append(l_idx)
+        if not shoot_metas:
+            petiole_leaves = {p: [] for p in petioles}
+            if leaves and petioles:
+                pet_tips = np.array([part_info[p]["tip"] for p in petioles])
+                pet_tree = cKDTree(pet_tips)
+                leaf_bases = np.array([part_info[l]["base"] for l in leaves])
+                _, nearest_pets = pet_tree.query(leaf_bases)
+                if not isinstance(nearest_pets, np.ndarray):
+                    nearest_pets = [nearest_pets]
+                for l_idx, p_local_idx in zip(leaves, nearest_pets):
+                    best_pet = petioles[p_local_idx]
+                    petiole_leaves[best_pet].append(l_idx)
 
         # Associate Peduncles to closest internode tip (bud base == internode tip)
-        if peduncles:
+        if not shoot_metas and peduncles:
             inode_tips = np.array([inode_tip_pos[i] for i in internodes])
             inode_tip_tree = cKDTree(inode_tips)
             pd_bases = np.array([part_info[pd]["base"] for pd in peduncles])
@@ -324,18 +390,19 @@ class PartAssemblyToXMLConverter:
                 phytomer_parts[best_inode]["peduncles"].append(pd_idx)
 
         # Associate Buds to closest internode tip (bud base == internode tip)
-        bud_state_by_inode = {}
-        if buds:
-            inode_tips = np.array([inode_tip_pos[i] for i in internodes])
-            inode_tip_tree = cKDTree(inode_tips)
-            bud_bases = np.array([part_info[b]["base"] for b in buds])
-            _, nearest_bud_inodes = inode_tip_tree.query(bud_bases)
-            if not isinstance(nearest_bud_inodes, np.ndarray):
-                nearest_bud_inodes = [nearest_bud_inodes]
-            for b_idx, i_local_idx in zip(buds, nearest_bud_inodes):
-                best_inode = internodes[i_local_idx]
-                ot = part_info[b_idx]["ot"]
-                bud_state_by_inode[best_inode] = 5 if ot == ORGAN_BUD_ABORTED else 1
+        if not shoot_metas:
+            bud_state_by_inode = {}
+            if buds:
+                inode_tips = np.array([inode_tip_pos[i] for i in internodes])
+                inode_tip_tree = cKDTree(inode_tips)
+                bud_bases = np.array([part_info[b]["base"] for b in buds])
+                _, nearest_bud_inodes = inode_tip_tree.query(bud_bases)
+                if not isinstance(nearest_bud_inodes, np.ndarray):
+                    nearest_bud_inodes = [nearest_bud_inodes]
+                for b_idx, i_local_idx in zip(buds, nearest_bud_inodes):
+                    best_inode = internodes[i_local_idx]
+                    ot = part_info[b_idx]["ot"]
+                    bud_state_by_inode[best_inode] = 5 if ot == ORGAN_BUD_ABORTED else 1
 
         # Associate Flowers & Fruits to peduncle using the record-order groups.
         # This fixes the round-trip because the parser places flowers on the
@@ -356,14 +423,20 @@ class PartAssemblyToXMLConverter:
         lines.append(f'\t\t<base_position> {_fmt(root_pos[0])} {_fmt(root_pos[1])} {_fmt(root_pos[2])} </base_position>')
         lines.append(f'\t\t<plant_age> 20 </plant_age>')
 
+        # Build lookup: internode -> (shoot_idx, local_phytomer_idx) for correct parent_node_index.
+        inode_to_location: Dict[int, Tuple[int, int]] = {}
+        for _si, _sh in enumerate(shoots):
+            for _li, _inode in enumerate(_sh):
+                inode_to_location[_inode] = (_si, _li)
+
         for s_idx, shoot_inodes in enumerate(shoots):
             p_shoot_id = -1 if s_idx == 0 else 0
             p_node_idx = 0
             if s_idx > 0:
                 first_i = shoot_inodes[0]
                 parent_i = inode_parent.get(first_i)
-                if parent_i is not None and parent_i in internodes:
-                    p_node_idx = internodes.index(parent_i)
+                if parent_i is not None and parent_i in inode_to_location:
+                    p_shoot_id, p_node_idx = inode_to_location[parent_i]
 
             shoot_label = "unifoliate" if s_idx == 0 else "trifoliate"
             lines.append(f'\t\t<shoot ID="{s_idx}">')

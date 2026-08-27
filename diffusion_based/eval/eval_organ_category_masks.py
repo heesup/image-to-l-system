@@ -91,7 +91,7 @@ def evaluate_sample(prefix: str, builder: HeliosPlantGeometryBuilder,
     H, W = gt_masks[2].shape
 
     organ_array = PlantOrganArray.from_xml_file(xml_path)
-    mesh_dict = builder.build_mesh_from_organ_array(organ_array, device=device)
+    mesh_dict = builder.build_mesh_from_part_tensor(organ_array.to_part_tensor(device=device), device=device)
 
     hfov = None
     if mode == "exact":

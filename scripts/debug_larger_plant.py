@@ -43,7 +43,7 @@ def make_plant(inode_len, pet_pitch, device):
 for inode_len, pet_pitch in [(0.25, 60.0), (0.08, 60.0), (0.25, 10.0)]:
     arr = make_plant(inode_len, pet_pitch, device)
     renderer = HeliosPyTorchRenderer(image_size=256).to(device)
-    mesh = renderer.geo_builder.build_mesh_from_organ_array(arr, device=device, species="cowpea")
+    mesh = renderer.geo_builder.build_mesh_from_part_tensor(arr.to_part_tensor(device=device), device=device)
     rgbd = renderer.forward(mesh, elevation_deg=89.88, camera_height=4.0, focus_plant=True, include_depth=True)
     rgb = rgbd[:3].permute(1,2,0).cpu().numpy()
     depth = rgbd[3].cpu().numpy()

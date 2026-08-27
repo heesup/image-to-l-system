@@ -89,7 +89,7 @@ def process_seed(
     renderer.geo_builder = builder
 
     t0 = time.time()
-    mesh_dict = renderer.geo_builder.build_mesh_from_organ_array(organ_array, device=device)
+    mesh_dict = renderer.geo_builder.build_mesh_from_part_tensor(organ_array.to_part_tensor(device=device), device=device)
     t_mesh = time.time() - t0
 
     t0 = time.time()

@@ -100,8 +100,8 @@ def evaluate_latent_flow_matching(
         N_organs = gt_arr.tensor.shape[0]
 
         def render_organ_multimodal(arr_obj):
-            mesh = renderer.geo_builder.build_mesh_from_organ_array(
-                arr_obj, device=device, species="cowpea", leaf_mode="generic"
+            mesh = renderer.geo_builder.build_mesh_from_part_tensor(
+                arr_obj.to_part_tensor(device=device), device=device, leaf_mode="generic"
             )
             rgb_t = renderer.render_mesh(
                 mesh, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0,

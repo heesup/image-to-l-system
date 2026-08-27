@@ -34,6 +34,10 @@
 
 ---
 
+### → [`ongoing/20260826_canonical_pipeline_refactor_progress.md`](ongoing/20260826_canonical_pipeline_refactor_progress.md)
+**Canonical Pipeline Refactor Progress Report (2026-08-26)**
+Unified all rendering paths onto the single canonical path `XML→40D→16D→Part Render`. Rewrote `extract_part_tensor()` to run native 40D forward kinematics (bit-identical to prior 94D path), converted `build_mesh_from_organ_array()` to a deprecated wrapper (removing ~600 lines of 94D FK), migrated all active training/eval/dataset/script callers to `build_mesh_from_part_tensor(arr.to_part_tensor())`, and added `DeprecationWarning` to the legacy converters.
+
 ### → [`ongoing/20260826_helios_flower_peduncle_pod_alignment_and_cleanup_report.md`](ongoing/20260826_helios_flower_peduncle_pod_alignment_and_cleanup_report.md)
 **16D/26D Differentiable Renderer Alignment, Flower/Peduncle/Pod Integration & Handover Report (2026-08-26)**
 Comprehensive handover on repository reorganization, removal of 94D intermediate layout, 0-indexed parent node bug fix ($0.06\ \mu\text{m}$ leaflet error), flower scaling & mesh prototype calibration, peduncle dormant bud filtering, and pod (fruit type 8) batch mesh integration guide.

@@ -166,7 +166,8 @@ for row, (label, xml_path, helios_path, helios_masks_path, helios_cam_path) in e
         continue
 
     arr = PlantOrganArray.from_xml_file(xml_path)
-    mesh = renderer.geo_builder.build_mesh_from_organ_array(arr, device=DEVICE, species="cowpea")
+    part = arr.to_part_tensor(device=DEVICE)
+    mesh = renderer.geo_builder.build_mesh_from_part_tensor(part, device=DEVICE)
 
     # Read exact camera height/elevation from the camera JSON. The exact-GT renders
     # use focus-plant auto-FOV (Helios fits the plant bbox into the frame), so we

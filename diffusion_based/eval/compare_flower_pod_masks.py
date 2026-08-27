@@ -37,7 +37,7 @@ helios_cam_legacy_path = os.path.join(EXACT_GT_DIR, "rad_dap090_0000_camera_para
 print("Loading DAP 90 plant XML and Helios Ground Truth...")
 arr = PlantOrganArray.from_xml_file(xml_path)
 renderer = HeliosPyTorchRenderer(image_size=IMG_SIZE).to(DEVICE)
-mesh = renderer.geo_builder.build_mesh_from_organ_array(arr, device=DEVICE, species="cowpea")
+mesh = renderer.geo_builder.build_mesh_from_part_tensor(arr.to_part_tensor(device=DEVICE), device=DEVICE)
 
 # Read exact camera parameters. The Helios exact-GT renders use focus-plant auto-FOV
 # (matching compute_focus_plant_camera), so we only force a fixed HFOV if an explicit

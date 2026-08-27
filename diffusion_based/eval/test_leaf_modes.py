@@ -88,7 +88,7 @@ for row_idx, (stage_name, prefix) in enumerate(test_stages):
     ax0.set_ylabel(stage_name, color="white", fontsize=12, fontweight="bold", labelpad=10)
 
     # Col 1: leaf_mode="generic"
-    mesh_generic = renderer.geo_builder.build_mesh_from_organ_array(arr, device=DEVICE, species="cowpea", leaf_mode="generic")
+    mesh_generic = renderer.geo_builder.build_mesh_from_part_tensor(arr.to_part_tensor(device=DEVICE), device=DEVICE, leaf_mode="generic")
     img_generic_t = renderer.render_mesh(
         mesh_generic,
         azimuth_deg=0.0,
@@ -117,7 +117,7 @@ for row_idx, (stage_name, prefix) in enumerate(test_stages):
     ax1.text(0.03, 0.05, f"V={mesh_generic['vertices'].shape[0]}, F={mesh_generic['faces'].shape[0]}", transform=ax1.transAxes, color="white", fontsize=9, bbox=dict(boxstyle="round,pad=0.2", fc="black", alpha=0.6))
 
     # Col 2: leaf_mode="obj"
-    mesh_obj = renderer.geo_builder.build_mesh_from_organ_array(arr, device=DEVICE, species="cowpea", leaf_mode="obj")
+    mesh_obj = renderer.geo_builder.build_mesh_from_part_tensor(arr.to_part_tensor(device=DEVICE), device=DEVICE, leaf_mode="obj")
     img_obj_t = renderer.render_mesh(
         mesh_obj,
         azimuth_deg=0.0,

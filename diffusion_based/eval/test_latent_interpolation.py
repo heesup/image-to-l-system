@@ -211,7 +211,7 @@ def run_latent_interpolation(
         X_active = X_interp[valid_mask]
 
         arr_interp = PlantOrganArray(tensor=X_active.cpu(), raw_metadata=arr2.raw_metadata if alpha >= 0.5 else arr1.raw_metadata)
-        mesh = renderer.geo_builder.build_mesh_from_organ_array(arr_interp, device=device, species="cowpea", leaf_mode="generic")
+        mesh = renderer.geo_builder.build_mesh_from_part_tensor(arr_interp.to_part_tensor(device=device), device=device, leaf_mode="generic")
 
         with torch.no_grad():
             rgb_top = renderer.render_mesh(mesh, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, focus_plant=True, differentiable=False)

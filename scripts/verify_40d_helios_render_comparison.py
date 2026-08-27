@@ -104,7 +104,7 @@ def main():
         print(f"  Parsed 40D Organ Array: shape={arr.tensor.shape} (is_typed={arr.is_typed})")
 
         # 2. Build 3D Mesh using Forward Kinematics Tree
-        mesh = renderer.geo_builder.build_mesh_from_organ_array(arr, device=device, species=species)
+        mesh = renderer.geo_builder.build_mesh_from_part_tensor(arr.to_part_tensor(device=device), device=device)
         verts = mesh["vertices"]
         print(f"  Forward Kinematics Mesh: {verts.shape[0]} vertices, {mesh['faces'].shape[0]} faces")
 

@@ -53,7 +53,7 @@ def main():
         # 1. Helios Forward Kinematics Render (from XML)
         t0_xml = time.time()
         arr_gt = PlantOrganArray.from_xml_file(xml_path)
-        mesh_gt = renderer.geo_builder.build_mesh_from_organ_array(arr_gt, device=device)
+        mesh_gt = renderer.geo_builder.build_mesh_from_part_tensor(arr_gt.to_part_tensor(device=device), device=device)
         rgb_gt = renderer.forward(mesh_gt, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, background="white", focus_plant=True)
         depth_gt = renderer.render_depth(mesh_gt, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, focus_plant=True)
         lat_xml = (time.time() - t0_xml) * 1000.0

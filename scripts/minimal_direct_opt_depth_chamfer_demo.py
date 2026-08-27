@@ -134,7 +134,7 @@ def make_minimal_plant(
 # -----------------------------------------------------------------------------
 def get_fixed_bounds(arr: PlantOrganArray, device: torch.device) -> Dict[str, Any]:
     """Compute static camera bounds from the target plant."""
-    mesh = HeliosPlantGeometryBuilder().build_mesh_from_organ_array(arr, device=device, species="cowpea")
+    mesh = HeliosPlantGeometryBuilder().build_mesh_from_part_tensor(arr.to_part_tensor(device=device), device=device)
     verts = mesh["vertices"]
     bb_min = verts.min(dim=0)[0].tolist()
     bb_max = verts.max(dim=0)[0].tolist()
@@ -150,7 +150,7 @@ def render_plant(
     fixed_bounds: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Render RGB+depth (top or oblique) for a typed organ array."""
-    mesh = renderer.geo_builder.build_mesh_from_organ_array(arr, device=device, species="cowpea")
+    mesh = renderer.geo_builder.build_mesh_from_part_tensor(arr.to_part_tensor(device=device), device=device)
     rgbd = renderer.forward(
         mesh,
         elevation_deg=elevation_deg,
@@ -193,7 +193,7 @@ def get_leaf_screen_centroid(
     fixed_bounds: Optional[Dict[str, Any]],
 ) -> Optional[Tuple[float, float]]:
     """Return (row, col) centroid of leaf pixels in the rendered organ-type buffer."""
-    mesh = renderer.geo_builder.build_mesh_from_organ_array(arr, device=device, species="cowpea")
+    mesh = renderer.geo_builder.build_mesh_from_part_tensor(arr.to_part_tensor(device=device), device=device)
     type_buf = renderer.render_organ_type_buffer(
         mesh,
         elevation_deg=elevation_deg,

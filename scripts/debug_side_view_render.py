@@ -44,7 +44,7 @@ renderer = HeliosPyTorchRenderer(image_size=256).to(device)
 
 for az, el in [(0.0, 20.0), (90.0, 20.0), (45.0, 20.0)]:
     arr = make_plant(0.25, 60.0, device)
-    mesh = renderer.geo_builder.build_mesh_from_organ_array(arr, device=device, species="cowpea")
+    mesh = renderer.geo_builder.build_mesh_from_part_tensor(arr.to_part_tensor(device=device), device=device)
     rgbd = renderer.forward(mesh, elevation_deg=el, azimuth_deg=az, camera_height=4.0, focus_plant=True, include_depth=True)
     rgb = rgbd[:3].permute(1,2,0).cpu().numpy()
     depth = rgbd[3].cpu().numpy()

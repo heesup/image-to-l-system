@@ -186,8 +186,8 @@ def run_vae_roundtrip_benchmark(
 
         # Render Visual Comparison
         def render_organ_multimodal(arr_obj):
-            mesh = renderer.geo_builder.build_mesh_from_organ_array(
-                arr_obj, device=device, species=species, leaf_mode="generic"
+            mesh = renderer.geo_builder.build_mesh_from_part_tensor(
+                arr_obj.to_part_tensor(device=device), device=device, leaf_mode="generic"
             )
             rgb_t = renderer.render_mesh(
                 mesh, azimuth_deg=0.0, elevation_deg=cam_el, camera_height=cam_h,

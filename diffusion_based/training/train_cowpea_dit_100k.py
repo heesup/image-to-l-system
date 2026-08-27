@@ -111,7 +111,7 @@ def render_and_log_debug_images(
 
     for row_idx, sc in enumerate(eval_samples):
         arr_gt = PlantOrganArray.from_xml_file(sc["xml"])
-        mesh_gt = renderer.geo_builder.build_mesh_from_organ_array(arr_gt, device=device)
+        mesh_gt = renderer.geo_builder.build_mesh_from_part_tensor(arr_gt.to_part_tensor(device=device), device=device)
         rgb_gt = renderer(mesh_gt, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, background="white", focus_plant=True)
         rgb_gt_np = rgb_gt.detach().cpu().permute(1, 2, 0).numpy().clip(0, 1)
 
