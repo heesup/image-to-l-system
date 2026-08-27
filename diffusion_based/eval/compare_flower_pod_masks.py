@@ -1,5 +1,5 @@
 """
-Compare Flower and Pod masks between Helios C++ Ground Truth and PyTorch 40D Differentiable Renderer.
+Compare Flower and Pod masks between Helios C++ Ground Truth and PyTorch 17D Differentiable Renderer.
 Extracts per-organ masks, calculates IoU, Dice, Precision, Recall, and produces comparison figure.
 """
 import os
@@ -84,7 +84,7 @@ for ann in coco_data["annotations"]:
             draw.polygon(pts, fill=1)
     gt_masks[cat] = gt_masks[cat] | (np.array(canvas) > 0)
 
-# Render PyTorch 40D type buffer
+# Render PyTorch 17D type buffer
 type_t = renderer.render_organ_type_buffer(
     mesh,
     azimuth_deg=0.0,
@@ -113,7 +113,7 @@ for organ_id, name in [(4, "Flower"), (5, "Pod"), (3, "Peduncle / Bud")]:
     dice = 2.0 * intersection / max(gt_m.sum() + pt_m.sum(), 1)
     print(f"[{name}]")
     print(f"  Helios GT Pixels: {gt_m.sum()} ({100.0 * gt_m.sum() / (IMG_SIZE*IMG_SIZE):.2f}%)")
-    print(f"  PyTorch 40D Pixels: {pt_m.sum()} ({100.0 * pt_m.sum() / (IMG_SIZE*IMG_SIZE):.2f}%)")
+    print(f"  PyTorch 17D Pixels: {pt_m.sum()} ({100.0 * pt_m.sum() / (IMG_SIZE*IMG_SIZE):.2f}%)")
     print(f"  Intersection: {intersection}")
     print(f"  IoU: {iou:.4f}, Dice: {dice:.4f}")
 
@@ -144,14 +144,14 @@ for r_idx, (title, cat_id, color_hex) in enumerate(rows):
     ax.axis("off")
     ax.set_title(f"Helios GT {title}\n({gt_m.sum()} px)", fontsize=11, color="#ff9999", fontweight="bold")
     
-    # Col 1: PyTorch 40D
+    # Col 1: PyTorch 17D
     ax = axes[r_idx, 1]
     ax.set_facecolor("#0d0d1a")
     rgb_pt = np.zeros((IMG_SIZE, IMG_SIZE, 3), dtype=np.float32)
     rgb_pt[pt_m] = [r, g, b]
     ax.imshow(rgb_pt)
     ax.axis("off")
-    ax.set_title(f"PyTorch 40D {title}\n({pt_m.sum()} px)", fontsize=11, color="#70d6ff", fontweight="bold")
+    ax.set_title(f"PyTorch 17D {title}\n({pt_m.sum()} px)", fontsize=11, color="#70d6ff", fontweight="bold")
     
     # Col 2: Overlap / Diff
     ax = axes[r_idx, 2]
@@ -182,7 +182,7 @@ for r_idx, (title, cat_id, color_hex) in enumerate(rows):
     ax.axis("off")
     ax.set_title(f"Overlay on RGB\n(Green=GT, Magenta=PT)", fontsize=11, color="#ffd166", fontweight="bold")
 
-fig.suptitle("Flower, Pod, and Peduncle Mask Comparison: Helios C++ GT vs PyTorch 40D (DAP 90)", fontsize=14, fontweight="bold", color="white", y=0.99)
+fig.suptitle("Flower, Pod, and Peduncle Mask Comparison: Helios C++ GT vs PyTorch 17D (DAP 90)", fontsize=14, fontweight="bold", color="white", y=0.99)
 
 out_path = os.path.join(ASSETS_DIR, "fig_flower_pod_mask_comparison.png")
 plt.savefig(out_path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())

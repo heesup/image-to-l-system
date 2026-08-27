@@ -154,7 +154,15 @@ Remaining gaps are thin-tube positional precision (1–2 px), not scale.
 * `if shoot_metas: phytomer_parts/petiole_leaves/bud_state/peduncle_infls/inode_tip_pos` via record order else `cKDTree` fallback; `if not shoot_metas` guards prevent overwriting. Fixes `vector::_M_range_check __n=1 >=1` and `getPetioleAxisVector 76` crash. Verified `DAP050/090 11/11 shoots` vs prior `40` and `Helios rc 0` with `Digital-Crops/projects/syntheticdata_generation/build/params.json`.
 * `soft_existence` param added to `build_mesh_from_part_tensor`, `torch.full(ped_rad)` `float(ped_rad.item())` fix.
 
-### 8.5 Benchmark
+### 8.5 FOV check (final)
+
+`helios_pytorch_renderer.py:24-165` `compute_focus_plant_camera` `1.05` margin matches Helios `main.cpp:1748-1793` focus-plant. `rad_dap050/090_camera.json` `camera_height 5.0 angle 89.88` vs `90.0`, HFOV `DAP050 9.51° DAP090 15.36°`, legacy `camera_params.json` absent → `focus_plant true` (no `hfov_override`). Re-verified `compare_flower_pod_masks.py:48-58` uses same path; remaining `Flower IoU 0.13 Pod 0.05` gap not FOV (thin-tube 1-2 px, scale `2.594` already).
+
+### 8.6 Helios → 17D → Helios round-trip
+
+`PlantOrganArray.from_xml_file → to_part_tensor (M==N, dormant PED existence 0) → PartAssemblyToXMLConverter → Helios main --input-xml --focus-plant` verified `DAP050 1158→1158 (163 dormant) DAP090 1558→1558 (131 dormant)`, `shoots 11/11`, `Helios rc 0`, mean abs diff `DAP050 0.039 DAP090 0.055` (dormant PED cull + bbox, vs `0.0049` for 40D→XML without cull, OptiX noise `~0.005`). `fig_flower_pod_mask_comparison.png:147-185` col1 now `PyTorch 17D` (was `40D`).
+
+### 8.7 Benchmark
 
 `diffusion_based/eval/benchmark_helios_vs_torch_renderer.py` re-run: `DAP100 8.36 ms total, 2270.8x` (`DAP50 2314x, DAP90 2230x`), `fig1_helios_vs_torch_rendering_benchmark.png` regenerated. `verify_40d_helios_render_comparison.py` mean diff `0.00489` (OptiX noise).
 
