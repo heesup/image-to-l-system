@@ -83,6 +83,30 @@ FM_PHYLLO_IDX = FM_SCALE_END + 1
 FM_NODE_DIM = FM_SCALE_END + 2
 
 
+def decode_fm(fm: torch.Tensor) -> torch.Tensor:
+    """Convert a 26D FM node tensor back to a canonical (N, 17) part tensor.
+
+    Organ type = argmax over the real organ categories; existence = 1 - p(empty).
+    This is the standalone (module-level) version of PartArrayDataset.decode_fm,
+    usable directly on model output (x_gen / x_1_hat) for the 17D->XML->Helios
+    round-trip without instantiating a dataset.
+    """
+    N = fm.shape[0]
+    out = torch.zeros((N, NUM_FEATURES), dtype=fm.dtype, device=fm.device)
+    ot_probs_real = fm[:, :EMPTY_IDX]
+    empty_prob = fm[:, EMPTY_IDX]
+    ot_idx = ot_probs_real.argmax(dim=1)
+    for i, cat in enumerate(ORGAN_CATEGORIES):
+        out[ot_idx == i, P_COL_ORGAN_TYPE] = cat
+    out[:, P_COL_EXISTENCE] = (1.0 - empty_prob).clamp(0.0, 1.0)
+    out[:, P_COL_BASE_X:P_COL_BASE_Z + 1] = fm[:, FM_BASE_START:FM_BASE_END] / BASE_SCALE
+    out[:, P_COL_ROT_0:P_COL_ROT_5 + 1] = fm[:, FM_ROT_START:FM_ROT_END]
+    out[:, P_COL_SCALE_X:P_COL_SCALE_Z + 1] = F.softplus(fm[:, FM_SCALE_START:FM_SCALE_END]).clamp(min=0.005) / SCALE_SCALE
+    out[:, P_COL_CURVATURE] = fm[:, FM_CURV_IDX] * CURVATURE_SCALE
+    out[:, P_COL_PHYLLOTACTIC_ANGLE] = fm[:, FM_PHYLLO_IDX] * PHYLLOTACTIC_SCALE
+    return out
+
+
 def canonical_sort_nodes(
     nodes: torch.Tensor,
     existence_mask: Optional[torch.Tensor] = None

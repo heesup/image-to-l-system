@@ -47,7 +47,8 @@ from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 from diffusion_based.dataset.part_array_dataset import (
     ORGAN_CATEGORIES, EMPTY_IDX, FM_NODE_DIM, FM_OT_END,
     FM_BASE_START, FM_BASE_END, FM_ROT_START, FM_ROT_END,
-    FM_SCALE_START, FM_SCALE_END, FM_CURV_IDX, FM_PHYLLO_IDX
+    FM_SCALE_START, FM_SCALE_END, FM_CURV_IDX, FM_PHYLLO_IDX,
+    decode_fm,
 )
 
 ORGAN_LEGEND_MAP = {
@@ -84,6 +85,7 @@ def parse_args():
     parser.add_argument("--cond-drop-prob", type=float, default=0.10, help="Classifier-Free Guidance condition dropout probability")
     parser.add_argument("--guidance-scale", type=float, default=2.0, help="CFG inference guidance scale")
     parser.add_argument("--render-loss-weight", type=float, default=0.15, help="Differentiable 2D photometric rendering loss weight")
+    parser.add_argument("--helios-roundtrip", action="store_true", default=False, help="Enable 17D->XML->Helios round-trip validation column in eval debug images")
     parser.add_argument("--noise-sigma", type=float, default=0.05, help="Scaffold bridge perturbation sigma")
     parser.add_argument("--freeze-vision", action="store_true", default=False, help="Freeze pretrained DINOv3 backbone")
     parser.add_argument("--resume", action="store_true", default=False, help="Resume training from latest checkpoint if exists")
@@ -157,11 +159,13 @@ def render_and_log_debug_images(
     device: torch.device,
     epoch: int,
     global_step: int,
+    helios_roundtrip: bool = False,
 ):
     if not eval_samples:
         return
     raw_model.eval()
-    fig, axes = plt.subplots(len(eval_samples), 6, figsize=(24, 4.2 * len(eval_samples)))
+    n_cols = 7 if helios_roundtrip else 6
+    fig, axes = plt.subplots(len(eval_samples), n_cols, figsize=(28 if helios_roundtrip else 24, 4.2 * len(eval_samples)))
     if len(eval_samples) == 1:
         axes = np.expand_dims(axes, 0)
     fig.patch.set_facecolor("#080C14")
@@ -268,6 +272,34 @@ def render_and_log_debug_images(
         axes[row_idx, 5].set_title("Gen Diff Organ Seg", color="#FB923C", fontsize=10, fontweight="bold")
         axes[row_idx, 5].legend(handles=patches, loc='lower right', fontsize=6, framealpha=0.85, facecolor='#0D1117', labelcolor='white', edgecolor='#334155', ncol=1)
         axes[row_idx, 5].axis("off")
+
+        # Col 7: 17D -> XML -> Helios Round-trip (re-render generated 17D via Helios XML)
+        if helios_roundtrip:
+            try:
+                # Decode 26D FM model output -> canonical 17D part tensor
+                part_gen_17d = decode_fm(x_gen)
+                # Serialize 17D -> Helios XML
+                xml_rt = assembler.convert_to_xml_string(part_gen_17d)
+                # Re-parse XML -> 17D to verify round-trip self-consistency
+                arr_rt = PlantOrganArray.from_xml_string(xml_rt)
+                part_rt = arr_rt.to_part_tensor(device=device)
+                rt_max_diff = float(torch.abs(part_gen_17d - part_rt).max().item())
+                # Render the round-tripped 17D mesh (same camera as GT)
+                mesh_rt = renderer.geo_builder.build_mesh_from_part_tensor(part_rt, device=device, existence_threshold=0.30)
+                rgb_rt = renderer.render_mesh(
+                    mesh_rt, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0,
+                    background="white", focus_plant=True
+                )
+                rgb_rt_np = rgb_rt.detach().cpu().permute(1, 2, 0).numpy().clip(0, 1)
+                rt_ok = True
+            except Exception:
+                rgb_rt_np = np.zeros((512, 512, 3), dtype=np.float32)
+                rt_max_diff = float("nan")
+                rt_ok = False
+            axes[row_idx, 6].imshow(rgb_rt_np)
+            axes[row_idx, 6].set_title("17D→XML→Helios RT\n(round-trip)", color="#FDE047", fontsize=10, fontweight="bold")
+            axes[row_idx, 6].text(0.03, 0.03, f"Δ={rt_max_diff:.4f}" if rt_ok else "FAIL", transform=axes[row_idx, 6].transAxes, fontsize=8, color='white', va='bottom', bbox=dict(boxstyle='round,pad=0.2', facecolor='black', alpha=0.7))
+            axes[row_idx, 6].axis("off")
 
     for ax in axes.flat:
         for spine in ax.spines.values():
@@ -619,7 +651,7 @@ def main():
             # Render 6-column 3D debug visualizations
             if epoch % args.eval_every == 0 or epoch == 1:
                 print(f"Rendering 6-column 3D visual reconstruction debug images for Epoch {epoch}...")
-                render_and_log_debug_images(raw_model, eval_samples, renderer, assembler, device, epoch, global_step)
+                render_and_log_debug_images(raw_model, eval_samples, renderer, assembler, device, epoch, global_step, helios_roundtrip=args.helios_roundtrip)
 
             if avg_loss < best_loss:
                 best_loss = avg_loss

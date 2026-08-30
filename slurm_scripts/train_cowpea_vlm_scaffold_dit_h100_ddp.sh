@@ -46,6 +46,7 @@ export NCCL_DEBUG=WARN
 export NCCL_IB_DISABLE=0
 
 # Run 2x A100/H100 DDP via torchrun with 4-Channel (RGB 3ch + Depth 1ch) Render Loss
+# + 17D->XML->Helios round-trip validation column in eval debug images
 ${TORCHRUN_BIN} \
     --nproc_per_node=2 \
     --master_port=29505 \
@@ -62,6 +63,7 @@ ${TORCHRUN_BIN} \
     --cond-drop-prob 0.10 \
     --guidance-scale 2.0 \
     --render-loss-weight 0.15 \
+    --helios-roundtrip \
     --noise-sigma 0.05 \
     --resume \
     --cache-dir dataset/helios_data/cowpea_shard \
