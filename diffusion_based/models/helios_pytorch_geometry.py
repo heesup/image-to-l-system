@@ -1444,6 +1444,7 @@ class HeliosPlantGeometryBuilder:
             rot_6d = p[:, 15:21]
             scale = F.softplus(p[:, 21:24]).clamp(min=0.001) / 50.0
             extra_col14 = torch.zeros(N, device=device)
+            bud_state_col = torch.zeros(N, device=device)
         else:
             ot = p[:, 0].long()
             base_pos = p[:, 1:4]
