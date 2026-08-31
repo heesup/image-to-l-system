@@ -15,7 +15,7 @@
 #SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
-#SBATCH --time=12:00:00
+#SBATCH --time=48:00:00
 #SBATCH --output=slurm_scripts/logs/train_vlm_scaffold_h100_%j.log
 #SBATCH --error=slurm_scripts/logs/train_vlm_scaffold_h100_%j.log
 
