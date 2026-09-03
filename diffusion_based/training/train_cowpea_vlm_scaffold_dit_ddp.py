@@ -1,7 +1,7 @@
 """
-Distributed Multi-GPU (2x / 4x NVIDIA H100) Training Pipeline for VLM-Scaffold-DiT.
+Distributed Multi-GPU Training Pipeline for VLM-Scaffold-DiT (N GPUs via torchrun).
 Combines Pretrained DINOv3 Vision Backbone, Macro Botanical Scaffold Prior,
-and Cross-Attention Bridge Flow Matching with BFloat16 Mixed Precision & NCCL NVLink.
+and Cross-Attention Bridge Flow Matching with BFloat16 Mixed Precision & NCCL.
 """
 
 import os
@@ -47,7 +47,7 @@ from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 from diffusion_based.dataset.part_array_dataset import (
     ORGAN_CATEGORIES, EMPTY_IDX, FM_NODE_DIM, FM_OT_END,
     FM_BASE_START, FM_BASE_END, FM_ROT_START, FM_ROT_END,
-    FM_SCALE_START, FM_SCALE_END, FM_CURV_IDX, FM_PHYLLO_IDX,
+    FM_SCALE_START, FM_SCALE_END,
     decode_fm,
 )
 
@@ -342,10 +342,21 @@ def main():
     effective_batch_size = args.batch_size * args.grad_accum_steps * world_size
 
     if is_main_process:
+        gpu_desc = ""
+        if torch.cuda.is_available():
+            try:
+                gpu_name = torch.cuda.get_device_name(0)
+                n_vis = torch.cuda.device_count()
+                gpu_desc = f"{n_vis}x {gpu_name}" if n_vis > 1 else gpu_name
+            except Exception:
+                gpu_desc = "unknown"
+        else:
+            gpu_desc = "CPU-only"
         print("\n" + "="*80)
-        print("🚀 INITIALIZING VLM-SCAFFOLD-DiT DDP TRAINING PIPELINE (H100 NVLINK)")
+        print("🚀 INITIALIZING VLM-SCAFFOLD-DiT DDP TRAINING PIPELINE")
         print("="*80)
         print(f"  • Date & Time:           {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"  • GPUs:                  {gpu_desc} (device name from torch)")
         print(f"  • World Size:            {world_size} GPUs")
         print(f"  • Micro-Batch Size:      {args.batch_size} per GPU")
         print(f"  • Grad Accumulation:     {args.grad_accum_steps} steps")
@@ -360,7 +371,7 @@ def main():
 
         os.makedirs(args.save_dir, exist_ok=True)
         if args.use_wandb and WANDB_AVAILABLE:
-            run_name = args.wandb_name or f"vlm_scaffold_dit_2xh100_b{effective_batch_size}_{datetime.now().strftime('%m%d_%H%M')}"
+            run_name = args.wandb_name or f"vlm_scaffold_dit_{world_size}gpu_b{effective_batch_size}_{datetime.now().strftime('%m%d_%H%M')}"
             wandb.init(
                 project=args.wandb_project,
                 group=args.wandb_group or "vlm-scaffold-dit-scale",

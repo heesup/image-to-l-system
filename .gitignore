@@ -56,3 +56,4 @@ wandb/
 scratch/
 diffusion_based/eval/test_*.png
 diffusion_based/eval/test_*.py
+agent_temp/

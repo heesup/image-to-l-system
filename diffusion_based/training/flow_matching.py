@@ -26,17 +26,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
 
-# Flow-matching node layout (must match part_array_dataset).
-FM_OT_END = 12          # 11 organ categories + 1 empty
-FM_BASE_START = FM_OT_END
-FM_BASE_END = FM_OT_END + 3
-FM_ROT_START = FM_BASE_END
-FM_ROT_END = FM_BASE_END + 6
-FM_SCALE_START = FM_ROT_END
-FM_SCALE_END = FM_ROT_END + 3
-FM_CURV_IDX = FM_SCALE_END
-FM_PHYLLO_IDX = FM_SCALE_END + 1
-FM_NODE_DIM = FM_SCALE_END + 2
+# Flow-matching node layout — single source of truth is part_array_dataset (27D).
+from diffusion_based.dataset.part_array_dataset import (
+    FM_OT_END, FM_BASE_START, FM_BASE_END,
+    FM_ROT_START, FM_ROT_END,
+    FM_SCALE_START, FM_SCALE_END,
+    FM_NODE_DIM,
+)
 
 
 class FlowMatchingScheduler:

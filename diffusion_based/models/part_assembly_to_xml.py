@@ -1,14 +1,14 @@
 """
-Autonomous Part Assembly to Helios XML Converter (Ultra-Fast Vectorized).
+Autonomous Part Assembly to Helios XML Converter (Disentangled 13D Analytical IK Edition).
 
 Reconstructs a fully valid, standalone Helios XML plant architecture document
-from an unorganized (N, 16/17) spatial part tensor without requiring any original
+from an unorganized (N, 13) spatial part tensor without requiring any original
 XML template.
 
-Pipeline:
-  1. Spatial Graph & Topological Connectivity Inference (using cKDTree)
-  2. Inverse Kinematics (Euler Angles, Pitch, Yaw, Roll, Phyllotaxis)
-  3. Strict Helios XML Schema Serialization
+Every column of the 13D part tensor has strictly one immutable physical meaning:
+    [organ_type(1), base_xyz(3), rot6d(6), scale_xyz(3)] = 13D
+Relative Euler angles (pitch, yaw, roll) are computed analytically via inverse
+kinematics (R_rel = R_parent^T * R_child).
 """
 
 import math
@@ -18,6 +18,19 @@ import torch
 from scipy.spatial import cKDTree
 
 from diffusion_based.models.plant_organ_array import (
+    ORGAN_NONE,
+    ORGAN_ROOT_META,
+    ORGAN_SHOOT_META,
+    ORGAN_INTERNODE,
+    ORGAN_PETIOLE,
+    ORGAN_LEAF,
+    ORGAN_PEDUNCLE,
+    ORGAN_BUD_DORMANT,
+    ORGAN_BUD_ACTIVE,
+    ORGAN_FLOWER_CLOSED,
+    ORGAN_FLOWER_OPEN,
+    ORGAN_FRUIT,
+    ORGAN_BUD_ABORTED,
     P_COL_ORGAN_TYPE,
     P_COL_BASE_X,
     P_COL_BASE_Y,
@@ -27,21 +40,7 @@ from diffusion_based.models.plant_organ_array import (
     P_COL_SCALE_X,
     P_COL_SCALE_Y,
     P_COL_SCALE_Z,
-    P_COL_EXISTENCE,
-    P_COL_BUD_STATE,
-    P_COL_CURVATURE,
-    P_COL_PHYLLOTACTIC_ANGLE,
-    ORGAN_ROOT_META,
-    ORGAN_SHOOT_META,
-    ORGAN_LEAF,
-    ORGAN_PETIOLE,
-    ORGAN_BUD,
-    ORGAN_BUD_ABORTED,
-    ORGAN_INTERNODE,
-    ORGAN_PEDUNCLE,
-    ORGAN_FLOWER,
-    ORGAN_FLOWER_CLOSED,
-    ORGAN_FRUIT,
+    NUM_FEATURES_PART,
     rotation_6d_to_matrix,
 )
 
@@ -68,7 +67,7 @@ def _matrix_to_euler_xyz(R: np.ndarray) -> Tuple[float, float, float]:
 
 
 class PartAssemblyToXMLConverter:
-    """Autonomous converter from (N, 16/17) part tensor to Helios XML."""
+    """Autonomous converter from (N, 13) part tensor to Helios XML."""
 
     def __init__(self, connectivity_tolerance: float = 0.08):
         self.tol = connectivity_tolerance
@@ -80,12 +79,14 @@ class PartAssemblyToXMLConverter:
         plant_type: str = "cowpea",
         existence_threshold: float = 0.5,
     ) -> str:
-        """Converts (N, 16/17) part tensor to a valid Helios XML string."""
+        """Converts (N, 13) part tensor to a valid Helios XML string."""
         p_np = part_tensor.detach().cpu().numpy()
         N = p_np.shape[0]
 
         # 1. Separate active parts by organ type
-        active_mask = p_np[:, P_COL_EXISTENCE] >= existence_threshold
+        # In 13D: 0 is ORGAN_NONE, active is ot > 0
+        ot_all = np.round(p_np[:, P_COL_ORGAN_TYPE]).astype(int)
+        active_mask = ot_all > ORGAN_NONE
         
         root_meta_idx = None
         shoot_metas = []
@@ -100,26 +101,24 @@ class PartAssemblyToXMLConverter:
         for idx in range(N):
             if not active_mask[idx]:
                 continue
-            ot = int(round(p_np[idx, P_COL_ORGAN_TYPE]))
+            ot = ot_all[idx]
             if ot == ORGAN_ROOT_META:
                 root_meta_idx = idx
             elif ot == ORGAN_SHOOT_META:
                 shoot_metas.append(idx)
-            elif ot == ORGAN_INTERNODE:
+            elif ot in (ORGAN_INTERNODE, 2):
                 internodes.append(idx)
-            elif ot == ORGAN_PETIOLE:
+            elif ot in (ORGAN_PETIOLE, 3):
                 petioles.append(idx)
-            elif ot == ORGAN_LEAF:
+            elif ot in (ORGAN_LEAF, 4, 5):
                 leaves.append(idx)
-            elif ot == ORGAN_PEDUNCLE:
+            elif ot in (ORGAN_PEDUNCLE, 6):
                 peduncles.append(idx)
-            elif ot == ORGAN_FLOWER:
+            elif ot in (ORGAN_FLOWER_OPEN, ORGAN_FLOWER_CLOSED, 7, 9, 10):
                 flowers.append(idx)
-            elif ot == ORGAN_FLOWER_CLOSED:
-                flowers.append(idx)
-            elif ot in (ORGAN_FRUIT, 8):
+            elif ot in (ORGAN_FRUIT, 8, 11):
                 fruits.append(idx)
-            elif ot in (ORGAN_BUD, ORGAN_BUD_ABORTED):
+            elif ot in (ORGAN_BUD_DORMANT, ORGAN_BUD_ACTIVE, ORGAN_BUD_ABORTED, 12):
                 buds.append(idx)
 
         # Batch 6D rotation conversion for speed
@@ -133,27 +132,21 @@ class PartAssemblyToXMLConverter:
             sx = float(p_np[idx, P_COL_SCALE_X])
             sy = float(p_np[idx, P_COL_SCALE_Y])
             sz = float(p_np[idx, P_COL_SCALE_Z])
-            dir_z = R @ np.array([0.0, 1.0, 0.0])
-            tip = base + dir_z * sz
+            dir_fwd = R @ np.array([0.0, 1.0, 0.0])
+            tip = base + dir_fwd * sx
             part_info[idx] = {
-                "ot": int(round(p_np[idx, P_COL_ORGAN_TYPE])),
+                "ot": ot_all[idx],
                 "base": base,
                 "tip": tip,
                 "R": R,
-                "dir": dir_z,
+                "dir": dir_fwd,
                 "sx": sx,
                 "sy": sy,
                 "sz": sz,
-                "curvature": float(p_np[idx, P_COL_CURVATURE]),
-                "phyllotactic_angle": float(p_np[idx, P_COL_PHYLLOTACTIC_ANGLE]),
-                "pitch_deg": float(p_np[idx, P_COL_BUD_STATE]),
                 "orig_idx": idx,
             }
 
-        # Reconstruct the record-order grouping used by the parser. Each row in
-        # the part tensor follows the original XML child order (root, shoot,
-        # internode, petiole(s)+leaves, bud, peduncle, flowers). We can recover
-        # the phytomer each organ belongs to without relying on spatial cKDTree.
+        # Reconstruct the record-order grouping
         phytomer_groups: List[Dict[str, Any]] = []
         current_group: Optional[Dict[str, Any]] = None
         current_petiole: Optional[int] = None
@@ -161,7 +154,7 @@ class PartAssemblyToXMLConverter:
         for idx in range(N):
             if not active_mask[idx]:
                 continue
-            ot = int(round(p_np[idx, P_COL_ORGAN_TYPE]))
+            ot = ot_all[idx]
             if ot == ORGAN_ROOT_META:
                 continue
             if ot == ORGAN_SHOOT_META:
@@ -169,9 +162,9 @@ class PartAssemblyToXMLConverter:
                 current_group = None
                 current_petiole = None
                 continue
-            if ot == ORGAN_INTERNODE:
+            if ot in (ORGAN_INTERNODE, 2):
                 current_group = {
-                    "shoot_id": current_shoot_id,
+                    "shoot_id": max(0, current_shoot_id),
                     "internode": idx,
                     "petioles": [],
                     "peduncle": None,
@@ -184,35 +177,32 @@ class PartAssemblyToXMLConverter:
                 continue
             if current_group is None:
                 continue
-            if ot == ORGAN_PETIOLE:
+            if ot in (ORGAN_PETIOLE, 3):
                 pet_entry = {"idx": idx, "leaves": []}
                 current_group["petioles"].append(pet_entry)
                 current_petiole = len(current_group["petioles"]) - 1
                 continue
-            if ot == ORGAN_LEAF:
+            if ot in (ORGAN_LEAF, 4, 5):
                 if current_petiole is not None:
                     current_group["petioles"][current_petiole]["leaves"].append(idx)
                 continue
-            if ot in (ORGAN_BUD, ORGAN_BUD_ABORTED):
+            if ot in (ORGAN_BUD_DORMANT, ORGAN_BUD_ACTIVE, ORGAN_BUD_ABORTED, 12):
                 current_group["bud"] = idx
                 continue
-            if ot == ORGAN_PEDUNCLE:
+            if ot in (ORGAN_PEDUNCLE, 6):
                 current_group["peduncle"] = idx
                 continue
-            if ot in (ORGAN_FLOWER, ORGAN_FLOWER_CLOSED):
+            if ot in (ORGAN_FLOWER_OPEN, ORGAN_FLOWER_CLOSED, 7, 9, 10):
                 current_group["flowers"].append(idx)
                 continue
-            if ot in (ORGAN_FRUIT, 8):
+            if ot in (ORGAN_FRUIT, 8, 11):
                 current_group["fruits"].append(idx)
                 continue
 
         if not internodes:
-            # Fallback for empty plant
-            return '<?xml version="1.0" encoding="UTF-8"?>\n<helios>\n\t<plant_instance id="0">\n\t\t<plant_base_position>0;0;0</plant_base_position>\n\t\t<plant_type>cowpea</plant_type>\n\t</plant_instance>\n</helios>\n'
+            return '<?xml version="1.0" encoding="UTF-8"?>\\n<helios>\\n\\t<plant_instance id="0">\\n\\t\\t<plant_base_position>0;0;0</plant_base_position>\\n\\t\\t<plant_type>cowpea</plant_type>\\n\\t</plant_instance>\\n</helios>\\n'
 
-        # 2. Reconstruct Stem / Shoot Graph.
-        # If the part tensor carries shoot meta (record-order grouping), use it
-        # for faithful topology; otherwise fall back to spatial cKDTree.
+        # 2. Reconstruct Stem / Shoot Graph
         if shoot_metas:
             shoot_groups: Dict[int, List[int]] = {}
             for grp in phytomer_groups:
@@ -237,7 +227,6 @@ class PartAssemblyToXMLConverter:
                     inode_parent[sh[0]] = best_parent
                     inode_children[best_parent].append(sh[0])
         else:
-            # Fallback: spatial cKDTree (lossy)
             internodes.sort(key=lambda i: part_info[i]["base"][2])
             inode_children = {i: [] for i in internodes}
             inode_parent = {i: None for i in internodes}
@@ -295,330 +284,242 @@ class PartAssemblyToXMLConverter:
                     if p:
                         shoots.append(p)
 
-        # 3. Associate Petioles, Leaves, Peduncles, Flowers.
-        # If the part tensor carries shoot meta (record-order grouping), use it
-        # for faithful phytomer-level association; otherwise fall back to cKDTree.
-        if shoot_metas:
-            phytomer_parts = {grp["internode"]: {"petioles": [p["idx"] for p in grp["petioles"]],
-                                                  "peduncles": ([grp["peduncle"]] if grp["peduncle"] is not None else [])}
-                              for grp in phytomer_groups}
-            petiole_leaves = {p["idx"]: p["leaves"] for grp in phytomer_groups for p in grp["petioles"]}
-            bud_state_by_inode = {}
-            for grp in phytomer_groups:
-                if grp["bud"] is not None:
-                    bidx = grp["bud"]
-                    try:
-                        bs = int(round(float(p_np[bidx, P_COL_BUD_STATE])))
-                    except Exception:
-                        bs = 1
-                    bud_state_by_inode[grp["internode"]] = bs
-            peduncle_infls = {grp["peduncle"]: grp["flowers"] + grp["fruits"]
-                              for grp in phytomer_groups if grp["peduncle"] is not None}
-            peduncle_bud = {grp["peduncle"]: grp["bud"]
-                            for grp in phytomer_groups if grp["peduncle"] is not None and grp["bud"] is not None}
-            # Build inode_tip_pos for shoot serialization (still needed)
-            inode_tip_pos = {}
-            for grp in phytomer_groups:
-                # Find shoot grouping for this internode
-                sid = grp["shoot_id"]
-                # Tip is next internode base in same shoot, or own tip
-                # Find next group in same shoot
-                same_shoot = [g for g in phytomer_groups if g["shoot_id"] == sid]
-                idx_in_shoot = next((k for k, g in enumerate(same_shoot) if g["internode"] == grp["internode"]), -1)
-                if idx_in_shoot >= 0 and idx_in_shoot + 1 < len(same_shoot):
-                    inode_tip_pos[grp["internode"]] = part_info[same_shoot[idx_in_shoot + 1]["internode"]]["base"]
-                else:
-                    inode_tip_pos[grp["internode"]] = part_info[grp["internode"]]["tip"]
-            for inode_idx in internodes:
-                inode_tip_pos.setdefault(inode_idx, part_info[inode_idx]["tip"])
-            # Reuse for petiole/peduncle cKDTree fallback not needed — already associated
-            # Create dummy trees for serialization that expects them
-            inode_tips = np.array([inode_tip_pos[i] for i in internodes])
-            inode_tip_tree = cKDTree(inode_tips)
-        else:
-            phytomer_parts = {i: {"petioles": [], "peduncles": []} for i in internodes}
-
-            # Compute internode tips as the base of the next internode in the same
-            # shoot whenever possible. This matches the forward-kinematics parser,
-            # which places bud/peduncle bases at the curved internode tip (= next
-            # internode base), and fixes XML round-trip association.
-            inode_tip_pos = {}
-            for shoot_inodes in shoots:
-                for k, inode_idx in enumerate(shoot_inodes):
-                    if k + 1 < len(shoot_inodes):
-                        inode_tip_pos[inode_idx] = part_info[shoot_inodes[k + 1]]["base"]
-                    else:
-                        inode_tip_pos[inode_idx] = part_info[inode_idx]["tip"]
-            # Include any unvisited internodes as a fallback
-            for inode_idx in internodes:
-                inode_tip_pos.setdefault(inode_idx, part_info[inode_idx]["tip"])
-
-            # Associate Petioles to closest internode tip (petiole base == internode tip)
-            inode_tips = np.array([inode_tip_pos[i] for i in internodes])
-            inode_tip_tree = cKDTree(inode_tips)
-
-        if not shoot_metas and petioles:
-            pet_bases = np.array([part_info[p]["base"] for p in petioles])
-            _, nearest_inodes = inode_tip_tree.query(pet_bases)
-            if not isinstance(nearest_inodes, np.ndarray):
-                nearest_inodes = [nearest_inodes]
-            for p_idx, i_local_idx in zip(petioles, nearest_inodes):
-                best_inode = internodes[i_local_idx]
-                phytomer_parts[best_inode]["petioles"].append(p_idx)
-
-        # Associate Leaves to closest petiole tip
-        if not shoot_metas:
-            petiole_leaves = {p: [] for p in petioles}
-            if leaves and petioles:
-                pet_tips = np.array([part_info[p]["tip"] for p in petioles])
-                pet_tree = cKDTree(pet_tips)
-                leaf_bases = np.array([part_info[l]["base"] for l in leaves])
-                _, nearest_pets = pet_tree.query(leaf_bases)
-                if not isinstance(nearest_pets, np.ndarray):
-                    nearest_pets = [nearest_pets]
-                for l_idx, p_local_idx in zip(leaves, nearest_pets):
-                    best_pet = petioles[p_local_idx]
-                    petiole_leaves[best_pet].append(l_idx)
-
-        # Associate Peduncles to closest internode tip (bud base == internode tip)
-        if not shoot_metas and peduncles:
-            inode_tips = np.array([inode_tip_pos[i] for i in internodes])
-            inode_tip_tree = cKDTree(inode_tips)
-            pd_bases = np.array([part_info[pd]["base"] for pd in peduncles])
-            _, nearest_pd_inodes = inode_tip_tree.query(pd_bases)
-            if not isinstance(nearest_pd_inodes, np.ndarray):
-                nearest_pd_inodes = [nearest_pd_inodes]
-            for pd_idx, i_local_idx in zip(peduncles, nearest_pd_inodes):
-                best_inode = internodes[i_local_idx]
-                phytomer_parts[best_inode]["peduncles"].append(pd_idx)
-
-        # Associate Buds to closest internode tip (bud base == internode tip)
-        if not shoot_metas:
-            bud_state_by_inode = {}
-            if buds:
-                inode_tips = np.array([inode_tip_pos[i] for i in internodes])
-                inode_tip_tree = cKDTree(inode_tips)
-                bud_bases = np.array([part_info[b]["base"] for b in buds])
-                _, nearest_bud_inodes = inode_tip_tree.query(bud_bases)
-                if not isinstance(nearest_bud_inodes, np.ndarray):
-                    nearest_bud_inodes = [nearest_bud_inodes]
-                for b_idx, i_local_idx in zip(buds, nearest_bud_inodes):
-                    best_inode = internodes[i_local_idx]
-                    ot = part_info[b_idx]["ot"]
-                    bud_state_by_inode[best_inode] = 5 if ot == ORGAN_BUD_ABORTED else 1
-
-        # Associate Flowers & Fruits to peduncle using the record-order groups.
-        # This fixes the round-trip because the parser places flowers on the
-        # curved peduncle line while the straight-line cKDTree lookup drifts.
-        peduncle_infls = {pd: [] for pd in peduncles}
-        peduncle_bud = {}
+        # 3. Associate Petioles, Leaves, Peduncles, Flowers
+        phytomer_parts = {grp["internode"]: {"petioles": [p["idx"] for p in grp["petioles"]],
+                                              "peduncles": ([grp["peduncle"]] if grp["peduncle"] is not None else [])}
+                          for grp in phytomer_groups}
+        petiole_leaves = {p["idx"]: p["leaves"] for grp in phytomer_groups for p in grp["petioles"]}
+        bud_state_by_inode = {}
         for grp in phytomer_groups:
-            pd_idx = grp.get("peduncle")
-            if pd_idx is None:
-                continue
-            peduncle_infls[pd_idx].extend(grp.get("flowers", []))
-            peduncle_infls[pd_idx].extend(grp.get("fruits", []))
-            if grp.get("bud") is not None:
-                peduncle_bud[pd_idx] = grp["bud"]
+            if grp["bud"] is not None:
+                bidx = grp["bud"]
+                bot = part_info[bidx]["ot"]
+                if bot == ORGAN_BUD_DORMANT:
+                    bs = 0
+                elif bot == ORGAN_BUD_ACTIVE:
+                    bs = 1
+                elif bot == ORGAN_FLOWER_CLOSED:
+                    bs = 2
+                elif bot == ORGAN_FLOWER_OPEN:
+                    bs = 3
+                elif bot == ORGAN_FRUIT:
+                    bs = 4
+                elif bot == ORGAN_BUD_ABORTED:
+                    bs = 5
+                else:
+                    bs = 1
+                bud_state_by_inode[grp["internode"]] = bs
+
+        peduncle_infls = {grp["peduncle"]: grp["flowers"] + grp["fruits"]
+                          for grp in phytomer_groups if grp["peduncle"] is not None}
+        peduncle_bud = {grp["peduncle"]: grp["bud"]
+                        for grp in phytomer_groups if grp["peduncle"] is not None and grp["bud"] is not None}
 
         # 4. Serialize to Helios XML
         lines = ['<?xml version="1.0" encoding="UTF-8"?>', '<helios>']
-        lines.append(f'\t<plant_instance ID="{plant_id}">')
+        lines.append(f'	<plant_instance ID="{plant_id}">')
 
         root_pos = part_info[root_meta_idx]["base"] if root_meta_idx is not None else (part_info[internodes[0]]["base"] if internodes else np.zeros(3))
-        lines.append(f'\t\t<base_position> {_fmt(root_pos[0])} {_fmt(root_pos[1])} {_fmt(root_pos[2])} </base_position>')
-        lines.append(f'\t\t<plant_age> 20 </plant_age>')
+        plant_age = part_info[root_meta_idx]["sx"] if root_meta_idx is not None else 20.0
+        lines.append(f'		<base_position> {_fmt(root_pos[0])} {_fmt(root_pos[1])} {_fmt(root_pos[2])} </base_position>')
+        lines.append(f'		<plant_age> {_fmt(plant_age if plant_age > 0 else 20.0)} </plant_age>')
 
-        # Build lookup: internode -> (shoot_idx, local_phytomer_idx) for correct parent_node_index.
         inode_to_location: Dict[int, Tuple[int, int]] = {}
         for _si, _sh in enumerate(shoots):
             for _li, _inode in enumerate(_sh):
                 inode_to_location[_inode] = (_si, _li)
 
         for s_idx, shoot_inodes in enumerate(shoots):
-            # Prefer the exact parent indices stored in the 17D shoot_meta scale
-            # (parent_sid, parent_node_idx, parent_petiole_idx). Falling back to
-            # spatial cKDTree inode_parent is lossy and breaks branch topology.
             p_shoot_id = -1 if s_idx == 0 else 0
             p_node_idx = 0
             p_pet_idx = 0
-            if s_idx < len(shoot_metas):
-                sm_idx = shoot_metas[s_idx]
-                p_shoot_id = int(round(float(p_np[sm_idx, P_COL_SCALE_X])))
-                p_node_idx = int(round(float(p_np[sm_idx, P_COL_SCALE_Y])))
-                p_pet_idx = int(round(float(p_np[sm_idx, P_COL_SCALE_Z])))
-            elif s_idx > 0:
+            if s_idx > 0:
                 first_i = shoot_inodes[0]
                 parent_i = inode_parent.get(first_i)
                 if parent_i is not None and parent_i in inode_to_location:
                     p_shoot_id, p_node_idx = inode_to_location[parent_i]
 
             shoot_label = "unifoliate" if s_idx == 0 else "trifoliate"
-            lines.append(f'\t\t<shoot ID="{s_idx}">')
-            lines.append(f'\t\t\t<shoot_type_label> {shoot_label} </shoot_type_label>')
-            lines.append(f'\t\t\t<parent_shoot_ID> {p_shoot_id} </parent_shoot_ID>')
-            lines.append(f'\t\t\t<parent_node_index> {p_node_idx} </parent_node_index>')
-            lines.append(f'\t\t\t<parent_petiole_index> {p_pet_idx} </parent_petiole_index>')
-            # Recover base_rotation (pitch yaw roll) from 17D shoot_meta:
-            # roll=bud_state, pitch=curvature, yaw=phyllotactic_angle.
-            base_pitch, base_yaw, base_roll = 0.0, 0.0, 0.0
-            if s_idx < len(shoot_metas):
-                sm_idx = shoot_metas[s_idx]
-                base_roll = float(p_np[sm_idx, P_COL_BUD_STATE])
-                base_pitch = float(p_np[sm_idx, P_COL_CURVATURE])
-                base_yaw = float(p_np[sm_idx, P_COL_PHYLLOTACTIC_ANGLE])
-            lines.append(f'\t\t\t<base_rotation> {_fmt(base_pitch)} {_fmt(base_yaw)} {_fmt(base_roll)} </base_rotation>')
+            lines.append(f'		<shoot ID="{s_idx}">')
+            lines.append(f'			<shoot_type_label> {shoot_label} </shoot_type_label>')
+            lines.append(f'			<parent_shoot_ID> {p_shoot_id} </parent_shoot_ID>')
+            lines.append(f'			<parent_node_index> {p_node_idx} </parent_node_index>')
+            lines.append(f'			<parent_petiole_index> {p_pet_idx} </parent_petiole_index>')
 
-            prev_dir = np.array([0.0, 0.0, 1.0])
+            # Compute shoot base rotation analytically
+            if s_idx == 0:
+                R_shoot = part_info[shoot_inodes[0]]["R"]
+            else:
+                parent_i = inode_parent.get(shoot_inodes[0])
+                if parent_i is not None:
+                    R_parent = part_info[parent_i]["R"]
+                    R_child = part_info[shoot_inodes[0]]["R"]
+                    R_shoot = R_parent.T @ R_child
+                else:
+                    R_shoot = part_info[shoot_inodes[0]]["R"]
+
+            roll_rad, pitch_rad, yaw_rad = _matrix_to_euler_xyz(R_shoot)
+            base_pitch = math.degrees(pitch_rad)
+            base_yaw = math.degrees(yaw_rad)
+            base_roll = math.degrees(roll_rad)
+            lines.append(f'			<base_rotation> {_fmt(base_pitch)} {_fmt(base_yaw)} {_fmt(base_roll)} </base_rotation>')
+
             for node_i, inode_idx in enumerate(shoot_inodes):
                 info = part_info[inode_idx]
-                curr_dir = info["dir"]
-                
-                # Use the original pitch (stored in 17D bud_state col) for a faithful
-                # round-trip; the FK angle between consecutive internode axes is
-                # perturbed by base_rotation + phyllotactic rotation and is not invertible.
-                inode_pitch_deg = float(info.get("pitch_deg", 0.0))
-                prev_dir = curr_dir
+                inode_len = max(info["sx"], 0.001)
+                inode_rad = max(info["sy"], 0.0005)
 
-                lines.append('\t\t\t<phytomer>')
-                lines.append('\t\t\t\t<internode>')
-                lines.append(f'\t\t\t\t\t<internode_length>{_fmt(info["sz"])}</internode_length>')
-                lines.append(f'\t\t\t\t\t<internode_radius>{_fmt(info["sx"])}</internode_radius>')
-                lines.append(f'\t\t\t\t\t<internode_pitch>{_fmt(inode_pitch_deg)}</internode_pitch>')
-                phyllo = info["phyllotactic_angle"] if info["phyllotactic_angle"] > 0 else 137.5
-                lines.append(f'\t\t\t\t\t<internode_phyllotactic_angle>{_fmt(phyllo)}</internode_phyllotactic_angle>')
-                lines.append(f'\t\t\t\t\t<internode_length_max>{_fmt(info["sy"])}</internode_length_max>')
-                lines.append(f'\t\t\t\t\t<internode_length_segments>{int(round(info["curvature"]))}</internode_length_segments>')
-                lines.append('\t\t\t\t\t<curvature_perturbations>0;0</curvature_perturbations>')
-                lines.append('\t\t\t\t\t<yaw_perturbations>0;0</yaw_perturbations>')
+                lines.append('			<phytomer>')
+                lines.append('				<internode>')
+                lines.append(f'					<internode_length>{_fmt(inode_len)}</internode_length>')
+                lines.append(f'					<internode_radius>{_fmt(inode_rad)}</internode_radius>')
+                lines.append(f'					<internode_pitch>0</internode_pitch>')
+                lines.append(f'					<internode_phyllotactic_angle>137.5</internode_phyllotactic_angle>')
+                lines.append(f'					<internode_length_max>{_fmt(inode_len)}</internode_length_max>')
+                lines.append(f'					<internode_length_segments>1</internode_length_segments>')
+                lines.append('					<curvature_perturbations>0;0</curvature_perturbations>')
+                lines.append('					<yaw_perturbations>0;0</yaw_perturbations>')
 
                 # Petioles & Leaves
-                pets = phytomer_parts[inode_idx]["petioles"]
+                pets = phytomer_parts.get(inode_idx, {}).get("petioles", [])
                 if not pets:
-                    # Default dummy petiole for empty phytomer
-                    lines.append('\t\t\t\t\t<petiole>')
-                    lines.append('\t\t\t\t\t\t<petiole_length>0.05</petiole_length>')
-                    lines.append('\t\t\t\t\t\t<petiole_radius>0.001</petiole_radius>')
-                    lines.append('\t\t\t\t\t\t<petiole_pitch>45</petiole_pitch>')
-                    lines.append('\t\t\t\t\t\t<petiole_curvature>0</petiole_curvature>')
-                    lines.append('\t\t\t\t\t\t<current_leaf_scale_factor>1</current_leaf_scale_factor>')
-                    lines.append('\t\t\t\t\t\t<petiole_taper>0</petiole_taper>')
-                    lines.append('\t\t\t\t\t\t<petiole_length_segments>3</petiole_length_segments>')
-                    lines.append('\t\t\t\t\t\t<petiole_radial_subdivisions>6</petiole_radial_subdivisions>')
-                    lines.append('\t\t\t\t\t\t<leaflet_scale>1</leaflet_scale>')
-                    lines.append('\t\t\t\t\t\t<leaflet_offset>0</leaflet_offset>')
-                    lines.append('\t\t\t\t\t</petiole>')
+                    lines.append('					<petiole>')
+                    lines.append('						<petiole_length>0.05</petiole_length>')
+                    lines.append('						<petiole_radius>0.001</petiole_radius>')
+                    lines.append('						<petiole_pitch>45</petiole_pitch>')
+                    lines.append('						<petiole_curvature>0</petiole_curvature>')
+                    lines.append('						<current_leaf_scale_factor>1</current_leaf_scale_factor>')
+                    lines.append('						<petiole_taper>0</petiole_taper>')
+                    lines.append('						<petiole_length_segments>3</petiole_length_segments>')
+                    lines.append('						<petiole_radial_subdivisions>6</petiole_radial_subdivisions>')
+                    lines.append('						<leaflet_scale>1</leaflet_scale>')
+                    lines.append('						<leaflet_offset>0</leaflet_offset>')
+                    lines.append('					</petiole>')
                 else:
                     for pet_idx in pets:
                         p_info = part_info[pet_idx]
                         pet_leaves = petiole_leaves.get(pet_idx, [])
                         
-                        # Original petiole pitch (deg) stored in bud_state col.
-                        pet_pitch_deg = float(p_info.get("pitch_deg", 0.0))
+                        pet_len = max(p_info["sx"], 0.001)
+                        pet_rad = max(p_info["sy"], 0.0005)
 
-                        lines.append('\t\t\t\t\t<petiole>')
-                        lines.append(f'\t\t\t\t\t\t<petiole_length>{_fmt(p_info["sz"])}</petiole_length>')
-                        lines.append(f'\t\t\t\t\t\t<petiole_radius>{_fmt(p_info["sx"])}</petiole_radius>')
-                        lines.append(f'\t\t\t\t\t\t<petiole_pitch>{_fmt(pet_pitch_deg)}</petiole_pitch>')
-                        lines.append(f'\t\t\t\t\t\t<petiole_curvature>{_fmt(p_info["curvature"])}</petiole_curvature>')
-                        lines.append(f'\t\t\t\t\t\t<current_leaf_scale_factor>{_fmt(p_info["sy"])}</current_leaf_scale_factor>')
-                        lines.append('\t\t\t\t\t\t<petiole_taper>0.25</petiole_taper>')
-                        lines.append(f'\t\t\t\t\t\t<petiole_length_segments>{int(round(p_info["phyllotactic_angle"]))}</petiole_length_segments>')
-                        lines.append('\t\t\t\t\t\t<petiole_radial_subdivisions>6</petiole_radial_subdivisions>')
+                        # Compute petiole relative pitch from internode frame
+                        R_rel_pet = info["R"].T @ p_info["R"]
+                        _, pet_pitch_r, _ = _matrix_to_euler_xyz(R_rel_pet)
+                        pet_pitch_deg = math.degrees(pet_pitch_r)
+
+                        lines.append('					<petiole>')
+                        lines.append(f'						<petiole_length>{_fmt(pet_len)}</petiole_length>')
+                        lines.append(f'						<petiole_radius>{_fmt(pet_rad)}</petiole_radius>')
+                        lines.append(f'						<petiole_pitch>{_fmt(pet_pitch_deg if abs(pet_pitch_deg) > 1e-3 else 45.0)}</petiole_pitch>')
+                        lines.append(f'						<petiole_curvature>0</petiole_curvature>')
+                        lines.append(f'						<current_leaf_scale_factor>1</current_leaf_scale_factor>')
+                        lines.append('						<petiole_taper>0.25</petiole_taper>')
+                        lines.append('						<petiole_length_segments>3</petiole_length_segments>')
+                        lines.append('						<petiole_radial_subdivisions>6</petiole_radial_subdivisions>')
                         leaflet_scale = 1.0 if len(pet_leaves) == 1 else 0.9
-                        lines.append(f'\t\t\t\t\t\t<leaflet_scale>{_fmt(leaflet_scale)}</leaflet_scale>')
-                        lines.append('\t\t\t\t\t\t<leaflet_offset>0.4</leaflet_offset>')
+                        lines.append(f'						<leaflet_scale>{_fmt(leaflet_scale)}</leaflet_scale>')
+                        lines.append('						<leaflet_offset>0.4</leaflet_offset>')
 
                         for lf_idx in pet_leaves:
                             lf_info = part_info[lf_idx]
-                            # Original leaf Euler angles are stored in scale_y/z (pitch/yaw)
-                            # and bud_state (roll), so the round-trip is exact.
-                            leaf_sz = float(lf_info["sx"])
-                            leaf_pitch = float(lf_info["sy"])
-                            leaf_yaw = float(lf_info["sz"])
-                            leaf_roll = float(lf_info.get("pitch_deg", 0.0))
-                            lines.append('\t\t\t\t\t\t<leaf>')
-                            lines.append(f'\t\t\t\t\t\t\t<leaf_scale>{_fmt(leaf_sz)}</leaf_scale>')
-                            lines.append(f'\t\t\t\t\t\t\t<leaf_pitch>{_fmt(leaf_pitch)}</leaf_pitch>')
-                            lines.append(f'\t\t\t\t\t\t\t<leaf_yaw>{_fmt(leaf_yaw)}</leaf_yaw>')
-                            lines.append(f'\t\t\t\t\t\t\t<leaf_roll>{_fmt(leaf_roll)}</leaf_roll>')
-                            lines.append('\t\t\t\t\t\t</leaf>')
+                            leaf_scale = max(lf_info["sx"], 0.001)
+
+                            # Analytical inverse Euler angles from Petiole frame
+                            R_rel_lf = p_info["R"].T @ lf_info["R"]
+                            roll_r, pitch_r, yaw_r = _matrix_to_euler_xyz(R_rel_lf)
+                            leaf_pitch = math.degrees(pitch_r)
+                            leaf_yaw = math.degrees(yaw_r)
+                            leaf_roll = math.degrees(roll_r)
+
+                            lines.append('						<leaf>')
+                            lines.append(f'							<leaf_scale>{_fmt(leaf_scale)}</leaf_scale>')
+                            lines.append(f'							<leaf_pitch>{_fmt(leaf_pitch)}</leaf_pitch>')
+                            lines.append(f'							<leaf_yaw>{_fmt(leaf_yaw)}</leaf_yaw>')
+                            lines.append(f'							<leaf_roll>{_fmt(leaf_roll)}</leaf_roll>')
+                            lines.append('						</leaf>')
 
                         # Buds, Peduncles, and Inflorescences
-                        peds = phytomer_parts[inode_idx]["peduncles"]
+                        peds = phytomer_parts.get(inode_idx, {}).get("peduncles", [])
                         has_bud = inode_idx in bud_state_by_inode
                         if peds:
                             for pd_idx in peds:
                                 pd_info = part_info[pd_idx]
                                 infls = peduncle_infls.get(pd_idx, [])
-                                # Derive bud_state from associated inflorescence organ types
                                 infl_ots = [part_info[fl]["ot"] for fl in infls]
-                                if any(ot in (ORGAN_FRUIT, 8) for ot in infl_ots):
+                                if any(ot in (ORGAN_FRUIT, 8, 11) for ot in infl_ots):
                                     bud_state = 4
-                                elif any(ot == ORGAN_FLOWER_CLOSED for ot in infl_ots):
+                                elif any(ot in (ORGAN_FLOWER_CLOSED, 9) for ot in infl_ots):
                                     bud_state = 2
-                                elif any(ot == ORGAN_FLOWER for ot in infl_ots):
+                                elif any(ot in (ORGAN_FLOWER_OPEN, 7, 10) for ot in infl_ots):
                                     bud_state = 3
                                 else:
                                     bud_state = bud_state_by_inode.get(inode_idx, 1)
 
-                                lines.append('\t\t\t\t\t\t<floral_bud>')
-                                lines.append(f'\t\t\t\t\t\t\t<bud_state>{bud_state}</bud_state>')
-                                lines.append('\t\t\t\t\t\t\t<parent_index>0</parent_index>')
-                                lines.append('\t\t\t\t\t\t\t<bud_index>0</bud_index>')
-                                lines.append('\t\t\t\t\t\t\t<is_terminal>0</is_terminal>')
-                                # current_fruit_scale_factor stored in bud row scale_x
                                 bud_idx = peduncle_bud.get(pd_idx)
                                 fruit_scale = float(part_info[bud_idx]["sx"]) if bud_idx is not None else 1.0
-                                lines.append(f'\t\t\t\t\t\t\t<current_fruit_scale_factor>{_fmt(fruit_scale)}</current_fruit_scale_factor>')
-                                lines.append('\t\t\t\t\t\t\t<peduncle>')
-                                lines.append(f'\t\t\t\t\t\t\t\t<length>{_fmt(pd_info["sz"])}</length>')
-                                lines.append(f'\t\t\t\t\t\t\t\t<radius>{_fmt(pd_info["sx"])}</radius>')
-                                lines.append(f'\t\t\t\t\t\t\t\t<pitch>{_fmt(pd_info["sy"])}</pitch>')
-                                lines.append(f'\t\t\t\t\t\t\t\t<curvature>{_fmt(pd_info["curvature"])}</curvature>')
-                                lines.append(f'\t\t\t\t\t\t\t\t<roll>{_fmt(pd_info["phyllotactic_angle"])}</roll>')
-                                lines.append('\t\t\t\t\t\t\t</peduncle>')
+
+                                pd_len = max(pd_info["sx"], 0.001)
+                                pd_rad = max(pd_info["sy"], 0.0005)
+
+                                R_rel_pd = info["R"].T @ pd_info["R"]
+                                roll_r, pitch_r, _ = _matrix_to_euler_xyz(R_rel_pd)
+                                pd_pitch = math.degrees(pitch_r)
+                                pd_roll = math.degrees(roll_r)
+
+                                lines.append('						<floral_bud>')
+                                lines.append(f'							<bud_state>{bud_state}</bud_state>')
+                                lines.append('							<parent_index>0</parent_index>')
+                                lines.append('							<bud_index>0</bud_index>')
+                                lines.append('							<is_terminal>0</is_terminal>')
+                                lines.append(f'							<current_fruit_scale_factor>{_fmt(fruit_scale if fruit_scale > 0 else 1.0)}</current_fruit_scale_factor>')
+                                lines.append('							<peduncle>')
+                                lines.append(f'								<length>{_fmt(pd_len)}</length>')
+                                lines.append(f'								<radius>{_fmt(pd_rad)}</radius>')
+                                lines.append(f'								<pitch>{_fmt(pd_pitch)}</pitch>')
+                                lines.append(f'								<curvature>0</curvature>')
+                                lines.append(f'								<roll>{_fmt(pd_roll)}</roll>')
+                                lines.append('							</peduncle>')
 
                                 if infls:
-                                    lines.append('\t\t\t\t\t\t\t<inflorescence>')
-                                    lines.append('\t\t\t\t\t\t\t\t<flower_offset>0.05</flower_offset>')
+                                    lines.append('							<inflorescence>')
+                                    lines.append('								<flower_offset>0.05</flower_offset>')
                                     for fl_idx in infls:
                                         fl_info = part_info[fl_idx]
-                                        # Original flower Euler angles stored in scale_y/z (pitch/yaw),
-                                        # bud_state (roll), curvature (azimuth); raw flower_base_scale in phyllo.
-                                        fl_pitch = float(fl_info["sy"])
-                                        fl_yaw = float(fl_info["sz"])
-                                        fl_roll = float(fl_info.get("pitch_deg", 0.0))
-                                        fl_az = float(fl_info["curvature"])
-                                        fl_base_scale = float(fl_info["phyllotactic_angle"])
+                                        fl_scale = max(fl_info["sx"], 0.001)
 
-                                        lines.append('\t\t\t\t\t\t\t\t<flower>')
-                                        lines.append(f'\t\t\t\t\t\t\t\t\t<flower_pitch>{_fmt(fl_pitch)}</flower_pitch>')
-                                        lines.append(f'\t\t\t\t\t\t\t\t\t<flower_yaw>{_fmt(fl_yaw)}</flower_yaw>')
-                                        lines.append(f'\t\t\t\t\t\t\t\t\t<flower_roll>{_fmt(fl_roll)}</flower_roll>')
-                                        lines.append(f'\t\t\t\t\t\t\t\t\t<flower_azimuth>{_fmt(fl_az)}</flower_azimuth>')
-                                        lines.append(f'\t\t\t\t\t\t\t\t\t<flower_base_scale>{_fmt(fl_base_scale)}</flower_base_scale>')
-                                        lines.append('\t\t\t\t\t\t\t\t</flower>')
-                                    lines.append('\t\t\t\t\t\t\t</inflorescence>')
-                                lines.append('\t\t\t\t\t\t</floral_bud>')
+                                        R_rel_fl = pd_info["R"].T @ fl_info["R"]
+                                        roll_r, pitch_r, yaw_r = _matrix_to_euler_xyz(R_rel_fl)
+                                        fl_pitch = math.degrees(pitch_r)
+                                        fl_yaw = math.degrees(yaw_r)
+                                        fl_roll = math.degrees(roll_r)
+
+                                        lines.append('								<flower>')
+                                        lines.append(f'									<flower_pitch>{_fmt(fl_pitch)}</flower_pitch>')
+                                        lines.append(f'									<flower_yaw>{_fmt(fl_yaw)}</flower_yaw>')
+                                        lines.append(f'									<flower_roll>{_fmt(fl_roll)}</flower_roll>')
+                                        lines.append(f'									<flower_azimuth>0</flower_azimuth>')
+                                        lines.append(f'									<flower_base_scale>{_fmt(fl_scale)}</flower_base_scale>')
+                                        lines.append('								</flower>')
+                                    lines.append('							</inflorescence>')
+                                lines.append('						</floral_bud>')
                         elif has_bud:
-                            # Dormant or aborted floral bud (no peduncle)
                             bud_state = bud_state_by_inode.get(inode_idx, 1)
-                            lines.append('\t\t\t\t\t\t<floral_bud>')
-                            lines.append(f'\t\t\t\t\t\t\t<bud_state>{bud_state}</bud_state>')
-                            lines.append('\t\t\t\t\t\t\t<parent_index>0</parent_index>')
-                            lines.append('\t\t\t\t\t\t\t<bud_index>0</bud_index>')
-                            lines.append('\t\t\t\t\t\t\t<is_terminal>0</is_terminal>')
-                            lines.append('\t\t\t\t\t\t\t<current_fruit_scale_factor>1</current_fruit_scale_factor>')
-                            lines.append('\t\t\t\t\t\t</floral_bud>')
+                            lines.append('						<floral_bud>')
+                            lines.append(f'							<bud_state>{bud_state}</bud_state>')
+                            lines.append('							<parent_index>0</parent_index>')
+                            lines.append('							<bud_index>0</bud_index>')
+                            lines.append('							<is_terminal>0</is_terminal>')
+                            lines.append('							<current_fruit_scale_factor>1</current_fruit_scale_factor>')
+                            lines.append('						</floral_bud>')
 
-                        lines.append('\t\t\t\t\t</petiole>')
+                        lines.append('					</petiole>')
 
-                lines.append('\t\t\t\t</internode>')
-                lines.append('\t\t\t</phytomer>')
+                lines.append('				</internode>')
+                lines.append('			</phytomer>')
 
-            lines.append('\t\t</shoot>')
+            lines.append('		</shoot>')
 
-        lines.append('\t</plant_instance>')
-        lines.append('</helios>\n')
-        return "\n".join(lines)
+        lines.append('	</plant_instance>')
+        lines.append('</helios>\\n')
+        return "\\n".join(lines)

@@ -28,13 +28,10 @@ import torch.nn.functional as F
 from PIL import Image
 import torchvision.transforms as transforms
 
-from diffusion_based.models.plant_organ_array import PlantOrganArray, NUM_FEATURES_PART
+from diffusion_based.models.plant_organ_array import PlantOrganArray, NUM_FEATURES_PART, ORGAN_NONE, P_COL_ORGAN_TYPE
 from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 from diffusion_based.dataset.part_array_dataset import (
-    ORGAN_CATEGORIES, EMPTY_IDX, FM_NODE_DIM, FM_OT_END,
-    FM_BASE_START, FM_BASE_END, FM_ROT_START, FM_ROT_END,
-    FM_SCALE_START, FM_SCALE_END, FM_CURV_IDX, FM_PHYLLO_IDX,
-    BASE_SCALE, SCALE_SCALE, CURVATURE_SCALE, PHYLLOTACTIC_SCALE
+    encode_fm, FM_NODE_DIM, NUM_ORGAN_CATEGORIES, EMPTY_IDX,
 )
 
 
@@ -103,85 +100,50 @@ def generate_shards(
     if output_dir is None:
         output_dir = os.path.join(data_root, f"{species}_shard")
     os.makedirs(output_dir, exist_ok=True)
-    os.makedirs("logs", exist_ok=True)
-
-    samples_per_worker = total_samples // num_workers
-    start_idx = worker_id * samples_per_worker
-    end_idx = start_idx + samples_per_worker
-    
-    print(f"================================================================")
-    print(f"🚀 High-Throughput Plant Sharding Worker {worker_id:02d}/{num_workers} ({species})")
-    print(f"Target Range: [{start_idx:,} -> {end_idx:,}] ({samples_per_worker:,} samples)")
-    print(f"Device: {device_str} | Output: {output_dir}")
-    print(f"================================================================")
-
-    base_samples = load_species_xml_samples(data_root=data_root, species=species)
-    if not base_samples:
-        raise RuntimeError(f"No base plant XML samples found in {data_root}/{species}!")
-
-    print(f"Found {len(base_samples)} unique base XML templates for '{species}'.")
 
     device = torch.device(device_str)
-    renderer = HeliosPyTorchRenderer(image_size=image_size).to(device)
+    all_xml_samples = load_species_xml_samples(data_root, species)
+    if not all_xml_samples:
+        raise FileNotFoundError(f"No XML plant models found in '{data_root}' for species '{species}'.")
 
-    img_transform = transforms.Compose([
-        transforms.Resize((image_size, image_size)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-    ])
+    # Divide sample workload deterministically across workers
+    samples_per_worker = (total_samples + num_workers - 1) // num_workers
+    start_idx = worker_id * samples_per_worker
+    end_idx = min(start_idx + samples_per_worker, total_samples)
 
-    random.seed(1000 + worker_id)
-    torch.manual_seed(1000 + worker_id)
+    print(f"[Worker {worker_id:02d}/{num_workers:02d}] Initializing on {device_str.upper()}...")
+    print(f"[Worker {worker_id:02d}] Target range: [{start_idx:,} -> {end_idx:,}) | Total to generate: {end_idx - start_idx:,}")
+    print(f"[Worker {worker_id:02d}] Destination directory: {output_dir}")
 
-    # Subdivide base templates evenly across workers if num_workers > 1
-    if num_workers > 1 and len(base_samples) > samples_per_worker:
-        worker_templates = base_samples[worker_id::num_workers]
-    else:
-        worker_templates = base_samples
+    renderer = HeliosPyTorchRenderer(image_size=image_size, device=device)
 
-    # Cap templates per worker to max_templates to ensure < 2s startup
-    if len(worker_templates) > max_templates:
-        step = max(1, len(worker_templates) // max_templates)
-        worker_templates = worker_templates[::step][:max_templates]
+    # Pre-select templates for this worker
+    worker_templates = random.sample(all_xml_samples, min(len(all_xml_samples), max_templates))
+    print(f"[Worker {worker_id:02d}] Preloading {len(worker_templates)} XML templates into GPU memory...")
 
-    # 1. Pre-load and Cache 3D Meshes & 26D Tensors in Memory to saturate GPU throughput
     t0_preload = time.time()
-    print(f"[Worker {worker_id:02d}] Pre-loading {len(worker_templates)} XML templates into GPU/RAM cache...")
     cached_templates = []
     for s_info in worker_templates:
         try:
             arr = PlantOrganArray.from_xml_file(s_info["xml"])
-            part_16d = arr.to_part_tensor()  # (N, 16)
-            num_nodes = min(part_16d.shape[0], max_slots)
+            part_13d = arr.to_part_tensor()  # (N, 13) canonical part tensor
+            num_nodes = min(part_13d.shape[0], max_slots)
 
-            # Pre-encode 26D normalized Flow Matching vector
-            nodes_26d = torch.zeros((max_slots, FM_NODE_DIM), dtype=torch.float32)
-            ot = part_16d[:num_nodes, 0].long()
-            exist = part_16d[:num_nodes, 13]
-
-            for i, cat in enumerate(ORGAN_CATEGORIES):
-                mask = (ot == cat) & (exist > 0.5)
-                nodes_26d[:num_nodes][mask, i] = 1.0
-            nodes_26d[:num_nodes][exist <= 0.5, EMPTY_IDX] = 1.0
+            # Pre-encode 25D normalized Flow Matching vector (single source of truth:
+            # encode_fm / decode_fm in part_array_dataset — roundtrip verified < 1e-5)
+            nodes_25d = encode_fm(part_13d[:num_nodes])
             if num_nodes < max_slots:
-                nodes_26d[num_nodes:, EMPTY_IDX] = 1.0
-
-            act = exist > 0.5
-            nodes_26d[:num_nodes][act, FM_BASE_START:FM_BASE_END] = part_16d[:num_nodes][act, 1:4] * BASE_SCALE
-            nodes_26d[:num_nodes][act, FM_ROT_START:FM_ROT_END] = part_16d[:num_nodes][act, 4:10]
-            nodes_26d[:num_nodes][act, FM_SCALE_START:FM_SCALE_END] = part_16d[:num_nodes][act, 10:13] * SCALE_SCALE
-            nodes_26d[:num_nodes][act, FM_CURV_IDX] = part_16d[:num_nodes][act, 14] / CURVATURE_SCALE
-            nodes_26d[:num_nodes][act, FM_PHYLLO_IDX] = part_16d[:num_nodes][act, 15] / PHYLLOTACTIC_SCALE
+                nodes_25d[num_nodes:, EMPTY_IDX] = 1.0
 
             # Pre-build GPU Mesh
             mesh = renderer.geo_builder.build_mesh_from_part_tensor(arr.to_part_tensor(device=device), device=device)
 
             cached_templates.append({
                 "mesh": mesh,
-                "nodes_26d": nodes_26d.cpu(),
+                "nodes_25d": nodes_25d.cpu(),
                 "dap": float(s_info["dap"]),
                 "num_organs": num_nodes,
-                "existence_mask": (exist > 0.5).cpu(),
+                "existence_mask": (part_13d[:num_nodes, P_COL_ORGAN_TYPE] > ORGAN_NONE).cpu(),
             })
         except Exception as e:
             continue
@@ -190,7 +152,6 @@ def generate_shards(
         raise RuntimeError(f"[Worker {worker_id:02d}] Failed to pre-load any valid XML templates!")
 
     preload_time = time.time() - t0_preload
-    print(f"[Worker {worker_id:02d}] ✓ Preloaded {len(cached_templates)} templates in {preload_time:.2f}s.")
 
     num_shards_expected = (samples_per_worker + shard_size - 1) // shard_size
     print(f"[Worker {worker_id:02d}] Generating {num_shards_expected} shards ({samples_per_worker:,} samples)...")
@@ -249,7 +210,7 @@ def generate_shards(
 
                 data = {
                     "image": img_4d.half().cpu(),
-                    "nodes": tmpl["nodes_26d"],
+                    "nodes": tmpl["nodes_25d"],
                     "dap": torch.tensor(tmpl["dap"], dtype=torch.float32),
                     "camera_view": torch.tensor([caz, cel, cam_h], dtype=torch.float32),
                     "sun_view": torch.tensor([saz, sel], dtype=torch.float32),

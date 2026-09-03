@@ -1,9 +1,11 @@
 # Image-to-L-System: Project Documentation
 
 **프로젝트**: 단일 RGB 이미지 → 3D 식물 장기 파라미터 배열 예측 Flow Matching 모델
-**활성 표현**: 16D Part Tensor (GPU-native) + 26D Organ Vector (DiT-Large training)
-**활성 모델**: 232M DiT-Large Flow Matching (2×H100 DDP)
-**클러스터**: UC Davis Farm HPC | **학습 노드**: `gpu-10-58` (2× H100 SXM5)
+**활성 표현**: 17D Part Tensor (GPU-native, 캐노니컬) + 27D FM 노드 벡터 (one-hot + BudState; DiT 학습)
+**활성 모델**: 232M DiT-Large Flow Matching (4×H100 NVL DDP + SLURM `low` partition)
+**클러스터**: UC Davis Farm HPC | **학습 노드**: `gpu-10-58` (4× H100 NVL, DDP)
+**2026-08-31 상태**: 17D→XML→Helios 라운드트립 완전 해결 (organ IoU 1.0) | FM **27D** 전환 + 1000 샤드 재생성·검증 완료
+**학습**: `vlm_mmdit_ddp` (job **38048780**) 4×H100, global batch 128, 27D fresh shards로 **LIVE** (v-loss 13.3→6.2 하강 중)
 
 ---
 
@@ -13,9 +15,9 @@
 
 | 디렉토리 | 설명 | 상태 |
 |----------|------|------|
-| `diffusion_based/` | **핵심 활성 파이프라인**: 40D XML 브릿지, 16D Part Tensor GPU 렌더러, 26D DiT 학습/평가 | ✅ Active |
+| `diffusion_based/` | **핵심 활성 파이프라인**: 40D XML 브릿지, 17D Part Tensor GPU 렌더러, 27D DiT 학습/평가 | ✅ Active |
 | `archive/` | **통합 아카이브**: 과거 Track-A(15D), 14D, 40D VAE, 94D 및 디버그 스크립트 모음 ([`archive/README.md`](../archive/README.md)) | 📦 Archived |
-| `dataset/helios_data/` | 10K XML 원본 및 100K `.pt` GPU 샤드 데이터셋 | ✅ Active |
+| `dataset/helios_data/` | 10K XML 원본 및 1000×27D GPU 샤드 (`cowpea_shard/`; 구 26D stale 세트는 `cowpea_shard_stale_26d_20260824/` 보관) | ✅ Active |
 | `slurm_scripts/` | 2×H100 DDP 분산 학습 및 데이터 생성 SLURM 배치 스크립트 | ✅ Active |
 | `Digital-Crops/` | Helios C++ 시뮬레이션 엔진 서브모듈 | ✅ Active |
 | `docs/` | 프로젝트 전반 설계 및 진행 문서 | 📄 Documentation |
@@ -33,6 +35,11 @@
 | `assets/` | 문서에서 참조하는 이미지 파일 |
 
 ---
+
+### → [`ongoing/20260831_27d_fm_layout_and_shard_regeneration.md`](ongoing/20260831_27d_fm_layout_and_shard_regeneration.md)
+**27D FM Layout, Shard Regeneration & 4×H100 Training Launch (2026-08-31) — READ THIS FIRST**
+27D Flow-Matching node layout (BudState channel added to the prior 26D), softplus→linear scale fix, organ-aware normalization + angle wrapping (corpus flower yaw 810° → FM explosion fix), single-source-of-truth `encode_fm`/`decode_fm`, 27D FM mesh decode (meshes bit-identical to 17D GT), 1000-shard regeneration via SLURM pipeline, launcher de-hardcoding (N-rank from SLURM allocation), and the live training run. **Next agent: read this first.**
+**Live run**: job `38048780` — 4×H100 NVL, batch 32/GPU (72.8/95.8 GB), global 128, log `slurm_scripts/logs/train_vlm_scaffold_38048780.log` (`srun --overlap --jobid=38048780 nvidia-smi` for live GPU state).
 
 ### → [`ongoing/20260826_canonical_pipeline_refactor_progress.md`](ongoing/20260826_canonical_pipeline_refactor_progress.md)
 **Canonical Pipeline Refactor Progress Report (2026-08-26)**
@@ -80,6 +87,7 @@ Gravitropic curvature alignment, child shoot reference frame fixing, COCO intern
 
 | 파일 | 내용 | 완료일 |
 |------|------|--------|
+| `done/20260830_pr_xml_roundtrip_fix.md` | Helios C++ 무손실 XML 라운드트립 PR (peduncle/inflorescence/ground-collision pruning; docs/pr_xml_roundtrip_fix.md에서 이동) | 2026-08-30 |
 | `done/20260822_dataset_pipeline_multigpu_sharding_update.md` | CUDA 209 해결, 100-seed 확장, Self-Healing SLURM, 100K GPU 샤딩 | 2026-08-22 |
 | `done/20260821_cowpea_100k_dit_large_handoff.md` | 73M→229M DiT-Large 설계, 26D 인코딩, 100K 데이터셋 파이프라인 | 2026-08-21 |
 | `done/20260819_lab_meeting_report_backprop_vs_diffusion.md` | Lab Meeting: Backprop vs Diffusion 리포트 | 2026-08-19 |

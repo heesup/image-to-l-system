@@ -206,22 +206,28 @@ T_COL_RESERVED = 38
 T_COL_EXISTENCE = 39
 NUM_FEATURES_TYPED = 40
 
-# Categorical organ types
-ORGAN_ROOT_META = 0
-ORGAN_SHOOT_META = 1
-ORGAN_INTERNODE = 2
-ORGAN_PETIOLE = 3
-ORGAN_LEAF = 4
-ORGAN_BUD = 5
+# Categorical organ types (Unified 13 categories, 0 = NONE/EMPTY)
+ORGAN_NONE = 0
+ORGAN_ROOT_META = 1
+ORGAN_SHOOT_META = 2
+ORGAN_INTERNODE = 3
+ORGAN_PETIOLE = 4
+ORGAN_LEAF = 5
 ORGAN_PEDUNCLE = 6
-ORGAN_FLOWER = 7
-ORGAN_FRUIT = 8
+ORGAN_BUD_DORMANT = 7
+ORGAN_BUD_ACTIVE = 8
 ORGAN_FLOWER_CLOSED = 9
-ORGAN_BUD_ABORTED = 10
-NUM_ORGAN_TYPES = 11
+ORGAN_FLOWER_OPEN = 10
+ORGAN_FRUIT = 11
+ORGAN_BUD_ABORTED = 12
+NUM_ORGAN_TYPES = 13
+
+# Aliases for backward compatibility:
+ORGAN_BUD = ORGAN_BUD_DORMANT
+ORGAN_FLOWER = ORGAN_FLOWER_OPEN
 
 # =============================================================================
-# PART TENSOR 16D COLUMN CONSTANTS
+# PART TENSOR 13D COLUMN CONSTANTS (Disentangled Minimal Representation)
 # =============================================================================
 P_COL_ORGAN_TYPE = 0
 P_COL_BASE_X = 1
@@ -236,12 +242,8 @@ P_COL_ROT_5 = 9
 P_COL_SCALE_X = 10
 P_COL_SCALE_Y = 11
 P_COL_SCALE_Z = 12
-P_COL_EXISTENCE = 13
-P_COL_BUD_STATE = 14
-P_COL_CURVATURE = 15
-P_COL_PHYLLOTACTIC_ANGLE = 16
-NUM_FEATURES = 17
-NUM_FEATURES_PART = 17
+NUM_FEATURES = 13
+NUM_FEATURES_PART = 13
 
 
 # =============================================================================
@@ -640,6 +642,12 @@ class PlantOrganArray:
                 lines.append(f'\t\t\t<parent_node_index> {pni} </parent_node_index>')
                 lines.append(f'\t\t\t<parent_petiole_index> {ppi} </parent_petiole_index>')
                 lines.append(f'\t\t\t<base_rotation> {br_p} {br_y} {br_r} </base_rotation>')
+                # Realized per-shoot gravitropic curvature (stored in the reserved column of the
+                # SHOOT_META row). Written only when non-zero so files round-trip losslessly and
+                # older readers that lack the tag still load.
+                sm_grav = _to_float(sm[T_COL_RESERVED])
+                if sm_grav != 0.0:
+                    lines.append(f'\t\t\t<gravitropic_curvature> {_fmt(sm_grav)} </gravitropic_curvature>')
 
                 phytomers = shoots[sid]
                 for pidx in sorted(phytomers.keys()):
@@ -1034,7 +1042,7 @@ class PlantOrganArray:
                                             fa_elem = fl_elem.find("flower_azimuth")
                                             raw_fa = fa_elem.text if fa_elem is not None else "0"
                                             fbs_elem = fl_elem.find("flower_base_scale")
-                                            raw_fbs = fbs_elem.text if fbs_elem is not None else "1"
+                                            raw_fbs = fbs_elem.text if fbs_elem is not None else "0.03"
 
                                             fl_metas.append({
                                                 "raw_pitch": raw_fp,
@@ -1115,6 +1123,15 @@ class PlantOrganArray:
                 br_vals = [float(x) for x in raw_br.strip().split()]
                 br = (br_vals[0], br_vals[1], br_vals[2]) if len(br_vals) >= 3 else (0.0, 0.0, 0.0)
 
+                # Realized per-shoot gravitropic curvature (optional). The FK reconstruction in
+                # extract_part_tensor() applies shoot->gravitropic_curvature per internode segment,
+                # so this value must be carried through the typed layout to reproduce the plant
+                # faithfully. Stored in the reserved column of the SHOOT_META row; absent in files
+                # written before the tag existed, in which case the FK falls back to the library
+                # default (200.0 for cowpea trifoliate).
+                grav_elem = shoot_elem.find("gravitropic_curvature")
+                grav = float(grav_elem.text.strip()) if grav_elem is not None and grav_elem.text else 0.0
+
                 # SHOOT_META row
                 shoot_row = [0.0] * NUM_FEATURES_TYPED
                 shoot_row[T_COL_PLANT_ID] = float(plant_id)
@@ -1127,6 +1144,7 @@ class PlantOrganArray:
                 shoot_row[T_COL_PITCH] = br[0]
                 shoot_row[T_COL_YAW] = br[1]
                 shoot_row[T_COL_ROLL] = br[2]
+                shoot_row[T_COL_RESERVED] = grav
                 shoot_row[T_COL_EXISTENCE] = 1.0
                 rows.append(shoot_row)
 
@@ -1282,7 +1300,7 @@ class PlantOrganArray:
                                         fy = _get_float_text(fl_elem, "flower_yaw", 0.0)
                                         fr = _get_float_text(fl_elem, "flower_roll", 0.0)
                                         fa = _get_float_text(fl_elem, "flower_azimuth", 0.0)
-                                        fbs = _get_float_text(fl_elem, "flower_base_scale", 1.0)
+                                        fbs = _get_float_text(fl_elem, "flower_base_scale", 0.03)
 
                                         fl_row = [0.0] * NUM_FEATURES_TYPED
                                         fl_row[T_COL_PLANT_ID] = float(plant_id)

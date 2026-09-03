@@ -42,10 +42,7 @@ from diffusion_based.models.plant_organ_array import (
     NUM_FEATURES_PART
 )
 from diffusion_based.dataset.part_array_dataset import (
-    ORGAN_CATEGORIES, EMPTY_IDX, FM_NODE_DIM, FM_OT_END,
-    FM_BASE_START, FM_BASE_END, FM_ROT_START, FM_ROT_END,
-    FM_SCALE_START, FM_SCALE_END, FM_CURV_IDX, FM_PHYLLO_IDX,
-    BASE_SCALE, SCALE_SCALE, CURVATURE_SCALE, PHYLLOTACTIC_SCALE
+    encode_fm, FM_NODE_DIM, NUM_ORGAN_CATEGORIES, EMPTY_IDX,
 )
 
 
@@ -120,29 +117,17 @@ class CanonicalCowpeaDataset(Dataset):
         pil_img = Image.open(sample["img"]).convert("RGB")
         img_t = self.img_transform(pil_img)
 
-        part_16d, num_organs = self._extract_canonical_slots(sample["xml"])
+        part_17d, num_organs = self._extract_canonical_slots(sample["xml"])
 
-        # Convert to 26D Flow Matching layout
-        nodes_26d = torch.zeros((self.max_slots, FM_NODE_DIM), dtype=torch.float32)
-        ot = part_16d[:, P_COL_ORGAN_TYPE].long()
-        exist = part_16d[:, P_COL_EXISTENCE]
-
-        for i, cat in enumerate(ORGAN_CATEGORIES):
-            mask = (ot == cat) & (exist > 0.5)
-            nodes_26d[mask, i] = 1.0
-        nodes_26d[exist <= 0.5, EMPTY_IDX] = 1.0
-
-        act = exist > 0.5
-        nodes_26d[act, FM_BASE_START:FM_BASE_END] = part_16d[act, P_COL_BASE_X:P_COL_BASE_Z + 1] * BASE_SCALE
-        nodes_26d[act, FM_ROT_START:FM_ROT_END] = part_16d[act, P_COL_ROT_0:P_COL_ROT_5 + 1]
-        nodes_26d[act, FM_SCALE_START:FM_SCALE_END] = part_16d[act, P_COL_SCALE_X:P_COL_SCALE_Z + 1] * SCALE_SCALE
-        nodes_26d[act, FM_CURV_IDX] = part_16d[act, P_COL_CURVATURE] / CURVATURE_SCALE
-        nodes_26d[act, FM_PHYLLO_IDX] = part_16d[act, P_COL_PHYLLOTACTIC_ANGLE] / PHYLLOTACTIC_SCALE
+        # Convert to 27D Flow Matching layout (encode_fm: single source of truth,
+        # 17D->XML->Helios round-trip params preserved: bud_state + organ-specific
+        # scale_y/z semantics in cols 14-16)
+        nodes_27d = encode_fm(part_17d)
 
         return {
             "image": img_t,
             "dap": torch.tensor(sample["dap"], dtype=torch.float32),
-            "nodes": nodes_26d,
+            "nodes": nodes_27d,
             "num_organs": torch.tensor(num_organs, dtype=torch.long),
             "existence_mask": act,
         }

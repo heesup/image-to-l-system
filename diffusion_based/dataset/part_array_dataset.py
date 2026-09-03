@@ -1,18 +1,14 @@
 """
 Dataset for paired (rendered image, part-centric PlantOrganArray tensor) samples.
 
-The part tensor layout (per organ):
-    [OrganType(0), Base(1..3), Rot6D(4..9), Scale(10..12), Existence(13),
-     Curvature(14), PhyllotacticAngle(15)]
+The 13D part tensor layout (per organ):
+    [OrganType(0), Base(1..3), Rot6D(4..9), Scale(10..12)]
 
-Normalization (fixed, hand-tuned to unit-ish scale for flow matching):
-    - organ type (col 0):  / 10.0 -> [0, 1]  (categorical, rounded at inference)
-    - base (cols 1..3):    * 100.0 -> ~[-1, 1] (world coords are ~cm scale)
-    - rot6d (cols 4..9):   unchanged (already [-1, 1])
-    - scale (cols 10..12): unchanged (already [0, 1])
-    - existence (col 13):  unchanged (already [0, 1])
-    - curvature (col 14):  / 100.0 -> ~[-1, 1] (degrees)
-    - phyllotactic (col 15): / 180.0 -> ~[0, 1] (degrees)
+Flow matching 25D node layout:
+    [One-hot Organ Type (0..12), Base*20 (13..15), Rot6D (16..21), Scale*50 (22..24)]
+    - Organ category 0 is ORGAN_NONE (empty slot).
+    - Real organs are 1..12.
+    - Existence is recovered as 1.0 - p(ORGAN_NONE).
 """
 
 import os
@@ -24,86 +20,97 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset
 from torchvision import transforms
 from PIL import Image
+import numpy as np
 
 from diffusion_based.models.plant_organ_array import (
     PlantOrganArray,
+    ORGAN_NONE,
+    ORGAN_ROOT_META,
+    ORGAN_SHOOT_META,
+    ORGAN_INTERNODE,
+    ORGAN_PETIOLE,
+    ORGAN_LEAF,
+    ORGAN_PEDUNCLE,
+    ORGAN_BUD_DORMANT,
+    ORGAN_BUD_ACTIVE,
+    ORGAN_FLOWER_CLOSED,
+    ORGAN_FLOWER_OPEN,
+    ORGAN_FRUIT,
+    ORGAN_BUD_ABORTED,
+    NUM_ORGAN_TYPES,
     P_COL_ORGAN_TYPE,
     P_COL_BASE_X,
     P_COL_BASE_Z,
     P_COL_ROT_0,
     P_COL_ROT_5,
     P_COL_SCALE_X,
+    P_COL_SCALE_Y,
     P_COL_SCALE_Z,
-    P_COL_EXISTENCE,
-    P_COL_CURVATURE,
-    P_COL_PHYLLOTACTIC_ANGLE,
     NUM_FEATURES,
-    ORGAN_ROOT_META, ORGAN_SHOOT_META, ORGAN_INTERNODE, ORGAN_PETIOLE, ORGAN_LEAF,
-    ORGAN_BUD, ORGAN_PEDUNCLE, ORGAN_FLOWER, ORGAN_FRUIT, ORGAN_FLOWER_CLOSED,
-    ORGAN_BUD_ABORTED,
 )
 
-# Fixed normalization constants (see module docstring)
-ORGAN_TYPE_SCALE = 10.0
+# Fixed normalization constants
 BASE_SCALE = 20.0
 SCALE_SCALE = 50.0
-CURVATURE_SCALE = 100.0
-PHYLLOTACTIC_SCALE = 180.0
 
 # ---------------------------------------------------------------------------
 # Flow-matching organ-category encoding.
 #
-# The canonical part tensor keeps a scalar organ type + existence column. For
-# flow matching we instead one-hot the organ type and add an "empty" category,
-# dropping the separate existence column. Existence is recovered as
-# 1 - p(empty). This makes the categorical organ type a proper probability
-# distribution (softmax) and lets the model grow organs from an empty plant.
+# The canonical part tensor keeps a scalar organ type (0=NONE, 1..12=real organs).
+# For flow matching we one-hot the organ type into 13 classes.
+# Existence is recovered as 1.0 - p(ORGAN_NONE).
 # ---------------------------------------------------------------------------
-ORGAN_CATEGORIES = [
-    ORGAN_ROOT_META, ORGAN_SHOOT_META, ORGAN_INTERNODE, ORGAN_PETIOLE, ORGAN_LEAF,
-    ORGAN_BUD, ORGAN_PEDUNCLE, ORGAN_FLOWER, ORGAN_FRUIT, ORGAN_FLOWER_CLOSED,
-    ORGAN_BUD_ABORTED,
-]
-CATEGORY_TO_IDX = {ot: i for i, ot in enumerate(ORGAN_CATEGORIES)}
-EMPTY_IDX = len(ORGAN_CATEGORIES)          # index of the "empty" category
-NUM_ORGAN_CATEGORIES = len(ORGAN_CATEGORIES) + 1  # 11 real + 1 empty
+ORGAN_CATEGORIES = list(range(NUM_ORGAN_TYPES))
+CATEGORY_TO_IDX = {ot: ot for ot in ORGAN_CATEGORIES}
+EMPTY_IDX = ORGAN_NONE
+NUM_ORGAN_CATEGORIES = NUM_ORGAN_TYPES
 
 # Flow-matching node layout (per organ):
-#   [one-hot organ type (NUM_ORGAN_CATEGORIES), Base(3), Rot6D(6), Scale(3),
-#    Curvature(1), Phyllotactic(1)]
-FM_OT_END = NUM_ORGAN_CATEGORIES
-FM_BASE_START = FM_OT_END
-FM_BASE_END = FM_OT_END + 3
-FM_ROT_START = FM_BASE_END
-FM_ROT_END = FM_BASE_END + 6
-FM_SCALE_START = FM_ROT_END
-FM_SCALE_END = FM_ROT_END + 3
-FM_CURV_IDX = FM_SCALE_END
-FM_PHYLLO_IDX = FM_SCALE_END + 1
-FM_NODE_DIM = FM_SCALE_END + 2
+#   [one-hot organ type (13), Base(3), Rot6D(6), Scale(3)] = 25D
+FM_OT_START = 0
+FM_OT_END = NUM_ORGAN_CATEGORIES  # 13
+FM_BASE_START = FM_OT_END         # 13
+FM_BASE_END = FM_OT_END + 3       # 16
+FM_ROT_START = FM_BASE_END        # 16
+FM_ROT_END = FM_BASE_END + 6      # 22
+FM_SCALE_START = FM_ROT_END       # 22
+FM_SCALE_END = FM_ROT_END + 3     # 25
+FM_NODE_DIM = FM_SCALE_END        # 25
+
+
+def encode_fm(part: torch.Tensor) -> torch.Tensor:
+    """Convert a canonical (N, 13) part tensor to the 25D FM node layout.
+
+    One-hot organ type (13) + Base(3) + Rot6D(6) + Scale(3) = 25D.
+    """
+    N = part.shape[0]
+    out = torch.zeros((N, FM_NODE_DIM), dtype=part.dtype, device=part.device)
+    ot = part[:, P_COL_ORGAN_TYPE].long().clamp(0, NUM_ORGAN_CATEGORIES - 1)
+
+    # 1. One-hot organ category (0 = ORGAN_NONE, 1..12 = organs)
+    out.scatter_(1, ot.unsqueeze(1), 1.0)
+
+    # 2. Continuous geometric regression targets
+    active_mask = ot > ORGAN_NONE
+    out[active_mask, FM_BASE_START:FM_BASE_END] = part[active_mask, P_COL_BASE_X:P_COL_BASE_Z + 1] * BASE_SCALE
+    out[active_mask, FM_ROT_START:FM_ROT_END] = part[active_mask, P_COL_ROT_0:P_COL_ROT_5 + 1]
+    out[active_mask, FM_SCALE_START:FM_SCALE_END] = part[active_mask, P_COL_SCALE_X:P_COL_SCALE_Z + 1] * SCALE_SCALE
+    return out
 
 
 def decode_fm(fm: torch.Tensor) -> torch.Tensor:
-    """Convert a 26D FM node tensor back to a canonical (N, 17) part tensor.
+    """Convert a 25D FM node tensor back to a canonical (N, 13) part tensor.
 
-    Organ type = argmax over the real organ categories; existence = 1 - p(empty).
-    This is the standalone (module-level) version of PartArrayDataset.decode_fm,
-    usable directly on model output (x_gen / x_1_hat) for the 17D->XML->Helios
-    round-trip without instantiating a dataset.
+    Organ type = argmax over the 13 categories (0 = NONE).
     """
     N = fm.shape[0]
     out = torch.zeros((N, NUM_FEATURES), dtype=fm.dtype, device=fm.device)
-    ot_probs_real = fm[:, :EMPTY_IDX]
-    empty_prob = fm[:, EMPTY_IDX]
-    ot_idx = ot_probs_real.argmax(dim=1)
-    for i, cat in enumerate(ORGAN_CATEGORIES):
-        out[ot_idx == i, P_COL_ORGAN_TYPE] = cat
-    out[:, P_COL_EXISTENCE] = (1.0 - empty_prob).clamp(0.0, 1.0)
+    ot_probs = fm[:, :NUM_ORGAN_CATEGORIES]
+    ot = ot_probs.argmax(dim=1)
+    out[:, P_COL_ORGAN_TYPE] = ot.float()
     out[:, P_COL_BASE_X:P_COL_BASE_Z + 1] = fm[:, FM_BASE_START:FM_BASE_END] / BASE_SCALE
     out[:, P_COL_ROT_0:P_COL_ROT_5 + 1] = fm[:, FM_ROT_START:FM_ROT_END]
-    out[:, P_COL_SCALE_X:P_COL_SCALE_Z + 1] = F.softplus(fm[:, FM_SCALE_START:FM_SCALE_END]).clamp(min=0.005) / SCALE_SCALE
-    out[:, P_COL_CURVATURE] = fm[:, FM_CURV_IDX] * CURVATURE_SCALE
-    out[:, P_COL_PHYLLOTACTIC_ANGLE] = fm[:, FM_PHYLLO_IDX] * PHYLLOTACTIC_SCALE
+    out[:, P_COL_SCALE_X:P_COL_SCALE_Z + 1] = fm[:, FM_SCALE_START:FM_SCALE_END] / SCALE_SCALE
     return out
 
 
@@ -112,12 +119,12 @@ def canonical_sort_nodes(
     existence_mask: Optional[torch.Tensor] = None
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Sorts 26D plant organ node slots into a deterministic canonical botanical order.
+    Sorts 25D plant organ node slots into a deterministic canonical botanical order.
     
     Order:
       1. Active vs Empty (Active nodes first, Empty padding slots last)
       2. Organ Type Botanical Hierarchy:
-         - Root / Shoot Meta (anchors)
+         - Root Meta / Shoot Meta (anchors)
          - Internodes (Stem skeleton, sorted bottom -> top along base_z)
          - Petioles (Branch / leaf stalks, sorted bottom -> top along base_z)
          - Leaves (Photosynthetic blades, sorted bottom -> top, then azimuth angle)
@@ -125,13 +132,6 @@ def canonical_sort_nodes(
          - Flowers / Fruits (Flowers / Pods)
       3. Z-height (base_z: height above soil)
       4. Azimuth angle (atan2(base_y, base_x) in [-pi, pi])
-    
-    Args:
-        nodes: (N, 26) tensor of organ nodes
-        existence_mask: optional (N,) boolean tensor
-    Returns:
-        sorted_nodes: (N, 26) canonically ordered tensor
-        sorted_mask: (N,) canonically ordered boolean mask
     """
     if nodes.ndim != 2 or nodes.shape[0] <= 1:
         if existence_mask is None:
@@ -141,27 +141,27 @@ def canonical_sort_nodes(
     N = nodes.shape[0]
     device = nodes.device
 
-    ot_onehot = nodes[:, :FM_OT_END]  # (N, 12)
+    ot_onehot = nodes[:, :FM_OT_END]  # (N, 13)
     ot_idx = ot_onehot.argmax(dim=-1)  # (N,)
 
-    # Determine active vs empty slots directly from nodes (and match mask if same shape)
     is_active = (ot_idx != EMPTY_IDX) & (ot_onehot[:, EMPTY_IDX] < 0.5)
     if existence_mask is not None and existence_mask.shape[0] == N:
         is_active = is_active & existence_mask
 
     rank_map = torch.tensor([
-        0,   # 0: Root Meta
-        1,   # 1: Shoot Meta
-        2,   # 2: Internode
-        3,   # 3: Petiole
-        4,   # 4: Leaf
-        5,   # 5: Bud
+        999, # 0: NONE
+        0,   # 1: Root Meta
+        1,   # 2: Shoot Meta
+        2,   # 3: Internode
+        3,   # 4: Petiole
+        4,   # 5: Leaf
         6,   # 6: Peduncle
-        7,   # 7: Flower
-        8,   # 8: Fruit
+        5,   # 7: Bud Dormant
+        5,   # 8: Bud Active
         7,   # 9: Flower Closed
-        5,   # 10: Bud Aborted
-        999  # 11: Empty
+        7,   # 10: Flower Open
+        8,   # 11: Fruit
+        5,   # 12: Bud Aborted
     ], dtype=torch.float32, device=device)
 
     cat_ranks = rank_map[ot_idx]
@@ -216,7 +216,6 @@ class PartArrayDataset(Dataset):
         xml_paths = sorted(glob.glob(os.path.join(self.data_root, "**", "*_plant_*.xml"), recursive=True))
         if not xml_paths:
             xml_paths = sorted(glob.glob(os.path.join(self.data_root, "*_plant_*.xml")))
-        # Filter out transient / temporary SLURM worker directories
         xml_paths = [p for p in xml_paths if "/_tmp_" not in p and "_tmp_" not in os.path.basename(p)]
         if include_globs:
             xml_paths = [p for p in xml_paths if any(_fnmatch.fnmatch(os.path.basename(p), pat) for pat in include_globs)]
@@ -236,69 +235,13 @@ class PartArrayDataset(Dataset):
                 break
         return {"xml": xml_path, "jpeg": jpeg_path, "prefix": prefix}
 
-    def normalize(self, part: torch.Tensor) -> torch.Tensor:
-        """Normalize a (N, D) part tensor to unit-ish scale."""
-        out = part.clone()
-        out[:, P_COL_ORGAN_TYPE] = out[:, P_COL_ORGAN_TYPE] / ORGAN_TYPE_SCALE
-        out[:, P_COL_BASE_X:P_COL_BASE_Z + 1] = out[:, P_COL_BASE_X:P_COL_BASE_Z + 1] * BASE_SCALE
-        out[:, P_COL_CURVATURE] = out[:, P_COL_CURVATURE] / CURVATURE_SCALE
-        out[:, P_COL_PHYLLOTACTIC_ANGLE] = out[:, P_COL_PHYLLOTACTIC_ANGLE] / PHYLLOTACTIC_SCALE
-        return out
-
-    def denormalize(self, part: torch.Tensor) -> torch.Tensor:
-        """Undo normalization."""
-        out = part.clone()
-        out[:, P_COL_ORGAN_TYPE] = out[:, P_COL_ORGAN_TYPE] * ORGAN_TYPE_SCALE
-        out[:, P_COL_BASE_X:P_COL_BASE_Z + 1] = out[:, P_COL_BASE_X:P_COL_BASE_Z + 1] / BASE_SCALE
-        out[:, P_COL_CURVATURE] = out[:, P_COL_CURVATURE] * CURVATURE_SCALE
-        out[:, P_COL_PHYLLOTACTIC_ANGLE] = out[:, P_COL_PHYLLOTACTIC_ANGLE] * PHYLLOTACTIC_SCALE
-        return out
-
-    # ------------------------------------------------------------------
-    # Flow-matching encoding: canonical 16D part tensor <-> FM node vector
-    # ------------------------------------------------------------------
     def encode_fm(self, part: torch.Tensor) -> torch.Tensor:
-        """Convert a canonical (N, 16) part tensor to the FM node layout.
-
-        Organ type is one-hot (with an extra 'empty' category), existence is
-        dropped (recovered as 1 - p(empty)). Continuous columns are normalized.
-        """
-        N = part.shape[0]
-        out = torch.zeros((N, FM_NODE_DIM), dtype=part.dtype, device=part.device)
-        ot = part[:, P_COL_ORGAN_TYPE].long()
-        exist = part[:, P_COL_EXISTENCE]
-        for i, cat in enumerate(ORGAN_CATEGORIES):
-            mask = (ot == cat) & (exist > 0.5)
-            out[mask, i] = 1.0
-        # Empty category = slots that are inactive (existence <= 0.5).
-        out[exist <= 0.5, EMPTY_IDX] = 1.0
-        active_mask = (exist > 0.5)
-        out[active_mask, FM_BASE_START:FM_BASE_END] = part[active_mask, P_COL_BASE_X:P_COL_BASE_Z + 1] * BASE_SCALE
-        out[active_mask, FM_ROT_START:FM_ROT_END] = part[active_mask, P_COL_ROT_0:P_COL_ROT_5 + 1]
-        out[active_mask, FM_SCALE_START:FM_SCALE_END] = part[active_mask, P_COL_SCALE_X:P_COL_SCALE_Z + 1] * SCALE_SCALE
-        out[active_mask, FM_CURV_IDX] = part[active_mask, P_COL_CURVATURE] / CURVATURE_SCALE
-        out[active_mask, FM_PHYLLO_IDX] = part[active_mask, P_COL_PHYLLOTACTIC_ANGLE] / PHYLLOTACTIC_SCALE
-        return out
+        """Convert a canonical (N, 13) part tensor to the 25D FM node layout."""
+        return encode_fm(part)
 
     def decode_fm(self, fm: torch.Tensor) -> torch.Tensor:
-        """Convert an FM node vector back to a canonical (N, 16) part tensor.
-
-        Organ type = argmax over the 11 real organ categories; existence = 1 - p(empty).
-        """
-        N = fm.shape[0]
-        out = torch.zeros((N, NUM_FEATURES), dtype=fm.dtype, device=fm.device)
-        ot_probs_real = fm[:, :EMPTY_IDX]
-        empty_prob = fm[:, EMPTY_IDX]
-        ot_idx = ot_probs_real.argmax(dim=1)
-        for i, cat in enumerate(ORGAN_CATEGORIES):
-            out[ot_idx == i, P_COL_ORGAN_TYPE] = cat
-        out[:, P_COL_EXISTENCE] = (1.0 - empty_prob).clamp(0.0, 1.0)
-        out[:, P_COL_BASE_X:P_COL_BASE_Z + 1] = fm[:, FM_BASE_START:FM_BASE_END] / BASE_SCALE
-        out[:, P_COL_ROT_0:P_COL_ROT_5 + 1] = fm[:, FM_ROT_START:FM_ROT_END]
-        out[:, P_COL_SCALE_X:P_COL_SCALE_Z + 1] = F.softplus(fm[:, FM_SCALE_START:FM_SCALE_END]).clamp(min=0.005) / SCALE_SCALE
-        out[:, P_COL_CURVATURE] = fm[:, FM_CURV_IDX] * CURVATURE_SCALE
-        out[:, P_COL_PHYLLOTACTIC_ANGLE] = fm[:, FM_PHYLLO_IDX] * PHYLLOTACTIC_SCALE
-        return out
+        """Convert a 25D FM node vector back to a canonical (N, 13) part tensor."""
+        return decode_fm(fm)
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -349,7 +292,6 @@ class PartArrayDataset(Dataset):
                 try:
                     with Image.open(sample["jpeg"]) as pil_img:
                         pil_rgb = pil_img.convert("RGB")
-                        # resize to self.image_size
                         pil_rgb = pil_rgb.resize((self.image_size, self.image_size), Image.Resampling.BILINEAR)
                         arr_img = np.array(pil_rgb, dtype=np.float32) / 255.0
                         rgb_t = torch.from_numpy(arr_img).permute(2, 0, 1)

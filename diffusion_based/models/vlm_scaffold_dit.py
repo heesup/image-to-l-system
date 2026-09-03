@@ -26,14 +26,10 @@ from diffusion_based.dataset.part_array_dataset import (
     FM_ROT_END,
     FM_SCALE_START,
     FM_SCALE_END,
-    FM_CURV_IDX,
-    FM_PHYLLO_IDX,
     ORGAN_CATEGORIES,
     EMPTY_IDX,
     BASE_SCALE,
     SCALE_SCALE,
-    CURVATURE_SCALE,
-    PHYLLOTACTIC_SCALE,
 )
 from diffusion_based.models.vlm_vision_tower import DINOv3VisionTower
 

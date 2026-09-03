@@ -4,6 +4,13 @@
 **Status**: ✅ Implementation Complete / Verification Passed  
 **Context**: Executed the [`20260826_implementation_plan.md`](20260826_implementation_plan.md) — unified every rendering path onto the single canonical path below and fully removed the legacy 94D layout from the rendering pipeline.
 
+> **UPDATE 2026-08-31**: The 17D→XML→Helios round-trip described as open in this doc
+> (§7.5 flower IoU 0.139 / pod 0.035) was **fully solved** on 2026-08-30 — all organs
+> IoU 1.0000. Remaining open item (internode curv/yaw perturbation gap on corpus
+> plants) is tracked in [`20260831_27d_fm_layout_and_shard_regeneration.md`](20260831_27d_fm_layout_and_shard_regeneration.md) §8.
+> The FM training layout is now **27D** (see also `20260830_pr_xml_roundtrip_fix.md`
+> in `done/` for the C++ side of the XML idempotency fix).
+
 $$\text{XML} \xrightarrow{\text{direct parse}} \text{40D}\ (\text{PlantOrganArray}) \xrightarrow[\text{native FK}]{\text{extract\_part\_tensor()}} \text{17D} \xrightarrow{\text{GPU mesh builder}}{\text{build\_mesh\_from\_part\_tensor()}} \text{3D Mesh}$$
 
 ---

@@ -148,10 +148,10 @@ plt.subplots_adjust(wspace=0.06, hspace=0.18)
 col_titles = [
     "Helios C++\nRadiation GT",
     "Helios C++\nOrgan Map GT",
-    "PyTorch 16D (26D)\nRGB Render",
+    "PyTorch 13D (25D)\nRGB Render",
     "Canopy Height (CHM)\n(taller = brighter)",
-    "PyTorch 16D (26D)\nForeground Mask",
-    "PyTorch 16D (26D)\nOrgan-Type Map"
+    "PyTorch 13D (25D)\nForeground Mask",
+    "PyTorch 13D (25D)\nOrgan-Type Map"
 ]
 col_colors = ["#ff9999", "#ff9999", "#70d6ff", "#c3a6e0", "#88d8c0", "#ffd166"]
 
@@ -302,7 +302,7 @@ for row, (label, xml_path, helios_path, helios_masks_path, helios_cam_path) in e
 
 # Overall title
 fig.suptitle(
-    "Figure 8: Helios C++ Raytrace vs 16D / 26D PyTorch Differentiable Multi-Modal Outputs (RGB · Canopy Height · Mask · Semantic Map)",
+    "Figure 8: Helios C++ Raytrace vs 13D / 25D PyTorch Differentiable Multi-Modal Outputs (RGB · Canopy Height · Mask · Semantic Map)",
     fontsize=13, fontweight='bold', color='white', y=0.995
 )
 
