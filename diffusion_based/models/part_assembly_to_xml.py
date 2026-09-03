@@ -521,5 +521,21 @@ class PartAssemblyToXMLConverter:
             lines.append('		</shoot>')
 
         lines.append('	</plant_instance>')
-        lines.append('</helios>\\n')
-        return "\\n".join(lines)
+        lines.append('</helios>\n')
+        return "\n".join(lines) + "\n"
+
+
+def assemble_part_tensor_to_xml(
+    part_tensor: torch.Tensor,
+    plant_id: int = 0,
+    plant_type: str = "cowpea",
+    existence_threshold: float = 0.5,
+) -> str:
+    """Convenience helper to convert a 13D part tensor into a Helios XML string."""
+    converter = PartAssemblyToXMLConverter()
+    return converter.convert_to_xml_string(
+        part_tensor,
+        plant_id=plant_id,
+        plant_type=plant_type,
+        existence_threshold=existence_threshold,
+    )
