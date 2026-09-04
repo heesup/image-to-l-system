@@ -1,15 +1,16 @@
 """
-Accurate Empirical Benchmark: Actual Helios C++ Binary Execution vs PyTorch 40D Typed OrganArray Renderer (DAP 1-100).
+Empirical Performance & Scaling Benchmark: Helios C++ Raytracer vs PyTorch 13D Differentiable Renderer (DAP 1-100).
 
-Directly runs and benchmarks:
-  1. Actual Helios C++ binary (main --renderer radiation) across DAPs (1-100)
-  2. PyTorch 40D Typed OrganArray direct assembly (Forward & Backward passes)
-  3. End-to-end XML -> 40D Typed Tensor -> Image wall-clock time
-  4. Real Speedup Factor across plant growth timeline (vs Helios C++)
+Function Call Path Profiled:
+  1. XML I/O: PlantOrganArray.from_xml_file()
+  2. Forward Kinematics (FK): organ_array.to_part_tensor() -> (N, 13)
+  3. Vectorized GPU Mesh Build: HeliosPlantGeometryBuilder.build_mesh_from_part_tensor()
+  4. Differentiable Rasterization: HeliosPyTorchRenderer.forward() (Nvdiffrast)
+  5. Backpropagation: loss.backward() -> dLoss/d(13D Part Tensor)
 
 Outputs:
   - docs/results/assets/fig1_helios_vs_torch_rendering_benchmark.png
-  - diffusion_based/eval/benchmark_cache_40d.json
+  - diffusion_based/eval/benchmark_cache_13d.json
 """
 
 import os
@@ -24,21 +25,22 @@ import torch
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 
-repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if repo_root not in sys.path:
-    sys.path.insert(0, repo_root)
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 from diffusion_based.models.plant_organ_array import PlantOrganArray
 from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 
-BUILD_DIR = os.path.join(repo_root, "Digital-Crops", "projects", "syntheticdata_generation", "build")
+BUILD_DIR = os.path.join(REPO_ROOT, "Digital-Crops", "projects", "syntheticdata_generation", "build")
 MAIN_BIN = os.path.join(BUILD_DIR, "main")
 PARAMS_FILE = os.path.join(BUILD_DIR, "params.json")
 
 
 def benchmark_accurate_dap(force_recompute=False):
-    cache_file = os.path.join(repo_root, "diffusion_based", "eval", "benchmark_cache_40d.json")
+    cache_file = os.path.join(REPO_ROOT, "diffusion_based", "eval", "benchmark_cache_13d.json")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Running Real Empirical Benchmark on {device}...")
 
@@ -50,20 +52,18 @@ def benchmark_accurate_dap(force_recompute=False):
         "organ_count": [],
         "triangle_count": [],
         "helios_time_sec": [],
-        "torch_40d_fwd_sec": [],
-        "torch_40d_bwd_sec": [],
-        "xml_to_40d_sec": [],
-        "render_40d_sec": [],
-        "end_to_end_40d_sec": [],
-        "speedup_40d_vs_helios": [],
-        "stage_to_legacy_sec": [],
+        "torch_13d_fwd_sec": [],
+        "torch_13d_bwd_sec": [],
+        "xml_io_sec": [],
+        "fk_to_13d_sec": [],
         "stage_build_mesh_sec": [],
-        "stage_camera_sec": [],
         "stage_rasterize_sec": [],
+        "end_to_end_13d_sec": [],
+        "speedup_13d_vs_helios": [],
     }
 
     # Load baseline Helios C++ cache if available
-    old_cache_file = os.path.join(repo_root, "diffusion_based", "eval", "benchmark_cache.json")
+    old_cache_file = os.path.join(REPO_ROOT, "diffusion_based", "eval", "benchmark_cache.json")
     helios_cached = {}
     if os.path.exists(old_cache_file):
         with open(old_cache_file, "r") as f:
@@ -71,8 +71,8 @@ def benchmark_accurate_dap(force_recompute=False):
             for d, h in zip(old_data.get("dap", []), old_data.get("helios_time_sec", [])):
                 helios_cached[d] = h
 
-    # Global warm-up for PyTorch CUDA context, nvdiffrast kernel compilation, and 16D part geometry caches
-    warmup_matches = glob.glob(os.path.join(repo_root, "dataset", "helios_data", "**", "*cowpea_dap001_seed68*.xml"), recursive=True)
+    # Global warm-up for PyTorch CUDA context, nvdiffrast kernel compilation, and geometry caches
+    warmup_matches = glob.glob(os.path.join(REPO_ROOT, "dataset", "helios_data", "**", "*cowpea_dap001_seed68*.xml"), recursive=True)
     if warmup_matches:
         warm_oa = PlantOrganArray.from_xml_file(warmup_matches[0])
         warm_part = warm_oa.to_part_tensor(device=device)
@@ -107,11 +107,11 @@ def benchmark_accurate_dap(force_recompute=False):
             helios_sec = time.time() - t0
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
-        # 2. Find matching XML (use consistent seed 68 series for true botanical scaling)
+        # 2. Find matching XML
         xml_path = None
-        matches = glob.glob(os.path.join(repo_root, "dataset", "helios_data", "**", f"*cowpea_dap{dap:03d}_seed68*.xml"), recursive=True)
+        matches = glob.glob(os.path.join(REPO_ROOT, "dataset", "helios_data", "**", f"*cowpea_dap{dap:03d}_seed68*.xml"), recursive=True)
         if not matches:
-            matches = glob.glob(os.path.join(repo_root, "dataset", "helios_data", "**", f"*dap{dap:03d}*.xml"), recursive=True)
+            matches = glob.glob(os.path.join(REPO_ROOT, "dataset", "helios_data", "**", f"*dap{dap:03d}*.xml"), recursive=True)
         if not matches:
             matches = glob.glob(os.path.join(BUILD_DIR, "output", f"*dap{dap}*.xml"))
         if matches:
@@ -124,28 +124,33 @@ def benchmark_accurate_dap(force_recompute=False):
         if xml_path is None or not os.path.exists(xml_path):
             continue
 
-        # 3. 16D Part Assembly Profiling
-        # Stage A: 40D Typed OrganArray to 16D Part Tensor
+        # 3. Call Path Stage-by-Stage Profiling
+        # Stage 1: XML Parsing & Deserialization
         t0 = time.time()
-        for _ in range(3):
+        for _ in range(5):
             organ_array = PlantOrganArray.from_xml_file(xml_path)
+        t_xml_io = (time.time() - t0) / 5.0
+
+        # Stage 2: Forward Kinematics (XML -> 13D Part Tensor)
+        t0 = time.time()
+        for _ in range(5):
             part_tensor = organ_array.to_part_tensor(device=device)
         if torch.cuda.is_available():
             torch.cuda.synchronize()
-        t_xml_to_16d = (time.time() - t0) / 3.0
+        t_fk_13d = (time.time() - t0) / 5.0
 
-        # Stage B: Fully Vectorized 16D Part Mesh Construction
+        # Stage 3: Fully Vectorized 13D Part Mesh Construction
         t0 = time.time()
-        mesh_dict = renderer.geo_builder.build_mesh_from_part_tensor(part_tensor, device=device)
+        for _ in range(5):
+            mesh_dict = renderer.geo_builder.build_mesh_from_part_tensor(part_tensor, device=device)
         if torch.cuda.is_available():
             torch.cuda.synchronize()
-        t_mesh_build_16d = time.time() - t0
+        t_mesh_build_13d = (time.time() - t0) / 5.0
 
         tri_count = mesh_dict["faces"].shape[0]
         organ_count = part_tensor.shape[0]
 
-        # Stage C: 16D GPU Rasterization & Forward Pass (512x512)
-        # Warmup GPU
+        # Stage 4: 13D GPU Rasterization & Shading (512x512)
         for _ in range(3):
             _ = renderer.forward(mesh_dict, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, focus_plant=True)
         if torch.cuda.is_available():
@@ -159,49 +164,46 @@ def benchmark_accurate_dap(force_recompute=False):
             torch.cuda.synchronize()
         torch_gpu_fwd = (time.time() - t0) / float(n_iters)
 
-        # Stage D: End-to-End 16D Part Assembly (16D Mesh Build + GPU Render)
-        t_render_16d = t_mesh_build_16d + torch_gpu_fwd
-        t_end_to_end = t_xml_to_16d + t_render_16d
+        # Stage 5: Total Forward Render (Mesh Build + GPU Rasterize)
+        t_render_13d = t_mesh_build_13d + torch_gpu_fwd
+        t_end_to_end = t_xml_io + t_fk_13d + t_render_13d
 
-        # Stage E: Differentiable 16D Optimization Pass (16D Mesh + Rasterize + Autograd Backward)
+        # Stage 6: Differentiable 13D Optimization Pass (Mesh + Rasterize + Backward)
         t0 = time.time()
         opt_part = part_tensor.clone().requires_grad_(True)
-        rend_16d = renderer.render_part_tensor(
+        rend_13d = renderer.render_part_tensor(
             opt_part, camera_height=5.0, elevation_deg=90.0,
             device=device, focus_plant=True, differentiable=True,
         )
-        loss_16d = rend_16d.sum()
-        loss_16d.backward()
+        loss_13d = rend_13d.sum()
+        loss_13d.backward()
         if torch.cuda.is_available():
             torch.cuda.synchronize()
-        torch_16d_bwd = time.time() - t0
+        torch_13d_bwd = time.time() - t0
 
-        speedup_16d = helios_sec / max(t_render_16d, 1e-6)
-        speedup_gpu = helios_sec / max(torch_gpu_fwd, 1e-6)
-
-        results["stage_to_legacy_sec"].append(t_xml_to_16d)
-        results["stage_build_mesh_sec"].append(t_mesh_build_16d)
-        results["stage_camera_sec"].append(0.002)
-        results["stage_rasterize_sec"].append(torch_gpu_fwd)
+        speedup_13d = helios_sec / max(t_render_13d, 1e-6)
 
         results["dap"].append(dap)
         results["organ_count"].append(organ_count)
         results["triangle_count"].append(tri_count)
         results["helios_time_sec"].append(helios_sec)
-        results["torch_40d_fwd_sec"].append(t_render_16d)
-        results["torch_40d_bwd_sec"].append(torch_16d_bwd)
-        results["xml_to_40d_sec"].append(t_xml_to_16d)
-        results["render_40d_sec"].append(t_render_16d)
-        results["end_to_end_40d_sec"].append(t_end_to_end)
-        results["speedup_40d_vs_helios"].append(speedup_16d)
+        results["torch_13d_fwd_sec"].append(t_render_13d)
+        results["torch_13d_bwd_sec"].append(torch_13d_bwd)
+        results["xml_io_sec"].append(t_xml_io)
+        results["fk_to_13d_sec"].append(t_fk_13d)
+        results["stage_build_mesh_sec"].append(t_mesh_build_13d)
+        results["stage_rasterize_sec"].append(torch_gpu_fwd)
+        results["end_to_end_13d_sec"].append(t_end_to_end)
+        results["speedup_13d_vs_helios"].append(speedup_13d)
 
         print(f"DAP {dap:03d} (Organs={organ_count:4d}, Tris={tri_count:6d}): "
               f"Helios C++={helios_sec:5.2f}s | "
-              f"16D Mesh={t_mesh_build_16d*1000:5.2f}ms | "
+              f"FK={t_fk_13d*1000:5.2f}ms | "
+              f"Mesh Build={t_mesh_build_13d*1000:5.2f}ms | "
               f"GPU Rast={torch_gpu_fwd*1000:5.2f}ms | "
-              f"16D Total Render={t_render_16d*1000:5.2f}ms | "
-              f"Diff (Fwd+Bwd)={torch_16d_bwd*1000:5.2f}ms | "
-              f"16D Speedup={speedup_16d:6.1f}x")
+              f"Total 13D Render={t_render_13d*1000:5.2f}ms | "
+              f"Diff (Fwd+Bwd)={torch_13d_bwd*1000:5.2f}ms | "
+              f"Speedup={speedup_13d:6.1f}x")
 
     with open(cache_file, "w") as f:
         json.dump(results, f, indent=2)
@@ -216,9 +218,9 @@ def benchmark_accurate_dap(force_recompute=False):
     ax0 = axes[0]
     ax0.set_yscale("log")
     ax0.plot(daps, results["helios_time_sec"], "o-", color="#d62728", linewidth=2.5, label="Helios C++ Raytracer (s)")
-    ax0.plot(daps, results["end_to_end_40d_sec"], "s-", color="#ff7f0e", linewidth=2.2, label="16D E2E (XML $\\to$ Img)")
-    ax0.plot(daps, results["torch_40d_bwd_sec"], "v-", color="#9467bd", linewidth=2.2, label="16D Diff (Fwd+Bwd)")
-    ax0.plot(daps, results["torch_40d_fwd_sec"], "*-", color="#2ca02c", linewidth=2.8, label="16D Part Direct Render")
+    ax0.plot(daps, results["end_to_end_13d_sec"], "s-", color="#ff7f0e", linewidth=2.2, label="13D E2E (XML $\\to$ Img)")
+    ax0.plot(daps, results["torch_13d_bwd_sec"], "v-", color="#9467bd", linewidth=2.2, label="13D Diff (Fwd+Bwd)")
+    ax0.plot(daps, results["torch_13d_fwd_sec"], "*-", color="#2ca02c", linewidth=2.8, label="13D Part Direct Render")
     ax0.set_xlabel("Plant Age (DAP)", fontsize=11, fontweight="bold")
     ax0.set_ylabel("Frame Latency (seconds, log scale)", fontsize=11, fontweight="bold")
     ax0.set_title("(a) Frame Rendering Latency (Log Scale)", fontsize=12, fontweight="bold")
@@ -228,32 +230,33 @@ def benchmark_accurate_dap(force_recompute=False):
     # Panel 2: Speedup Factor (LOG SCALE on Y-axis)
     ax1 = axes[1]
     ax1.set_yscale("log")
-    ax1.plot(daps, results["speedup_40d_vs_helios"], "D-", color="#1f77b4", linewidth=2.5, label="16D Part Assembly vs Helios C++")
-    ax1.fill_between(daps, results["speedup_40d_vs_helios"], 1.0, color="#1f77b4", alpha=0.12)
+    ax1.plot(daps, results["speedup_13d_vs_helios"], "D-", color="#1f77b4", linewidth=2.5, label="13D Part Assembly vs Helios C++")
+    ax1.fill_between(daps, results["speedup_13d_vs_helios"], 1.0, color="#1f77b4", alpha=0.12)
     ax1.set_ylim(bottom=50.0, top=5000.0)
-    ax1.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, _: f"{int(y):,}x" if y >= 1 else f"{y:.1f}x"))
+    ax1.yaxis.set_major_formatter(ticker.FuncFormatter(lambda y, _: f"{int(y):,}x" if y >= 1 else f"{y:.1f}x"))
     ax1.set_xlabel("Plant Age (DAP)", fontsize=11, fontweight="bold")
     ax1.set_ylabel("Speedup Factor vs Helios C++ (Log Scale)", fontsize=11, fontweight="bold", color="#1f77b4")
-    ax1.set_title("(b) 16D Hardware Acceleration Speedup", fontsize=12, fontweight="bold")
+    ax1.set_title("(b) 13D Hardware Acceleration Speedup", fontsize=12, fontweight="bold")
     ax1.grid(True, which="both", linestyle="--", alpha=0.35)
 
-    max_idx = np.argmax(results["speedup_40d_vs_helios"])
+    max_idx = np.argmax(results["speedup_13d_vs_helios"])
     ax1.annotate(
-        f"Peak Speedup: {results['speedup_40d_vs_helios'][max_idx]:,.0f}x\n(DAP {daps[max_idx]})",
-        xy=(daps[max_idx], results["speedup_40d_vs_helios"][max_idx]),
-        xytext=(daps[max_idx] - 25, results["speedup_40d_vs_helios"][max_idx] * 0.45),
+        f"Peak Speedup: {results['speedup_13d_vs_helios'][max_idx]:,.0f}x\n(DAP {daps[max_idx]})",
+        xy=(daps[max_idx], results["speedup_13d_vs_helios"][max_idx]),
+        xytext=(daps[max_idx] - 25, results["speedup_13d_vs_helios"][max_idx] * 0.45),
         arrowprops=dict(facecolor="black", shrink=0.08, width=1.5, headwidth=5),
         fontweight="bold", fontsize=8.5,
     )
 
-    # Panel 3: Pipeline Stage Breakdown (ms)
+    # Panel 3: Pipeline Call Path Stage Breakdown (ms)
     ax2 = axes[2]
-    ax2.plot(daps, np.array(results["xml_to_40d_sec"]) * 1000, "o-", color="#1f77b4", linewidth=2.0, label="XML $\\to$ 16D Tensor")
-    ax2.plot(daps, np.array(results["stage_build_mesh_sec"]) * 1000, "^-", color="#e377c2", linewidth=2.0, label="16D Vectorized Mesh Build")
-    ax2.plot(daps, np.array(results["stage_rasterize_sec"]) * 1000, "s-", color="#2ca02c", linewidth=2.5, label="GPU Rasterization (512x512)")
+    ax2.plot(daps, np.array(results["xml_io_sec"]) * 1000, "o-", color="#8c564b", linewidth=2.0, label="1. XML Deserialization")
+    ax2.plot(daps, np.array(results["fk_to_13d_sec"]) * 1000, "x-", color="#1f77b4", linewidth=2.0, label="2. Forward Kinematics (FK)")
+    ax2.plot(daps, np.array(results["stage_build_mesh_sec"]) * 1000, "^-", color="#e377c2", linewidth=2.0, label="3. 13D GPU Mesh Build")
+    ax2.plot(daps, np.array(results["stage_rasterize_sec"]) * 1000, "s-", color="#2ca02c", linewidth=2.5, label="4. GPU Rasterize (512x512)")
     ax2.set_xlabel("Plant Age (DAP)", fontsize=11, fontweight="bold")
     ax2.set_ylabel("Execution Time (milliseconds)", fontsize=11, fontweight="bold")
-    ax2.set_title("(c) 16D Pipeline Stage Breakdown (ms)", fontsize=12, fontweight="bold")
+    ax2.set_title("(c) 13D Call Path Breakdown (ms)", fontsize=12, fontweight="bold")
     ax2.grid(True, linestyle="--", alpha=0.35)
     ax2.legend(fontsize=8.5, loc="upper left")
 
@@ -275,12 +278,12 @@ def benchmark_accurate_dap(force_recompute=False):
 
     plt.suptitle("Figure 1: Empirical Rendering Performance & Scaling Benchmark: Helios C++ Raytracer vs Differentiable PyTorch Renderer (DAP 1–100)", fontsize=14, fontweight="bold", y=0.97)
 
-    out_png = os.path.join(repo_root, "docs", "results", "assets", "fig1_helios_vs_torch_rendering_benchmark.png")
+    out_png = os.path.join(REPO_ROOT, "docs", "results", "assets", "fig1_helios_vs_torch_rendering_benchmark.png")
     os.makedirs(os.path.dirname(out_png), exist_ok=True)
     plt.savefig(out_png, dpi=200)
     plt.close()
 
-    print(f"\n[OK] Saved updated 1x4 40D typed benchmark figure to: {out_png}")
+    print(f"\n[OK] Successfully saved updated Figure 1 benchmark to:\n  -> {out_png}")
     return results
 
 

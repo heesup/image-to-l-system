@@ -695,7 +695,7 @@ class HeliosPlantGeometryBuilder:
             ORGAN_FLOWER_OPEN, ORGAN_FRUIT, ORGAN_BUD_ABORTED,
             P_COL_ORGAN_TYPE, P_COL_BASE_X, P_COL_BASE_Y, P_COL_BASE_Z,
             P_COL_ROT_0, P_COL_SCALE_X, P_COL_SCALE_Y, P_COL_SCALE_Z,
-            NUM_FEATURES_PART,
+            P_COL_CURVATURE, NUM_FEATURES_PART,
         )
 
         t = organ_array.tensor.to(device)
@@ -745,11 +745,11 @@ class HeliosPlantGeometryBuilder:
                     d['flowers'].append((child_index_arr[i], i))
             phytomer_data[(sid, pidx)] = d
 
-        # Helper: pack a world-space organ into a 13D row
+        # Helper: pack a world-space organ into a 14D row
         def _make_row(organ_type_int: int, pos: torch.Tensor, forward: torch.Tensor,
                       up_hint: torch.Tensor, scale: torch.Tensor,
-                      clamp_scale: bool = True) -> torch.Tensor:
-            """Build one 13D part-tensor row from world-space pose."""
+                      clamp_scale: bool = True, curvature: float = 0.0) -> torch.Tensor:
+            """Build one part-tensor row from world-space pose."""
             fwd = forward / (torch.linalg.norm(forward) + 1e-8)
             up = up_hint - (up_hint * fwd).sum() * fwd
             up_norm = torch.linalg.norm(up)
@@ -767,17 +767,21 @@ class HeliosPlantGeometryBuilder:
             row[P_COL_BASE_X:P_COL_BASE_X + 3] = pos
             row[P_COL_ROT_0:P_COL_ROT_0 + 6] = rot6d
             row[P_COL_SCALE_X:P_COL_SCALE_X + 3] = scale.clamp(min=1e-6) if clamp_scale else scale
+            if NUM_FEATURES_PART > 13:
+                row[P_COL_CURVATURE] = float(curvature)
             return row
 
         def _make_row_rot(organ_type_int: int, pos: torch.Tensor, R: torch.Tensor,
-                          scale: torch.Tensor, clamp_scale: bool = True) -> torch.Tensor:
-            """Build one 13D part-tensor row from a full 3x3 rotation matrix R."""
+                          scale: torch.Tensor, clamp_scale: bool = True, curvature: float = 0.0) -> torch.Tensor:
+            """Build one part-tensor row from a full 3x3 rotation matrix R."""
             rot6d = torch.cat([R[:, 0], R[:, 1]], dim=0)
             row = torch.zeros(NUM_FEATURES_PART, device=device)
             row[P_COL_ORGAN_TYPE] = float(organ_type_int)
             row[P_COL_BASE_X:P_COL_BASE_X + 3] = pos
             row[P_COL_ROT_0:P_COL_ROT_0 + 6] = rot6d
             row[P_COL_SCALE_X:P_COL_SCALE_X + 3] = scale.clamp(min=1e-6) if clamp_scale else scale
+            if NUM_FEATURES_PART > 13:
+                row[P_COL_CURVATURE] = float(curvature)
             return row
 
         rows: list = []
@@ -970,6 +974,7 @@ class HeliosPlantGeometryBuilder:
                         ORGAN_INTERNODE, inode_base, inode_tip_axis,
                         up_hint=petiole_rot_axis,
                         scale=torch.stack([inode_len, inode_rad, torch.tensor(0.0, device=device)]),
+                        curvature=float(curv_p0.item()) if inode_i is not None else 0.0,
                     ))
                 else:
                     rows.append(torch.zeros(NUM_FEATURES_PART, device=device))
@@ -1046,6 +1051,7 @@ class HeliosPlantGeometryBuilder:
                             ORGAN_PETIOLE, pet_base, pet_axis,
                             up_hint=pet_rot_ax_norm,
                             scale=torch.stack([p_len, p_rad, torch.tensor(0.0, device=device)]),
+                            curvature=float(p_curv_deg.item()) if torch.is_tensor(p_curv_deg) else float(p_curv_deg),
                         ))
                     else:
                         rows.append(torch.zeros(NUM_FEATURES_PART, device=device))
@@ -1220,6 +1226,7 @@ class HeliosPlantGeometryBuilder:
                             ORGAN_PEDUNCLE, ped_base, ped_axis_initial,
                             up_hint=infl_bend_axis,
                             scale=torch.stack([ped_len * node_exist, ped_rad * node_exist, torch.tensor(0.0, device=device)]),
+                            curvature=curv_val,
                         ))
                     else:
                         rows.append(torch.zeros(NUM_FEATURES_PART, device=device))

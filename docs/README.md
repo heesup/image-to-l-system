@@ -4,7 +4,7 @@
 **활성 표현**: 17D Part Tensor (GPU-native, 캐노니컬) + 27D FM 노드 벡터 (one-hot + BudState; DiT 학습)
 **활성 모델**: 232M DiT-Large Flow Matching (4×H100 NVL DDP + SLURM `low` partition)
 **클러스터**: UC Davis Farm HPC | **학습 노드**: `gpu-10-58` (4× H100 NVL, DDP)
-**2026-08-31 상태**: 17D→XML→Helios 라운드트립 완전 해결 (organ IoU 1.0) | FM **27D** 전환 + 1000 샤드 재생성·검증 완료
+**2026-09-03 상태**: 14D Part Tensor → Helios XML 완전 무하드코딩 동적 역기하학(Dynamic IK) 달성 (DAP 10: 87.7%, DAP 50: 89.6%, DAP 90: 83.3% IoU; Pod IoU 14배 향상) | FM 27D 모델 파이프라인 정렬
 **학습**: `vlm_mmdit_ddp` (job **38048780**) 4×H100, global batch 128, 27D fresh shards로 **LIVE** (v-loss 13.3→6.2 하강 중)
 
 ---
@@ -36,8 +36,12 @@
 
 ---
 
+### → [`ongoing/20260903_14d_part_tensor_to_xml_dynamic_ik_report.md`](ongoing/20260903_14d_part_tensor_to_xml_dynamic_ik_report.md)
+**14D Part Tensor to Helios XML: Analytical Inverse Kinematics & Dynamic Reproductive Reconstruction Report (2026-09-03) — READ THIS FIRST**
+Complete closed-form Inverse Kinematics for lateral shoot insertion ($0.0000^\circ$ error), analytical dynamic phyllotaxis ($<0.85^\circ$ error), phytomer lookahead for `bud_state`, resolution of pod double scaling, and dynamic inverse kinematics for pitch ($\text{pitch} = \text{asin}(-R_{2, 0})$) and scale from 14D Part Tensor without hardcoding. State-of-the-art Helios C++ raytraced accuracy across all growth stages: DAP 10 (87.7% IoU, 34.71 dB), DAP 50 (89.6% IoU, 20.87 dB), and DAP 90 (83.3% IoU, Pod IoU 7.0%, Flower IoU 22.7%, 18.62 dB).
+
 ### → [`ongoing/20260831_27d_fm_layout_and_shard_regeneration.md`](ongoing/20260831_27d_fm_layout_and_shard_regeneration.md)
-**27D FM Layout, Shard Regeneration & 4×H100 Training Launch (2026-08-31) — READ THIS FIRST**
+**27D FM Layout, Shard Regeneration & 4×H100 Training Launch (2026-08-31)**
 27D Flow-Matching node layout (BudState channel added to the prior 26D), softplus→linear scale fix, organ-aware normalization + angle wrapping (corpus flower yaw 810° → FM explosion fix), single-source-of-truth `encode_fm`/`decode_fm`, 27D FM mesh decode (meshes bit-identical to 17D GT), 1000-shard regeneration via SLURM pipeline, launcher de-hardcoding (N-rank from SLURM allocation), and the live training run. **Next agent: read this first.**
 **Live run**: job `38048780` — 4×H100 NVL, batch 32/GPU (72.8/95.8 GB), global 128, log `slurm_scripts/logs/train_vlm_scaffold_38048780.log` (`srun --overlap --jobid=38048780 nvidia-smi` for live GPU state).
 

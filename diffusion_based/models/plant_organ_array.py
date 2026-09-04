@@ -242,8 +242,11 @@ P_COL_ROT_5 = 9
 P_COL_SCALE_X = 10
 P_COL_SCALE_Y = 11
 P_COL_SCALE_Z = 12
-NUM_FEATURES = 13
-NUM_FEATURES_PART = 13
+P_COL_CURVATURE = 13
+NUM_FEATURES = 14
+NUM_FEATURES_PART = 14
+NUM_FEATURES_PART_13D = 13
+NUM_FEATURES_PART_14D = 14
 
 
 # =============================================================================
@@ -671,13 +674,13 @@ class PlantOrganArray:
                         elif ot == ORGAN_LEAF:
                             pet_i = _to_int(row[T_COL_PARENT_PETIOLE_IDX])
                             petioles.setdefault(pet_i, []).append(row)
-                        elif ot == ORGAN_BUD:
+                        elif ot in (ORGAN_BUD_DORMANT, ORGAN_BUD_ACTIVE, ORGAN_BUD_ABORTED):
                             pet_i = _to_int(row[T_COL_PARENT_PETIOLE_IDX])
                             petioles.setdefault(pet_i, []).append(row)
                         elif ot == ORGAN_PEDUNCLE:
                             pet_i = _to_int(row[T_COL_PARENT_PETIOLE_IDX])
                             petioles.setdefault(pet_i, []).append(row)
-                        elif ot == ORGAN_FLOWER:
+                        elif ot in (ORGAN_FLOWER_OPEN, ORGAN_FLOWER_CLOSED, ORGAN_FRUIT):
                             pet_i = _to_int(row[T_COL_PARENT_PETIOLE_IDX])
                             petioles.setdefault(pet_i, []).append(row)
 
@@ -707,11 +710,11 @@ class PlantOrganArray:
                                     pet = pr
                                 elif ot == ORGAN_LEAF:
                                     leaves.append(pr)
-                                elif ot == ORGAN_BUD:
+                                elif ot in (ORGAN_BUD_DORMANT, ORGAN_BUD_ACTIVE, ORGAN_BUD_ABORTED):
                                     bud = pr
                                 elif ot == ORGAN_PEDUNCLE:
                                     peduncle = pr
-                                elif ot == ORGAN_FLOWER:
+                                elif ot in (ORGAN_FLOWER_OPEN, ORGAN_FLOWER_CLOSED, ORGAN_FRUIT):
                                     flowers.append(pr)
 
                         if pet is None:
@@ -1641,7 +1644,7 @@ class PlantOrganArray:
         Evaluates forward kinematics tree to ensure correct 3D world positions and orientations.
         """
         t = self.tensor.to(device=device) if device is not None else self.tensor
-        if t.shape[1] == NUM_FEATURES_PART:
+        if t.shape[1] in (NUM_FEATURES_PART, 13, 14):
             return t
 
         from diffusion_based.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
