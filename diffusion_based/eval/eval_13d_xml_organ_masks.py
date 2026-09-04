@@ -183,10 +183,10 @@ def main():
         "Helios GT\nRaytrace RGB",
         "Helios GT\nOrgan Mask (COCO)",
         "Helios GT\nRaytrace Depth",
-        "Helios Reconstructed\nRaytrace RGB (13D XML)",
-        "Helios Reconstructed\nOrgan Mask (13D XML)",
-        "Helios Reconstructed\nRaytrace Depth (13D XML)",
-        "PyTorch 13D\nDirect Differentiable"
+        "Helios Reconstructed\nRaytrace RGB (14D XML)",
+        "Helios Reconstructed\nOrgan Mask (14D XML)",
+        "Helios Reconstructed\nRaytrace Depth (14D XML)",
+        "PyTorch 14D\nDirect Differentiable"
     ]
 
     for col, title in enumerate(col_titles):
@@ -199,14 +199,14 @@ def main():
             continue
 
         print(f"\n--- Processing [{label}] ---")
-        # 1. Load Original XML & extract 13D Part Tensor
+        # 1. Load Original XML & extract 14D Part Tensor
         arr = PlantOrganArray.from_xml_file(orig_xml_path)
         part_tensor = arr.to_part_tensor(device=DEVICE)
 
-        # 2. Render PyTorch 13D Direct
-        mesh_13d = geo_builder.build_mesh_from_part_tensor(part_tensor, device=DEVICE)
-        rgbd_13d = renderer.forward(
-            mesh_13d,
+        # 2. Render PyTorch 14D Direct
+        mesh_14d = geo_builder.build_mesh_from_part_tensor(part_tensor, device=DEVICE)
+        rgbd_14d = renderer.forward(
+            mesh_14d,
             azimuth_deg=0.0,
             elevation_deg=90.0,
             camera_height=5.0,
@@ -215,9 +215,9 @@ def main():
             image_size=IMG_SIZE,
             include_depth=True
         )
-        rgb_pytorch_np = rgbd_13d[:3].permute(1, 2, 0).detach().cpu().clamp(0, 1).numpy()
+        rgb_pytorch_np = rgbd_14d[:3].permute(1, 2, 0).detach().cpu().clamp(0, 1).numpy()
 
-        # 3. Export 13D Part Tensor -> Helios XML via Analytical IK
+        # 3. Export 14D Part Tensor -> Helios XML via Analytical IK
         recon_xml_str = assemble_part_tensor_to_xml(part_tensor.cpu(), existence_threshold=0.5)
         recon_xml_path = os.path.join(SCRATCH_DIR, f"recon_{tag}.xml")
         with open(recon_xml_path, "w", encoding="utf-8") as f:
@@ -289,7 +289,7 @@ def main():
         ax.imshow(helios_recon["rgb"])
         ax.axis("off")
         ax.set_facecolor("#0a0a14")
-        ax.text(0.03, 0.03, f"13D XML Recon\nIoU: {fg_iou*100:.1f}%", transform=ax.transAxes, fontsize=9, color="#7ee8fa",
+        ax.text(0.03, 0.03, f"14D XML Recon\nIoU: {fg_iou*100:.1f}%", transform=ax.transAxes, fontsize=9, color="#7ee8fa",
                 bbox=dict(boxstyle="round,pad=0.2", facecolor="black", alpha=0.7))
 
         # Col 4: Helios Recon Organ Mask
@@ -308,12 +308,12 @@ def main():
         ax.text(0.03, 0.03, f"Recon Depth\nPSNR: {depth_psnr:.1f} dB", transform=ax.transAxes, fontsize=9, color="#ffd166",
                 bbox=dict(boxstyle="round,pad=0.2", facecolor="black", alpha=0.7))
 
-        # Col 6: PyTorch 13D Direct
+        # Col 6: PyTorch 14D Direct
         ax = ax_row[6]
         ax.imshow(rgb_pytorch_np)
         ax.axis("off")
         ax.set_facecolor("#0a0a14")
-        ax.text(0.03, 0.03, "PyTorch 13D (Direct)", transform=ax.transAxes, fontsize=9, color="white",
+        ax.text(0.03, 0.03, "PyTorch 14D (Direct)", transform=ax.transAxes, fontsize=9, color="white",
                 bbox=dict(boxstyle="round,pad=0.2", facecolor="black", alpha=0.7))
 
     # Add legend for semantic organ classes at bottom

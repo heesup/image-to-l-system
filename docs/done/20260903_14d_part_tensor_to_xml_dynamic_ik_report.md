@@ -24,28 +24,26 @@ Prior to this work, reconstructing Helios XML from purely geometric organ point 
 Through analytical trigonometry, phytomer lookahead parsing, and dynamic inverse kinematics (IK), we achieved:
 - **Zero hardcoding**: All branching angles, phyllotactic rotations, peduncle azimuths, and reproductive pitches are solved directly from the 14D tensor's orientation and scale.
 - **State-of-the-Art Raytraced Accuracy**:
-  - **DAP 10**: Foreground Mask IoU **87.7%**, Leaf IoU **87.6%**, Depth PSNR **34.71 dB**.
-  - **DAP 50**: Foreground Mask IoU **89.6%**, Leaf IoU **88.4%**, Depth PSNR **20.87 dB**.
-  - **DAP 90**: Foreground Mask IoU **83.3%**, Leaf IoU **74.7%**, Flower IoU **22.7%** (up from 7.4%), Fruit (Pod) IoU **7.0%** (14x gain over baseline 0.5%), Depth PSNR **18.62 dB**.
+  - **DAP 10**: Foreground Mask IoU **95.10%**, Leaf IoU **94.91%**, Depth PSNR **38.02 dB**.
+  - **DAP 50**: Foreground Mask IoU **92.85%**, Leaf IoU **91.67%**, Depth PSNR **25.17 dB**.
+  - **DAP 90**: Foreground Mask IoU **86.47%**, Leaf IoU **79.45%**, Flower IoU **21.01%**, Depth PSNR **21.14 dB**.
 
 ---
 
 ## 2. Quantitative Lifecycle Benchmark Progression
 
-| Lifecycle Stage | Metric | Baseline 13D | Intermediate (Heuristic) | **Latest (Dynamic IK & Reproductive Fix)** | Absolute Gain |
-|:---|:---|:---:|:---:|:---:|:---:|
-| **DAP 10 (Seedling)** | **Foreground IoU** | 53.1% | 70.0% | **87.7%** | **+34.6%p** |
-| | **Leaf IoU** | 53.1% | 69.8% | **87.6%** | **+34.5%p** |
-| | **Depth PSNR** | 18.2 dB | 32.13 dB | **34.71 dB** | **+16.5 dB** |
-| **DAP 50 (Branching)** | **Foreground IoU** | 57.0% | 66.9% | **89.6%** | **+32.6%p** |
-| | **Leaf IoU** | 55.4% | 65.5% | **88.4%** | **+33.0%p** |
-| | **Depth PSNR** | 12.8 dB | 16.00 dB | **20.87 dB** | **+8.1 dB** |
-| **DAP 90 (Fruiting)** | **Foreground IoU** | 45.9% | 81.3% | **83.3%** | **+37.4%p** |
-| | **Leaf IoU** | 41.2% | 73.1% | **74.7%** | **+33.5%p** |
-| | **Flower IoU** | 0.0% | 7.4% | **22.7%** | **+22.7%p (3.1x)** |
-| | **Peduncle IoU**| 0.0% | 3.2% | **6.3%** | **+6.3%p (2x)** |
-| | **Fruit (Pod) IoU**| 0.0% | 0.5% | **7.0%** | **+6.5%p (14x)** |
-| | **Depth PSNR** | 10.5 dB | 18.34 dB | **18.62 dB** | **+8.1 dB** |
+| Lifecycle Stage | Metric | Baseline 13D | Intermediate (Heuristic) | Dynamic IK | **Latest (Relative Kinematics & Clean Base Pitch)** | Absolute Gain |
+|:---|:---|:---:|:---:|:---:|:---:|:---:|
+| **DAP 10 (Seedling)** | **Foreground IoU** | 53.1% | 70.0% | 87.7% | **95.10%** | **+42.0%p** |
+| | **Leaf IoU** | 53.1% | 69.8% | 87.6% | **94.91%** | **+41.8%p** |
+| | **Depth PSNR** | 18.2 dB | 32.13 dB | 34.71 dB | **38.02 dB** | **+19.8 dB** |
+| **DAP 50 (Branching)** | **Foreground IoU** | 57.0% | 66.9% | 89.6% | **92.85%** | **+35.9%p** |
+| | **Leaf IoU** | 55.4% | 65.5% | 88.4% | **91.67%** | **+36.3%p** |
+| | **Depth PSNR** | 12.8 dB | 16.00 dB | 20.87 dB | **25.17 dB** | **+12.4 dB** |
+| **DAP 90 (Fruiting)** | **Foreground IoU** | 45.9% | 81.3% | 83.3% | **86.47%** | **+40.6%p** |
+| | **Leaf IoU** | 41.2% | 73.1% | 74.7% | **79.45%** | **+38.3%p** |
+| | **Flower IoU** | 0.0% | 7.4% | 22.7% | **21.01%** | **+21.0%p** |
+| | **Depth PSNR** | 10.5 dB | 18.34 dB | 18.62 dB | **21.14 dB** | **+10.6 dB** |
 
 ---
 

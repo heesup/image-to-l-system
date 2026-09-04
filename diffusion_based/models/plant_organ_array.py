@@ -227,7 +227,7 @@ ORGAN_BUD = ORGAN_BUD_DORMANT
 ORGAN_FLOWER = ORGAN_FLOWER_OPEN
 
 # =============================================================================
-# PART TENSOR 13D COLUMN CONSTANTS (Disentangled Minimal Representation)
+# CANONICAL 14D PART TENSOR COLUMN CONSTANTS (Disentangled Representation)
 # =============================================================================
 P_COL_ORGAN_TYPE = 0
 P_COL_BASE_X = 1
@@ -245,7 +245,6 @@ P_COL_SCALE_Z = 12
 P_COL_CURVATURE = 13
 NUM_FEATURES = 14
 NUM_FEATURES_PART = 14
-NUM_FEATURES_PART_13D = 13
 NUM_FEATURES_PART_14D = 14
 
 
@@ -629,17 +628,27 @@ class PlantOrganArray:
 
             shoots = plants[pid]
             for sid in sorted(shoots.keys()):
-                sm = shoot_meta.get((pid, sid), torch.zeros(NUM_FEATURES_TYPED))
+                actual_sid = max(0, sid)
+                sm = shoot_meta.get((pid, sid), None)
+                if sm is None and sid != actual_sid:
+                    sm = shoot_meta.get((pid, actual_sid), None)
+                if sm is None:
+                    sm = torch.zeros(NUM_FEATURES_TYPED)
+                    if actual_sid == 0:
+                        psi = -1
+                    else:
+                        psi = 0
+                else:
+                    psi = _to_int(sm[T_COL_PARENT_SHOOT_ID])
                 st = _to_int(sm[T_COL_SHOOT_TYPE])
                 stl_str = "unifoliate" if st == 0 else "trifoliate"
-                psi = _to_int(sm[T_COL_PARENT_SHOOT_ID])
                 pni = _to_int(sm[T_COL_PARENT_NODE_IDX])
                 ppi = _to_int(sm[T_COL_PARENT_PETIOLE_IDX])
                 br_p = _fmt(_to_float(sm[T_COL_PITCH]))
                 br_y = _fmt(_to_float(sm[T_COL_YAW]))
                 br_r = _fmt(_to_float(sm[T_COL_ROLL]))
 
-                lines.append(f'\t\t<shoot ID="{sid}">')
+                lines.append(f'\t\t<shoot ID="{actual_sid}">')
                 lines.append(f'\t\t\t<shoot_type_label> {stl_str} </shoot_type_label>')
                 lines.append(f'\t\t\t<parent_shoot_ID> {psi} </parent_shoot_ID>')
                 lines.append(f'\t\t\t<parent_node_index> {pni} </parent_node_index>')
@@ -732,6 +741,8 @@ class PlantOrganArray:
                         lines.append(f'\t\t\t\t\t\t<leaflet_offset>{_fmt(_to_float(pet[T_COL_LEAFLET_OFFSET]))}</leaflet_offset>')
 
                         leaves = sorted(leaves, key=lambda r: _to_int(r[T_COL_CHILD_INDEX]))
+                        max_leaves = 1 if "unifoliate" in stl_str else 3
+                        leaves = leaves[:max_leaves]
                         for lf in leaves:
                             lines.append('\t\t\t\t\t\t<leaf>')
                             lines.append(f'\t\t\t\t\t\t\t<leaf_scale>{_fmt(_to_float(lf[T_COL_SCALE]))}</leaf_scale>')

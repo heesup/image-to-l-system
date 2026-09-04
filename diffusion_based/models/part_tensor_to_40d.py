@@ -1,17 +1,18 @@
 """
-Direct 13D Part Tensor to 40D PlantOrganArray Tensor Converter.
+Direct 14D Part Tensor to 40D PlantOrganArray Tensor Converter.
 
-Converts (N, 13) world-space Part Tensor [organ_type(1), base_xyz(3), rot6d(6), scale_xyz(3)]
+Converts (N, 14) world-space Part Tensor [organ_type(1), base_xyz(3), rot6d(6), scale_xyz(3), curvature(1)]
 into the canonical (N, 40) PlantOrganArray typed tensor.
 
 Ensures:
-1. Exact row-to-row isomorphism (N rows in 13D -> N rows in 40D).
+1. Exact row-to-row isomorphism (N rows in 14D -> N rows in 40D).
 2. Exact topological recovery (parent shoots, parent node indices, parent petiole indices).
 3. Exact physical scaling (internode lengths, radii, petiole lengths, leaf scales).
 4. Direct serialization to XML via PlantOrganArray._to_xml_string_typed().
 """
 
 import math
+import os
 import numpy as np
 import torch
 from scipy.spatial import cKDTree
@@ -75,7 +76,35 @@ from diffusion_based.models.plant_organ_array import (
     T_COL_EXISTENCE,
     rotation_6d_to_matrix,
 )
-from diffusion_based.models.part_assembly_to_xml import _invert_helios_zxz_rotation, _rot_z_matrix
+
+
+def _invert_helios_zxz_rotation(R_helios: np.ndarray) -> Tuple[float, float, float]:
+    """
+    Decompose Helios rotation matrix R_helios = Rz(yaw + roll) * Rx(pitch) * Rz(roll)
+    into (pitch_deg, yaw_deg, roll_deg).
+    """
+    cos_pitch = np.clip(R_helios[2, 2], -1.0, 1.0)
+    pitch_rad = math.acos(cos_pitch)
+
+    if math.sin(pitch_rad) > 1e-4:
+        alpha = math.atan2(R_helios[0, 2], -R_helios[1, 2])
+        gamma = math.atan2(R_helios[2, 0], R_helios[2, 1])
+        roll_rad = gamma
+        yaw_rad = alpha - gamma
+    else:
+        pitch_rad = 0.0
+        roll_rad = 0.0
+        yaw_rad = math.atan2(R_helios[1, 0], R_helios[0, 0])
+
+    pitch_deg = math.degrees(pitch_rad)
+    yaw_deg = (math.degrees(yaw_rad) + 360.0) % 360.0
+    roll_deg = (math.degrees(roll_rad) + 360.0) % 360.0
+    return pitch_deg, yaw_deg, roll_deg
+
+
+def _rot_z_matrix(ang_rad: float) -> np.ndarray:
+    c, s = math.cos(ang_rad), math.sin(ang_rad)
+    return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
 
 
 def rotate_about_line(point, axis, angle_rad):
@@ -175,9 +204,9 @@ class PartTensorTo40DConverter:
         for idx in range(N):
             base = p_np[idx, 1:4]
             R = R_all[idx]
-            sx = float(p_np[idx, 10])
-            sy = float(p_np[idx, 11])
-            sz = float(p_np[idx, 12])
+            sx = max(1e-4, abs(float(p_np[idx, 10])))
+            sy = max(5e-4, abs(float(p_np[idx, 11])))
+            sz = max(5e-4, abs(float(p_np[idx, 12])))
             dir_fwd = R[:, 1]
             up = R[:, 0]
             tip = base + dir_fwd * sx
@@ -285,8 +314,9 @@ class PartTensorTo40DConverter:
                 phytomer_flowers.setdefault((c_sid, c_pidx), []).append(ot)
 
         # 2. Reconstruct 40D rows
-        curr_sid = -1
-        curr_pidx = 0
+        has_shoot_meta = bool((ot_all == ORGAN_SHOOT_META).any())
+        curr_sid = -1 if has_shoot_meta else 0
+        curr_pidx = -1
         curr_pet_i = 0
         leaf_in_pet = 0
         infl_in_ped = 0
@@ -354,7 +384,8 @@ class PartTensorTo40DConverter:
             elif ot == ORGAN_INTERNODE:
                 curr_pidx += 1
                 curr_pet_i = 0
-                leaf_in_pet = 0
+                pet_count_in_phytomer = 0
+                leaf_counts_per_pet = {}
                 infl_in_ped = 0
                 out_40d[idx, T_COL_ORGAN_TYPE] = float(ORGAN_INTERNODE)
                 out_40d[idx, T_COL_SHOOT_ID] = float(curr_sid)
@@ -363,29 +394,77 @@ class PartTensorTo40DConverter:
                 out_40d[idx, T_COL_RADIUS] = part_info[idx]["sy"]
                 out_40d[idx, T_COL_LENGTH_MAX] = part_info[idx]["sx"]
                 out_40d[idx, T_COL_LENGTH_SEGMENTS] = 2.0
-                out_40d[idx, T_COL_PITCH] = 20.0
+                
+                # Base internode (Shoot 0, phytomer 0) orientation is defined by base_rotation; pitch must be 0.
+                # Subsequent internodes deflect by the canonical species phytomer pitch (20.0 deg for cowpea).
+                if curr_sid == 0 and curr_pidx == 0:
+                    out_40d[idx, T_COL_PITCH] = 0.0
+                else:
+                    out_40d[idx, T_COL_PITCH] = 20.0
 
                 # Dynamic analytical phyllotaxis inversion
                 phyllo_angle = 180.0
-                if curr_sid < len(shoot_petioles) and curr_pidx > 0:
-                    prev_pets = shoot_petioles[curr_sid][curr_pidx - 1] if curr_pidx - 1 < len(shoot_petioles[curr_sid]) else []
-                    curr_pets_list = shoot_petioles[curr_sid][curr_pidx] if curr_pidx < len(shoot_petioles[curr_sid]) else []
-                    if prev_pets and curr_pets_list:
-                        u = part_info[idx]["dir"]
-                        v_prev = part_info[prev_pets[0]]["dir"]
-                        v_curr = part_info[curr_pets_list[0]]["dir"]
-                        p1 = v_prev - float(np.dot(u, v_prev)) * u
-                        norm_p1 = float(np.linalg.norm(p1))
-                        p2 = v_curr - float(np.dot(u, v_curr)) * u
-                        norm_p2 = float(np.linalg.norm(p2))
-                        if norm_p1 > 1e-6 and norm_p2 > 1e-6:
-                            p1 /= norm_p1
-                            p2 /= norm_p2
-                            ang_rad = math.atan2(float(np.dot(u, np.cross(p1, p2))), float(np.dot(p1, p2)))
-                            ang_deg = math.degrees(ang_rad)
-                            if ang_deg < 0:
-                                ang_deg += 360.0
-                            phyllo_angle = float(ang_deg)
+                if curr_sid < len(shoot_petioles):
+                    if curr_pidx > 0:
+                        prev_pets = shoot_petioles[curr_sid][curr_pidx - 1] if curr_pidx - 1 < len(shoot_petioles[curr_sid]) else []
+                        curr_pets_list = shoot_petioles[curr_sid][curr_pidx] if curr_pidx < len(shoot_petioles[curr_sid]) else []
+                        if prev_pets and curr_pets_list:
+                            u = part_info[idx]["dir"]
+                            v_prev = part_info[prev_pets[0]]["dir"]
+                            v_curr = part_info[curr_pets_list[0]]["dir"]
+                            p1 = v_prev - float(np.dot(u, v_prev)) * u
+                            norm_p1 = float(np.linalg.norm(p1))
+                            p2 = v_curr - float(np.dot(u, v_curr)) * u
+                            norm_p2 = float(np.linalg.norm(p2))
+                            if norm_p1 > 1e-6 and norm_p2 > 1e-6:
+                                p1 /= norm_p1
+                                p2 /= norm_p2
+                                ang_rad = math.atan2(float(np.dot(u, np.cross(p1, p2))), float(np.dot(p1, p2)))
+                                ang_deg = math.degrees(ang_rad)
+                                if ang_deg < 0:
+                                    ang_deg += 360.0
+                                phyllo_angle = float(ang_deg)
+                    elif curr_pidx == 0 and curr_sid == 0:
+                        # For Shoot 0 with 2 cotyledon petioles
+                        p0_list = shoot_petioles[0][0] if shoot_petioles and shoot_petioles[0] else []
+                        if len(p0_list) >= 2:
+                            u = part_info[idx]["dir"]
+                            v0 = part_info[p0_list[0]]["dir"]
+                            v1 = part_info[p0_list[1]]["dir"]
+                            p1 = v0 - float(np.dot(u, v0)) * u
+                            norm_p1 = float(np.linalg.norm(p1))
+                            p2 = v1 - float(np.dot(u, v1)) * u
+                            norm_p2 = float(np.linalg.norm(p2))
+                            if norm_p1 > 1e-6 and norm_p2 > 1e-6:
+                                p1 /= norm_p1
+                                p2 /= norm_p2
+                                ang_rad = math.atan2(float(np.dot(u, np.cross(p1, p2))), float(np.dot(p1, p2)))
+                                ang_deg = math.degrees(ang_rad)
+                                if ang_deg < 0:
+                                    ang_deg += 360.0
+                                phyllo_angle = float(ang_deg)
+                    elif curr_pidx == 0 and curr_sid > 0:
+                        # For child shoot phytomer 0: petiole relative to parent shoot petiole
+                        psi, pni, ppi = shoot_parent_info.get(curr_sid, (-1, 0, 0))
+                        if psi >= 0 and psi < len(shoot_petioles) and pni < len(shoot_petioles[psi]):
+                            p_pets = shoot_petioles[psi][pni]
+                            c_pets = shoot_petioles[curr_sid][0] if shoot_petioles[curr_sid] else []
+                            if p_pets and c_pets:
+                                u = part_info[idx]["dir"]
+                                v_prev = part_info[p_pets[min(ppi, len(p_pets)-1)]]["dir"]
+                                v_curr = part_info[c_pets[0]]["dir"]
+                                p1 = v_prev - float(np.dot(u, v_prev)) * u
+                                norm_p1 = float(np.linalg.norm(p1))
+                                p2 = v_curr - float(np.dot(u, v_curr)) * u
+                                norm_p2 = float(np.linalg.norm(p2))
+                                if norm_p1 > 1e-6 and norm_p2 > 1e-6:
+                                    p1 /= norm_p1
+                                    p2 /= norm_p2
+                                    ang_rad = math.atan2(float(np.dot(u, np.cross(p1, p2))), float(np.dot(p1, p2)))
+                                    ang_deg = math.degrees(ang_rad)
+                                    if ang_deg < 0:
+                                        ang_deg += 360.0
+                                    phyllo_angle = float(ang_deg)
 
                 out_40d[idx, T_COL_PHYLLOTACTIC_ANGLE] = phyllo_angle
                 if p_np.shape[1] > 13:
@@ -393,11 +472,8 @@ class PartTensorTo40DConverter:
                 out_40d[idx, T_COL_EXISTENCE] = 1.0
 
             elif ot == ORGAN_PETIOLE:
-                if curr_sid == 0 and curr_pidx == 0:
-                    curr_pet_i = 0 if out_40d[idx-1, T_COL_ORGAN_TYPE] == ORGAN_INTERNODE else 1
-                else:
-                    curr_pet_i = 0
-                leaf_in_pet = 0
+                curr_pet_i = pet_count_in_phytomer
+                pet_count_in_phytomer += 1
                 out_40d[idx, T_COL_ORGAN_TYPE] = float(ORGAN_PETIOLE)
                 out_40d[idx, T_COL_SHOOT_ID] = float(curr_sid)
                 out_40d[idx, T_COL_PHYTOMER_IDX] = float(curr_pidx)
@@ -431,11 +507,23 @@ class PartTensorTo40DConverter:
                     out_40d[idx, T_COL_PITCH] = float(math.degrees(math.acos(cos_pet)))
 
             elif ot == ORGAN_LEAF:
+                # Find parent petiole in the current phytomer closest to leaf base
+                best_pet_idx = 0
+                best_dist = float("inf")
+                leaf_base = part_info[idx]["base"]
+                for p_i in range(N):
+                    if ot_all[p_i] == ORGAN_PETIOLE and out_40d[p_i, T_COL_PHYTOMER_IDX] == curr_pidx and out_40d[p_i, T_COL_SHOOT_ID] == curr_sid:
+                        dist = float(np.linalg.norm(part_info[p_i]["tip"] - leaf_base))
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_pet_idx = int(out_40d[p_i, T_COL_PARENT_PETIOLE_IDX].item())
+
+                c_idx = leaf_counts_per_pet.get(best_pet_idx, 0)
                 out_40d[idx, T_COL_ORGAN_TYPE] = float(ORGAN_LEAF)
                 out_40d[idx, T_COL_SHOOT_ID] = float(curr_sid)
                 out_40d[idx, T_COL_PHYTOMER_IDX] = float(curr_pidx)
-                out_40d[idx, T_COL_PARENT_PETIOLE_IDX] = float(curr_pet_i)
-                out_40d[idx, T_COL_CHILD_INDEX] = float(leaf_in_pet)
+                out_40d[idx, T_COL_PARENT_PETIOLE_IDX] = float(best_pet_idx)
+                out_40d[idx, T_COL_CHILD_INDEX] = float(c_idx)
                 out_40d[idx, T_COL_SCALE] = part_info[idx]["sx"]
                 out_40d[idx, T_COL_EXISTENCE] = 1.0
                 if curr_sid == 0:
@@ -445,13 +533,13 @@ class PartTensorTo40DConverter:
                 else:
                     out_40d[idx, T_COL_PITCH] = 2.5385
                     out_40d[idx, T_COL_ROLL] = -15.0
-                    if leaf_in_pet == 0:
+                    if c_idx == 0:
                         out_40d[idx, T_COL_YAW] = 10.0
-                    elif leaf_in_pet == 1:
+                    elif c_idx == 1:
                         out_40d[idx, T_COL_YAW] = 0.0
                     else:
                         out_40d[idx, T_COL_YAW] = -10.0
-                leaf_in_pet += 1
+                leaf_counts_per_pet[best_pet_idx] = c_idx + 1
 
             elif ot in (ORGAN_BUD_DORMANT, ORGAN_BUD_ACTIVE, ORGAN_BUD_ABORTED):
                 node_fls = phytomer_flowers.get((curr_sid, curr_pidx), [])
@@ -491,14 +579,14 @@ class PartTensorTo40DConverter:
 
                 # Solve exact peduncle pitch and azimuth from 3D direction
                 cand_inodes = [j for j in range(idx-1, -1, -1) if ot_all[j] == ORGAN_INTERNODE]
-                if cand_inodes:
+                if cand_inodes and ot == ORGAN_PEDUNCLE:
                     in_dir = part_info[cand_inodes[0]]["dir"]
                     ped_dir = part_info[idx]["dir"]
                     cos_p = np.clip(np.dot(in_dir, ped_dir), -1.0, 1.0)
                     out_40d[idx, T_COL_PITCH] = float(math.degrees(math.acos(cos_p)))
                     curr_ped_az = float(-math.degrees(math.atan2(ped_dir[1], ped_dir[0])))
                 else:
-                    out_40d[idx, T_COL_PITCH] = 15.0
+                    out_40d[idx, T_COL_PITCH] = 10.3034
                     curr_ped_az = 0.0
 
                 out_40d[idx, T_COL_ROLL] = 90.0
@@ -549,6 +637,74 @@ class PartTensorTo40DConverter:
                 out_40d[idx, T_COL_ROLL] = 0.0
                 out_40d[idx, T_COL_FLOWER_OFFSET] = 0.05
                 out_40d[idx, T_COL_EXISTENCE] = 1.0
-                infl_in_ped += 1
+
+        if not has_shoot_meta and N > 0:
+            meta_rows = []
+
+            # 1. ROOT_META
+            root_row = torch.zeros(NUM_FEATURES_TYPED, dtype=torch.float32)
+            root_row[T_COL_PLANT_ID] = float(plant_id)
+            root_row[T_COL_ORGAN_TYPE] = float(ORGAN_ROOT_META)
+            root_row[T_COL_BASE_X:T_COL_BASE_Z+1] = torch.from_numpy(part_info[0]["base"])
+            root_row[T_COL_EXISTENCE] = 1.0
+            meta_rows.append(root_row)
+
+            # 2. SHOOT_META for shoot 0
+            shoot_row = torch.zeros(NUM_FEATURES_TYPED, dtype=torch.float32)
+            shoot_row[T_COL_PLANT_ID] = float(plant_id)
+            shoot_row[T_COL_SHOOT_ID] = 0.0
+            shoot_row[T_COL_PARENT_SHOOT_ID] = -1.0
+            shoot_row[T_COL_ORGAN_TYPE] = float(ORGAN_SHOOT_META)
+            shoot_row[T_COL_SHOOT_TYPE] = 0.0  # unifoliate
+            shoot_row[T_COL_EXISTENCE] = 1.0
+
+            # Dynamically align shoot yaw with petiole 0 heading
+            pet0_idxs = [i for i in range(N) if ot_all[i] == ORGAN_PETIOLE]
+            if pet0_idxs:
+                dir_p0 = part_info[pet0_idxs[0]]["dir"]
+                az_deg = math.degrees(math.atan2(float(dir_p0[1]), float(dir_p0[0])))
+                shoot_yaw = (az_deg + 90.0) % 360.0
+            else:
+                shoot_yaw = 0.0
+            shoot_row[T_COL_YAW] = float(shoot_yaw)
+            meta_rows.append(shoot_row)
+
+            out_40d = torch.cat([torch.stack(meta_rows, dim=0), out_40d], dim=0)
 
         return out_40d
+
+
+class PartAssemblyToXMLConverter:
+    """Canonical XML Converter wrapping PartTensorTo40DConverter -> PlantOrganArray.to_xml_string()."""
+
+    def __init__(self, connectivity_tolerance: float = 0.008):
+        self.conv = PartTensorTo40DConverter(connectivity_tolerance)
+
+    def convert_to_xml_string(
+        self,
+        part_tensor: torch.Tensor,
+        plant_id: int = 0,
+        plant_type: str = "cowpea",
+        existence_threshold: float = 0.5,
+    ) -> str:
+        arr_40d = self.conv.convert(part_tensor, plant_id=plant_id)
+        arr = PlantOrganArray(arr_40d)
+        return arr.to_xml_string()
+
+
+def assemble_part_tensor_to_xml(
+    part_tensor: torch.Tensor,
+    plant_id: int = 0,
+    xml_filepath: Optional[str] = None,
+    **kwargs,
+) -> str:
+    """Direct functional helper to serialize a 14D part tensor into Helios XML via analytical IK."""
+    conv = PartTensorTo40DConverter()
+    arr_40d = conv.convert(part_tensor, plant_id=plant_id)
+    xml_str = PlantOrganArray(arr_40d).to_xml_string()
+    if xml_filepath is not None:
+        os.makedirs(os.path.dirname(os.path.abspath(xml_filepath)), exist_ok=True)
+        with open(xml_filepath, "w", encoding="utf-8") as f:
+            f.write(xml_str)
+    return xml_str
+

@@ -8,7 +8,7 @@ import math
 import warnings
 import torch
 import torch.nn as nn
-from typing import Dict, Tuple, Optional, Any
+from typing import Dict, Tuple, Optional, Any, List
 from diffusion_based.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
 
 if "TORCH_CUDA_ARCH_LIST" not in os.environ:
@@ -33,9 +33,12 @@ def compute_focus_plant_camera(
     focus_plant: bool = True,
     hfov_override_deg: Optional[float] = None,
     fixed_camera_bounds: Optional[Dict[str, Any]] = None,
+    zoom_factor: float = 1.0,
+    reference_window_size: Optional[float] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, float]:
     """
     Computes camera view matrix and projection matrix matching Helios C++ init_camera & --focus-plant math.
+    Supports progressive multi-scale zoom pyramids via reference_window_size and zoom_factor.
     """
     device = verts.device
 
@@ -66,6 +69,10 @@ def compute_focus_plant_camera(
     else:
         bb_min_x = bb_min_y = bb_min_z = -0.5
         bb_max_x = bb_max_y = bb_max_z = 0.5
+        plant_center = torch.tensor([0.0, 0.0, 0.0], device=device, dtype=torch.float32)
+
+    # If reference_window_size is specified without plant bounds, center at origin (0, 0, 0)
+    if reference_window_size is not None and not focus_plant:
         plant_center = torch.tensor([0.0, 0.0, 0.0], device=device, dtype=torch.float32)
 
     # 2. Camera spherical positioning from plant center matching Helios C++ main.cpp:1730-1747
@@ -104,7 +111,12 @@ def compute_focus_plant_camera(
     view_mat[:3, 3] = t_view
 
     # 3. Compute HFOV / VFOV matching Helios C++ main.cpp:1748-1793
-    if hfov_override_deg is not None:
+    if reference_window_size is not None:
+        # Ground window size in meters = reference_window_size / zoom_factor
+        window_w = float(reference_window_size) / max(float(zoom_factor), 1e-3)
+        half_ext = (window_w * 0.5) / max(dist, 1e-3)
+        hfov_rad = 2.0 * math.atan(half_ext)
+    elif hfov_override_deg is not None:
         hfov_rad = math.radians(hfov_override_deg)
     elif focus_plant and (bb_max_x > bb_min_x) and (bb_max_y > bb_min_y):
         # Project all 8 3D bounding box corners into camera basis
@@ -136,8 +148,7 @@ def compute_focus_plant_camera(
                     min_vy = min(min_vy, proj_y)
                     max_vy = max(max_vy, proj_y)
 
-        # +5% margin matching Helios C++ --focus-plant behavior. This gives the
-        # closest pixel overlap with the exact-GT organ masks for cowpea DAP 90.
+        # +5% margin matching Helios C++ --focus-plant behavior.
         half_ext_x = max(abs(min_vx), abs(max_vx)) * 1.05
         half_ext_y = max(abs(min_vy), abs(max_vy)) * 1.05
         half_ext_x = max(half_ext_x, 1e-4)
@@ -152,8 +163,10 @@ def compute_focus_plant_camera(
         hfov_rad = math.radians(45.0)
 
     tan_half_fov = math.tan(hfov_rad / 2.0)
-    f_x = 1.0 / tan_half_fov
-    f_y = 1.0 / (tan_half_fov / aspect_ratio)
+    # If focus_plant is used with zoom_factor, scale focal length directly
+    f_mult = float(zoom_factor) if (reference_window_size is None and zoom_factor != 1.0) else 1.0
+    f_x = (1.0 / tan_half_fov) * f_mult
+    f_y = (1.0 / (tan_half_fov / aspect_ratio)) * f_mult
 
     proj_mat = torch.zeros((4, 4), device=device, dtype=torch.float32)
     proj_mat[0, 0] = f_x
@@ -204,6 +217,8 @@ class HeliosPyTorchRenderer(nn.Module):
         include_depth: bool = False,
         fixed_camera_bounds: Optional[Dict[str, Any]] = None,
         image_size: Optional[int] = None,
+        zoom_factor: float = 1.0,
+        reference_window_size: Optional[float] = None,
     ) -> torch.Tensor:
         verts = mesh_dict['vertices']     # (V, 3)
         faces = mesh_dict['faces']        # (F, 3)
@@ -225,11 +240,13 @@ class HeliosPyTorchRenderer(nn.Module):
                 bg = torch.cat([bg, torch.zeros((1, H, W), device=device)], dim=0)
             return bg
 
-        # Camera Matrices matching Helios C++ --focus-plant
+        # Camera Matrices matching Helios C++ --focus-plant & Multi-Scale Pyramid
         view_mat, proj_mat, _ = compute_focus_plant_camera(
             verts, organ_types, azimuth_deg, elevation_deg, camera_height,
             aspect_ratio=1.0, focus_plant=focus_plant, hfov_override_deg=hfov_override_deg,
             fixed_camera_bounds=fixed_camera_bounds,
+            zoom_factor=zoom_factor,
+            reference_window_size=reference_window_size,
         )
 
         # Transform Vertices to Camera & NDC Space
@@ -271,12 +288,22 @@ class HeliosPyTorchRenderer(nn.Module):
 
                 mask = rast_out[..., 3:4] > 0  # (1, H, W, 1)
 
+                opacities = mesh_dict.get('opacities', None)
+                if opacities is None:
+                    opacities = torch.ones((verts.shape[0], 1), device=device, dtype=torch.float32)
+                else:
+                    opacities = opacities.to(device=device, dtype=torch.float32).clamp(0.0, 1.0)
+                    if opacities.ndim == 1:
+                        opacities = opacities.unsqueeze(-1)
+
                 if include_depth:
-                    # 4-Channel Unified Interpolation (RGB 3ch + Physical Canopy Height Model (CHM) 1ch)
-                    # Physical height in meters above ground level (Z_world >= 0.0)
+                    # 5-Channel Unified Interpolation (RGB 3ch + CHM 1ch + Opacity/Alpha 1ch)
                     chm_verts = torch.clamp(verts[:, 2:3].float(), min=0.0)  # (V, 1) in physical meters
-                    rgbd_attrs = torch.cat([shaded_colors.float(), chm_verts], dim=-1).unsqueeze(0).contiguous()  # (1, V, 4)
-                    rgbd_rast, _ = dr.interpolate(rgbd_attrs, rast_out, faces_i32)  # (1, H, W, 4)
+                    rgbda_attrs = torch.cat([shaded_colors.float(), chm_verts, opacities], dim=-1).unsqueeze(0).contiguous()  # (1, V, 5)
+                    interp_out, _ = dr.interpolate(rgbda_attrs, rast_out, faces_i32)  # (1, H, W, 5)
+                    rgb_rast = interp_out[..., :3]
+                    depth_rast = interp_out[..., 3:4]
+                    alpha_rast = interp_out[..., 4:5]
 
                     if background == "ground":
                         bg_rgb = self.COLOR_GROUND.to(device=device, dtype=torch.float32).view(1, 1, 1, 3)
@@ -285,15 +312,23 @@ class HeliosPyTorchRenderer(nn.Module):
                     else:
                         bg_rgb = torch.zeros((1, 1, 1, 3), device=device, dtype=torch.float32)
                     bg_depth = torch.zeros((1, 1, 1, 1), device=device, dtype=torch.float32)  # Ground level = 0.0m
-                    bg = torch.cat([bg_rgb, bg_depth], dim=-1)
 
-                    rgbd_out = torch.where(mask, rgbd_rast, bg)
+                    # Alpha-composite foreground with background for soft existence (fading/ghost effect)
+                    rgb_comp = alpha_rast * rgb_rast + (1.0 - alpha_rast) * bg_rgb
+                    depth_comp = alpha_rast * depth_rast + (1.0 - alpha_rast) * bg_depth
+                    rgbd_comp = torch.cat([rgb_comp, depth_comp], dim=-1)
+
+                    bg = torch.cat([bg_rgb, bg_depth], dim=-1)
+                    rgbd_out = torch.where(mask, rgbd_comp, bg)
+                    if differentiable and _HAS_NVDIFFRAST:
+                        rgbd_out = dr.antialias(rgbd_out, rast_out, v_clip.unsqueeze(0), faces_i32)
                     return rgbd_out.squeeze(0).permute(2, 0, 1).flip(1)  # (4, H, W); match Helios row-0 = bottom
 
-                # Standard 3-Channel RGB
-                shaded_colors_b = shaded_colors.float().unsqueeze(0).contiguous()  # (1, V, 3)
-                rgb_rast, _ = dr.interpolate(shaded_colors_b, rast_out, faces_i32)
-                # (1, H, W, 3)
+                # Standard 3-Channel RGB with Soft Opacity
+                rgba_attrs = torch.cat([shaded_colors.float(), opacities], dim=-1).unsqueeze(0).contiguous()  # (1, V, 4)
+                interp_out, _ = dr.interpolate(rgba_attrs, rast_out, faces_i32)
+                rgb_rast = interp_out[..., :3]
+                alpha_rast = interp_out[..., 3:4]
 
                 # Background composite
                 if background == "ground":
@@ -303,7 +338,10 @@ class HeliosPyTorchRenderer(nn.Module):
                 else:
                     bg = torch.zeros((1, 1, 1, 3), device=device, dtype=torch.float32)
 
-                rgb_out = torch.where(mask, rgb_rast, bg)
+                rgb_comp = alpha_rast * rgb_rast + (1.0 - alpha_rast) * bg
+                rgb_out = torch.where(mask, rgb_comp, bg)
+                if differentiable and _HAS_NVDIFFRAST:
+                    rgb_out = dr.antialias(rgb_out, rast_out, v_clip.unsqueeze(0), faces_i32)
                 return rgb_out.squeeze(0).permute(2, 0, 1).flip(1)  # (3, H, W); match Helios row-0 = bottom
 
         # Fallback: original slow PyTorch CPU/GPU loop rasterizer
@@ -377,6 +415,51 @@ class HeliosPyTorchRenderer(nn.Module):
                         )
 
         return rgb_buffer.permute(2, 0, 1).flip(1)  # match Helios row-0 = bottom
+
+    def render_multiscale_pyramid(
+        self,
+        mesh_dict: Dict[str, torch.Tensor],
+        scales: List[float] = [1.0, 2.0, 4.0, 8.0],
+        reference_window_size: float = 1.2,
+        azimuth_deg: float = 0.0,
+        elevation_deg: float = 90.0,
+        camera_height: float = 5.0,
+        background: str = "ground",
+        light_dir: Optional[torch.Tensor] = None,
+        differentiable: bool = False,
+        include_depth: bool = True,
+        image_size: Optional[int] = None,
+    ) -> Dict[float, torch.Tensor]:
+        """
+        Renders a progressive multi-scale zoom pyramid of the plant.
+        - Level 0 (1.0x): Full global canopy window (reference_window_size, e.g. 1.2m x 1.2m)
+          capturing absolute metric scale and field context.
+        - Level 1 (2.0x): Sub-canopy window (0.6m x 0.6m).
+        - Level 2 (4.0x): Plant-level window (0.3m x 0.3m).
+        - Level 3 (8.0x): Organ-level detail window (0.15m x 0.15m) providing dense rasterization
+          gradients for small seedlings (e.g. 14cm unifoliate).
+
+        Returns:
+            Dict mapping scale factor -> (C, H, W) rendered tensor (RGB or RGB-D).
+        """
+        pyramid = {}
+        for s in scales:
+            img = self.forward(
+                mesh_dict=mesh_dict,
+                azimuth_deg=azimuth_deg,
+                elevation_deg=elevation_deg,
+                camera_height=camera_height,
+                background=background,
+                light_dir=light_dir,
+                differentiable=differentiable,
+                focus_plant=False,
+                include_depth=include_depth,
+                image_size=image_size,
+                zoom_factor=float(s),
+                reference_window_size=float(reference_window_size),
+            )
+            pyramid[float(s)] = img
+        return pyramid
 
     def render_organ_type_buffer(
         self,

@@ -1,7 +1,13 @@
 # Handoff: Diffusion 17D → XML → Helios Roundtrip & Python-World Reconstruction
 
-**Date:** 2026-09-01 (Updated 2026-09-02)
-**Status:** Verification complete; Python-world reconstruction validated
+> [!IMPORTANT]
+> **SUPERSEDED ON 2026-09-03 / 2026-09-04**:
+> The earlier hypothesis in this document that *"17D → XML → Helios is structurally lossy and cannot be inverted"* has been **completely resolved**.
+> By solving the exact closed-form Shoot Base IK (`solve_helios_shoot_base`), dynamic phyllotactic angle inversion, Shoot 0 base internode pitch 0 isolation, and dynamic reproductive pitch/scale extraction, Helios XML roundtrip now achieves **95.10% IoU on DAP 10**, **92.85% IoU on DAP 50**, and **86.47% IoU on DAP 90** in native OptiX physical raytracing.
+> See [20260903_14d_part_tensor_to_xml_dynamic_ik_report.md](file:///home/lion397/codes/image-to-l-system/docs/ongoing/20260903_14d_part_tensor_to_xml_dynamic_ik_report.md) and [AGENT_TAKEOVER_GUIDE.md](file:///home/lion397/codes/image-to-l-system/docs/ongoing/AGENT_TAKEOVER_GUIDE.md) for the active reference implementation.
+
+**Date:** 2026-09-01 (Superseded 2026-09-03)
+**Status:** Historical / Superseded by 14D Analytical IK Converter
 **Repo:** `/home/lion397/codes/image-to-l-system`
 
 ---

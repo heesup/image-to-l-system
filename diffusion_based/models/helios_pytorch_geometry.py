@@ -10,7 +10,7 @@ import math
 import torch
 import torch.nn.functional as F
 import numpy as np
-from typing import List, Tuple, Dict, Optional, Any
+from typing import List, Tuple, Dict, Optional, Any, Union
 from diffusion_based.models.plant_organ_array import (
     PlantOrganArray,
 )
@@ -651,7 +651,7 @@ class HeliosPlantGeometryBuilder:
         """
         Deprecated: Use build_mesh_from_part_tensor(organ_array.to_part_tensor()) instead.
 
-        This wrapper runs the canonical XML -> 40D -> 16D pipeline and delegates to
+        This wrapper runs the canonical XML -> 40D -> 14D Part Tensor pipeline and delegates to
         build_mesh_from_part_tensor. The legacy 94D forward-kinematics path has been
         removed from the rendering pipeline.
         """
@@ -677,8 +677,8 @@ class HeliosPlantGeometryBuilder:
         """
         Runs forward kinematics directly on the typed (N, 40) per-organ layout.
         Collects the world-space pose of every organ:
-            [organ_type(1), base_xyz(3), rot6d(6), scale_xyz(3)]
-        = 13 columns.
+            [organ_type(1), base_xyz(3), rot6d(6), scale_xyz(3), curvature(1)]
+        = 14 columns (Canonical 14D Part Tensor).
         """
         from diffusion_based.models.plant_organ_array import (
             T_COL_PLANT_ID, T_COL_PLANT_AGE, T_COL_BASE_X, T_COL_BASE_Y, T_COL_BASE_Z,
@@ -1313,37 +1313,36 @@ class HeliosPlantGeometryBuilder:
     def build_mesh_from_part_tensor(
         self,
         part_tensor: torch.Tensor,
+        existence: Optional[torch.Tensor] = None,
         device: torch.device = torch.device('cpu'),
-        existence_threshold: float = 0.5,
         leaf_mode: Optional[str] = None,
-        soft_existence: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """
-        Directly builds 3D meshes from a canonical 13D part tensor (or 25D FM node layout) on GPU.
+        Directly builds 3D meshes from a Canonical 14D Part Tensor on GPU.
         Zero XML serialization overhead.
 
-        Layouts supported:
-          1. Unified 13D Part Tensor:
-             - col 0:     organ_type (ORGAN_NONE=0, ORGAN_ROOT_META=1, ORGAN_SHOOT_META=2,
-                          ORGAN_INTERNODE=3, ORGAN_PETIOLE=4, ORGAN_LEAF=5,
-                          ORGAN_PEDUNCLE=6, ORGAN_BUD_DORMANT=7, ORGAN_BUD_ACTIVE=8,
-                          ORGAN_FLOWER_CLOSED=9, ORGAN_FLOWER_OPEN=10, ORGAN_FRUIT=11,
-                          ORGAN_BUD_ABORTED=12)
-             - cols 1-3:  base world position (metres)
-             - cols 4-9:  rot6d = [R[:,0], R[:,1]] packed (Gram-Schmidt -> full R)
-             - cols 10-12: scale (length, radius, 0) for tubes; (s, 0, 0) for meshes
-          2. Unified 25D Flow Matching node layout:
-             - cols 0-12:  one-hot organ category (0=NONE)
-             - cols 13-15: base world position (* 20.0)
-             - cols 16-21: rot6d (as-is)
-             - cols 22-24: scale (* 50.0)
-          3. Legacy 16D/17D and 26D/27D formats (backward compatibility).
+        Canonical 14D Part Tensor Layout:
+          - col 0:     organ_type (ORGAN_NONE=0, ORGAN_ROOT_META=1, ORGAN_SHOOT_META=2,
+                       ORGAN_INTERNODE=3, ORGAN_PETIOLE=4, ORGAN_LEAF=5,
+                       ORGAN_PEDUNCLE=6, ORGAN_BUD_DORMANT=7, ORGAN_BUD_ACTIVE=8,
+                       ORGAN_FLOWER_CLOSED=9, ORGAN_FLOWER_OPEN=10, ORGAN_FRUIT=11,
+                       ORGAN_BUD_ABORTED=12)
+          - cols 1-3:  base world position (metres)
+          - cols 4-9:  rot6d = [R[:,0], R[:,1]] packed (Gram-Schmidt -> full R)
+          - cols 10-12: scale (length, radius, 0) for tubes; (s, 0, 0) for meshes
+          - col 13:    curvature (metres^-1 or deg)
+
+        existence:
+          - Optional continuous existence weights in [0, 1] per organ row (N,).
+          - XML Ground Truth: defaults to 1.0 (fully opaque, crisp solid rendering).
+          - Diffusion / Optimization: can be in (0, 1), rendering the organ softly/translucent
+            and allowing dense photometric image loss gradients to directly flow back to existence!
         """
         from diffusion_based.models.plant_organ_array import (
             ORGAN_NONE, ORGAN_ROOT_META, ORGAN_SHOOT_META, ORGAN_INTERNODE,
             ORGAN_PETIOLE, ORGAN_LEAF, ORGAN_PEDUNCLE, ORGAN_BUD_DORMANT,
             ORGAN_BUD_ACTIVE, ORGAN_FLOWER_CLOSED, ORGAN_FLOWER_OPEN,
-            ORGAN_FRUIT, ORGAN_BUD_ABORTED,
+            ORGAN_FRUIT, ORGAN_BUD_ABORTED, NUM_FEATURES_PART,
         )
 
         eff_leaf_mode = leaf_mode.lower() if leaf_mode is not None else self.leaf_mode
@@ -1353,39 +1352,26 @@ class HeliosPlantGeometryBuilder:
             p = p.unsqueeze(0)
         N, D = p.shape
 
-        if D == 25:
-            # Unified 25D FM node layout
-            ot_probs = torch.softmax(p[:, :13], dim=-1)
-            exist = 1.0 - ot_probs[:, 0]
-            ot = torch.argmax(ot_probs, dim=-1)
-            base_pos = p[:, 13:16] / 20.0
-            rot_6d = p[:, 16:22]
-            scale = p[:, 22:25] / 50.0
-            active_mask = (ot != ORGAN_NONE) & (exist > existence_threshold)
-        elif D in (26, 27):
-            # Legacy 26D/27D FM node layout
-            ot_probs = torch.softmax(p[:, :12], dim=-1)
-            exist = 1.0 - ot_probs[:, 11]
-            ot = torch.argmax(ot_probs[:, :11], dim=-1)
-            base_pos = p[:, 12:15] / 20.0
-            rot_6d = p[:, 15:21]
-            scale = p[:, 21:24] / 50.0
-            active_mask = exist > existence_threshold
-        elif D in (16, 17):
-            # Legacy 16D/17D Part Tensor
-            ot = p[:, 0].long()
-            base_pos = p[:, 1:4]
-            rot_6d = p[:, 4:10]
-            scale = p[:, 10:13]
-            exist = p[:, 13] if D > 13 else torch.ones(N, device=device)
-            active_mask = exist > existence_threshold
+        if D != NUM_FEATURES_PART:
+            raise ValueError(
+                f"build_mesh_from_part_tensor strictly expects Canonical 14D Part Tensor (N, 14), got (N, {D}). "
+                f"If using a 26D continuous/differentiable tensor, call diff_node_to_part_tensor_14d(diff_tensor) "
+                f"before passing to build_mesh_from_part_tensor."
+            )
+
+        if existence is None:
+            exist = torch.ones((N,), device=device, dtype=torch.float32)
         else:
-            # Unified 13D Part Tensor
-            ot = p[:, 0].long()
-            base_pos = p[:, 1:4]
-            rot_6d = p[:, 4:10]
-            scale = p[:, 10:13]
-            active_mask = ot != ORGAN_NONE
+            exist = existence.to(device).float().clamp(0.0, 1.0)
+            if exist.ndim > 1:
+                exist = exist.squeeze(-1)
+
+        ot = p[:, 0].long()
+        base_pos = p[:, 1:4]
+        rot_6d = p[:, 4:10]
+        scale = p[:, 10:13]
+        curvature = p[:, 13]
+        active_mask = (ot != ORGAN_NONE) & (exist > 1e-4) & (scale[:, 0] > 1e-5)
 
         z_axis_build = torch.tensor([0.0, 0.0, 1.0], device=device)
 
@@ -1405,6 +1391,7 @@ class HeliosPlantGeometryBuilder:
         all_faces = []
         all_normals = []
         all_colors = []
+        all_opacities = []
         all_organs = []
         vert_offset = 0
 
@@ -1422,7 +1409,6 @@ class HeliosPlantGeometryBuilder:
                 return _leaf_cache[variant]
             obj_name, tex_name = _leaf_obj_map.get(variant, _leaf_obj_map[2])
             if eff_leaf_mode == "generic":
-                num_leaves_hint = 1 if variant == 0 else 3
                 if variant == 0:
                     tex_name_use = "CowpeaLeaf_unifoliate_centered.png"
                 elif variant == 1:
@@ -1445,17 +1431,18 @@ class HeliosPlantGeometryBuilder:
             _leaf_cache[variant] = (v_lf, f_lf)
             return v_lf, f_lf
 
+        n_rad = max(3, self.tube_radial_subdivisions)
+
         ot_a = ot[active_mask]
+        exist_a = exist[active_mask]
         base_pos_a = base_pos[active_mask]
         R_a = R_mats[active_mask]
         scale_a = scale[active_mask].clamp(min=1e-6)
 
-        is_legacy = (D in (16, 17, 26, 27))
-
         # -------------------------------------------------------------
-        # 1. BATCH LEAVES (ORGAN_LEAF=5, legacy=4)
+        # 1. BATCH LEAVES (ORGAN_LEAF=5)
         # -------------------------------------------------------------
-        leaf_mask = (ot_a == 4) if is_legacy else (ot_a == ORGAN_LEAF)
+        leaf_mask = (ot_a == ORGAN_LEAF)
         if leaf_mask.any():
             v_proto, f_proto = _get_leaf_mesh(2)
             n_proto = compute_face_normals_torch(v_proto, f_proto)
@@ -1464,6 +1451,7 @@ class HeliosPlantGeometryBuilder:
             R_l = R_a[leaf_mask]
             pos_l = base_pos_a[leaf_mask]
             s_l = scale_a[leaf_mask][:, 0:1]  # uniform leaf scale
+            exist_l = exist_a[leaf_mask]
 
             v_scaled = v_proto.unsqueeze(0) * s_l.unsqueeze(1)
             v_rot = torch.bmm(v_scaled, R_l.transpose(1, 2)) + pos_l.unsqueeze(1)
@@ -1476,30 +1464,24 @@ class HeliosPlantGeometryBuilder:
             v_flat = v_rot.reshape(-1, 3)
             n_flat = n_rot.reshape(-1, 3)
             c_flat = self.COLOR_LEAF.to(device).unsqueeze(0).expand(v_flat.shape[0], -1)
+            op_flat = exist_l.unsqueeze(1).expand(M, V).reshape(-1, 1)
             o_flat = torch.full((v_flat.shape[0],), 2, dtype=torch.int64, device=device)
 
             all_verts.append(v_flat)
             all_faces.append(f_batch)
             all_normals.append(n_flat)
             all_colors.append(c_flat)
+            all_opacities.append(op_flat)
             all_organs.append(o_flat)
             vert_offset += v_flat.shape[0]
 
         # -------------------------------------------------------------
-        # 2. BATCH STRAIGHT TUBES (Internode, Petiole, Peduncle)
+        # 2. BATCH STRAIGHT TUBES (ORGAN_INTERNODE=3, ORGAN_PETIOLE=4)
         # -------------------------------------------------------------
-        if is_legacy:
-            tube_mask = (ot_a == 2) | (ot_a == 3)
-            is_inode = (ot_a[tube_mask] == 2)
-            ped_mask = (ot_a == 6)
-        else:
-            tube_mask = (ot_a == ORGAN_INTERNODE) | (ot_a == ORGAN_PETIOLE)
-            is_inode = (ot_a[tube_mask] == ORGAN_INTERNODE)
-            ped_mask = (ot_a == ORGAN_PEDUNCLE)
+        tube_mask = (ot_a == ORGAN_INTERNODE) | (ot_a == ORGAN_PETIOLE)
+        is_inode = (ot_a[tube_mask] == ORGAN_INTERNODE)
+        ped_mask = (ot_a == ORGAN_PEDUNCLE)
 
-        n_rad = max(3, self.tube_radial_subdivisions)
-
-        # Straight tubes (Internodes, Petioles)
         if tube_mask.any():
             _, proto_f = _make_straight_tube_prototype(1, n_rad, device)
 
@@ -1507,13 +1489,10 @@ class HeliosPlantGeometryBuilder:
             R_t = R_a[tube_mask]
             pos_t = base_pos_a[tube_mask]
             s_t = scale_a[tube_mask]
+            exist_t = exist_a[tube_mask]
 
-            if is_legacy:
-                lengths = s_t[:, 2].clamp(min=1e-3)
-                radii_0 = s_t[:, 0].clamp(min=1e-4)
-            else:
-                lengths = s_t[:, 0].clamp(min=1e-3)
-                radii_0 = s_t[:, 1].clamp(min=1e-4)
+            lengths = s_t[:, 0].clamp(min=1e-3)
+            radii_0 = s_t[:, 1].clamp(min=1e-4)
             radii_1 = torch.where(is_inode, radii_0 * 0.85, radii_0 * 0.8)
 
             fwd = R_t[:, :, 1]   # (M, 3) forward axis
@@ -1549,6 +1528,7 @@ class HeliosPlantGeometryBuilder:
                 c_pet.unsqueeze(0)
             ).unsqueeze(1).expand(M, V_t, 3).reshape(-1, 3)
 
+            op_flat = exist_t.unsqueeze(1).expand(M, V_t).reshape(-1, 1)
             o_vals = torch.where(is_inode, torch.tensor(0, device=device), torch.tensor(1, device=device))
             o_flat = o_vals.unsqueeze(1).expand(M, V_t).reshape(-1)
 
@@ -1556,10 +1536,13 @@ class HeliosPlantGeometryBuilder:
             all_faces.append(f_batch)
             all_normals.append(n_flat)
             all_colors.append(c_flat)
+            all_opacities.append(op_flat)
             all_organs.append(o_flat)
             vert_offset += v_flat.shape[0]
 
-        # Curved tubes (Peduncles with upward gravitropic curvature)
+        # -------------------------------------------------------------
+        # 3. BATCH CURVED TUBES (ORGAN_PEDUNCLE=6 with upward gravitropic curvature)
+        # -------------------------------------------------------------
         if ped_mask.any():
             n_seg = 6
             _, proto_f = _make_straight_tube_prototype(n_seg, n_rad, device)
@@ -1568,9 +1551,10 @@ class HeliosPlantGeometryBuilder:
             R_ped = R_a[ped_mask]
             pos_ped = base_pos_a[ped_mask]
             s_ped = scale_a[ped_mask]
+            exist_ped = exist_a[ped_mask]
 
-            lengths = s_ped[:, 2].clamp(min=1e-3) if is_legacy else s_ped[:, 0].clamp(min=1e-3)
-            radii = s_ped[:, 0].clamp(min=1e-4) if is_legacy else s_ped[:, 1].clamp(min=1e-4)
+            lengths = s_ped[:, 0].clamp(min=1e-3)
+            radii = s_ped[:, 1].clamp(min=1e-4)
 
             fwd = R_ped[:, :, 1]
             e0 = R_ped[:, :, 0]
@@ -1651,19 +1635,21 @@ class HeliosPlantGeometryBuilder:
             n_ped = torch.stack(normals_list, dim=1).reshape(-1, 3)
             c_ped = self.COLOR_PEDUNCLE.to(device)
             c_flat = c_ped.unsqueeze(0).expand(v_flat.shape[0], 3)
+            op_flat = exist_ped.unsqueeze(1).expand(M, V_ped).reshape(-1, 1)
             o_flat = torch.full((v_flat.shape[0],), 3, dtype=torch.long, device=device)
 
             all_verts.append(v_flat)
             all_faces.append(f_batch)
             all_normals.append(n_ped)
             all_colors.append(c_flat)
+            all_opacities.append(op_flat)
             all_organs.append(o_flat)
             vert_offset += v_flat.shape[0]
 
         # -------------------------------------------------------------
-        # 3. BATCH PODS (ORGAN_FRUIT=11, legacy=8)
+        # 4. BATCH PODS (ORGAN_FRUIT=11)
         # -------------------------------------------------------------
-        pod_mask = (ot_a == 8) if is_legacy else (ot_a == ORGAN_FRUIT)
+        pod_mask = (ot_a == ORGAN_FRUIT)
         if pod_mask.any():
             try:
                 v_pod, f_pod = self.asset_mgr.get_mesh_device("CowpeaPod.obj", device)
@@ -1672,6 +1658,7 @@ class HeliosPlantGeometryBuilder:
                 R_p = R_a[pod_mask]
                 pos_p = base_pos_a[pod_mask]
                 s_p = scale_a[pod_mask][:, 0:1]
+                exist_pod = exist_a[pod_mask]
 
                 v_scaled = v_pod.unsqueeze(0) * s_p.unsqueeze(1)
                 v_rot = torch.bmm(v_scaled, R_p.transpose(1, 2)) + pos_p.unsqueeze(1)
@@ -1684,25 +1671,25 @@ class HeliosPlantGeometryBuilder:
                 v_flat = v_rot.reshape(-1, 3)
                 n_flat = n_rot.reshape(-1, 3)
                 c_flat = self.COLOR_POD.to(device).unsqueeze(0).expand(v_flat.shape[0], -1)
+                op_flat = exist_pod.unsqueeze(1).expand(M, V).reshape(-1, 1)
                 o_flat = torch.full((v_flat.shape[0],), 5, dtype=torch.int64, device=device)
 
                 all_verts.append(v_flat)
                 all_faces.append(f_batch)
                 all_normals.append(n_flat)
                 all_colors.append(c_flat)
+                all_opacities.append(op_flat)
                 all_organs.append(o_flat)
                 vert_offset += v_flat.shape[0]
             except Exception:
                 pass
 
         # -------------------------------------------------------------
-        # 4. BATCH FLOWERS (ORGAN_FLOWER_OPEN=10, ORGAN_FLOWER_CLOSED=9, legacy 7, 9)
+        # 5. BATCH FLOWERS (ORGAN_FLOWER_OPEN=10, ORGAN_FLOWER_CLOSED=9)
         # -------------------------------------------------------------
-        fl_mask = ((ot_a == 7) | (ot_a == 9)) if is_legacy else ((ot_a == ORGAN_FLOWER_OPEN) | (ot_a == ORGAN_FLOWER_CLOSED))
+        fl_mask = (ot_a == ORGAN_FLOWER_OPEN) | (ot_a == ORGAN_FLOWER_CLOSED)
         if fl_mask.any():
-            fl_specs = (((7, "CowpeaFlower_open_yellow.obj"), (9, "CowpeaFlower_closed_yellow.obj"))
-                        if is_legacy else
-                        ((ORGAN_FLOWER_OPEN, "CowpeaFlower_open_yellow.obj"), (ORGAN_FLOWER_CLOSED, "CowpeaFlower_closed_yellow.obj")))
+            fl_specs = ((ORGAN_FLOWER_OPEN, "CowpeaFlower_open_yellow.obj"), (ORGAN_FLOWER_CLOSED, "CowpeaFlower_closed_yellow.obj"))
             for fl_ot, fl_obj in fl_specs:
                 fm = fl_mask & (ot_a == fl_ot)
                 if not fm.any():
@@ -1714,6 +1701,7 @@ class HeliosPlantGeometryBuilder:
                     R_f = R_a[fm]
                     pos_f = base_pos_a[fm]
                     s_f = scale_a[fm][:, 0:1]
+                    exist_fl = exist_a[fm]
 
                     v_scaled = v_fl.unsqueeze(0) * s_f.unsqueeze(1)
                     v_rot = torch.bmm(v_scaled, R_f.transpose(1, 2)) + pos_f.unsqueeze(1)
@@ -1726,12 +1714,14 @@ class HeliosPlantGeometryBuilder:
                     v_flat = v_rot.reshape(-1, 3)
                     n_flat = n_rot.reshape(-1, 3)
                     c_flat = self.COLOR_FLOWER.to(device).unsqueeze(0).expand(v_flat.shape[0], -1)
+                    op_flat = exist_fl.unsqueeze(1).expand(M, V).reshape(-1, 1)
                     o_flat = torch.full((v_flat.shape[0],), 4, dtype=torch.int64, device=device)
 
                     all_verts.append(v_flat)
                     all_faces.append(f_batch)
                     all_normals.append(n_flat)
                     all_colors.append(c_flat)
+                    all_opacities.append(op_flat)
                     all_organs.append(o_flat)
                     vert_offset += v_flat.shape[0]
                 except Exception:
@@ -1740,14 +1730,62 @@ class HeliosPlantGeometryBuilder:
         if not all_verts:
             empty3 = torch.zeros((0, 3), dtype=torch.float32, device=device)
             empty_f = torch.zeros((0, 3), dtype=torch.int64, device=device)
+            empty_op = torch.zeros((0, 1), dtype=torch.float32, device=device)
             empty_o = torch.zeros((0,), dtype=torch.int64, device=device)
-            return {'vertices': empty3, 'faces': empty_f, 'normals': empty3, 'colors': empty3, 'organ_types': empty_o}
+            return {'vertices': empty3, 'faces': empty_f, 'normals': empty3, 'colors': empty3, 'opacities': empty_op, 'organ_types': empty_o}
 
         return {
             'vertices': torch.cat(all_verts, dim=0),
             'faces': torch.cat(all_faces, dim=0),
             'normals': torch.cat(all_normals, dim=0),
             'colors': torch.cat(all_colors, dim=0),
+            'opacities': torch.cat(all_opacities, dim=0),
             'organ_types': torch.cat(all_organs, dim=0)
         }
+
+
+# =====================================================================
+# Differentiable Converters (External to build_mesh_from_part_tensor)
+# =====================================================================
+
+def diff_node_to_part_tensor_14d(
+    diff_tensor: torch.Tensor,
+    return_existence: bool = True,
+    device: Optional[torch.device] = None,
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+    """
+    Converts a continuous/differentiable Node Tensor (N, 26) into a Canonical 14D Part Tensor (N, 14).
+
+    Physical Scale Purity:
+      - scale (cols 10-12) is ALWAYS preserved as true physical dimensions in metres.
+      - existence is NEVER multiplied into scale (legacy scale-shrinking hack is completely deprecated).
+      - If return_existence=True (default): returns (part_14d, existence) where existence is
+        prob_selected * (1 - p(NONE)) for soft alpha rendering.
+      - If return_existence=False: returns part_14d alone with uncorrupted physical scale.
+    """
+    from diffusion_based.models.plant_organ_array import ORGAN_NONE
+
+    if device is not None:
+        diff_tensor = diff_tensor.to(device)
+
+    ot_probs = torch.softmax(diff_tensor[:, :13], dim=-1)
+    exist = 1.0 - ot_probs[:, ORGAN_NONE]
+    ot = torch.argmax(ot_probs, dim=-1)
+
+    base_pos = diff_tensor[:, 13:16]
+    rot_6d = diff_tensor[:, 16:22]
+    scale = diff_tensor[:, 22:25]
+    curvature = diff_tensor[:, 25:26]
+
+    prob_selected = torch.gather(ot_probs, 1, ot.unsqueeze(1)).squeeze(-1)
+    soft_exist = prob_selected * exist
+
+    part_14d = torch.cat([ot.unsqueeze(-1).float(), base_pos, rot_6d, scale, curvature], dim=-1)
+    if return_existence:
+        return part_14d, soft_exist
+    return part_14d
+
+
+
+
 
