@@ -1,6 +1,6 @@
 # Agent Takeover & Engineering Handover Guide
 **Project: Image-to-L-System / 3D Inverse Procedural Plant Reconstruction**
-**Last Updated:** 2026-09-04
+**Last Updated:** 2026-09-04 (Phase 2 complete)
 **Primary Author/Agent:** Antigravity Autonomous Agent (Pair programming with Heesup Yun)
 **Environment:** Linux, Python 3.10+, Mamba (`mamba activate digital-crops`), CUDA, PyTorch, `nvdiffrast`, Helios C++ OptiX Raytracer.
 
@@ -19,7 +19,9 @@ Given a single monocular top-view RGB-D ($256 \times 256 \times 4$) image contai
   - **DAP 10 (Seedling)**: **95.10% Foreground Mask IoU**, **94.91% Leaf IoU**, **38.02 dB Depth PSNR**.
   - **DAP 50 (Branching)**: **92.85% Foreground Mask IoU**, **91.67% Leaf IoU**, **25.17 dB Depth PSNR**.
   - **DAP 90 (Fruiting)**: **86.47% Foreground Mask IoU**, **79.45% Leaf IoU**, **21.14 dB Depth PSNR**.
-- Direct Differentiable Rendering optimization with our **Concentric Multi-Scale Pyramid** achieves **81.61% Mask IoU** and **2.29 mm Chamfer distance** on canonical unifoliate seedlings without blank-canvas collapse.
+- Direct Differentiable Rendering optimization with our **Concentric Multi-Scale Pyramid** achieves **92.45% Mask IoU** and **0.71 mm Chamfer distance** on canonical unifoliate seedlings without blank-canvas collapse (Phase 2 anti-erasure rewrite; was 81.61% / 2.29 mm in Phase 1).
+- **Phase 2 (Variable Organ Topology) complete**: Strategy B over-allocation pruning (10→5 slots, OVERALL PASS) and Strategy A residual-driven leaf spawning (57.7%→82.7% IoU, +25 pp) both verified.
+- **Representation coverage audit (exp6/exp7)**: all 26 dimensions of the continuous node tensor verified differentiable & rendered (2 were dead pre-fix: curvature, scale_z). Group-wise recovery: base_xyz RECOVERED (4.8→0.7–1.6 mm), curvature PARTIAL (56→80→45–57°/m, weak signal), rot6d/scale LIMITED by gauge freedoms & sub-pixel radius observability, organ-type mobility FAILED (Phase 3 scope).
 
 ---
 
@@ -121,35 +123,67 @@ Helios procedural mesh building relies on `<bud_state>` inside `<phytomer>`:
 
 ## 4. Key Source Code & Architecture Directory Map
 
+The repository was reorganized (2026-09-04) to contain only active code. Legacy
+models/training/eval live in `archive/`; reusable verification scripts live in
+`tests/unit/`; `scratch/` holds only active benchmark scripts + their outputs.
+
 ```
 /home/lion397/codes/image-to-l-system/
+├── scratch/                              <-- [ACTIVE] experiment scripts + outputs (git-ignored)
+│   ├── phase2_core.py                    <-- [CRITICAL] shared anti-erasure loss core (exp2/4/5/7)
+│   ├── make_target_unifoliate.py         <-- [CRITICAL] canonical 7-row target generator
+│   ├── exp1_per_organ_icp.py             <-- Method 1: Point Cloud ICP benchmark
+│   ├── exp2_diff_render_opt.py           <-- Method 2: Diff Renderer (anti-erasure) benchmark
+│   ├── exp3_toy_flow_matching.py         <-- Method 3 baseline (kept for reference; superseded by 3b)
+│   ├── exp3b_flow_matching_fixed.py      <-- Method 3b: fixed FM (conditioning+guidance+hybrid)
+│   ├── exp4_overalloc_pruning.py         <-- Phase 2 Strategy B: 10-slot over-allocation pruning
+│   ├── exp5_underalloc_spawn.py          <-- Phase 2 Strategy A: residual-driven leaf spawning
+│   ├── exp6_dimension_coverage.py        <-- 26D per-dimension differentiability audit
+│   ├── exp7_dimension_recovery.py        <-- Group-wise perturb-recover test
+│   ├── eval_phase1_comparison.py         <-- Synthesis comparison & Figure 12 generator
+│   ├── exp*_recon_14d.pt / target_*.pt   <-- benchmark outputs & GT artifacts
+│   └── xml_outputs/                      <-- exported Helios XMLs
+├── tests/unit/                           <-- [ACTIVE] reusable verification scripts
+│   ├── test_14d_curvature.py             <-- 14D extraction / 40D reconstruction w/ curvature
+│   ├── test_multiscale_pyramid.py        <-- pyramid renderer verification
+│   ├── test_reproductive.py / test_render_14d.py  <-- DAP 50/90 raytrace verification
+│   ├── test_soft_existence_visual.py     <-- soft-existence alpha rendering demo
+│   └── helios_xml_roundtrip_visualizer.py
 ├── diffusion_based/
-│   ├── models/
-│   │   ├── part_tensor_to_40d.py       <-- [CRITICAL] Closed-form IK & XML assembler
-│   │   ├── helios_pytorch_geometry.py  <-- [CRITICAL] 14D & 26D mesh builder & differentiable mapping
-│   │   ├── helios_pytorch_renderer.py  <-- [CRITICAL] nvdiffrast renderer + multi-scale pyramid
-│   │   ├── plant_organ_array.py        <-- [CRITICAL] Typed 40D & 14D column constants & XML roundtrip
-│   │   └── part_assembly_to_xml.py     <-- Pipeline bridge
-│   └── eval/
-│       └── eval_13d_xml_organ_masks.py <-- [CRITICAL] Full lifecycle benchmark (DAP 10, 50, 90)
-├── scratch/
-│   ├── make_target_unifoliate.py       <-- [ACTIVE] Canonical 7-row unifoliate target generator
-│   ├── exp1_per_organ_icp.py           <-- [ACTIVE] Method 1: Point Cloud ICP benchmark
-│   ├── exp2_diff_render_opt.py         <-- [ACTIVE] Method 2: Diff Renderer Multi-Loss Pyramid benchmark
-│   ├── exp3_toy_flow_matching.py       <-- [ACTIVE] Method 3: Conditional Flow Matching ODE benchmark
-│   ├── eval_phase1_comparison.py       <-- [ACTIVE] Synthesis comparison & Figure 12 generator
-│   └── xml_outputs/                    <-- Exported XML files from all benchmarks
+│   ├── models/                           <-- [ACTIVE] 6 modules, dependency-ordered:
+│   │   ├── plant_organ_array.py          <-- [CRITICAL] 14D/40D column constants + XML roundtrip
+│   │   ├── helios_pytorch_geometry.py    <-- [CRITICAL] mesh builder + differentiable mapping
+│   │   ├── helios_pytorch_renderer.py    <-- [CRITICAL] nvdiffrast renderer + multi-scale pyramid
+│   │   ├── part_tensor_to_40d.py         <-- [CRITICAL] closed-form IK + XML assembler (assemble_part_tensor_to_xml)
+│   │   ├── vit_image_encoder.py          <-- FM conditioning encoder (dep of part_flow_matching)
+│   │   └── part_flow_matching.py         <-- FM denoiser model
+│   ├── training/                         <-- [ACTIVE] 2 files:
+│   │   ├── flow_matching.py              <-- [CRITICAL] Rectified Flow scheduler (x_t=(1-t)x0+t·x1)
+│   │   └── train_part_flow_matching.py   <-- FM training loop
+│   ├── dataset/                          <-- [ACTIVE] 3 files:
+│   │   ├── part_array_dataset.py         <-- [CRITICAL] 25D FM encode/decode (BASE_SCALE=20, SCALE_SCALE=50)
+│   │   ├── cowpea_shard_dataset.py       <-- shard dataset loader
+│   │   └── generate_tensor_shards.py     <-- shard generation pipeline
+│   ├── eval/
+│   │   ├── eval_13d_xml_organ_masks.py   <-- [CRITICAL] Helios C++ raytrace benchmark (Fig 10)
+│   │   └── metrics.py                    <-- shared metrics
+│   └── checkpoints/fm/part_flow_matching.pt  <-- final FM checkpoint (only one kept)
+├── dataset/helios_data/cowpea_shard/     <-- FM training data (25GB, git-ignored)
+├── archive/                              <-- legacy code (git-tracked, not active)
+│   ├── models_legacy/  training_legacy/  eval_scripts/  dataset_scripts/
+│   └── ... (dataset_legacy, notebooks_legacy, etc.)
+├── Digital-Crops/                        <-- Helios C++ OptiX raytracer
 ├── docs/
-│   ├── ongoing/
-│   │   ├── AGENT_TAKEOVER_GUIDE.md     <-- [THIS DOCUMENT] Single source of truth
-│   │   ├── 20260903_14d_part_tensor... <-- Comprehensive IK & raytracing report
-│   │   ├── 20260903-back-to-basics.md  <-- Phase 1 benchmark & Phase 2 roadmap
-│   │   └── README.md                   <-- Directory index
-│   └── results/assets/
-│       ├── fig10_helios_per_organ...   <-- Full lifecycle raytraced comparison (DAP 10, 50, 90)
-│       ├── fig12_back_to_basics...     <-- Phase 1 synthesis comparison grid
-│       └── fig13_progressive_multi...  <-- Concentric multi-scale pyramid visualization
+│   ├── ongoing/AGENT_TAKEOVER_GUIDE.md   <-- [THIS DOCUMENT]
+│   └── results/assets/                   <-- all benchmark figures (fig10-14, exp*)
+└── scripts/                              <-- figure-generation utilities
 ```
+
+Removed on 2026-09-04 cleanup (~93 GB freed):
+- 60 intermediate FM epoch checkpoints + stale DIT/VLM/VAE checkpoints (73 GB)
+- stale shard dataset `cowpea_shard_stale_26d_20260824` (19 GB)
+- `wandb/`, `logs/`, `training_logs/`, `agent_temp/`, `diffusion_based/plots/`
+- `diffusion_based/tests/` (empty after archiving plant_vae test)
 
 ---
 
@@ -171,8 +205,47 @@ Evaluated on true top-view ($90^\circ$ nadir) calibrated RGB-D target with 5 geo
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **Ground Truth (7-Row)** | — | **100.00%** | **0.00 mm** | **0.000 cm²** | **0.000 cm²** | **SUCCESS** |
 | **Method 1: Per-Organ ICP** | 257.5 ms | **68.07%** | **16.11 mm** | **0.500 cm²** | 0.928 cm² | **SUCCESS** |
-| **Method 2: Diff Renderer (Pyramid)** | 40.0 ms/step (3.4s) | **81.61%** | **2.29 mm** | **2.854 cm²** | **0.827 cm²** | **SUCCESS** |
+| **Method 2: Diff Renderer (Pyramid + Anti-Erasure)** | 58 ms/step (4.4s) | **92.06%** | **1.04 mm** | **0.070 cm²** | **0.277 cm²** | **SUCCESS** |
 | **Method 3: Flow Matching ODE** | **64.3 ms (15 steps)**| 9.97% | 30.30 mm | 28.112 cm² | 23.024 cm² | **SUCCESS** |
+| **Method 3b: FM (best-of-6) + Render Polish (hybrid)** | 2.5 s total | **79–83%** (stable) | **3.03 mm** | 0.179 cm² | 0.213 cm² | **SUCCESS** |
+
+> [!NOTE]
+> Method 2 was upgraded during Phase 2 with the anti-erasure loss stack (see §8).
+> Phase 1 baselines were: IoU 81.61%, Chamfer 2.29 mm, Position MSE 2.854 cm² — but silently erased
+> the internode + both petioles (2/5 organ retention). The new run retains all 5 organs.
+
+### C. Phase 2 — Variable Organ Topology ([Figure: exp4/exp5 progression PNGs](file:///home/lion397/codes/image-to-l-system/docs/results/assets/exp4_overalloc_pruning_progression.png))
+
+| Strategy | Setup | Result | Verdict |
+| :--- | :--- | :--- | :--- |
+| **B: Over-Allocation + Pruning** | 10 slots (5 real + 5 coincident ghosts), L1 sparsity + soft-NMS exclusion + ghost-NONE logit init +2.0 + annealing | 10→**5** slots; ghosts e<1e-4 & argmax NONE; reals e≥0.5; IoU **94.29%**, Chamfer **1.43 mm**; XML exported | **OVERALL PASS** |
+| **A: Under-Allocation + Spawning** | 3 slots (no leaves), residual-mask-driven leaf cloning at residual centroid | 5 spawn events; IoU 35.3%→**83.36%** (+48.1 pp); 4/5 spawns kept, 1 bad spawn self-pruned | **FEASIBLE** (not SOTA) |
+
+### D. Representation Coverage Audit (exp6 + exp7)
+
+**Exp6 — per-dimension differentiability probe** (`scratch/exp6_dimension_coverage.py`):
+Two tests per 26D dimension: (A) analytic gradient norm through the full loss, (B) finite-difference image sensitivity.
+
+| Verdict pre-fix | Dimensions |
+| :--- | :--- |
+| DEAD (no render effect, no gradient) | `scale_z`, `curvature` |
+| Verdict post-fix | **all 26 OPTIMIZABLE** |
+
+Fixes applied to `helios_pytorch_geometry.py`:
+- `curvature` (col 13) now bends INTERNODE/PETIOLE tubes (7-ring sagittal bend about the horizontal axis cross(fwd, z), deg/m, Helios gravitropic convention; curvature=0 is bitwise-identical to the old straight 2-ring path). Also clamped to ±720°/m to prevent degenerate full-loop bends.
+- `scale_z` (col 12) now modulates LEAF blade width (aspect factor `s_z/s_x`, clamped [0.2, 5.0]); canonical `[s,s,s]` renders identically to the old uniform path.
+
+**Exp7 — group-wise recovery** (`scratch/exp7_dimension_recovery.py`): perturb one group of a GT-correct state, optimize with the full Phase 2 stack, measure functional error:
+
+| Group | Init err → Final err | Verdict | Root cause for non-full recovery |
+| :--- | :--- | :--- | :--- |
+| `base_xyz` | 4.8 → **0.7–1.6 mm** | **RECOVERED** | — |
+| `rot6d` | 2.3 → 3.2 mm func | LIMITED | gauge freedoms (leaf in-plane spin is near-image-invariant); tips stay pinned |
+| `scale_xyz` | 30% → 34% (len+rad) | LIMITED | radius is sub-pixel at 256px for thin tubes (observability-limited); length is recovered via tip anchor |
+| `curvature` | 80 → 45–57 °/m | PARTIAL | gradient exists (~3e-4) but weak; needs longer schedules & better parameterization |
+| `organ_logits` | 100% → 100% mismatch | FAILED | type-mobility requires crossing argmax decision boundaries — Phase 3 scope |
+
+Operational notes: the exact-GT loss (~0.075) is NOT reachable by optimization (irreducible shading/regularizer floor ≈ 1.1–1.5); GT-anchor weight should stay ≥ 1.5 (decaying it to 0.5 lets Z-position drift under RGB noise — Z is only weakly observed in top-view depth).
 
 ---
 
@@ -201,14 +274,29 @@ PYTHONPATH=. python scratch/make_target_unifoliate.py
 # Method 1: Point Cloud ICP
 PYTHONPATH=. python scratch/exp1_per_organ_icp.py
 
-# Method 2: Differentiable Renderer with Multi-Scale Pyramid
+# Method 2: Differentiable Renderer with Multi-Scale Pyramid + Anti-Erasure
 PYTHONPATH=. python scratch/exp2_diff_render_opt.py
 
 # Method 3: Conditional Flow Matching
 PYTHONPATH=. python scratch/exp3_toy_flow_matching.py
 ```
 
-### 3. Run the Synthesis Evaluation & Update Figure 12:
+### 3. Run the Phase 2 Topology & Coverage Benchmarks:
+```bash
+# Strategy B: 10-slot over-allocation with existence pruning (OVERALL PASS)
+PYTHONPATH=. python scratch/exp4_overalloc_pruning.py
+
+# Strategy A: 3-slot under-allocation with residual-driven leaf spawning
+PYTHONPATH=. python scratch/exp5_underalloc_spawn.py
+
+# Dimension coverage: per-dim gradient/sensitivity audit (all 26 must be OPTIMIZABLE)
+PYTHONPATH=. python scratch/exp6_dimension_coverage.py
+
+# Dimension recovery: group-wise perturb-recover end-to-end test
+PYTHONPATH=. python scratch/exp7_dimension_recovery.py
+```
+
+### 4. Run the Synthesis Evaluation & Update Figure 12:
 ```bash
 PYTHONPATH=. python scratch/eval_phase1_comparison.py
 # Outputs:
@@ -216,7 +304,7 @@ PYTHONPATH=. python scratch/eval_phase1_comparison.py
 # - docs/results/assets/fig12_back_to_basics_benchmark_summary.png
 ```
 
-### 4. Run the Full Lifecycle Raytracing Benchmark (Figure 10):
+### 5. Run the Full Lifecycle Raytracing Benchmark (Figure 10):
 ```bash
 PYTHONPATH=. python diffusion_based/eval/eval_13d_xml_organ_masks.py
 # Outputs:
@@ -242,26 +330,48 @@ PYTHONPATH=. python diffusion_based/eval/eval_13d_xml_organ_masks.py
    Helios C++ raytracer will crash with `SIGABRT` if any `<internode_radius>` or `<leaf_scale>` is negative or zero. Always clamp physical dimensions to $\ge 10^{-4}$ m in `part_tensor_to_40d.py`.
 6. **CHM Depth vs OpenGL Depth**:
    In our renderer, the 4th channel is Canopy Height Model (CHM) height from the ground (m), where ground $= 0.0$ and surface $= Z_{\text{world}}$. This is the inverse of camera-distance depth.
+7. **Existence Is NOT the Only Erasure Channel (Phase 2 finding)**:
+   Even with existence floored at 1.0, the optimizer erases thin tubes through the **scale channel**: a misaligned tube has zero pixel overlap with its target, so IoU/depth/RGB reward shrinking it. Radius collapses to sub-pixel (invisible), length shrinks, and position drifts (zero gradient + Adam normalized steps = random walk). Countermeasures (all in `scratch/phase2_core.py`, used by exp2/exp4/exp5):
+   - `ExistenceWarden`: warmup freeze (existence + scale frozen for first ~15–25 steps) + existence floor hinge for seeded organs.
+   - `apply_scale_floor`: **hard** radius floor (straight-through clamp, rel 0.7×init) — radius collapse is a one-way trap because at 0 px no image gradient can restore it. Length uses a **soft** hinge (`scale_floor_loss`) instead: hard-clamping length zeroes the gradient at the boundary and freezes organs at 70% length.
+   - `tube_pull_loss`: dilated-corridor coverage deficit around target tubes (annealed 40px→8px) — long-range growth gradient for zero-overlap tubes.
+   - `organ_tip_positions` + 3D tip/base anchor loss (quadratic, per-organ-summed): image-space losses are structurally blind to zero-pixel organs (a nadir-viewed vertical tube projects a ~12px sliver whose visible pixels all interpolate CHM=0 → invisible). The tip anchor is differentiable w.r.t. base/rot/scale and works at 0 px. **Use sum-over-organs, not mean** (mean dilutes single-organ errors into stalling).
+8. **Coincident-Copy Ambiguity (Phase 2 finding)**:
+   Two coincident ghost copies saturate compositing (each e≈0.7 renders identically to one e≈1.0) — pure L1 sparsity cannot decide a winner. Fixes: (a) `ExistenceWarden.regularizers` soft-NMS mutual-exclusion penalty with **seeded-slot gradient protection** (detach the real slot's factor in ghost-real pairs, else exclusion erases real organs); (b) initialize ghost `ORGAN_NONE` logits HIGH (+2.0, "dead until proven useful"); (c) late-stage ghost NONE-logit annealing (+0.05/step after step 60) because softmax saturation floors `p(1-p)` existence at ~1e-3 under Adam.
+9. **Nadir-View CHM Blindness of Vertical Tubes**:
+   `build_mesh_from_part_tensor` renders a vertical stem as a ~12 px sliver whose visible pixels all lie on the bottom-ring edge (CHM interpolates to 0 there) → `clamp(depth*100)` mask = 0 → **the internode contributes zero image signal in top-view**. This is a renderer semantic, not a bug; the 3D tip anchor (gotcha 7) is the correct compensation.
+10. **Helios C++ Leaf Roll Is NOT Rotation-Equivariant (Phase 2 finding)**:
+    `PlantArchitecture.cpp` applies unifoliate leaf roll about the **world X axis** (`context_ptr->rotateObject(objID_leaf, roll_rot, "x")` with sign `±` by `shoot_index.x % 2`), and the blade-up correction uses world-up. A plant yaw-rotated 30° in `base_rotation` renders with genuinely different leaf orientations (verified: GT vs yaw30-GT raytrace IoU 17.9%, not fixed by 2D rotation correction). Consequence: the 14D→XML pipeline is only rotation-equivariant for yaw-free geometry; Helios C++ raytrace IoU against yaw-perturbed reconstructions is pessimistic. Use the PyTorch renderer (our differentiable convention) for optimization-time verification (exp4 recon: 90.24% PyTorch IoU) and treat Helios IoU as approximate for yawed plants.
+11. **Dataset Organ-Type Prior (shard layout)**:
+    `dataset/helios_data/cowpea_shard/*.pt` samples store `nodes` as (N, 25+) **FM-encoded** tensors: columns 0:13 are the one-hot organ type (see `part_array_dataset.py` `FM_NODE_DIM=25`), NOT a scalar organ column. Empirical distribution over 600 plants / 617,941 organs: PETIOLE 20.40%, BUD_ABORTED 49.55%, SHOOT_META 7.16%, INTERNODE 7.09%, PEDUNCLE 7.06%, LEAF 4.82%, FLOWER_OPEN 2.07%. Used as the logit prior in exp4 (`compute_dataset_organ_prior`).
+12. **Dead Dimensions (exp6 finding, FIXED)**:
+    Pre-fix, `curvature` (col 13) was read but never used by the mesh builder (tubes straight 2-ring, leaves fixed prototype), and `scale_z` (col 12) was ignored for both tubes AND leaves (only `s_x` uniform). Both are now wired (see §5-D). When adding new geometry features, always run exp6 — a dimension that renders zero pixels or receives zero gradient is invisible to the optimizer no matter what loss you design.
+13. **GT-Anchor Weight Annealing Trap (exp7 finding)**:
+    Decaying the 3D tip/base anchor weight below ~1.0 lets Z-position drift under RGB noise: in a nadir view, Z (height) is observed only through the depth channel, which is weak vs RGB terms. Keep `tip_w >= 1.5` when GT anchors are available; reserve annealing for unknown-geometry scenarios (exp4 ghosts).
+14. **Curvature Optimization Is Slow (exp7 finding)**:
+    The curvature gradient (~3e-4 through the full loss) is 2–5 orders of magnitude weaker than position gradients. Adam normalizes per-parameter, so a high `curv_lr` (2.0) is safe for curvature recovery BUT destabilizes other groups (unit-norm steps swing curvature against tiny true gradients). Use per-group learning rates; expect curvature recovery to need 150–300 steps.
+15. **26D vs 14D Column Layout Confusion**:
+    `organ_tip_positions` now auto-detects layout (14D: base 1:4, rot 4:10, len 10; 26D: base 13:16, rot 16:22, len 22). When writing new helpers, never index a 26D node tensor with 14D column constants — this produced silently-wrong 655mm "errors" before the audit.
+16. **Which generative algorithm? Flow Matching, not DDPM/DDIM**:
+    The repo's generative model is **conditional Rectified Flow / Flow Matching** (Lipman et al. 2023 / Liu et al. 2023): `x_t = (1-t)x_0 + t·x_1`, `v_target = x_1 - x_0`, MSE velocity regression, Euler ODE sampling t:0→1 (`diffusion_based/training/flow_matching.py`). No DDPM noise-prediction, no DDIM deterministic schedule; `sigma_min=0` means fully deterministic straight paths.
+17. **Why raw FM underperforms + the hybrid fix (exp3b finding)**:
+    Exp3's 9.97% IoU had 4 measured root causes: (a) **conditioning collapse** — CNN+AvgPool encoder maps all images to near-identical features (pairwise dist ~0.007), so the field regresses to the unconditional dataset mean; (b) **discrete-block mean regression** — one-hot organ logits cannot cross argmax boundaries, and rotation/scale regression averages multi-modal yaw/pitch datasets into degenerate geometry; (c) degenerate dataset (21 samples varying one scalar); (d) no test-time guidance. Fixes in `scratch/exp3b_flow_matching_fixed.py`: structurally diverse dataset (210 samples: scale×pitch×yaw×curvature), depth-stat + contrastive conditioning, **slot-role type assignment** post-ODE, and the recommended production pattern: **FM proposal (fast, topology-correct) → differentiable-render polish (exp2 stack, ~75 steps)**. Result: IoU 9.97% → **65.54%**, Chamfer 30.3 → 6.8 mm, type agreement 100%.
+    In-place masking of a converted 14D tensor (`p14[:, :13][:, mask] = -100`) **cuts the autograd graph** — always role-lock logits on the 26D node BEFORE `diff_node_to_part_tensor_14d` when guidance gradients are needed.
+    Final exp3b recipe (stable 79–83% over repeated runs): 6 FM proposals (batched ODE) → **10-step mini-polish per proposal** → select best by post-polish loss → 75-step full polish. Two extra lessons: (a) raw ODE render-loss is a *poor* proposal-quality predictor — selection must happen AFTER optimization; (b) proposal mini-polish must run OUTSIDE `torch.no_grad()` (backprop through the render is required).
 
 ---
 
-## 8. Immediate Next Steps & Phase 2 Roadmap
+## 8. Immediate Next Steps & Phase 3 Roadmap
 
-With Phase 1 (Minimal Seedling) and Phase 3 (Multi-Scale Pyramid) completed and verified, the incoming agent should execute **Phase 2: Variable Organ Topology**:
+**Phase 2 (Variable Organ Topology) is COMPLETE and verified** (2026-09-04):
+- ✅ **Strategy B (Over-Allocation + Existence Pruning)**: 10 slots → exactly 5; ghost slots decay to e<1e-4 with argmax ORGAN_NONE; real organs retained (e≥0.5); valid Helios XML exported (`scratch/xml_outputs/method_4.xml`); final IoU 92.45%, Chamfer 0.71 mm. All anti-erasure machinery lives in `scratch/phase2_core.py` (shared by exp2/4/5).
+- ✅ **Strategy A (Under-Allocation + Spawning) evaluated**: 3 slots (1 stem + 2 petioles, no leaves) + residual-driven leaf spawning reaches 82.68% IoU (+25.0 pp over the 3-slot cap); 5 spawn events, 1 bad spawn correctly self-pruned. Feasible but probe-quality (Chamfer 13.5 mm, slight over-spawn without mutual-exclusion pressure among spawned slots).
+- ⚠️ **Known limitation discovered**: Helios C++ unifoliate leaf roll is applied about world axes (PlantArchitecture.cpp:2136) → XML pipeline is not yaw-rotation-equivariant (gotcha §7-10). A future fix should derive leaf pitch/yaw/roll in the petiole-local frame inside `part_tensor_to_40d.py`.
 
-### Phase 2 Objective:
-Extend the optimization pipeline to handle plants where the number of organs is **unknown or variable**:
-1. **Target**: Canonical seedling with 5 physical organs (Stem, 2 Petioles, 2 Leaves).
-2. **Strategy B (Over-Allocation with Existence Pruning) [Active Plan]**:
-   - Initialize with $N_{\max} = 10$ organ slots:
-     - 2 Internodes
-     - 4 Petioles
-     - 4 Leaves
-   - Allow continuous existence $e_i \in [0, 1]$ to be optimized via the multi-scale pyramid loss.
-   - Verify that the 5 redundant slots cleanly decay to $e_i < 10^{-4}$ and `ORGAN_NONE`.
-   - Before XML compilation, filter out pruned slots (`e_i < 0.5`), verify that the resulting tree contains exactly the active organs, and export valid Helios XML.
-3. **Evaluate Strategy A (Under-Allocation / Splitting)**:
-   - Start with 3 slots (1 stem, 2 petioles; missing leaves).
-   - Evaluate whether new leaf organs can be spawned via bifurcation or slot expansion.
+### Phase 3 Objective (proposed): Scale to Real Canopy Topology
+1. **Multi-phytomer plants**: extend exp4's over-allocation scheme beyond the 5-organ seedling to DAP 50 branching architecture (multiple phytomers + lateral shoots). The closed-form lateral-shoot IK (§3 Rule 2) already supports this; the missing piece is slot→shoot topology assignment (parent_logits / parent_candidates already exist in `PlantOrganArray`).
+2. **Type-mobility**: exp4 used role-locked slots ({type, NONE} only). Free 13-class logits with the dataset prior (gotcha §7-11) is the next step; watch for argmax-flip instability (gotcha §7-3).
+3. **Spawn + prune unified**: combine exp4's pruning pressure with exp5's spawning in one optimizer (mutual exclusion among spawned slots is the missing piece — reuse the soft-NMS exclusion term).
+4. **Helios leaf-frame fix**: derive leaf pitch/yaw/roll in the petiole-local frame in `part_tensor_to_40d.py` so raytraced IoU is rotation-equivariant (unblocks trustworthy Helios verification of yawed reconstructions).
 
-You are now fully equipped with all necessary context, math, code paths, and verification tools to take over and drive Phase 2 to completion!
+You are now fully equipped with all necessary context, math, code paths, and verification tools to take over and drive Phase 3 to completion!

@@ -1,66 +1,78 @@
 # image-to-l-system
 
-**Single RGB Image → 3D Plant Architecture** via 26D Organ-Vector Flow Matching.
+**Single RGB-D Image → 3D Plant Architecture** via conditional Flow Matching + differentiable rendering.
 
-> **Active pipeline**: 232M DiT-Large Flow Matching model, 26D organ representation, 100K cowpea dataset (DAP 1–100).
-> Training on 2×H100 via DDP on UC Davis Farm HPC.
+> **Active pipeline**: inverse 3D botanical reconstruction — 14D Part Tensor representation,
+> concentric multi-scale differentiable renderer, Helios C++ OptiX XML round-trip.
+> See [`docs/ongoing/AGENT_TAKEOVER_GUIDE.md`](docs/ongoing/AGENT_TAKEOVER_GUIDE.md) for the full
+> state, math, and benchmark results.
 
 ---
 
 ## What This Repo Does
 
-- **Input**: A single plant image (cowpea, DAP 1–100) + optional camera/sun metadata
-- **Output**: A (N, 26) organ-typed plant array:
-  ```
-  [organ_type_one_hot (12), base_xyz (3), rotation_6D (6), scale_xyz (3), curvature (1), phyllotactic_angle (1)]
-  ```
-- **3D rendering**: Fully-differentiable GPU rasterization via nvdiffrast → RGB + Depth + Foreground Mask + Organ Map
-- **XML round-trip**: Lossless conversion to/from Helios C++ XML (0.000000 mm vertex error)
+- **Input**: A single monocular top-view RGB-D image (cowpea seedling, 4×256×256)
+- **Output**:
+  1. A (N, 14) Canonical Part Tensor:
+     `[organ_type(1), base_xyz(3), rot6d(6), scale_xyz(3), curvature(1)]`
+  2. A native Helios C++ XML tree that compiles and raytraces in the physical engine
+- **Rendering**: fully-differentiable nvdiffrast rasterization (RGB + CHM depth + soft-existence alpha)
+- **Benchmarks (2026-09-04)**: direct render optimization **92% Mask IoU / 0.9mm Chamfer** (seedling),
+  full-lifecycle Helios raytrace 95.1 / 92.9 / 86.5% IoU (DAP 10/50/90)
 
 ---
 
-## Repository Structure
+## Repository Structure (reorganized 2026-09-04 — only active code remains)
 
 ```
 image-to-l-system/
+├── scratch/                              # ★ Active experiment scripts + outputs (git-ignored)
+│   ├── phase2_core.py                    # Shared anti-erasure loss core (used by exp2/4/5/7)
+│   ├── make_target_unifoliate.py         # Canonical 7-row GT target generator
+│   ├── exp1_per_organ_icp.py             # Method 1: Point Cloud ICP benchmark
+│   ├── exp2_diff_render_opt.py           # Method 2: Differentiable renderer benchmark
+│   ├── exp3b_flow_matching_fixed.py      # Method 3b: fixed Flow Matching (hybrid polish)
+│   ├── exp4_overalloc_pruning.py         # Phase 2 Strategy B: existence pruning
+│   ├── exp5_underalloc_spawn.py          # Phase 2 Strategy A: residual-driven spawning
+│   ├── exp6_dimension_coverage.py        # 26D per-dimension differentiability audit
+│   ├── exp7_dimension_recovery.py        # Group-wise perturb-recover test
+│   └── eval_phase1_comparison.py         # Synthesis comparison (Figure 12)
+├── tests/unit/                           # Reusable verification scripts
+│   ├── test_14d_curvature.py             # 14D↔40D roundtrip w/ curvature
+│   ├── test_multiscale_pyramid.py        # Pyramid renderer verification
+│   └── ...                               # reproductive/render/soft-existence checks
 ├── diffusion_based/                      # ★ Active AI & differentiable rendering pipeline
-│   ├── models/
-│   │   ├── canonical_cowpea_dit_large.py   # 232M DiT-Large (ViT-16L + Decoder-12L)
-│   │   ├── plant_organ_array.py            # 40D Typed organ array & XML serialization bridge
-│   │   ├── helios_pytorch_geometry.py      # 16D/26D → 3D mesh (vectorized GPU builder + FK bridge)
-│   │   ├── helios_pytorch_renderer.py      # Multi-modal nvdiffrast GPU rasterizer
-│   │   └── part_assembly_to_xml.py         # 16D Part assembly → Helios XML
-│   ├── dataset/
-│   │   ├── cowpea_shard_dataset.py         # Streaming shard loader + dynamic collation
-│   │   ├── generate_tensor_shards.py       # XML → GPU render → 26D .pt shards
-│   │   └── part_array_dataset.py           # 26D layout definition & normalization
+│   ├── models/                           # 6 active modules:
+│   │   ├── plant_organ_array.py          # 14D/40D constants + XML round-trip
+│   │   ├── helios_pytorch_geometry.py    # 26D → 3D mesh (differentiable)
+│   │   ├── helios_pytorch_renderer.py    # nvdiffrast multi-scale rasterizer
+│   │   ├── part_tensor_to_40d.py         # Closed-form IK + XML assembler
+│   │   ├── vit_image_encoder.py          # FM conditioning encoder
+│   │   └── part_flow_matching.py         # FM denoiser model
 │   ├── training/
-│   │   ├── train_cowpea_dit_100k_ddp.py    # ★ 2×H100 DDP training (active)
-│   │   └── train_cowpea_dit_100k.py        # Single-GPU fallback
+│   │   ├── flow_matching.py              # Rectified Flow scheduler
+│   │   └── train_part_flow_matching.py   # FM training loop
+│   ├── dataset/
+│   │   ├── part_array_dataset.py         # 25D FM encode/decode (BASE_SCALE=20)
+│   │   ├── cowpea_shard_dataset.py       # Shard dataset loader
+│   │   └── generate_tensor_shards.py     # XML → GPU render → .pt shards
 │   ├── eval/
-│   │   ├── test_render_part_tensor_quality.py # Direct 16D part renderer benchmark
-│   │   ├── generate_part_report.py         # Multi-DAP quantitative eval & figures
-│   │   ├── eval_cowpea_dit_100k.py         # Full lifespan benchmark
-│   │   └── metrics.py                      # mSSIM, FG-IoU, Chamfer Distance
-│   └── checkpoints/fm/                     # Model checkpoints
+│   │   ├── eval_13d_xml_organ_masks.py   # Helios C++ raytrace benchmark (Figure 10)
+│   │   └── metrics.py                    # mSSIM, FG-IoU, Chamfer
+│   └── checkpoints/fm/part_flow_matching.pt  # Final FM checkpoint (only one kept)
 ├── dataset/helios_data/
-│   ├── cowpea/                             # 10K raw XMLs (100 seeds × 100 DAPs)
-│   └── cowpea_shard/                       # 100K .pt tensor shards
-├── slurm_scripts/
-│   ├── train_cowpea_dit_h100_ddp.sh        # ★ DDP training launcher
-│   └── generate_helios_dataset_jobs.sh     # Data generation pipeline
-├── archive/                                # Consolidated legacy & historical modules (see archive/README.md)
-│   ├── root_legacy/                        # Early renderer & 15D graph diffuser
-│   ├── models_legacy/                      # 40D VAE & Track-A models
-│   ├── training_legacy/                    # 40D FM, VAE & GRPO training scripts
-│   ├── eval_legacy/                        # 40D & Track-A evaluation scripts
-│   ├── eval_scripts/                       # One-off comparison scripts
-│   ├── dataset_legacy/                     # Old dataset loaders
-│   ├── notebooks_legacy/                   # Track-A benchmark notebooks
-│   └── scratch/                            # Exploratory & debug snapshots
-├── Digital-Crops/                          # Git submodule: Helios C++ simulation engine
-├── docs/                                   # Project documentation (see docs/README.md)
-└── environment.yml                         # Conda env spec
+│   ├── cowpea/                           # Raw XMLs (100 seeds × 100 DAPs)
+│   └── cowpea_shard/                     # ~50K .pt tensor shards
+├── archive/                              # Legacy code (git-tracked, NOT active)
+│   ├── models_legacy/                    # Archived models (DIT, VAE, VLM scaffold, ...)
+│   ├── training_legacy/  eval_scripts/   # Archived training/eval scripts
+│   ├── dataset_scripts/                  # Archived dataset loaders
+│   └── ... (dataset_legacy, notebooks_legacy, root_legacy, ...)
+├── Digital-Crops/                        # Helios C++ OptiX simulation engine (submodule)
+├── docs/
+│   ├── ongoing/AGENT_TAKEOVER_GUIDE.md   # ★ Single source of truth — read this first
+│   └── results/assets/                   # All benchmark figures
+└── scripts/                              # Figure-generation & data utilities
 ```
 
 ---
@@ -70,32 +82,38 @@ image-to-l-system/
 ### 1. Environment
 
 ```bash
-conda env create -f environment.yml
-conda activate digital-crops
+mamba env create -f environment.yml
+mamba activate digital-crops
+export PYTHONPATH=.   # REQUIRED from repo root
 ```
 
-### 2. Train 232M DiT-Large (2×H100 DDP)
+### 2. Run the benchmark suite
 
 ```bash
-sbatch slurm_scripts/train_cowpea_dit_h100_ddp.sh
+# Canonical target generation (7-row unifoliate seedling)
+python scratch/make_target_unifoliate.py
+
+# Method benchmarks
+python scratch/exp1_per_organ_icp.py          # ICP
+python scratch/exp2_diff_render_opt.py        # Diff renderer (SOTA: ~92% IoU)
+python scratch/exp3b_flow_matching_fixed.py   # FM hybrid (~80% IoU)
+python scratch/exp4_overalloc_pruning.py      # Topology: over-allocation pruning
+python scratch/exp5_underalloc_spawn.py       # Topology: under-allocation spawning
+
+# Audits
+python scratch/exp6_dimension_coverage.py     # All 26 dims optimizable?
+python scratch/exp7_dimension_recovery.py     # Per-group recovery test
+
+# Synthesis figure + Helios raytrace benchmark
+python scratch/eval_phase1_comparison.py
+python diffusion_based/eval/eval_13d_xml_organ_masks.py
 ```
 
-### 3. Evaluate
+### 3. Train the Flow Matching model
 
 ```bash
-python diffusion_based/eval/eval_cowpea_dit_100k.py
+python diffusion_based/training/train_part_flow_matching.py --help
 ```
-
----
-
-## Cluster Setup
-
-| Item | Value |
-|------|-------|
-| **Cluster** | UC Davis Farm HPC (`farm.hpc.ucdavis.edu`) |
-| **Training Node** | `gpu-10-58` (2× NVIDIA H100 SXM5) |
-| **Python Env** | `/home/lion397/.conda/envs/digital-crops/bin/python` |
-| **SLURM Account** | `lion397` / `publicgrp` / `geminigrp` |
 
 ---
 
@@ -103,38 +121,19 @@ python diffusion_based/eval/eval_cowpea_dit_100k.py
 
 | File | Model | Status |
 |------|-------|--------|
-| `fm/canonical_cowpea_dit_best.pt` | 73M DiT (60 epochs) | Baseline |
-| `fm/cowpea_dit_large_2xh100_ddp.pt` | 232M DiT-Large | Training in progress |
-
----
-
-## Minimal Direct Optimization Demo
-
-A self-contained 3-organ example verifies that the differentiable PyTorch renderer
-and geometry builder can directly optimize a continuous botanical parameter via
-a 3D Chamfer loss:
-
-```bash
-python scripts/minimal_direct_opt_depth_chamfer_demo.py
-```
-
-- **Template**: one internode + one petiole + one leaf
-- **Task**: optimize only `petiole_pitch` from 10° to the target 60°
-- **Supervision**: 3D vertex Chamfer distance alone (no RGB/depth losses)
-- **Result**: Chamfer distance drops from ~303 mm to ~0.07 mm in 200 steps
-- **Output figure**: [`docs/results/assets/minimal_direct_opt_depth_chamfer_demo.png`](docs/results/assets/minimal_direct_opt_depth_chamfer_demo.png)
+| `diffusion_based/checkpoints/fm/part_flow_matching.pt` | Part Flow Matching (26D nodes) | Final |
 
 ---
 
 ## Documentation
 
-See [`docs/README.md`](docs/README.md) for detailed project documentation including:
-- Active handoff documents
-- Completed milestone records
-- Benchmark results and figures
+- [`docs/ongoing/AGENT_TAKEOVER_GUIDE.md`](docs/ongoing/AGENT_TAKEOVER_GUIDE.md) — active handover doc: golden rules, gotchas, benchmark tables, roadmap
+- [`docs/results/`](docs/results/) — milestone reports & benchmark assets
+- [`archive/README.md`](archive/README.md) — legacy module index
 
----
+## Cleanup Log (2026-09-04)
 
-## Legacy Modules
-
-Superseded code from earlier representations (5D, 14D, 15D, 40D) is preserved in `*/legacy/` subdirectories for reference. See `legacy/` and `diffusion_based/*/legacy/`.
+~93 GB freed; repository reduced to active code only:
+- Archived: 9 model files, 6 training scripts, 22 eval scripts, 4 dataset scripts, 4 figure scripts
+- Deleted: 60 intermediate FM epoch checkpoints + stale DIT/VLM/VAE checkpoints (73 GB), stale shard dataset (19 GB), `wandb/`, `logs/`, `training_logs/`, `agent_temp/`
+- Moved: 9 `scratch/test_*` verification scripts → `tests/unit/`

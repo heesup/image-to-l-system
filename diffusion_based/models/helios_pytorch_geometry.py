@@ -1373,6 +1373,10 @@ class HeliosPlantGeometryBuilder:
         curvature = p[:, 13]
         active_mask = (ot != ORGAN_NONE) & (exist > 1e-4) & (scale[:, 0] > 1e-5)
 
+        # Per-organ physicality clamp on curvature magnitude so wild optimizer
+        # swings cannot create degenerate loops (full circle bend).
+        curvature = curvature.clamp(-720.0, 720.0)
+
         z_axis_build = torch.tensor([0.0, 0.0, 1.0], device=device)
 
         # Gram-Schmidt 6D to 3x3 rotation matrices
@@ -1438,6 +1442,7 @@ class HeliosPlantGeometryBuilder:
         base_pos_a = base_pos[active_mask]
         R_a = R_mats[active_mask]
         scale_a = scale[active_mask].clamp(min=1e-6)
+        curv_a = curvature[active_mask]
 
         # -------------------------------------------------------------
         # 1. BATCH LEAVES (ORGAN_LEAF=5)
@@ -1450,10 +1455,22 @@ class HeliosPlantGeometryBuilder:
             M = int(leaf_mask.sum().item())
             R_l = R_a[leaf_mask]
             pos_l = base_pos_a[leaf_mask]
-            s_l = scale_a[leaf_mask][:, 0:1]  # uniform leaf scale
+            s_l = scale_a[leaf_mask][:, 0:1]  # uniform leaf scale (length)
+            # scale_z (col 12) = blade aspect ratio modifier: multiplies blade
+            # WIDTH (proto local +y) relative to length. scale_z == s (canonical
+            # uniform [s, s, s]) => factor 1.0 => identical to old geometry.
+            s_z = scale_a[leaf_mask][:, 2:3]
+            width_factor = (s_z / s_l.clamp(min=1e-6)).clamp(0.2, 5.0)
             exist_l = exist_a[leaf_mask]
 
-            v_scaled = v_proto.unsqueeze(0) * s_l.unsqueeze(1)
+            # Anisotropic proto scale: x (length) and z by s_l, y (width) by
+            # s_l * width_factor.
+            scale_xyz_proto = torch.cat([
+                s_l,
+                s_l * width_factor,
+                s_l,
+            ], dim=-1).unsqueeze(1)  # (M, 1, 3)
+            v_scaled = v_proto.unsqueeze(0) * scale_xyz_proto
             v_rot = torch.bmm(v_scaled, R_l.transpose(1, 2)) + pos_l.unsqueeze(1)
             n_rot = torch.bmm(n_proto.unsqueeze(0).expand(M, -1, -1), R_l.transpose(1, 2))
 
@@ -1499,26 +1516,98 @@ class HeliosPlantGeometryBuilder:
             e0 = R_t[:, :, 0]    # (M, 3) radial basis 0
             e1 = R_t[:, :, 2]    # (M, 3) radial basis 1
 
+            # Sagittal curvature (14D col 13, deg/m): bend the tube along its
+            # length in the plane containing the forward axis and world-up,
+            # matching Helios' gravitropic bending convention (positive
+            # curvature bends the tip upward). Zero curvature -> straight tube
+            # (identical to the old 2-ring path, bitwise-compatible).
+            curv_deg_m = curv_a[tube_mask]
+            has_curv = curv_deg_m.abs() > 1e-3
+            n_seg_curv = 6
+
+            # Build ring centers/frames by iterating segments with a
+            # Rodrigues rotation about the horizontal bend axis.
+            z_axis = torch.tensor([0.0, 0.0, 1.0], device=device)
+            dr = (lengths / float(n_seg_curv)).unsqueeze(-1)  # (M, 1)
+
+            ring_centers = [pos_t]
+            ring_e0 = [e0]
+            ring_e1 = [e1]
+
+            cur_axis = fwd.clone()
+            cur_e0 = e0.clone()
+            cur_e1 = e1.clone()
+
+            for seg_i in range(n_seg_curv):
+                h_bend = torch.linalg.cross(cur_axis, z_axis.expand_as(cur_axis))
+                h_norm = torch.linalg.norm(h_bend, dim=-1, keepdim=True)
+                valid = (h_norm > 1e-4).squeeze(-1)
+                h_unit = torch.where(
+                    (h_norm > 1e-4),
+                    h_bend / (h_norm + 1e-8),
+                    torch.tensor([1.0, 0.0, 0.0], device=device).expand_as(cur_axis),
+                )
+                # Per-segment bend angle; straight tubes short-circuit below.
+                theta_curv = torch.deg2rad(curv_deg_m).unsqueeze(-1) * dr  # (M, 1)
+
+                cos_t = torch.cos(theta_curv)
+                sin_t = torch.sin(theta_curv)
+
+                k_cross_v = torch.linalg.cross(h_unit, cur_axis)
+                k_dot_v = (h_unit * cur_axis).sum(dim=-1, keepdim=True)
+                rot_v = cur_axis * cos_t + k_cross_v * sin_t + h_unit * k_dot_v * (1.0 - cos_t)
+                rot_v = rot_v / (torch.linalg.norm(rot_v, dim=-1, keepdim=True) + 1e-8)
+
+                k_cross_e0 = torch.linalg.cross(h_unit, cur_e0)
+                k_dot_e0 = (h_unit * cur_e0).sum(dim=-1, keepdim=True)
+                rot_e0 = cur_e0 * cos_t + k_cross_e0 * sin_t + h_unit * k_dot_e0 * (1.0 - cos_t)
+                rot_e0 = rot_e0 / (torch.linalg.norm(rot_e0, dim=-1, keepdim=True) + 1e-8)
+                rot_e1 = torch.linalg.cross(rot_v, rot_e0)
+                rot_e1 = rot_e1 / (torch.linalg.norm(rot_e1, dim=-1, keepdim=True) + 1e-8)
+
+                next_p = ring_centers[-1] + rot_v * dr
+                # Straight tubes (|curv| ~ 0): keep exactly the old geometry.
+                cur_axis = torch.where(has_curv.unsqueeze(-1), rot_v, fwd)
+                cur_e0 = torch.where(has_curv.unsqueeze(-1), rot_e0, e0)
+                cur_e1 = torch.where(has_curv.unsqueeze(-1), rot_e1, e1)
+                next_p = torch.where(has_curv.unsqueeze(-1), next_p,
+                                     ring_centers[-1] + fwd * dr)
+                ring_centers.append(next_p)
+                ring_e0.append(cur_e0)
+                ring_e1.append(cur_e1)
+
             angles = torch.linspace(0.0, 2.0 * math.pi, n_rad + 1, device=device)[:-1]
             ca = torch.cos(angles)
             sa = torch.sin(angles)
 
-            radial = ca.unsqueeze(0).unsqueeze(2) * e0.unsqueeze(1) + sa.unsqueeze(0).unsqueeze(2) * e1.unsqueeze(1)
+            # Interpolate per-ring radius linearly radii_0 -> radii_1 (matches
+            # old taper for straight tubes).
+            n_rings = n_seg_curv + 1
+            t_rings = torch.linspace(0.0, 1.0, n_rings, device=device).view(1, n_rings, 1)  # (1, R, 1)
+            ring_radii = radii_0.view(-1, 1, 1) * (1.0 - t_rings) + \
+                radii_1.view(-1, 1, 1) * t_rings  # (M, R, 1)
 
-            center0 = pos_t.unsqueeze(1)
-            center1 = (pos_t + fwd * lengths.unsqueeze(1)).unsqueeze(1)
+            rings = []
+            normals_list = []
+            for seg_i in range(n_rings):
+                c_i = ring_centers[seg_i]
+                e0_i = ring_e0[seg_i]
+                e1_i = ring_e1[seg_i]
+                rad_vec = ca.unsqueeze(0).unsqueeze(2) * e0_i.unsqueeze(1) + \
+                    sa.unsqueeze(0).unsqueeze(2) * e1_i.unsqueeze(1)
+                ring_v = c_i.unsqueeze(1) + rad_vec * ring_radii[:, seg_i].view(-1, 1, 1)
+                rings.append(ring_v)
+                normals_list.append(rad_vec)
 
-            ring0 = center0 + radial * radii_0.unsqueeze(1).unsqueeze(2)
-            ring1 = center1 + radial * radii_1.unsqueeze(1).unsqueeze(2)
-
-            v_scaled = torch.cat([ring0, ring1], dim=1)
+            v_scaled = torch.stack(rings, dim=1)  # (M, R, n_rad, 3)
             v_flat = v_scaled.reshape(-1, 3)
 
-            V_t = 2 * n_rad
+            V_t = n_rings * n_rad
+            _, proto_f_multi = _make_straight_tube_prototype(n_seg_curv, n_rad, device)
             f_offsets = (torch.arange(M, device=device) * V_t).unsqueeze(1).unsqueeze(2)
-            f_batch = (proto_f.unsqueeze(0) + f_offsets).reshape(-1, 3) + vert_offset
+            f_batch = (proto_f_multi.unsqueeze(0) + f_offsets).reshape(-1, 3) + vert_offset
 
-            n_flat = torch.cat([radial, radial], dim=1).reshape(-1, 3)
+            n_flat = torch.stack(normals_list, dim=1).reshape(-1, 3)
 
             c_stem = self.COLOR_STEM.to(device)
             c_pet = self.COLOR_PETIOLE.to(device)
@@ -1776,6 +1865,18 @@ def diff_node_to_part_tensor_14d(
     rot_6d = diff_tensor[:, 16:22]
     scale = diff_tensor[:, 22:25]
     curvature = diff_tensor[:, 25:26]
+
+    # Physicality clamp: Helios XML and mesh building require strictly positive
+    # physical dimensions (Gotcha §7-5). Unclamped negative radii silently
+    # collapse to sub-pixel tubes via clamp(min=1e-4) in the mesh builder,
+    # hiding organ erasure behind existence >= 0.5.
+    # scale_x (length / leaf size): >= 1e-4 m. scale_y (radius): >= 1e-4 m.
+    # scale_z is unused (0 for tubes, == s for leaves).
+    scale = torch.stack([
+        scale[:, 0].clamp(min=1e-4),
+        scale[:, 1].clamp(min=1e-4),
+        scale[:, 2],
+    ], dim=-1)
 
     prob_selected = torch.gather(ot_probs, 1, ot.unsqueeze(1)).squeeze(-1)
     soft_exist = prob_selected * exist
