@@ -184,11 +184,12 @@ class HeliosPyTorchRenderer(nn.Module):
     Supports both hard rasterization and soft differentiable rasterization for image backpropagation.
     """
 
-    def __init__(self, image_size: int = 256):
+    def __init__(self, image_size: int = 256, device: Optional[torch.device] = None):
         super().__init__()
         self.image_size = image_size
         self.geo_builder = HeliosPlantGeometryBuilder()
         self.COLOR_GROUND = torch.tensor([0.72, 0.62, 0.50], dtype=torch.float32)
+        self._default_device = device
         self._glctx = None
         self._mesh_cache: Dict = {}
 
@@ -608,6 +609,8 @@ class HeliosPyTorchRenderer(nn.Module):
         hfov_override_deg: Optional[float] = None,
         include_depth: bool = False,
         fixed_camera_bounds: Optional[Dict[str, Any]] = None,
+        zoom_factor: float = 1.0,
+        reference_window_size: Optional[float] = None,
     ) -> torch.Tensor:
         """Helper alias for forward."""
         return self.forward(
@@ -623,6 +626,8 @@ class HeliosPyTorchRenderer(nn.Module):
             include_depth=include_depth,
             fixed_camera_bounds=fixed_camera_bounds,
             image_size=image_size,
+            zoom_factor=zoom_factor,
+            reference_window_size=reference_window_size,
         )
 
     def render_depth(

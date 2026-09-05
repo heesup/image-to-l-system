@@ -45,7 +45,7 @@ class PartFlowMatchingModel(nn.Module):
         self.image_encoder = ViTImageEncoder(
             image_size=image_size,
             patch_size=patch_size,
-            in_channels=3,
+            in_channels=4,  # RGB(3) + CHM depth(1); 16-ch pyramid is averaged per-zoom in forward
             embed_dim=embed_dim,
             num_layers=encoder_layers,
             num_heads=num_heads,

@@ -62,12 +62,29 @@ class ViTImageEncoder(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x: (B, 3, H, W) normalized image.
+            x: (B, C, H, W) normalized image. C=3 (RGB), 4 (RGB-D),
+               or 16 (RGB-D at zooms 1x/2x/4x/8x concatenated: 4 channels each).
         Returns:
             (B, num_patches + 1, embed_dim) feature tokens (cls prepended).
+            For 16-ch pyramid input, tokens from the 4 zoom views are averaged
+            per spatial position so the output shape stays (B, Np+1, D).
         """
         if x.shape[1] == 1:
             x = x.repeat(1, 3, 1, 1)
+        if x.shape[1] == 16:
+            # pyramid-concat: (B, 4 zooms * 4ch, H, W) -> average per-zoom patch embeddings
+            zoom_embeddings = []
+            for z in range(4):
+                z_img = x[:, z * 4:(z + 1) * 4]
+                tok = self.patch_embed(z_img).flatten(2).transpose(1, 2)  # (B, Np, D)
+                zoom_embeddings.append(tok)
+            x = torch.stack(zoom_embeddings, dim=0).mean(dim=0)  # (B, Np, D)
+            B = x.shape[0]
+            cls_tokens = self.cls_token.expand(B, -1, -1)
+            x = torch.cat([cls_tokens, x], dim=1)
+            x = x + self.pos_embed
+            x = self.encoder(x)
+            return self.norm(x)
         B = x.shape[0]
         x = self.patch_embed(x)                      # (B, D, Hp, Wp)
         x = x.flatten(2).transpose(1, 2)             # (B, Np, D)

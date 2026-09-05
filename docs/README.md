@@ -87,6 +87,15 @@ Gravitropic curvature alignment, child shoot reference frame fixing, COCO intern
 
 ---
 
+## 📋 Todo (예정된 최적화 및 작업)
+
+| 파일 | 내용 | 우선순위 |
+|------|------|:---:|
+| [`todo/task_speedup_xml_loading_and_kinematics.md`](todo/task_speedup_xml_loading_and_kinematics.md) | **XML 역직렬화 & Forward Kinematics 가속**: DAP 100 E2E 3.8s 병목을 슛 단위 독립 계산(Shoot Chunking) 및 벡터화 FK로 <100ms 단축 | 🔴 High |
+| [`todo/roadmap_26d.md`](todo/roadmap_26d.md) | 26D/27D VLM-Scaffold-DiT 종합 개발 로드맵 | 🟡 Medium |
+
+---
+
 ## ✅ Done (완료된 작업)
 
 | 파일 | 내용 | 완료일 |

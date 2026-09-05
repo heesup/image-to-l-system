@@ -1316,6 +1316,9 @@ class HeliosPlantGeometryBuilder:
         existence: Optional[torch.Tensor] = None,
         device: torch.device = torch.device('cpu'),
         leaf_mode: Optional[str] = None,
+        existence_threshold: float = 0.5,
+        soft_existence: bool = False,
+        **kwargs,
     ) -> Dict[str, torch.Tensor]:
         """
         Directly builds 3D meshes from a Canonical 14D Part Tensor on GPU.

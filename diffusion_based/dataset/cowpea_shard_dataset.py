@@ -125,6 +125,11 @@ class PlantShardDataset(Dataset):
         # Standardize keys
         image = sample["image"].float()
         nodes = sample["nodes"].float()
+        # Backward compatibility: shards generated before 2026-09-04 are 25D
+        # (no curvature channel). Pad zeros to 26D (curvature 0 = straight
+        # organ) so mixed old/new shards coexist during regeneration.
+        if nodes.shape[-1] == FM_NODE_DIM - 1:
+            nodes = torch.cat([nodes, torch.zeros((*nodes.shape[:-1], 1))], dim=-1)
         dap = sample["dap"] if "dap" in sample else torch.tensor(30.0)
         num_organs = sample["num_organs"] if "num_organs" in sample else (sample.get("num_nodes", torch.tensor(50)))
         exist = sample["existence_mask"] if "existence_mask" in sample else (nodes[:, EMPTY_IDX] < 0.5)

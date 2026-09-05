@@ -15,6 +15,8 @@
 #   ./slurm_scripts/generate_helios_dataset_jobs.sh --plant-types cowpea --seeds 100 --total-samples 100000 --submit
 #   ./slurm_scripts/generate_helios_dataset_jobs.sh --skip-xml --submit      # Run only GPU sharding
 #   ./slurm_scripts/generate_helios_dataset_jobs.sh --skip-shards --submit   # Run only C++ XML generation
+#   ./slurm_scripts/generate_helios_dataset_jobs.sh --mode cache --pyramid concat --skip-xml --submit
+#       # 26D cache mode (per-sample .pt with pyramid-concat 16-ch image), cowpea-only
 # =============================================================================
 
 set -e
@@ -103,6 +105,14 @@ while [[ $# -gt 0 ]]; do
             MAX_SLOTS="$2"
             shift 2
             ;;
+        --mode)
+            GEN_MODE="$2"
+            shift 2
+            ;;
+        --pyramid)
+            PYRAMID="$2"
+            shift 2
+            ;;
         --skip-xml)
             RUN_XML=false
             shift
@@ -133,7 +143,16 @@ done
 
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 BATCH_LOG_DIR="${LOGS_DIR}/unified_${PLANT_TYPES}_${TIMESTAMP}"
-SHARDS_DIR="${DATASET_DIR}/${PLANT_TYPES}_shard"
+GEN_MODE="${GEN_MODE:-cache}"
+PYRAMID="${PYRAMID:-concat}"
+# Crop-named outputs to keep species separate:
+#   cache mode -> dataset/cache/<crop>_curv26/   (PartArrayDataset fast path)
+#   shard mode -> dataset/helios_data/<crop>_shard_curv26/
+if [[ "${GEN_MODE}" == "cache" ]]; then
+    SHARDS_DIR="${REPO_ROOT}/dataset/cache/${PLANT_TYPES}_curv26"
+else
+    SHARDS_DIR="${DATASET_DIR}/${PLANT_TYPES}_shard_curv26"
+fi
 
 mkdir -p "${BATCH_LOG_DIR}"
 mkdir -p "${DATASET_DIR}/${PLANT_TYPES}"
@@ -321,8 +340,10 @@ fi
 # -----------------------------------------------------------------------------
 if [[ "${RUN_SHARDS}" == true ]]; then
     echo ""
-    echo ">>> [Phase 2/2] Generating 26D Flow Matching Tensor Shards (Worker ${job_idx}/${NUM_JOBS}, ${SAMPLES_PER_WORKER} samples)..."
+    echo ">>> [Phase 2/2] Generating tensors (mode=${GEN_MODE}, pyramid=${PYRAMID}, Worker ${job_idx}/${NUM_JOBS}, ${SAMPLES_PER_WORKER} samples)..."
     ${PYTHON_BIN} diffusion_based/dataset/generate_tensor_shards.py \\
+        --mode "${GEN_MODE}" \\
+        --pyramid "${PYRAMID}" \\
         --species "${PLANT_TYPES}" \\
         --data-root "${DATASET_DIR}" \\
         --output-dir "${SHARDS_DIR}" \\

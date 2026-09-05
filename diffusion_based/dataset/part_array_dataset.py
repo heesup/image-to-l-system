@@ -53,6 +53,13 @@ from diffusion_based.models.plant_organ_array import (
 BASE_SCALE = 20.0
 SCALE_SCALE = 50.0
 
+# Aliases re-exported for downstream modules (botanical_scaffold etc.) —
+# canonical definitions live in plant_organ_array.
+from diffusion_based.models.plant_organ_array import (  # noqa: E402,F401
+    ORGAN_BUD,
+    ORGAN_FLOWER,
+)
+
 # ---------------------------------------------------------------------------
 # Flow-matching organ-category encoding.
 #
@@ -66,7 +73,10 @@ EMPTY_IDX = ORGAN_NONE
 NUM_ORGAN_CATEGORIES = NUM_ORGAN_TYPES
 
 # Flow-matching node layout (per organ):
-#   [one-hot organ type (13), Base(3), Rot6D(6), Scale(3)] = 25D
+#   [one-hot organ type (13), Base(3), Rot6D(6), Scale(3), Curvature(1)] = 26D
+# Curvature (14D col 13, deg/m) added 2026-09-04: exp6/exp7 verified the
+# dimension is live in the renderer (AGENT_TAKEOVER_GUIDE §8.5). Empty slots
+# encode curvature 0 via the same scaling.
 FM_OT_START = 0
 FM_OT_END = NUM_ORGAN_CATEGORIES  # 13
 FM_BASE_START = FM_OT_END         # 13
@@ -75,13 +85,19 @@ FM_ROT_START = FM_BASE_END        # 16
 FM_ROT_END = FM_BASE_END + 6      # 22
 FM_SCALE_START = FM_ROT_END       # 22
 FM_SCALE_END = FM_ROT_END + 3     # 25
-FM_NODE_DIM = FM_SCALE_END        # 25
+FM_CURV = FM_SCALE_END            # 25
+FM_NODE_DIM = FM_CURV + 1         # 26
+
+# Curvature normalization: cowpea shard curvature values concentrate in
+# [-60, 60] deg/m with std ~18.3; scale by 1/60 to keep ODE magnitudes ~O(1)
+# comparable to the other normalized blocks.
+CURV_SCALE = 1.0 / 60.0
 
 
 def encode_fm(part: torch.Tensor) -> torch.Tensor:
-    """Convert a canonical (N, 13) part tensor to the 25D FM node layout.
+    """Convert a canonical (N, 13) part tensor to the 26D FM node layout.
 
-    One-hot organ type (13) + Base(3) + Rot6D(6) + Scale(3) = 25D.
+    One-hot organ type (13) + Base(3) + Rot6D(6) + Scale(3) + Curvature(1) = 26D.
     """
     N = part.shape[0]
     out = torch.zeros((N, FM_NODE_DIM), dtype=part.dtype, device=part.device)
@@ -95,22 +111,27 @@ def encode_fm(part: torch.Tensor) -> torch.Tensor:
     out[active_mask, FM_BASE_START:FM_BASE_END] = part[active_mask, P_COL_BASE_X:P_COL_BASE_Z + 1] * BASE_SCALE
     out[active_mask, FM_ROT_START:FM_ROT_END] = part[active_mask, P_COL_ROT_0:P_COL_ROT_5 + 1]
     out[active_mask, FM_SCALE_START:FM_SCALE_END] = part[active_mask, P_COL_SCALE_X:P_COL_SCALE_Z + 1] * SCALE_SCALE
+    if part.shape[1] > 13:
+        # Curvature (col 13, deg/m) -> normalized; zeros stay zeros (straight).
+        out[active_mask, FM_CURV] = part[active_mask, 13] * CURV_SCALE
     return out
 
 
 def decode_fm(fm: torch.Tensor) -> torch.Tensor:
-    """Convert a 25D FM node tensor back to a canonical (N, 13) part tensor.
+    """Convert a 26D FM node tensor back to a canonical (N, 14) part tensor.
 
     Organ type = argmax over the 13 categories (0 = NONE).
+    Returns 14D: [organ_type, base(3), rot6d(6), scale(3), curvature(1)].
     """
     N = fm.shape[0]
-    out = torch.zeros((N, NUM_FEATURES), dtype=fm.dtype, device=fm.device)
+    out = torch.zeros((N, 14), dtype=fm.dtype, device=fm.device)
     ot_probs = fm[:, :NUM_ORGAN_CATEGORIES]
     ot = ot_probs.argmax(dim=1)
     out[:, P_COL_ORGAN_TYPE] = ot.float()
     out[:, P_COL_BASE_X:P_COL_BASE_Z + 1] = fm[:, FM_BASE_START:FM_BASE_END] / BASE_SCALE
     out[:, P_COL_ROT_0:P_COL_ROT_5 + 1] = fm[:, FM_ROT_START:FM_ROT_END]
     out[:, P_COL_SCALE_X:P_COL_SCALE_Z + 1] = fm[:, FM_SCALE_START:FM_SCALE_END] / SCALE_SCALE
+    out[:, 13] = fm[:, FM_CURV] / CURV_SCALE
     return out
 
 
@@ -217,6 +238,11 @@ class PartArrayDataset(Dataset):
         if not xml_paths:
             xml_paths = sorted(glob.glob(os.path.join(self.data_root, "*_plant_*.xml")))
         xml_paths = [p for p in xml_paths if "/_tmp_" not in p and "_tmp_" not in os.path.basename(p)]
+        # Species filter: when a crop-named cache is in use, restrict to that crop's XMLs
+        if self.cache_dir is not None:
+            crop = os.path.basename(os.path.normpath(self.cache_dir)).split("_")[0]
+            if crop in ("cowpea", "bean", "sorghum", "soybean", "maize"):
+                xml_paths = [p for p in xml_paths if f"/{crop}/" in p or os.sep + crop + os.sep in p]
         if include_globs:
             xml_paths = [p for p in xml_paths if any(_fnmatch.fnmatch(os.path.basename(p), pat) for pat in include_globs)]
         elif exclude_globs:
@@ -257,6 +283,12 @@ class PartArrayDataset(Dataset):
                 try:
                     data = torch.load(cache_path, map_location="cpu", weights_only=False)
                     if isinstance(data, dict) and "image" in data and "nodes" in data:
+                        # Pyramid-concat cache: (16, H0, W0) half -> (16, image_size, image_size) float
+                        img = data["image"].float()
+                        if img.shape[-1] != self.image_size:
+                            img = F.interpolate(img.unsqueeze(0), size=(self.image_size, self.image_size),
+                                                mode="bilinear", align_corners=False).squeeze(0)
+                        data["image"] = img
                         if "dap" not in data:
                             dap = 30.0
                             if "dap" in sample["prefix"]:
@@ -268,6 +300,11 @@ class PartArrayDataset(Dataset):
                                 except Exception:
                                     pass
                             data["dap"] = torch.tensor(dap, dtype=torch.float32)
+                        # nodes padding: crop to max_nodes
+                        if data["nodes"].shape[0] > self.max_nodes:
+                            data["nodes"] = data["nodes"][: self.max_nodes]
+                            if "existence_mask" in data:
+                                data["existence_mask"] = data["existence_mask"][: self.max_nodes]
                         return data
                 except Exception:
                     pass

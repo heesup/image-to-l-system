@@ -1,0 +1,64 @@
+W0904 19:34:15.140000 2785498 site-packages/torch/distributed/run.py:793] 
+W0904 19:34:15.140000 2785498 site-packages/torch/distributed/run.py:793] *****************************************
+W0904 19:34:15.140000 2785498 site-packages/torch/distributed/run.py:793] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0904 19:34:15.140000 2785498 site-packages/torch/distributed/run.py:793] *****************************************
+/home/lion397/.conda/envs/digital-crops/lib/python3.12/site-packages/torch/nn/modules/transformer.py:379: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  warnings.warn(
+/home/lion397/.conda/envs/digital-crops/lib/python3.12/site-packages/torch/nn/modules/transformer.py:379: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  warnings.warn(
+rank 1: DDP fwd/bwd OK, out shape (2, 64, 26)rank 0: DDP fwd/bwd OK, out shape (2, 64, 26)
+
+
+############### Job 38134094 summary from  ###############
+Name                : ddp_test
+User                : lion397
+Account             : geminigrp
+Partition           : gpu-6000_ada-h
+Nodes               : gpu-10-54
+Cores               : 4
+GPUs                : 2
+State               : COMPLETED
+ExitCode            : 0:0
+Submit              : 2026-09-04T19:34:10
+Start               : 2026-09-04T19:34:13
+End                 : 2026-09-04T19:34:21
+Reserved walltime   : 00:15:00
+Used walltime       : 00:00:08
+Used CPU time       : 00:00:08
+% User (Computation): 70.33%
+% System (I/O)      : 29.67%
+Mem reserved        : 16G
+Max Mem used        : 1.79G (gpu-10-54)
+Max Disk Write      : 0.00  (gpu-10-54)
+Max Disk Read       : 0.00  (gpu-10-54)
+
+############### Job 38134094 info ###############
+JobId=38134094 JobName=ddp_test
+   UserId=lion397(1917662) GroupId=lion397(1917662) MCS_label=N/A
+   Priority=7809 Nice=0 Account=geminigrp QOS=geminigrp-gpu-6000_ada-h-qos
+   JobState=COMPLETING Reason=None Dependency=(null)
+   Requeue=1 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=0:0
+   RunTime=00:00:08 TimeLimit=00:15:00 TimeMin=N/A
+   SubmitTime=2026-09-04T19:34:10 EligibleTime=2026-09-04T19:34:10
+   AccrueTime=2026-09-04T19:34:10
+   StartTime=2026-09-04T19:34:13 EndTime=2026-09-04T19:34:21 Deadline=N/A
+   SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-09-04T19:34:13 Scheduler=Main
+   Partition=gpu-6000_ada-h AllocNode:Sid=gpu-10-54:2785382
+   ReqNodeList=(null) ExcNodeList=(null)
+   NodeList=gpu-10-54
+   BatchHost=gpu-10-54
+   NumNodes=1 NumCPUs=4 NumTasks=1 CPUs/Task=4 ReqB:S:C:T=0:0:*:*
+   ReqTRES=cpu=4,mem=16G,node=1,billing=4,gres/gpu=2
+   AllocTRES=cpu=4,mem=16G,node=1,billing=4,gres/gpu=2
+   Socks/Node=* NtasksPerN:B:S:C=0:0:*:* CoreSpec=*
+   MinCPUsNode=4 MinMemoryNode=16G MinTmpDiskNode=0
+   Features=(null) DelayBoot=00:00:00
+   OverSubscribe=OK Exclusive=NO Contiguous=0 Licenses=(null) LicensesAlloc=(null) Network=(null)
+   Command=/home/lion397/codes/image-to-l-system/tmp_tests/ddp_test.sh
+   SubmitLine=sbatch /home/lion397/codes/image-to-l-system/tmp_tests/ddp_test.sh
+   WorkDir=/home/lion397/codes/image-to-l-system
+   StdErr=
+   StdIn=/dev/null
+   StdOut=/home/lion397/codes/image-to-l-system/tmp_tests/ddp_test_38134094.log
+   TresPerNode=gres/gpu:2
+   TresPerTask=cpu=4

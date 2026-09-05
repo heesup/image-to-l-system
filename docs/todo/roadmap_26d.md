@@ -52,6 +52,8 @@
 
 - [ ] Tweedie DPS / Differentiable Rendering Guidance at test-time inference
 - [ ] End-to-end differentiable Depth / Mask rendering loss supervision (mSSIM + FG-IoU)
+- [ ] **Accelerate XML Deserialization & Forward Kinematics Pipeline** (Reduce 3.8s DAP 100 E2E bottleneck to <100ms via shoot-level chunked assembly / vectorized FK; see [`task_speedup_xml_loading_and_kinematics.md`](task_speedup_xml_loading_and_kinematics.md))
 - [ ] Extend 26D pipeline to Sorghum and Common Bean
 - [ ] Field drone orthomosaic test-time adaptation with real multi-spectral imagery
 - [ ] Gaussian-Splatting / NeRF 3D mesh reconstruction cross-validation
+
