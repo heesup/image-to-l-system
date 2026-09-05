@@ -12,6 +12,7 @@ This directory tracks active research, architectural decisions, mathematical der
 | :--- | :--- | :--- |
 | **[AGENT_TAKEOVER_GUIDE.md](file:///home/lion397/codes/image-to-l-system/docs/ongoing/AGENT_TAKEOVER_GUIDE.md)** | **Master Handover & Execution Manual** | Full system architecture, 14D Part Tensor contract, Helios procedural kinematics rules, active benchmark results, reproduction commands, gotchas, and Phase 2 roadmap. |
 | **[20260903-back-to-basics.md](file:///home/lion397/codes/image-to-l-system/docs/ongoing/20260903-back-to-basics.md)** | **Phase 1–3 Benchmark & Phase 2 Active Roadmap** | Comparative benchmark across 3 paradigms (ICP vs Differentiable Rendering vs Flow Matching), multi-scale pyramid verification, and variable organ topology next steps. |
+| **[20260905_fm_curv26_handoff.md](file:///home/lion397/codes/image-to-l-system/docs/ongoing/20260905_fm_curv26_handoff.md)** | **FM Curvature-26D Session Handoff (2026-09-05)** | 26D FM training (curvature channel + pyramid 16-ch conditioning), trainer NaN/DDP fixes, coverage audits (exp6/7), verification commands, known issues, and prioritized next steps. |
 
 ---
 
