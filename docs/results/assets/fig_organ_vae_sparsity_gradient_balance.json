@@ -1,0 +1,26 @@
+{
+  "n_shards_scanned": 10000,
+  "n_stat_samples": 600,
+  "n_physical_organs": 184859,
+  "class_counts": {
+    "INTERNODE": 29406,
+    "PETIOLE": 30006,
+    "LEAF": 87618,
+    "PEDUNCLE": 2967,
+    "BUD_ACTIVE": 14875,
+    "FLOWER_CLOSED": 1236,
+    "FLOWER_OPEN": 1519,
+    "FRUIT": 3301,
+    "BUD_ABORTED": 13931
+  },
+  "raw_tube_gradient_spread": 60.80991744995117,
+  "peduncle_length_radius_ratio": 155.8148193359375,
+  "latent_gradient_spread": 3.2597570419311523,
+  "latent_gradient_dims_alive": 16,
+  "source": {
+    "corpus": "dataset/cache/cowpea_curv26 (10,000 Helios Cowpea shards)",
+    "vae_ckpt": "diffusion_based/checkpoints/organ_vae/organ_latent_vae_best.pt"
+  },
+  "pca2d_silhouette": 0.5046497583389282,
+  "pca2d_explained_variance": 0.737032413482666
+}
