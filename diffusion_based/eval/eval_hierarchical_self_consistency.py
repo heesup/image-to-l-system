@@ -330,6 +330,8 @@ def evaluate_self_consistency_batch(
             except Exception:
                 pass
 
+        pred_num_phy = float(sample_out["pred_num_phytomers"][b].item()) if "pred_num_phytomers" in sample_out else None
+
         panels_data.append({
             "dap": dap_val,
             "im_helios": im_helios,
@@ -344,6 +346,8 @@ def evaluate_self_consistency_batch(
             "pred_nodes": pred_nodes,
             "node_rmse_cm": node_rmse_cm,
             "gt_point_cloud": gt_point_cloud,
+            "pred_num_phy": pred_num_phy,
+            "gt_num_phy": len(gt_nodes),
         })
 
     # 6. Build Diagnostic Visualization Figure (7 Columns: Helios Ref + 2x2 RGB + 2x2 Depth + 3D Preds & Error + True 3D Point Cloud)
@@ -404,7 +408,8 @@ def evaluate_self_consistency_batch(
 
             # Col 3: Pred 3D Mesh
             axes_row[3].imshow(data["pred_rgb"])
-            axes_row[3].set_xlabel(f"IoU: {data['iou']*100:.1f}%", fontsize=10, color="#4ade80")
+            phy_str = f" | Phy: {data['pred_num_phy']:.1f}/{data['gt_num_phy']}" if data.get("pred_num_phy") is not None else ""
+            axes_row[3].set_xlabel(f"IoU: {data['iou']*100:.1f}%{phy_str}", fontsize=9, color="#4ade80")
             axes_row[3].set_xticks([])
             axes_row[3].set_yticks([])
 
@@ -450,10 +455,11 @@ def evaluate_self_consistency_batch(
 
             # 3. Predicted 3D Anchor Nodes (magenta diamonds)
             if len(data["pred_nodes"]) > 0:
+                pred_phy_lbl = f", Est={data['pred_num_phy']:.1f}" if data.get("pred_num_phy") is not None else ""
                 ax3d.scatter(
                     data["pred_nodes"][:, 0] * 100, data["pred_nodes"][:, 1] * 100, data["pred_nodes"][:, 2] * 100,
                     c="#f43f5e", marker="D", s=75, edgecolors="white", linewidth=1.3,
-                    label=f"Pred Node (K={len(data['pred_nodes'])})", zorder=9
+                    label=f"Pred Node (K={len(data['pred_nodes'])}{pred_phy_lbl})", zorder=9
                 )
 
             # 4. 3D Error displacement vectors

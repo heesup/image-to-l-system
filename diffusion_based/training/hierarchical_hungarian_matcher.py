@@ -43,16 +43,20 @@ class HierarchicalBotanicalMatcher(nn.Module):
         tgt_geoms: List[torch.Tensor],        # List of (N_active_i, node_dim)
         tgt_labels: List[torch.Tensor],       # List of (N_active_i,)
         tgt_positions: Optional[List[torch.Tensor]] = None,  # Optional List of (N_active_i, 3) 3D base positions
+        soft_margin_weights: Optional[torch.Tensor] = None,  # Optional (B, K) soft tapering existence prior
     ) -> List[Dict[str, torch.Tensor]]:
         """
-        Performs 2-stage hierarchical matching for each batch item.
+        Performs hierarchical bipartite matching for each batch item.
 
         Returns:
             List of length B containing dicts with:
                 'anchor_src_idx': 1D int64 tensor of matched predicted anchor indices.
                 'anchor_tgt_idx': 1D int64 tensor of matched GT cluster indices.
+                'anchor_tgt_pos': (M_anc, 3) GT cluster center positions for matched anchors.
                 'fine_src_idx': 1D int64 tensor of matched fine slot indices in [0, N_fine-1].
                 'fine_tgt_idx': 1D int64 tensor of matched GT organ indices in [0, N_active_i-1].
+                'num_gt_phytomers': integer count of GT phytomer clusters.
+                'gt_node_centers': (N_gt_phytomers, 3) GT phytomer insertion node coordinates.
         """
         B, K, _ = pred_anchor_pos.shape
         M = self.slots_per_anchor
@@ -70,7 +74,10 @@ class HierarchicalBotanicalMatcher(nn.Module):
                 empty = torch.empty(0, dtype=torch.int64, device=device)
                 batch_matches.append({
                     "anchor_src_idx": empty, "anchor_tgt_idx": empty,
+                    "anchor_tgt_pos": torch.empty((0, 3), device=device),
                     "fine_src_idx": empty, "fine_tgt_idx": empty,
+                    "num_gt_phytomers": 0,
+                    "gt_node_centers": torch.empty((0, 3), device=device),
                 })
                 continue
 
@@ -118,6 +125,8 @@ class HierarchicalBotanicalMatcher(nn.Module):
             cost_pos = torch.cdist(p_pos, cluster_centers, p=1)  # (K, num_gt_clusters)
 
             p_exist_prob = torch.sigmoid(pred_anchor_logits[b]).squeeze(-1)  # (K,)
+            if soft_margin_weights is not None:
+                p_exist_prob = p_exist_prob * soft_margin_weights[b]
             cost_exist = -p_exist_prob.unsqueeze(1).expand(-1, num_gt_clusters)
 
             total_anchor_cost = self.cost_anchor_pos * cost_pos + self.cost_anchor_exist * cost_exist
@@ -268,6 +277,8 @@ class HierarchicalBotanicalMatcher(nn.Module):
                 "anchor_tgt_pos": anc_tgt_pos,
                 "fine_src_idx": fine_src,
                 "fine_tgt_idx": fine_tgt,
+                "num_gt_phytomers": num_gt_clusters,
+                "gt_node_centers": cluster_centers,
             })
 
         return batch_matches

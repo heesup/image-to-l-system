@@ -23,16 +23,29 @@ from diffusion_based.dataset.part_array_dataset import (
 )
 
 
-def compute_matryoshka_slice(dap: torch.Tensor, max_anchors: int = 512) -> int:
-    """Computes upper-bound active anchor count based on empirical logistic growth curve.
+def compute_matryoshka_slice(
+    dap: Optional[torch.Tensor] = None,
+    num_phytomers: Optional[torch.Tensor] = None,
+    max_anchors: int = 512,
+    margin: float = 4.0,
+) -> int:
+    """Computes upper-bound active anchor count based on biological growth or predicted phytomers.
 
-    K_upper(t) = min(max_anchors, ceil(8 * 2^(t / 8.5)))
+    If num_phytomers is provided:
+        K_upper = min(max_anchors, ceil(num_phytomers + margin))
+    Else if DAP is provided:
+        K_upper(t) = min(max_anchors, ceil(8 * 2^(t / 8.5)))
     """
-    if dap is None:
+    if num_phytomers is not None:
+        val = float(num_phytomers.max().item())
+        k = math.ceil(val + margin)
+    elif dap is not None:
+        dap_val = float(dap.max().item())
+        # Doubling every 8.5 days starting from 8 at DAP 0
+        k = math.ceil(8.0 * (2.0 ** (max(0.0, dap_val) / 8.5)))
+    else:
         return max_anchors
-    dap_val = float(dap.max().item())
-    # Doubling every 8.5 days starting from 8 at DAP 0
-    k = math.ceil(8.0 * (2.0 ** (max(0.0, dap_val) / 8.5)))
+
     # Snap to nearest power-of-2 tier
     tiers = [8, 16, 32, 64, 128, 256, max_anchors]
     for tier in tiers:
@@ -65,11 +78,71 @@ def estimate_organ_budget(dap: Optional[torch.Tensor], margin: float = 1.35, max
     return budget.long()
 
 
+class MacroBiologicalHead(nn.Module):
+    """Stage 1: Macro Biological Prior Head.
+
+    Predicts:
+    1. Plant Age (DAP in [0, 100])
+    2. Phytomer Count (N_phytomer >= 0.0)
+    3. Soft Tapering Existence Prior (w_k in [0, 1]) with additive logit bias
+       for direct, differentiable gradient flow from existence loss to macro topology.
+    """
+
+    def __init__(
+        self,
+        embed_dim: int = 384,
+        default_margin: float = 1.0,
+        default_tau: float = 0.8,
+    ):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.default_margin = default_margin
+        self.default_tau = default_tau
+
+        self.net = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim // 2),
+            nn.GELU(),
+            nn.Linear(embed_dim // 2, embed_dim // 2),
+            nn.GELU(),
+        )
+        self.dap_head = nn.Linear(embed_dim // 2, 1)
+        self.phy_head = nn.Linear(embed_dim // 2, 1)
+
+    def forward(
+        self,
+        cls_token: torch.Tensor,
+        max_k: int,
+        margin: Optional[float] = None,
+        tau: Optional[float] = None,
+    ) -> Dict[str, torch.Tensor]:
+        m = margin if margin is not None else self.default_margin
+        t = tau if tau is not None else self.default_tau
+
+        h = self.net(cls_token)
+        pred_dap = F.relu(self.dap_head(h)) * 100.0  # (B, 1)
+        pred_num_phytomers = F.elu(self.phy_head(h)) + 1.0  # (B, 1) >= 0.0
+
+        # Soft tapering margin schedule across slots 0..max_k-1
+        # w_k = sigmoid((N_phy + margin - k) / tau)
+        # Additive logit bias: init_logits = (N_phy + margin - k) / tau
+        k_indices = torch.arange(max_k, device=cls_token.device, dtype=torch.float32).unsqueeze(0)  # (1, K)
+        init_logits = (pred_num_phytomers + m - k_indices) / t  # (B, K)
+        soft_margin_weights = torch.sigmoid(init_logits)  # (B, K) in [0, 1]
+
+        return {
+            "pred_dap": pred_dap,
+            "pred_num_phytomers": pred_num_phytomers,
+            "soft_margin_weights": soft_margin_weights,
+            "init_logits": init_logits.unsqueeze(-1),  # (B, K, 1)
+        }
+
+
 class CoarseSkeletalTransformer(nn.Module):
-    """Stage 1: Deterministic Set Transformer predicting coarse 3D skeletal anchors.
+    """Stage 2: Deterministic Set Transformer predicting coarse 3D skeletal node point cloud scaffold.
 
     Predicts 3D base coordinates, 6D orientation, and existence logits for K anchors.
-    Uses DETR3D / PETR style 3D reference coordinates and 3D positional encoding.
+    Uses DETR3D / PETR style 3D reference coordinates, 3D positional encoding,
+    and incorporates Stage 1 MacroBiologicalHead soft margin prior.
     """
 
     def __init__(
@@ -111,7 +184,10 @@ class CoarseSkeletalTransformer(nn.Module):
         )
         self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
 
-        # Prediction Heads
+        # Stage 1: Macro Biological Head
+        self.macro_head = MacroBiologicalHead(embed_dim=embed_dim)
+
+        # Stage 2 Prediction Heads
         # 1. Delta 3D position relative to 3D reference points
         self.pos_head = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
@@ -126,15 +202,8 @@ class CoarseSkeletalTransformer(nn.Module):
             nn.Linear(embed_dim, 6),
         )
 
-        # 3. Anchor existence probability logit (active phytomer node vs pruned background)
+        # 3. Anchor existence probability logit (delta relative to soft margin prior)
         self.exist_head = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim // 2),
-            nn.GELU(),
-            nn.Linear(embed_dim // 2, 1),
-        )
-
-        # Auxiliary DAP regressor head (estimates age [0, 100] days from pooled image tokens)
-        self.dap_head = nn.Sequential(
             nn.Linear(embed_dim, embed_dim // 2),
             nn.GELU(),
             nn.Linear(embed_dim // 2, 1),
@@ -153,9 +222,11 @@ class CoarseSkeletalTransformer(nn.Module):
             Dict containing:
                 'anchor_pos': (B, K, 3) predicted 3D anchor base positions.
                 'anchor_rot': (B, K, 6) predicted 6D rotation.
-                'anchor_logits': (B, K, 1) existence logits.
+                'anchor_logits': (B, K, 1) existence logits with soft margin bias.
                 'anchor_features': (B, K, embed_dim) anchor latent representations.
                 'pred_dap': (B, 1) auxiliary estimated DAP.
+                'pred_num_phytomers': (B, 1) predicted phytomer count.
+                'soft_margin_weights': (B, K) soft tapering existence prior.
         """
         B = image_tokens.shape[0]
         K = active_k if active_k is not None else self.max_anchors
@@ -168,22 +239,27 @@ class CoarseSkeletalTransformer(nn.Module):
         # Cross-attend with 3D-aware image tokens
         anchor_features = self.decoder(q, image_tokens)
 
-        # Heads: predict coordinate offset from 3D reference points
+        # Stage 1: Macro Biological Head from global CLS token (token 0)
+        cls_token = image_tokens[:, 0]
+        macro_out = self.macro_head(cls_token, max_k=K)
+
+        # Stage 2 Heads: predict coordinate offset from 3D reference points
         delta_pos = self.pos_head(anchor_features)
         anchor_pos = self.ref_points[:K].unsqueeze(0) + delta_pos
         anchor_rot = self.rot_head(anchor_features)
-        anchor_logits = self.exist_head(anchor_features)
 
-        # Auxiliary DAP estimation from global image token pool (token 0 is CLS)
-        cls_token = image_tokens[:, 0]
-        pred_dap = F.relu(self.dap_head(cls_token)) * 100.0  # Scale ~[0, 100]
+        # Combine learned delta logits with differentiable soft margin logit prior
+        delta_logits = self.exist_head(anchor_features)
+        anchor_logits = delta_logits + macro_out["init_logits"]
 
         return {
             "anchor_pos": anchor_pos,
             "anchor_rot": anchor_rot,
             "anchor_logits": anchor_logits,
             "anchor_features": anchor_features,
-            "pred_dap": pred_dap,
+            "pred_dap": macro_out["pred_dap"],
+            "pred_num_phytomers": macro_out["pred_num_phytomers"],
+            "soft_margin_weights": macro_out["soft_margin_weights"],
         }
 
 
@@ -261,6 +337,18 @@ class FineBotanicalFlowMatchingDecoder(nn.Module):
         )
         self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
 
+        # 3D Node Scaffold Positional & Rotational Encoders (Stage 2 -> Stage 3 Conditioning)
+        self.node_pos_mlp = nn.Sequential(
+            nn.Linear(3, embed_dim),
+            nn.GELU(),
+            nn.Linear(embed_dim, embed_dim),
+        )
+        self.node_rot_mlp = nn.Sequential(
+            nn.Linear(6, embed_dim),
+            nn.GELU(),
+            nn.Linear(embed_dim, embed_dim),
+        )
+
         # Continuous geometry velocity head (v_theta predicting d/dt of 16D latent)
         self.velocity_head = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
@@ -290,14 +378,18 @@ class FineBotanicalFlowMatchingDecoder(nn.Module):
         timesteps: torch.Tensor,
         anchor_features: torch.Tensor,
         image_tokens: torch.Tensor,
+        anchor_pos: Optional[torch.Tensor] = None,
+        anchor_rot: Optional[torch.Tensor] = None,
         existence_mask: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Args:
             noisy_fine_nodes: (B, N_fine, node_dim) noisy geometry x_t where N_fine = K * M.
             timesteps: (B,) flow time t in [0, 1].
-            anchor_features: (B, K, embed_dim) from Stage 1 CoarseSkeletalTransformer.
+            anchor_features: (B, K, embed_dim) from Stage 2 CoarseSkeletalTransformer.
             image_tokens: (B, T, embed_dim) from ViT.
+            anchor_pos: Optional (B, K, 3) predicted 3D node scaffold coordinates.
+            anchor_rot: Optional (B, K, 6) predicted 3D node orientations.
             existence_mask: Optional (B, N_fine) boolean mask of active slots.
         Returns:
             Dict containing:
@@ -314,36 +406,47 @@ class FineBotanicalFlowMatchingDecoder(nn.Module):
         # (B, K, D) -> (B, K, 1, D) -> (B, K, M, D) -> (B, N_fine, D)
         expanded_anchors = anchor_features.unsqueeze(2).expand(-1, -1, M, -1).reshape(B, N_fine, self.embed_dim)
 
-        # 2. Canonical Phytomer Role + Positional Embeddings
+        # 2. Stage 2 -> 3: 3D Node Scaffold Positional & Rotational Condition Embeddings
+        if anchor_pos is not None:
+            node_pos_emb = self.node_pos_mlp(anchor_pos).unsqueeze(2).expand(-1, -1, M, -1).reshape(B, N_fine, self.embed_dim)
+        else:
+            node_pos_emb = 0.0
+
+        if anchor_rot is not None:
+            node_rot_emb = self.node_rot_mlp(anchor_rot).unsqueeze(2).expand(-1, -1, M, -1).reshape(B, N_fine, self.embed_dim)
+        else:
+            node_rot_emb = 0.0
+
+        # 3. Canonical Phytomer Role + Positional Embeddings
         # Map slot positions [0..M-1] to botanical functional roles [0..4]
         role_map_tensor = torch.as_tensor(SLOT_ROLE_MAPPING[:M], dtype=torch.long, device=device)
         slot_pos_tensor = torch.arange(M, device=device)
         block_role_embs = self.functional_role_emb(role_map_tensor) + self.slot_pos_emb(slot_pos_tensor)  # (M, D)
         role_embs = block_role_embs.unsqueeze(0).expand(K, -1, -1).reshape(1, N_fine, self.embed_dim).expand(B, -1, -1)
 
-        # 3. Geometry projection
+        # 4. Geometry projection
         geom_embs = self.geom_proj(noisy_fine_nodes)
 
-        # 4. Time conditioning
+        # 5. Time conditioning
         t_emb = self.time_embed(self._sinusoidal(timesteps)).unsqueeze(1)  # (B, 1, D)
 
-        # Composite query representation
-        queries = geom_embs + expanded_anchors + role_embs + t_emb
+        # Composite query representation (Conditioned on 3D Scaffold + Anchor Latents + Roles + Time)
+        queries = geom_embs + expanded_anchors + node_pos_emb + node_rot_emb + role_embs + t_emb
 
-        # 5. Intra-Phytomer Block Multi-Head Self-Attention:
+        # 6. Intra-Phytomer Block Multi-Head Self-Attention:
         # Reshape to (B * K, M, D) so local organs directly communicate joint kinematics
         q_block = queries.view(B * K, M, self.embed_dim)
         q_norm = self.block_norm(q_block)
         block_attn_out, _ = self.block_self_attn(q_norm, q_norm, q_norm)
         queries = (q_block + block_attn_out).view(B, N_fine, self.embed_dim)
 
-        # 6. Global Decoder cross-attention to image tokens & anchor memory
+        # 7. Global Decoder cross-attention to image tokens & anchor memory
         # Concatenate image tokens with anchor features as memory for full multi-scale conditioning
         memory = torch.cat([image_tokens, anchor_features], dim=1)
 
         x = self.decoder(queries, memory)
 
-        # 7. Heads
+        # 8. Heads
         pred_velocity = self.velocity_head(x)
         pred_exist_logits = self.exist_head(x)
 
@@ -354,10 +457,11 @@ class FineBotanicalFlowMatchingDecoder(nn.Module):
 
 
 class HierarchicalPartFlowMatchingModel(nn.Module):
-    """End-to-End Hierarchical Matryoshka Botanical Flow Matching System.
+    """End-to-End 3-Stage Cascaded Hierarchical Botanical Flow Matching System.
 
-    Couples Stage 1 Coarse Skeletal Predictor and Stage 2 Fine Flow Matching Decoder
-    with multi-scale ViT visual perception.
+    Stage 1: Macro Biological Prior (Plant Age DAP & Phytomer Count N_phy with Soft Margin).
+    Stage 2: Coarse 3D Node Point Cloud Scaffold (Anchors along shoot axis).
+    Stage 3: Intra-Phytomer Canonical Flow Matching (Organ geometry relative to node).
     """
 
     def __init__(
@@ -389,7 +493,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             embed_dim=embed_dim,
         )
 
-        # 2. Stage 1 Coarse Skeletal Transformer
+        # 2. Stage 1 & 2: Coarse Skeletal Transformer with MacroBiologicalHead
         self.coarse_stage = CoarseSkeletalTransformer(
             max_anchors=max_anchors,
             embed_dim=embed_dim,
@@ -397,7 +501,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             num_layers=coarse_layers,
         )
 
-        # 3. Stage 2 Fine Botanical Flow Matching Decoder
+        # 3. Stage 3: Fine Botanical Flow Matching Decoder conditioned on 3D Scaffold
         self.fine_stage = FineBotanicalFlowMatchingDecoder(
             slots_per_anchor=slots_per_anchor,
             node_dim=node_dim,
@@ -414,8 +518,9 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         images: torch.Tensor,
         daps: Optional[torch.Tensor] = None,
         teacher_anchor_pos: Optional[torch.Tensor] = None,
+        num_phytomers: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Unified joint forward pass.
+        """Unified joint forward pass across 3 cascaded stages.
 
         Args:
             noisy_fine_nodes: (B, N_fine, node_dim) interpolated geometry x_t.
@@ -423,39 +528,47 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             images: (B, 4, H, W) or (B, 16, H, W) drone RGB+CHM imagery.
             daps: Optional (B,) plant age tensor for Matryoshka slicing.
             teacher_anchor_pos: Optional (B, K, 3) ground-truth anchor positions for teacher forcing.
+            num_phytomers: Optional (B,) ground-truth phytomer count for Matryoshka slicing.
         """
-        # 1. Vision perception
+        # 1. Vision perception: 3D-aware multi-scale tokens
         image_tokens = self.image_encoder(images)
 
         # 2. Dynamic Matryoshka Slicing
-        # Compute active K based on batch maximum DAP
-        active_k = compute_matryoshka_slice(daps, max_anchors=self.max_anchors)
+        # Compute active K based on DAP or phytomer budget
+        active_k = compute_matryoshka_slice(dap=daps, num_phytomers=num_phytomers, max_anchors=self.max_anchors)
 
-        # 3. Stage 1: Coarse Skeleton Prediction
+        # 3. Stage 1 & 2: Macro Prior + Coarse 3D Node Scaffold Prediction
         coarse_out = self.coarse_stage(image_tokens, active_k=active_k)
         anchor_features = coarse_out["anchor_features"]
+        anchor_pos = coarse_out["anchor_pos"]
+        anchor_rot = coarse_out["anchor_rot"]
 
         # If noisy nodes exceed active fine slots, slice accordingly
         active_fine = active_k * self.slots_per_anchor
         if noisy_fine_nodes.shape[1] > active_fine:
             noisy_fine_nodes = noisy_fine_nodes[:, :active_fine]
 
-        # 4. Stage 2: Fine Botanical Flow Matching
+        # 4. Stage 3: Fine Botanical Flow Matching conditioned on 3D Scaffold
         fine_out = self.fine_stage(
             noisy_fine_nodes=noisy_fine_nodes,
             timesteps=timesteps,
             anchor_features=anchor_features,
             image_tokens=image_tokens,
+            anchor_pos=anchor_pos,
+            anchor_rot=anchor_rot,
         )
 
         return {
-            # Stage 1 outputs
+            # Stage 1: Macro Biological Prior
+            "pred_dap": coarse_out["pred_dap"],
+            "pred_num_phytomers": coarse_out["pred_num_phytomers"],
+            "soft_margin_weights": coarse_out["soft_margin_weights"],
+            # Stage 2: 3D Node Point Cloud Scaffold
             "pred_anchor_pos": coarse_out["anchor_pos"],
             "pred_anchor_rot": coarse_out["anchor_rot"],
             "pred_anchor_logits": coarse_out["anchor_logits"],
-            "pred_dap": coarse_out["pred_dap"],
             "active_k": active_k,
-            # Stage 2 outputs
+            # Stage 3: Intra-Phytomer Canonical Flow Matching
             "pred_velocity": fine_out["pred_velocity"],
             "pred_fine_exist_logits": fine_out["pred_exist_logits"],
         }
@@ -478,21 +591,23 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         B = images.shape[0]
         device = images.device
 
-        # 1. Encode image & predict coarse skeleton (5ms)
+        # 1. Encode image & predict Stage 1 Macro Prior + Stage 2 3D Node Scaffold
         image_tokens = self.image_encoder(images)
         active_k = compute_matryoshka_slice(daps, max_anchors=self.max_anchors)
         coarse_out = self.coarse_stage(image_tokens, active_k=active_k)
 
-        anchor_pos = coarse_out["anchor_pos"]  # (B, K, 3)
+        anchor_pos = coarse_out["anchor_pos"]      # (B, K, 3)
+        anchor_rot = coarse_out["anchor_rot"]      # (B, K, 6)
         anchor_features = coarse_out["anchor_features"]
-        anchor_existence = torch.sigmoid(coarse_out["anchor_logits"]).squeeze(-1)  # (B, K)
+        soft_margin_weights = coarse_out["soft_margin_weights"]
+        anchor_existence = torch.sigmoid(coarse_out["anchor_logits"]).squeeze(-1) * soft_margin_weights  # (B, K)
 
         # 2. Construct Prior x_0 strictly matching standard Gaussian N(0, I)
         M = self.slots_per_anchor
         N_fine = active_k * M
         x = torch.randn(B, N_fine, self.node_dim, device=device)
 
-        # 3. 2nd-Order Heun ODE Integration from t=0 to t=1 (40ms)
+        # 3. 2nd-Order Heun ODE Integration from t=0 to t=1 (Stage 3 Flow Matching)
         dt = 1.0 / num_steps
         for step in range(num_steps):
             t_curr = step * dt
@@ -504,6 +619,8 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                 timesteps=t_tensor,
                 anchor_features=anchor_features,
                 image_tokens=image_tokens,
+                anchor_pos=anchor_pos,
+                anchor_rot=anchor_rot,
             )
             v_1 = out_1["pred_velocity"]
 
@@ -518,6 +635,8 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                     timesteps=t_next_tensor,
                     anchor_features=anchor_features,
                     image_tokens=image_tokens,
+                    anchor_pos=anchor_pos,
+                    anchor_rot=anchor_rot,
                 )
                 v_2 = out_2["pred_velocity"]
                 v_eff = 0.5 * (v_1 + v_2)
@@ -532,6 +651,8 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             timesteps=torch.ones((B,), device=device),
             anchor_features=anchor_features,
             image_tokens=image_tokens,
+            anchor_pos=anchor_pos,
+            anchor_rot=anchor_rot,
         )
 
         pred_latent = x  # (B, N_fine, node_dim)
@@ -562,7 +683,11 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             "pred_fine_exist_logits": pred_fine_exist_logits,
             "slot_active": slot_active,
             "anchor_pos": anchor_pos,
+            "anchor_rot": anchor_rot,
             "anchor_existence": anchor_existence,
+            "pred_num_phytomers": coarse_out["pred_num_phytomers"],
+            "pred_dap": coarse_out["pred_dap"],
+            "soft_margin_weights": soft_margin_weights,
             "active_fine_count": N_fine,
         }
 

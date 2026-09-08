@@ -121,6 +121,8 @@ def forward_backward_step(
     pred_velocity = outputs["pred_velocity"].float()                  # (B, active_fine, node_dim)
     pred_fine_exist_logits = outputs["pred_fine_exist_logits"].float()  # (B, active_fine, 1)
     pred_dap = outputs["pred_dap"].float()
+    pred_num_phytomers = outputs.get("pred_num_phytomers")
+    soft_margin_weights = outputs.get("soft_margin_weights")
 
     # 1-Step Analytical Clean Prediction in 16D latent space: z_hat_1 = z_t + (1 - t) * v_pred
     t_b = t.view(B, 1, 1)
@@ -136,7 +138,7 @@ def forward_backward_step(
         tgt_labels_list.append(type_labels_sub[b, act_b])
         tgt_positions_list.append(nodes_sub[b, act_b, FM_BASE_START : FM_BASE_START + 3] / BASE_SCALE)
 
-    # Hierarchical Bipartite Matching in 16D Latent Space
+    # Hierarchical Bipartite Matching in 16D Latent Space with Soft Margin Modulation
     matches = matcher(
         pred_anchor_pos=pred_anchor_pos,
         pred_anchor_logits=pred_anchor_logits,
@@ -145,7 +147,15 @@ def forward_backward_step(
         tgt_geoms=tgt_geoms_list,
         tgt_labels=tgt_labels_list,
         tgt_positions=tgt_positions_list,
+        soft_margin_weights=soft_margin_weights,
     )
+
+    # Extract GT phytomer counts from matcher clusters
+    gt_phy_counts = torch.tensor(
+        [m["num_gt_phytomers"] for m in matches],
+        dtype=torch.float32,
+        device=device,
+    ).unsqueeze(-1)  # (B, 1)
 
     # Loss Computation
     loss_anchor_pos_acc = torch.tensor(0.0, device=device)
@@ -214,10 +224,14 @@ def forward_backward_step(
     loss_fine_vel = loss_fine_vel_acc / norm_m
     loss_fine_exist = loss_fine_exist_acc / max(B, 1)
 
-    # Auxiliary DAP loss
+    # Stage 1: Macro Losses (Phytomer Count & Plant Age DAP)
+    loss_phy_count = torch.tensor(0.0, device=device)
+    if pred_num_phytomers is not None:
+        loss_phy_count = F.smooth_l1_loss(pred_num_phytomers.float(), gt_phy_counts)
+
     loss_dap = torch.tensor(0.0, device=device)
-    if daps is not None:
-        loss_dap = F.mse_loss(pred_dap.squeeze(-1), daps) * 0.01
+    if daps is not None and pred_dap is not None:
+        loss_dap = F.smooth_l1_loss(pred_dap.squeeze(-1), daps.float()) * 0.05
 
     # In-Loop Differentiable Optical Grounding (1-Step Clean Prediction -> 4-Scale Multi-Scale Pyramid Depth + Silhouette Dice + Cosine Color)
     loss_depth = torch.tensor(0.0, device=device)
@@ -326,12 +340,13 @@ def forward_backward_step(
             loss_cos = loss_cos_acc / max(n_render, 1)
             loss_dice = loss_dice_acc / max(n_render, 1)
 
-    # Composite Loss
+    # Composite Loss (Macro Prior + 3D Node Scaffold + Intra-Phytomer Flow Matching + Photometric)
     loss = (
         2.0 * loss_anchor_pos
         + 1.0 * loss_anchor_exist
         + 2.0 * loss_fine_vel
         + 1.0 * loss_fine_exist
+        + 0.5 * loss_phy_count
         + loss_dap
         + depth_loss_weight * loss_depth
         + color_loss_weight * loss_cos
@@ -349,6 +364,10 @@ def forward_backward_step(
         "loss": loss.item(),
         "anchor_pos_loss": loss_anchor_pos.item(),
         "anchor_exist_loss": loss_anchor_exist.item(),
+        "phy_count_loss": loss_phy_count.item(),
+        "pred_phy_mean": pred_num_phytomers.mean().item() if pred_num_phytomers is not None else 0.0,
+        "gt_phy_mean": gt_phy_counts.mean().item(),
+        "dap_loss": loss_dap.item(),
         "fine_vel_loss": loss_fine_vel.item(),
         "fine_exist_loss": loss_fine_exist.item(),
         "dense_depth_loss": loss_depth.item(),
@@ -490,6 +509,9 @@ def train_one_epoch(
     total_loss = 0.0
     total_anchor_pos_loss = 0.0
     total_anchor_exist_loss = 0.0
+    total_phy_count_loss = 0.0
+    total_pred_phy_mean = 0.0
+    total_gt_phy_mean = 0.0
     total_fine_vel_loss = 0.0
     total_fine_exist_loss = 0.0
     total_dense_depth_loss = 0.0
@@ -526,6 +548,9 @@ def train_one_epoch(
         total_loss += step_metrics["loss"]
         total_anchor_pos_loss += step_metrics["anchor_pos_loss"]
         total_anchor_exist_loss += step_metrics["anchor_exist_loss"]
+        total_phy_count_loss += step_metrics.get("phy_count_loss", 0.0)
+        total_pred_phy_mean += step_metrics.get("pred_phy_mean", 0.0)
+        total_gt_phy_mean += step_metrics.get("gt_phy_mean", 0.0)
         total_fine_vel_loss += step_metrics["fine_vel_loss"]
         total_fine_exist_loss += step_metrics["fine_exist_loss"]
         total_dense_depth_loss += step_metrics["dense_depth_loss"]
@@ -540,6 +565,7 @@ def train_one_epoch(
                 f"  [Epoch {epoch:02d}] Step {batch_idx+1:03d}/{len(dataloader):03d} | "
                 f"Loss: {step_metrics['loss']:.4f} (Vel: {step_metrics['fine_vel_loss']:.4f}, "
                 f"AncPos: {step_metrics['anchor_pos_loss']:.4f}, "
+                f"PhyLoss: {step_metrics.get('phy_count_loss', 0.0):.4f} [Pred:{step_metrics.get('pred_phy_mean', 0.0):.1f}/GT:{step_metrics.get('gt_phy_mean', 0.0):.1f}], "
                 f"Exist: {step_metrics['fine_exist_loss']:.4f}, Depth: {step_metrics['dense_depth_loss']:.4f}, "
                 f"Dice: {step_metrics['silhouette_dice_loss']:.4f}, "
                 f"Acc: {step_metrics['cls_acc']*100:.1f}%)",
@@ -550,6 +576,9 @@ def train_one_epoch(
         "loss": total_loss / max(count, 1),
         "anchor_pos_loss": total_anchor_pos_loss / max(count, 1),
         "anchor_exist_loss": total_anchor_exist_loss / max(count, 1),
+        "phy_count_loss": total_phy_count_loss / max(count, 1),
+        "pred_phy_mean": total_pred_phy_mean / max(count, 1),
+        "gt_phy_mean": total_gt_phy_mean / max(count, 1),
         "fine_vel_loss": total_fine_vel_loss / max(count, 1),
         "fine_exist_loss": total_fine_exist_loss / max(count, 1),
         "dense_depth_loss": total_dense_depth_loss / max(count, 1),
@@ -776,6 +805,7 @@ def main():
                 f"Epoch {epoch:03d} | Loss: {epoch_metrics['loss']:.4f} | "
                 f"VelLoss: {epoch_metrics['fine_vel_loss']:.4f} | "
                 f"AncPosLoss: {epoch_metrics['anchor_pos_loss']:.4f} | "
+                f"PhyLoss: {epoch_metrics['phy_count_loss']:.4f} (Pred:{epoch_metrics['pred_phy_mean']:.1f}/GT:{epoch_metrics['gt_phy_mean']:.1f}) | "
                 f"ExistLoss: {epoch_metrics['fine_exist_loss']:.4f} | "
                 f"DepthLoss: {epoch_metrics['dense_depth_loss']:.4f} | "
                 f"CosLoss: {epoch_metrics['cos_color_loss']:.4f} | "
@@ -788,6 +818,9 @@ def main():
                 "train/loss": epoch_metrics["loss"],
                 "train/fine_vel_loss": epoch_metrics["fine_vel_loss"],
                 "train/anchor_pos_loss": epoch_metrics["anchor_pos_loss"],
+                "train/phy_count_loss": epoch_metrics["phy_count_loss"],
+                "train/pred_phy_mean": epoch_metrics["pred_phy_mean"],
+                "train/gt_phy_mean": epoch_metrics["gt_phy_mean"],
                 "train/fine_exist_loss": epoch_metrics["fine_exist_loss"],
                 "train/dense_depth_loss": epoch_metrics["dense_depth_loss"],
                 "train/cos_color_loss": epoch_metrics["cos_color_loss"],
