@@ -302,35 +302,37 @@ def evaluate_self_consistency_batch(
         # Oblique 3D Real Mesh Composite (Cyan: GT, Amber: Pred, Blend: Overlap)
         comp_img = None
         try:
-            gt_cyan = None
+            rend_gt_obl = None
             if gt_mesh is not None and "vertices" in gt_mesh and gt_mesh["vertices"].shape[0] > 0:
-                gt_cyan_mesh = dict(gt_mesh)
-                gt_cyan_mesh["colors"] = torch.tensor([0.0, 0.90, 1.0], device=device).expand_as(gt_mesh["colors"])
-                gt_cyan = renderer.forward(
-                    gt_cyan_mesh, elevation_deg=30.0, azimuth_deg=-50.0, camera_height=4.0, focus_plant=True, include_depth=True
+                rend_gt_obl = renderer.forward(
+                    gt_mesh, elevation_deg=30.0, azimuth_deg=30.0, background="black", focus_plant=False, include_depth=False, zoom_factor=eval_zoom, reference_window_size=1.2
                 )
 
-            pred_amber = None
+            rend_pred_obl = None
             if active_parts.shape[0] > 0 and "vertices" in mesh and mesh["vertices"].shape[0] > 0:
-                pred_amber_mesh = dict(mesh)
-                pred_amber_mesh["colors"] = torch.tensor([0.98, 0.57, 0.24], device=device).expand_as(mesh["colors"])
-                pred_amber = renderer.forward(
-                    pred_amber_mesh, elevation_deg=30.0, azimuth_deg=-50.0, camera_height=4.0, focus_plant=True, include_depth=True
+                rend_pred_obl = renderer.forward(
+                    mesh, elevation_deg=30.0, azimuth_deg=30.0, background="black", focus_plant=False, include_depth=False, zoom_factor=eval_zoom, reference_window_size=1.2
                 )
 
-            if gt_cyan is not None and pred_amber is not None:
-                mask_pred = (pred_amber[3] > 0.005).unsqueeze(0).expand(3, -1, -1)
-                mask_gt = (gt_cyan[3] > 0.005).unsqueeze(0).expand(3, -1, -1)
-                comp = torch.zeros_like(gt_cyan[:3])
-                comp = comp + renderer.COLOR_GROUND.to(device).view(3, 1, 1) * (~(mask_pred | mask_gt)).float()
-                comp = torch.where(mask_gt & ~mask_pred, gt_cyan[:3], comp)
-                comp = torch.where(mask_pred & ~mask_gt, pred_amber[:3], comp)
-                comp = torch.where(mask_pred & mask_gt, pred_amber[:3] * 0.7 + gt_cyan[:3] * 0.3, comp)
-                comp_img = comp.permute(1, 2, 0).clamp(0, 1).cpu().numpy()
-            elif gt_cyan is not None:
-                comp_img = gt_cyan[:3].permute(1, 2, 0).clamp(0, 1).cpu().numpy()
-            elif pred_amber is not None:
-                comp_img = pred_amber[:3].permute(1, 2, 0).clamp(0, 1).cpu().numpy()
+            if rend_gt_obl is not None and rend_pred_obl is not None:
+                gt_lum = rend_gt_obl[:3].mean(dim=0, keepdim=True)
+                pred_lum = rend_pred_obl[:3].mean(dim=0, keepdim=True)
+                cyan = torch.tensor([0.0, 0.9, 1.0], device=device)[:, None, None]
+                amber = torch.tensor([1.0, 0.55, 0.0], device=device)[:, None, None]
+                gt_colored = gt_lum * cyan
+                pred_colored = pred_lum * amber
+                overlap_mask = (gt_lum > 0.08) & (pred_lum > 0.08)
+                comp_tensor = gt_colored + pred_colored
+                comp_tensor = torch.where(overlap_mask, torch.tensor([0.95, 0.85, 0.3], device=device)[:, None, None] * torch.max(gt_lum, pred_lum), comp_tensor)
+                comp_img = comp_tensor.permute(1, 2, 0).clamp(0, 1).cpu().numpy()
+            elif rend_gt_obl is not None:
+                gt_lum = rend_gt_obl[:3].mean(dim=0, keepdim=True)
+                cyan = torch.tensor([0.0, 0.9, 1.0], device=device)[:, None, None]
+                comp_img = (gt_lum * cyan).permute(1, 2, 0).clamp(0, 1).cpu().numpy()
+            elif rend_pred_obl is not None:
+                pred_lum = rend_pred_obl[:3].mean(dim=0, keepdim=True)
+                amber = torch.tensor([1.0, 0.55, 0.0], device=device)[:, None, None]
+                comp_img = (pred_lum * amber).permute(1, 2, 0).clamp(0, 1).cpu().numpy()
         except Exception:
             comp_img = None
 
@@ -442,11 +444,11 @@ def evaluate_self_consistency_batch(
             "comp_img": comp_img,
         })
 
-    # 6. Build Diagnostic Visualization Figure (8 Columns: Ref + RGB + Depth + Pred RGB + Pred Depth + Depth Error + Real Solid Mesh + 3D Botanical Skeleton & Nodes)
+    # 6. Build Diagnostic Visualization Figure (7 Columns: Ref + RGB + Depth + Pred RGB + Pred Depth + Real Solid Mesh + 3D Botanical Skeleton & Nodes)
     if panels_data:
         n_rows = len(panels_data)
-        fig = plt.figure(figsize=(28.0, 3.5 * n_rows), facecolor="#12151a")
-        gs = fig.add_gridspec(n_rows, 8, wspace=0.15, hspace=0.25, left=0.02, right=0.98, top=0.84, bottom=0.04)
+        fig = plt.figure(figsize=(24.5, 3.5 * n_rows), facecolor="#12151a")
+        gs = fig.add_gridspec(n_rows, 7, wspace=0.14, hspace=0.25, left=0.03, right=0.97, top=0.84, bottom=0.04)
 
         mean_node_rmse = np.mean([d["node_rmse_cm"] for d in panels_data])
         fig.suptitle(
@@ -461,20 +463,19 @@ def evaluate_self_consistency_batch(
             "2. Drone Depth Pyramid\n(2x2: 1x, 2x / 4x, 8x)",
             "3. Pred 3D Mesh\n(Top-Down Reconstruction)",
             "4. Pred 3D Depth\n(Canopy Height CHM)",
-            "5. Signed Depth Error\n(Blue: Under, Red: Over)",
-            "6. Real 3D Solid Mesh\n(Oblique 30° Composite)",
-            "7. 3D Botanical Skeleton\n(Stem Trees & Nodes)",
+            "5. Real 3D Solid Mesh\n(Oblique 30° Composite)",
+            "6. 3D Botanical Skeleton\n(Stem Trees & Nodes)",
         ]
 
         for row_idx, data in enumerate(panels_data):
             vmax_d = max(0.3, float(data["gt_3d_depth"].max()))
 
-            # Create 2D subplots for Columns 0 to 6
+            # Create 2D subplots for Columns 0 to 5
             axes_row = []
-            for col_idx in range(7):
+            for col_idx in range(6):
                 ax = fig.add_subplot(gs[row_idx, col_idx])
                 if row_idx == 0:
-                    color = "#fbbf24" if col_idx == 0 else ("#38bdf8" if col_idx in (1, 2) else ("#34d399" if col_idx in (3, 4) else ("#38bdf8" if col_idx == 5 else "#00e5ff")))
+                    color = "#fbbf24" if col_idx == 0 else ("#38bdf8" if col_idx in (1, 2) else ("#34d399" if col_idx in (3, 4) else "#00e5ff"))
                     ax.set_title(col_titles[col_idx], fontsize=9.5, fontweight="bold", color=color, pad=8)
                 axes_row.append(ax)
 
@@ -508,68 +509,67 @@ def evaluate_self_consistency_batch(
 
             # Col 4: Pred 3D Depth
             axes_row[4].imshow(data["pred_depth"], cmap="viridis", vmin=0.0, vmax=vmax_d)
-            axes_row[4].axis("off")
+            axes_row[4].set_xlabel(f"Depth MAE: {data['depth_mae']*100:.2f} cm", fontsize=8.5, color="#38bdf8")
+            axes_row[4].set_xticks([])
+            axes_row[4].set_yticks([])
 
-            # Col 5: Signed Depth Error Heatmap (BWR: Blue=Under/GT missing, Red=Over/Pred extra)
-            signed_diff = data["pred_depth"] - data["gt_3d_depth"]
-            axes_row[5].imshow(signed_diff, cmap="bwr", vmin=-0.15, vmax=0.15)
-            axes_row[5].set_xlabel(f"MAE: {data['depth_mae']*100:.2f} cm\n(Blue: Under, Red: Over)", fontsize=8.5, color="#38bdf8")
-            axes_row[5].axis("off")
-
-            # Col 6: Oblique 3D Real Mesh Composite (Cyan: GT, Amber: Pred, Blend: Overlap)
+            # Col 5: Oblique 3D Real Mesh Composite (Cyan: GT, Amber: Pred, Blend: Overlap)
             if data.get("comp_img") is not None:
-                axes_row[6].imshow(data["comp_img"])
-                axes_row[6].set_xlabel("Real 3D Mesh Composite\n(Cyan: GT, Amber: Pred)", fontsize=8.5, color="#00e5ff")
+                axes_row[5].imshow(data["comp_img"])
+                axes_row[5].set_xlabel("Real 3D Mesh Composite\n(Cyan: GT, Amber: Pred)", fontsize=8.5, color="#00e5ff")
             else:
-                axes_row[6].text(0.5, 0.5, "Mesh N/A", color="#94a3b8", ha="center", va="center")
-            axes_row[6].axis("off")
+                axes_row[5].text(0.5, 0.5, "Mesh N/A", color="#94a3b8", ha="center", va="center")
+            axes_row[5].set_xticks([])
+            axes_row[5].set_yticks([])
+            for spine in axes_row[5].spines.values():
+                spine.set_visible(False)
 
-            # Col 7: 3D Botanical Skeleton & Nodes (Matplotlib 3D)
-            ax7 = fig.add_subplot(gs[row_idx, 7], projection="3d")
-            ax7.set_facecolor("#181c24")
-            ax7.view_init(elev=24, azim=-55)
+            # Col 6: 3D Botanical Skeleton & Nodes (Matplotlib 3D)
+            ax6 = fig.add_subplot(gs[row_idx, 6], projection="3d")
+            ax6.set_facecolor("#181c24")
+            ax6.view_init(elev=24, azim=-55)
             if row_idx == 0:
-                ax7.set_title(col_titles[7], fontsize=9.5, fontweight="bold", color="#e879f9", pad=8)
+                ax6.set_title(col_titles[6], fontsize=9.5, fontweight="bold", color="#e879f9", pad=8)
 
             # Draw GT stem segments (internode tubes)
             gt_segs = data.get("gt_stem_segments", [])
             for i, (b_pos, tp_pos) in enumerate(gt_segs):
                 lbl = "GT Stem Tree" if i == 0 else ""
-                ax7.plot([b_pos[0], tp_pos[0]], [b_pos[1], tp_pos[1]], [b_pos[2], tp_pos[2]],
+                ax6.plot([b_pos[0], tp_pos[0]], [b_pos[1], tp_pos[1]], [b_pos[2], tp_pos[2]],
                          color="#00e5ff", linestyle="-", linewidth=3.2, alpha=0.95, zorder=10, label=lbl)
 
             # Draw Pred stem segments (internode tubes)
             pred_segs = data.get("pred_stem_segments", [])
             for i, (b_pos, tp_pos) in enumerate(pred_segs):
                 lbl = "Pred Stem Tree" if i == 0 else ""
-                ax7.plot([b_pos[0], tp_pos[0]], [b_pos[1], tp_pos[1]], [b_pos[2], tp_pos[2]],
+                ax6.plot([b_pos[0], tp_pos[0]], [b_pos[1], tp_pos[1]], [b_pos[2], tp_pos[2]],
                          color="#f43f5e", linestyle="--", linewidth=2.4, alpha=0.90, zorder=11, label=lbl)
 
             # Draw GT Nodes
             if len(data["gt_nodes"]) > 0:
-                ax7.scatter(data["gt_nodes"][:, 0] * 100, data["gt_nodes"][:, 1] * 100, data["gt_nodes"][:, 2] * 100,
+                ax6.scatter(data["gt_nodes"][:, 0] * 100, data["gt_nodes"][:, 1] * 100, data["gt_nodes"][:, 2] * 100,
                             c="#00e5ff", s=32, edgecolors="white", linewidth=0.9, zorder=12,
                             label=f"GT Node (N={len(data['gt_nodes'])})")
 
             # Draw Pred Nodes
             if len(data["pred_nodes"]) > 0:
-                ax7.scatter(data["pred_nodes"][:, 0] * 100, data["pred_nodes"][:, 1] * 100, data["pred_nodes"][:, 2] * 100,
+                ax6.scatter(data["pred_nodes"][:, 0] * 100, data["pred_nodes"][:, 1] * 100, data["pred_nodes"][:, 2] * 100,
                             c="#f43f5e", marker="s", s=28, edgecolors="black", linewidth=0.8, zorder=13,
                             label=f"Pred Node (K={len(data['pred_nodes'])})")
 
-            ax7.tick_params(colors="#94a3b8", labelsize=6.5, pad=0.5)
-            for pane in [ax7.xaxis.pane, ax7.yaxis.pane, ax7.zaxis.pane]:
+            ax6.tick_params(colors="#94a3b8", labelsize=6.5, pad=0.5)
+            for pane in [ax6.xaxis.pane, ax6.yaxis.pane, ax6.zaxis.pane]:
                 pane.set_facecolor("#1e2330")
                 pane.set_edgecolor("#334155")
 
-            ax7.set_xlabel("X [cm]", fontsize=7, color="#94a3b8", labelpad=-3)
-            ax7.set_ylabel("Y [cm]", fontsize=7, color="#94a3b8", labelpad=-3)
-            ax7.set_zlabel("Z [cm]", fontsize=7, color="#94a3b8", labelpad=-3)
+            ax6.set_xlabel("X [cm]", fontsize=7, color="#94a3b8", labelpad=-3)
+            ax6.set_ylabel("Y [cm]", fontsize=7, color="#94a3b8", labelpad=-3)
+            ax6.set_zlabel("Z [cm]", fontsize=7, color="#94a3b8", labelpad=-3)
 
             rmse_str = f"Node RMSE: {data['node_rmse_cm']:.1f} cm"
-            ax7.text2D(0.05, 0.88, rmse_str, transform=ax7.transAxes, color="#e879f9", fontsize=8, fontweight="bold")
+            ax6.text2D(0.05, 0.88, rmse_str, transform=ax6.transAxes, color="#e879f9", fontsize=8, fontweight="bold")
             if row_idx == 0:
-                ax7.legend(loc="upper right", fontsize=6.0, facecolor="#0f172a", edgecolor="#334155", labelcolor="#f8fafc", framealpha=0.8)
+                ax6.legend(loc="upper right", fontsize=6.0, facecolor="#0f172a", edgecolor="#334155", labelcolor="#f8fafc", framealpha=0.8)
 
         panel_path = os.path.join(output_dir, f"hierarchical_self_consistency_epoch_{epoch:03d}.png")
         fig.savefig(panel_path, dpi=120, bbox_inches="tight", facecolor=fig.get_facecolor())
