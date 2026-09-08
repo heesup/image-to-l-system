@@ -70,6 +70,7 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     --render_sub_batch 4 \
     --render_ratio 0.25 \
     --save_every 25 \
+    --eval_every 1 \
     --wandb_project part-flow-matching \
     --wandb_run_name "hierarchical-3stage-cascaded-cowpea"
 

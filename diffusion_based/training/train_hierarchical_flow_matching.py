@@ -626,6 +626,7 @@ def main():
     parser.add_argument("--render_ratio", type=float, default=1.0, help="Ratio of batch to render differentiably (0.0 to 1.0, default: 1.0 = 100 percent full batch)")
     parser.add_argument("--render_sub_batch", type=int, default=None, help="Explicit sub-batch size for in-loop differentiable rendering per GPU (overrides render_ratio if set)")
     parser.add_argument("--save_every", type=int, default=25)
+    parser.add_argument("--eval_every", type=int, default=1, help="Validation image generation interval in epochs (default: 1)")
     parser.add_argument("--init_checkpoint", type=str, default=None, help="Path to checkpoint to initialize weights from (strict=False)")
     parser.add_argument("--wandb_project", type=str, default="part-flow-matching")
     parser.add_argument("--wandb_run_name", type=str, default="hierarchical-matryoshka-cowpea")
@@ -855,8 +856,11 @@ def main():
                 }, save_path)
                 print(f"Saved checkpoint to {save_path}", flush=True)
 
-                # Differentiable Renderer Self-Consistency Check (Silhouette IoU & CHM Depth MAE & 3D Nodes)
+            # Differentiable Renderer Self-Consistency Check (Silhouette IoU & CHM Depth MAE & 3D Nodes)
+            # Evaluated every args.eval_every epochs (default: 1 epoch)
+            if epoch % args.eval_every == 0 or epoch == args.epochs:
                 try:
+                    raw_model = model.module if hasattr(model, "module") else model
                     val_batch = next(iter(dataloader))
                     importlib.reload(ehsc)
                     val_metrics = ehsc.evaluate_self_consistency_batch(
@@ -870,7 +874,7 @@ def main():
                         vae=vae,
                     )
                     print(
-                        f"  [Self-Consistency] Silhouette IoU: {val_metrics['silhouette_iou']*100:.1f}% | "
+                        f"  [Self-Consistency Epoch {epoch:03d}] Silhouette IoU: {val_metrics['silhouette_iou']*100:.1f}% | "
                         f"Depth MAE: {val_metrics['depth_mae']*100:.2f} cm | "
                         f"Node RMSE: {val_metrics.get('val/node_rmse_cm', val_metrics.get('node_rmse_cm', 0.0)):.1f} cm",
                         flush=True,
