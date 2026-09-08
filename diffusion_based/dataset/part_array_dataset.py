@@ -310,6 +310,9 @@ class PartArrayDataset(Dataset):
             xml_paths = [p for p in xml_paths if any(_fnmatch.fnmatch(os.path.basename(p), pat) for pat in include_globs)]
         elif exclude_globs:
             xml_paths = [p for p in xml_paths if not any(_fnmatch.fnmatch(os.path.basename(p), pat) for pat in exclude_globs)]
+        if self.cache_dir and os.path.isdir(self.cache_dir):
+            cached_files = {f[:-3] for f in os.listdir(self.cache_dir) if f.endswith(".pt")}
+            xml_paths = [p for p in xml_paths if os.path.basename(p).split("_plant_")[0] in cached_files]
         resolved = [self._resolve_pair(p) for p in xml_paths]
         self.samples = [p for p in resolved if p["jpeg"] and os.path.exists(p["jpeg"])]
 
