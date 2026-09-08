@@ -302,37 +302,57 @@ def evaluate_self_consistency_batch(
         # Oblique 3D Real Mesh Composite (Cyan: GT, Amber: Pred, Blend: Overlap)
         comp_img = None
         try:
+            # Lifecycle-adaptive zoom for optimal 3D visual framing
+            if dap_val <= 10:
+                eval_zoom_obl = 8.0
+            elif dap_val <= 20:
+                eval_zoom_obl = 4.0
+            elif dap_val <= 35:
+                eval_zoom_obl = 2.2
+            else:
+                eval_zoom_obl = 1.3
+
             rend_gt_obl = None
             if gt_mesh is not None and "vertices" in gt_mesh and gt_mesh["vertices"].shape[0] > 0:
                 rend_gt_obl = renderer.forward(
-                    gt_mesh, elevation_deg=30.0, azimuth_deg=30.0, background="black", focus_plant=False, include_depth=False, zoom_factor=eval_zoom, reference_window_size=1.2
+                    gt_mesh, elevation_deg=30.0, azimuth_deg=30.0, background="black", focus_plant=False, include_depth=False, zoom_factor=eval_zoom_obl, reference_window_size=1.2
                 )
 
             rend_pred_obl = None
             if active_parts.shape[0] > 0 and "vertices" in mesh and mesh["vertices"].shape[0] > 0:
                 rend_pred_obl = renderer.forward(
-                    mesh, elevation_deg=30.0, azimuth_deg=30.0, background="black", focus_plant=False, include_depth=False, zoom_factor=eval_zoom, reference_window_size=1.2
+                    mesh, elevation_deg=30.0, azimuth_deg=30.0, background="black", focus_plant=False, include_depth=False, zoom_factor=eval_zoom_obl, reference_window_size=1.2
                 )
 
+            def boost_lum(lum, thresh=0.02):
+                mask = lum > thresh
+                if not mask.any():
+                    return lum
+                val = lum.clone()
+                peak = val[mask].max()
+                val_norm = torch.clamp(val / (peak + 1e-4), 0.0, 1.0)
+                val_boosted = torch.pow(val_norm, 0.65) * 0.9 + 0.1
+                return torch.where(mask, val_boosted, torch.zeros_like(lum))
+
+            cyan_vivid = torch.tensor([0.0, 0.95, 1.0], device=device)[:, None, None]
+            amber_vivid = torch.tensor([1.0, 0.45, 0.02], device=device)[:, None, None]
+            gold_vivid = torch.tensor([1.0, 0.95, 0.20], device=device)[:, None, None]
+
             if rend_gt_obl is not None and rend_pred_obl is not None:
-                gt_lum = rend_gt_obl[:3].mean(dim=0, keepdim=True)
-                pred_lum = rend_pred_obl[:3].mean(dim=0, keepdim=True)
-                cyan = torch.tensor([0.0, 0.9, 1.0], device=device)[:, None, None]
-                amber = torch.tensor([1.0, 0.55, 0.0], device=device)[:, None, None]
-                gt_colored = gt_lum * cyan
-                pred_colored = pred_lum * amber
-                overlap_mask = (gt_lum > 0.08) & (pred_lum > 0.08)
+                gt_lum = boost_lum(rend_gt_obl[:3].mean(dim=0, keepdim=True))
+                pred_lum = boost_lum(rend_pred_obl[:3].mean(dim=0, keepdim=True))
+                gt_colored = gt_lum * cyan_vivid
+                pred_colored = pred_lum * amber_vivid
+                overlap_mask = (gt_lum > 0.03) & (pred_lum > 0.03)
                 comp_tensor = gt_colored + pred_colored
-                comp_tensor = torch.where(overlap_mask, torch.tensor([0.95, 0.85, 0.3], device=device)[:, None, None] * torch.max(gt_lum, pred_lum), comp_tensor)
+                comp_tensor = torch.where(overlap_mask, gold_vivid * torch.max(gt_lum, pred_lum), comp_tensor)
                 comp_img = comp_tensor.permute(1, 2, 0).clamp(0, 1).cpu().numpy()
             elif rend_gt_obl is not None:
-                gt_lum = rend_gt_obl[:3].mean(dim=0, keepdim=True)
-                cyan = torch.tensor([0.0, 0.9, 1.0], device=device)[:, None, None]
-                comp_img = (gt_lum * cyan).permute(1, 2, 0).clamp(0, 1).cpu().numpy()
+                gt_lum = boost_lum(rend_gt_obl[:3].mean(dim=0, keepdim=True))
+                comp_img = (gt_lum * cyan_vivid).permute(1, 2, 0).clamp(0, 1).cpu().numpy()
             elif rend_pred_obl is not None:
-                pred_lum = rend_pred_obl[:3].mean(dim=0, keepdim=True)
-                amber = torch.tensor([1.0, 0.55, 0.0], device=device)[:, None, None]
-                comp_img = (pred_lum * amber).permute(1, 2, 0).clamp(0, 1).cpu().numpy()
+                pred_lum = boost_lum(rend_pred_obl[:3].mean(dim=0, keepdim=True))
+                comp_img = (pred_lum * amber_vivid).permute(1, 2, 0).clamp(0, 1).cpu().numpy()
         except Exception:
             comp_img = None
 
