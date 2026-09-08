@@ -37,8 +37,12 @@
 
 ## 🌟 Key Active & Authoritative Documents
 
+### → [`results/20260908_3d_spatial_vision_and_hierarchical_reconstruction_milestone.md`](results/20260908_3d_spatial_vision_and_hierarchical_reconstruction_milestone.md)
+**3D Spatial Vision & Hierarchical Botanical Reconstruction Milestone Report (2026-09-08) — READ THIS FIRST**  
+Comprehensive empirical verification of 3D spatial vision (DINOv2 + PETR 3D Ray PE + DETR3D 3D Reference Queries + Intra-Phytomer Flow Matching) evaluated at Epoch 150. Achieves **49.2% Mean Silhouette IoU** (peaking at **66.5%** on DAP 64 mature bushy canopies with 1,312 organs), **2.6 cm Node RMSE**, and **13.20 cm Depth MAE**. Documents why scaling model (DINOv2-Base) and dataset will further propel performance.
+
 ### → [`results/20260907_latent_hierarchical_flow_matching_500epoch_report.md`](results/20260907_latent_hierarchical_flow_matching_500epoch_report.md)
-**Option B: 16D Latent Hierarchical Botanical Flow Matching — 500-Epoch Training & 3D Reconstruction Report (2026-09-07) — READ THIS FIRST**  
+**Option B: 16D Latent Hierarchical Botanical Flow Matching — 500-Epoch Training & 3D Reconstruction Report (2026-09-07)**  
 Complete realization and empirical verification of Option B (16D Latent Botanical Flow Matching) using a frozen `OrganLatentVAE`. 500 epochs completed on 4× RTX 6000 Ada (18h 57m, job `38143585`). Velocity loss dropped by 83% ($1.71 \to 0.29$), 3D anchor position RMSE collapsed from 35.9 cm to 4.24 cm, and organ classification accuracy reached 85.6%. Demonstrates **55.1% Mean Silhouette IoU** (peaking at **67.9%** on mature plants), **2.49 cm Peak Height Error**, and complete elimination of ghost organ artifacts.
 
 ### → [`ongoing/20260907_latent_hierarchical_flow_matching_specification.md`](ongoing/20260907_latent_hierarchical_flow_matching_specification.md)
