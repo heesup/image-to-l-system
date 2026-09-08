@@ -37,8 +37,12 @@
 
 ## 🌟 Key Active & Authoritative Documents
 
+### → [`ongoing/20260908_cascaded_architecture_design_space_analysis.md`](ongoing/20260908_cascaded_architecture_design_space_analysis.md)
+**Cascaded Architecture Design Space: Deterministic vs. Diffusion Analysis (2026-09-08) — READ THIS FIRST**  
+Exhaustive evaluation of the $2 \times 2 = 4$ design space (Stage 2 3D node scaffold vs Stage 3 intra-phytomer organs across Deterministic ViT vs Diffusion/Flow Matching). Mathematical and botanical rationale proving why **Combination 2 ([Deterministic Scaffold] + [16D Latent Flow Matching])** achieves the optimal trade-off between metric accuracy, organic leaf curvature, fast inference (30 ms), and DepthAnything v2 compatibility.
+
 ### → [`results/20260908_3d_spatial_vision_and_hierarchical_reconstruction_milestone.md`](results/20260908_3d_spatial_vision_and_hierarchical_reconstruction_milestone.md)
-**3D Spatial Vision & Hierarchical Botanical Reconstruction Milestone Report (2026-09-08) — READ THIS FIRST**  
+**3D Spatial Vision & Hierarchical Botanical Reconstruction Milestone Report (2026-09-08)**  
 Comprehensive empirical verification of 3D spatial vision (DINOv2 + PETR 3D Ray PE + DETR3D 3D Reference Queries + Intra-Phytomer Flow Matching) evaluated at Epoch 150. Achieves **49.2% Mean Silhouette IoU** (peaking at **66.5%** on DAP 64 mature bushy canopies with 1,312 organs), **2.6 cm Node RMSE**, and **13.20 cm Depth MAE**. Documents why scaling model (DINOv2-Base) and dataset will further propel performance.
 
 ### → [`results/20260907_latent_hierarchical_flow_matching_500epoch_report.md`](results/20260907_latent_hierarchical_flow_matching_500epoch_report.md)
