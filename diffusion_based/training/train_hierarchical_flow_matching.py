@@ -49,7 +49,8 @@ from diffusion_based.training.hierarchical_hungarian_matcher import (
 )
 from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 from diffusion_based.models.organ_latent_vae import OrganLatentVAE
-from diffusion_based.eval.eval_hierarchical_self_consistency import evaluate_self_consistency_batch
+import importlib
+import diffusion_based.eval.eval_hierarchical_self_consistency as ehsc
 
 
 def forward_backward_step(
@@ -808,10 +809,11 @@ def main():
                 }, save_path)
                 print(f"Saved checkpoint to {save_path}", flush=True)
 
-                # Differentiable Renderer Self-Consistency Check (Silhouette IoU & CHM Depth MAE)
+                # Differentiable Renderer Self-Consistency Check (Silhouette IoU & CHM Depth MAE & 3D Nodes)
                 try:
                     val_batch = next(iter(dataloader))
-                    val_metrics = evaluate_self_consistency_batch(
+                    importlib.reload(ehsc)
+                    val_metrics = ehsc.evaluate_self_consistency_batch(
                         model=raw_model,
                         val_batch=val_batch,
                         renderer=renderer,
@@ -824,7 +826,7 @@ def main():
                     print(
                         f"  [Self-Consistency] Silhouette IoU: {val_metrics['silhouette_iou']*100:.1f}% | "
                         f"Depth MAE: {val_metrics['depth_mae']*100:.2f} cm | "
-                        f"Peak Height Err: {val_metrics['peak_height_error']*100:.2f} cm",
+                        f"Node RMSE: {val_metrics.get('val/node_rmse_cm', val_metrics.get('node_rmse_cm', 0.0)):.1f} cm",
                         flush=True,
                     )
                 except Exception as e:

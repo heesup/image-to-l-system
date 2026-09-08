@@ -25,6 +25,8 @@ from diffusion_based.dataset.part_array_dataset import (
     SCALE_SCALE,
     CURV_SCALE,
     EMPTY_IDX,
+    FM_OT_END,
+    FM_BASE_START,
     P_COL_ORGAN_TYPE,
     P_COL_BASE_X,
     P_COL_BASE_Z,
@@ -178,7 +180,6 @@ def evaluate_self_consistency_batch(
         gt_3d_depth = input_depth
         if "nodes" in val_batch:
             try:
-                from diffusion_based.dataset.part_array_dataset import FM_OT_END, FM_BASE_START
                 gt_nodes_b = val_batch["nodes"][b].to(device)
                 gt_types = gt_nodes_b[:, :FM_OT_END].argmax(dim=-1)
                 gt_exist = val_batch["existence_mask"][b].to(device)
@@ -270,6 +271,57 @@ def evaluate_self_consistency_batch(
             except Exception:
                 im_helios = None
 
+        # Extract Ground-Truth & Predicted 3D Botanical Nodes
+        gt_nodes = np.zeros((0, 3), dtype=np.float32)
+        if "nodes" in val_batch:
+            try:
+                gt_nodes_raw = val_batch["nodes"][b]
+                gt_types_b = gt_nodes_raw[:, :FM_OT_END].argmax(dim=-1).cpu().numpy()
+                gt_exist_b = val_batch["existence_mask"][b].cpu().numpy() if "existence_mask" in val_batch else np.ones_like(gt_types_b)
+                act_gt_mask = (gt_types_b > EMPTY_IDX) & (gt_exist_b > 0.5)
+
+                if act_gt_mask.any():
+                    gt_pos_metric = (gt_nodes_raw[act_gt_mask, FM_BASE_START:FM_BASE_START+3] / BASE_SCALE).cpu().numpy()
+                    act_types_sub = gt_types_b[act_gt_mask]
+
+                    # Physical Nodes: Petiole bases (type 4) + standalone internodes (type 3)
+                    pet_idx = np.where(act_types_sub == 4)[0]
+                    if len(pet_idx) > 0:
+                        gt_nodes = gt_pos_metric[pet_idx]
+                        in_idx = np.where(act_types_sub == 3)[0]
+                        if len(in_idx) > 0:
+                            dists = np.linalg.norm(gt_pos_metric[in_idx, None, :] - gt_nodes[None, :, :], axis=-1).min(axis=1)
+                            standalone = in_idx[dists > 0.04]
+                            if len(standalone) > 0:
+                                gt_nodes = np.concatenate([gt_nodes, gt_pos_metric[standalone]], axis=0)
+                    else:
+                        in_idx = np.where(act_types_sub == 3)[0]
+                        gt_nodes = gt_pos_metric[in_idx] if len(in_idx) > 0 else gt_pos_metric[:16]
+            except Exception:
+                gt_nodes = np.zeros((0, 3), dtype=np.float32)
+
+        # Predicted 3D Nodes
+        pred_nodes = np.zeros((0, 3), dtype=np.float32)
+        node_rmse_cm = 0.0
+        if "anchor_pos" in sample_out:
+            try:
+                pred_pos_raw = (sample_out["anchor_pos"][b] / BASE_SCALE).cpu().numpy()
+                pred_exist_raw = sample_out["anchor_existence"][b].cpu().numpy() if "anchor_existence" in sample_out else np.ones(len(pred_pos_raw))
+
+                k_target = max(len(gt_nodes), 8)
+                active_anc_mask = pred_exist_raw > 0.35
+                if active_anc_mask.sum() >= 4:
+                    pred_nodes = pred_pos_raw[active_anc_mask]
+                else:
+                    top_k_idx = np.argsort(-pred_exist_raw)[:k_target]
+                    pred_nodes = pred_pos_raw[top_k_idx]
+
+                if len(pred_nodes) > 0 and len(gt_nodes) > 0:
+                    dists = np.linalg.norm(pred_nodes[:, None, :] - gt_nodes[None, :, :], axis=-1).min(axis=1)
+                    node_rmse_cm = float(np.sqrt(np.mean(dists ** 2)) * 100.0)
+            except Exception:
+                pass
+
         panels_data.append({
             "dap": dap_val,
             "im_helios": im_helios,
@@ -280,19 +332,23 @@ def evaluate_self_consistency_batch(
             "iou": iou,
             "depth_mae": depth_mae_3d_gt,
             "active_organs": int(active_parts.shape[0]),
+            "gt_nodes": gt_nodes,
+            "pred_nodes": pred_nodes,
+            "node_rmse_cm": node_rmse_cm,
         })
 
-    # 6. Build Diagnostic Visualization Figure (6 Columns: Helios Ref + 2x2 RGB + 2x2 Depth + 3D Preds & Error)
+    # 6. Build Diagnostic Visualization Figure (7 Columns: Helios Ref + 2x2 RGB + 2x2 Depth + 3D Preds & Error + 3D Nodes)
     if panels_data:
         n_rows = len(panels_data)
-        fig, axes = plt.subplots(n_rows, 6, figsize=(20, 3.4 * n_rows), facecolor="#12151a")
+        fig, axes = plt.subplots(n_rows, 7, figsize=(23.5, 3.4 * n_rows), facecolor="#12151a")
         if n_rows == 1:
             axes = np.expand_dims(axes, axis=0)
 
-        plt.subplots_adjust(wspace=0.10, hspace=0.25, left=0.03, right=0.97, top=0.88, bottom=0.04)
+        mean_node_rmse = np.mean([d["node_rmse_cm"] for d in panels_data])
+        plt.subplots_adjust(wspace=0.12, hspace=0.25, left=0.03, right=0.97, top=0.82, bottom=0.04)
         fig.suptitle(
-            f"Hierarchical Flow Matching: Multi-Scale 2x2 Pyramid Conditioning & 3D Reconstruction (Epoch {epoch:03d})\n"
-            f"Mean Silhouette IoU: {np.mean(ious)*100:.1f}% | Mean 3D Depth MAE: {np.mean(depth_maes)*100:.2f} cm",
+            f"Hierarchical Flow Matching: 3D Reconstruction & Botanical Node Estimation (Epoch {epoch:03d})\n"
+            f"Mean Silhouette IoU: {np.mean(ious)*100:.1f}% | Depth MAE: {np.mean(depth_maes)*100:.2f} cm | Node RMSE: {mean_node_rmse:.1f} cm",
             fontsize=15, fontweight="bold", color="#f0f4f8", y=0.96
         )
 
@@ -303,6 +359,7 @@ def evaluate_self_consistency_batch(
             "3. Pred 3D Mesh\n(Reconstruction)",
             "4. Pred 3D Depth\n(CHM Height)",
             "5. Depth Error Heatmap\n|Pred - GT 3D|",
+            "6. 3D Skeleton Nodes\n(GT Cyan vs Pred Magenta)",
         ]
 
         for col_idx, title in enumerate(col_titles):
@@ -310,6 +367,8 @@ def evaluate_self_consistency_batch(
                 color = "#fbbf24"
             elif col_idx in (1, 2):
                 color = "#38bdf8"
+            elif col_idx == 6:
+                color = "#f43f5e"
             else:
                 color = "#34d399"
             axes[0, col_idx].set_title(title, fontsize=10, fontweight="bold", color=color, pad=8)
@@ -354,6 +413,49 @@ def evaluate_self_consistency_batch(
             axes[row_idx, 5].set_xlabel(f"Depth MAE: {data['depth_mae']*100:.2f} cm", fontsize=10, color="#f87171")
             axes[row_idx, 5].axis("off")
 
+            # Col 6: 3D Botanical Nodes (Front Elevation X-Z View)
+            ax_node = axes[row_idx, 6]
+            ax_node.set_facecolor("#181c24")
+            ax_node.axhline(0, color="#64748b", linestyle="--", linewidth=1.0, alpha=0.5)
+
+            # Ground Truth stem spine & nodes (Cyan circles)
+            if len(data["gt_nodes"]) > 0:
+                if len(data["gt_nodes"]) > 1:
+                    sort_z = np.argsort(data["gt_nodes"][:, 2])
+                    ax_node.plot(
+                        data["gt_nodes"][sort_z, 0] * 100, data["gt_nodes"][sort_z, 2] * 100,
+                        color="#06b6d4", linestyle="-", linewidth=1.8, alpha=0.5, zorder=3
+                    )
+                ax_node.scatter(
+                    data["gt_nodes"][:, 0] * 100, data["gt_nodes"][:, 2] * 100,
+                    c="#06b6d4", s=70, edgecolors="white", linewidth=1.2,
+                    label=f"GT Node (N={len(data['gt_nodes'])})", zorder=4
+                )
+
+            # Predicted 3D nodes (Magenta diamonds)
+            if len(data["pred_nodes"]) > 0:
+                ax_node.scatter(
+                    data["pred_nodes"][:, 0] * 100, data["pred_nodes"][:, 2] * 100,
+                    c="#f43f5e", marker="D", s=60, edgecolors="white", linewidth=1.2,
+                    label=f"Pred Node (K={len(data['pred_nodes'])})", zorder=5
+                )
+
+            # Draw displacement error vectors
+            if len(data["gt_nodes"]) > 0 and len(data["pred_nodes"]) > 0:
+                for p in data["pred_nodes"]:
+                    dists = np.linalg.norm(data["gt_nodes"] - p, axis=1)
+                    g_near = data["gt_nodes"][np.argmin(dists)]
+                    ax_node.plot(
+                        [g_near[0] * 100, p[0] * 100], [g_near[2] * 100, p[2] * 100],
+                        color="#94a3b8", linestyle=":", linewidth=1.0, alpha=0.7, zorder=3
+                    )
+
+            ax_node.set_xlabel(f"X Width [cm]\nRMSE: {data['node_rmse_cm']:.1f} cm", color="#38bdf8", fontsize=9, fontweight="bold")
+            ax_node.set_ylabel("Z Height [cm]", color="#cbd5e1", fontsize=9)
+            ax_node.tick_params(colors="#94a3b8", labelsize=8)
+            ax_node.grid(True, linestyle="--", alpha=0.25, color="#94a3b8")
+            ax_node.legend(facecolor="#12151a", edgecolor="#334155", labelcolor="#f8fafc", fontsize=7.5, loc="upper left")
+
         panel_path = os.path.join(output_dir, f"hierarchical_self_consistency_epoch_{epoch:03d}.png")
         fig.savefig(panel_path, dpi=120, bbox_inches="tight", facecolor=fig.get_facecolor())
         plt.close(fig)
@@ -364,10 +466,15 @@ def evaluate_self_consistency_batch(
                 "val/silhouette_iou": float(np.mean(ious)),
                 "val/depth_mae": float(np.mean(depth_maes)),
                 "val/peak_height_error": float(np.mean(peak_height_diffs)),
+                "val/node_rmse_cm": float(mean_node_rmse),
                 "val/self_consistency_panel": wandb.Image(panel_path),
             }, step=epoch)
 
     return {
+        "val/silhouette_iou": float(np.mean(ious)) if ious else 0.0,
+        "val/depth_mae": float(np.mean(depth_maes)) if depth_maes else 0.0,
+        "val/peak_height_error": float(np.mean(peak_height_diffs)) if peak_height_diffs else 0.0,
+        "val/node_rmse_cm": float(np.mean([d["node_rmse_cm"] for d in panels_data])) if panels_data else 0.0,
         "silhouette_iou": float(np.mean(ious)) if ious else 0.0,
         "depth_mae": float(np.mean(depth_maes)) if depth_maes else 0.0,
         "peak_height_error": float(np.mean(peak_height_diffs)) if peak_height_diffs else 0.0,
