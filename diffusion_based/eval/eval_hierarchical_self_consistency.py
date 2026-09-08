@@ -11,7 +11,7 @@ Validates 3D-to-2D consistency by:
 """
 
 import os
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 import numpy as np
 from PIL import Image
 import torch
@@ -73,6 +73,36 @@ def decode_predictions_to_part_tensor(
     # 14D part layout: [type(1), base(3), rot6d(6), scale(3), curv(1)]
     part_tensor = torch.cat([cls_col, base_xyz, rot6d, scale_xyz, curv_val], dim=-1)
     return part_tensor
+
+
+def rot6d_to_matrix(rot_6d: torch.Tensor) -> torch.Tensor:
+    """Converts 6D continuous rotation representation to 3x3 rotation matrix via Gram-Schmidt."""
+    u = rot_6d[:, :3]
+    v = rot_6d[:, 3:6]
+    u_norm = torch.linalg.norm(u, dim=-1, keepdim=True).clamp(min=1e-6)
+    r1 = u / u_norm
+    dot = (r1 * v).sum(dim=-1, keepdim=True)
+    v_ortho = v - dot * r1
+    v_norm = torch.linalg.norm(v_ortho, dim=-1, keepdim=True).clamp(min=1e-6)
+    r2 = v_ortho / v_norm
+    r3 = torch.linalg.cross(r1, r2)
+    return torch.stack([r1, r2, r3], dim=-1)
+
+
+def extract_stem_segments(parts: Optional[torch.Tensor]) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """Extracts true botanical stem tube segments (base [cm], tip [cm]) from internodes (type 3)."""
+    if parts is None or len(parts) == 0:
+        return []
+    internode_mask = (parts[:, 0] == 3)
+    inode_parts = parts[internode_mask]
+    if len(inode_parts) == 0:
+        return []
+    R = rot6d_to_matrix(inode_parts[:, 4:10])  # (M, 3, 3)
+    bases = (inode_parts[:, 1:4] * 100.0).cpu().numpy()  # [cm]
+    lengths = (inode_parts[:, 10] * 100.0).cpu().numpy()  # [cm]
+    fwds = R[:, :, 1].cpu().numpy()  # forward axis (Y-axis along stem)
+    tips = bases + fwds * lengths[:, None]
+    return list(zip(bases, tips))
 
 
 def make_2x2_rgb(img_tensor: torch.Tensor) -> np.ndarray:
@@ -337,7 +367,20 @@ def evaluate_self_consistency_batch(
             except Exception:
                 pass
 
-        pred_num_phy = float(sample_out["pred_num_phytomers"][b].item()) if "pred_num_phytomers" in sample_out else None
+        # Extract True Botanical Stem Segments (Internode tubes)
+        pred_stem_segments = extract_stem_segments(active_parts)
+        gt_stem_segments = []
+        if "nodes" in val_batch:
+            try:
+                gt_parts = decode_predictions_to_part_tensor(
+                    gt_nodes_raw[:, FM_BASE_START:],
+                    torch.from_numpy(gt_types_b).to(device) if isinstance(gt_types_b, np.ndarray) else gt_types_b,
+                    torch.from_numpy(gt_exist_b).to(device) if isinstance(gt_exist_b, np.ndarray) else gt_exist_b,
+                    device=device,
+                )
+                gt_stem_segments = extract_stem_segments(gt_parts)
+            except Exception:
+                gt_stem_segments = []
 
         panels_data.append({
             "dap": dap_val,
@@ -356,6 +399,8 @@ def evaluate_self_consistency_batch(
             "pred_point_cloud": pred_point_cloud,
             "pred_num_phy": pred_num_phy,
             "gt_num_phy": len(gt_nodes),
+            "gt_stem_segments": gt_stem_segments,
+            "pred_stem_segments": pred_stem_segments,
         })
 
     # 6. Build Diagnostic Visualization Figure (7 Columns: Helios Ref + 2x2 RGB + 2x2 Depth + 3D Preds & Error + True 3D Point Cloud)
@@ -452,21 +497,35 @@ def evaluate_self_consistency_batch(
                     c="#fb923c", s=3.5, alpha=0.22, label="Pred Surface PC", depthshade=True
                 )
 
-            # 2. Stem Spines (GT bold cyan vs Pred magenta dashed)
-            if len(data["gt_nodes"]) > 1:
+            # 2. True Botanical Stem Trees (GT bold cyan vs Pred magenta dashed)
+            gt_segs = data.get("gt_stem_segments", [])
+            for i, (b_pos, tp_pos) in enumerate(gt_segs):
+                lbl = "GT Stem Tree" if i == 0 else ""
+                ax3d.plot(
+                    [b_pos[0], tp_pos[0]], [b_pos[1], tp_pos[1]], [b_pos[2], tp_pos[2]],
+                    color="#00e5ff", linestyle="-", linewidth=3.5, alpha=0.95, zorder=10,
+                    label=lbl
+                )
+            if len(gt_segs) == 0 and len(data["gt_nodes"]) > 1:
                 sort_z = np.argsort(data["gt_nodes"][:, 2])
                 ax3d.plot(
                     data["gt_nodes"][sort_z, 0] * 100, data["gt_nodes"][sort_z, 1] * 100, data["gt_nodes"][sort_z, 2] * 100,
-                    color="#00e5ff", linestyle="-", linewidth=3.8, alpha=0.95, zorder=10,
-                    label="GT Stem Spine"
+                    color="#00e5ff", linestyle="-", linewidth=2.5, alpha=0.7, zorder=10, label="GT Stem"
                 )
 
-            if len(data["pred_nodes"]) > 1:
+            pred_segs = data.get("pred_stem_segments", [])
+            for i, (b_pos, tp_pos) in enumerate(pred_segs):
+                lbl = "Pred Stem Tree" if i == 0 else ""
+                ax3d.plot(
+                    [b_pos[0], tp_pos[0]], [b_pos[1], tp_pos[1]], [b_pos[2], tp_pos[2]],
+                    color="#f43f5e", linestyle="--", linewidth=2.4, alpha=0.90, zorder=11,
+                    label=lbl
+                )
+            if len(pred_segs) == 0 and len(data["pred_nodes"]) > 1:
                 pred_sort_z = np.argsort(data["pred_nodes"][:, 2])
                 ax3d.plot(
                     data["pred_nodes"][pred_sort_z, 0] * 100, data["pred_nodes"][pred_sort_z, 1] * 100, data["pred_nodes"][pred_sort_z, 2] * 100,
-                    color="#f43f5e", linestyle="--", linewidth=2.6, alpha=0.90, zorder=11,
-                    label="Pred Stem Spine"
+                    color="#f43f5e", linestyle="--", linewidth=2.0, alpha=0.7, zorder=11, label="Pred Stem"
                 )
 
             # 3. Botanical Nodes (Crisp beads on strings)
