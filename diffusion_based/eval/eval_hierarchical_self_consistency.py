@@ -416,28 +416,40 @@ def evaluate_self_consistency_batch(
             # Col 6: 3D Botanical Nodes (Front Elevation X-Z View)
             ax_node = axes[row_idx, 6]
             ax_node.set_facecolor("#181c24")
-            ax_node.axhline(0, color="#64748b", linestyle="--", linewidth=1.0, alpha=0.5)
+            ax_node.axhline(0, color="#64748b", linestyle="--", linewidth=1.2, alpha=0.6, label="Soil Line (Z=0)")
 
             # Ground Truth stem spine & nodes (Cyan circles)
             if len(data["gt_nodes"]) > 0:
+                sort_z = np.argsort(data["gt_nodes"][:, 2])
                 if len(data["gt_nodes"]) > 1:
-                    sort_z = np.argsort(data["gt_nodes"][:, 2])
                     ax_node.plot(
                         data["gt_nodes"][sort_z, 0] * 100, data["gt_nodes"][sort_z, 2] * 100,
-                        color="#06b6d4", linestyle="-", linewidth=1.8, alpha=0.5, zorder=3
+                        color="#00e5ff", linestyle="-", linewidth=2.8, alpha=0.8, zorder=5,
+                        label="GT Stem Spine"
                     )
                 ax_node.scatter(
                     data["gt_nodes"][:, 0] * 100, data["gt_nodes"][:, 2] * 100,
-                    c="#06b6d4", s=70, edgecolors="white", linewidth=1.2,
-                    label=f"GT Node (N={len(data['gt_nodes'])})", zorder=4
+                    c="#00e5ff", s=130, edgecolors="white", linewidth=1.8,
+                    label=f"GT Node (N={len(data['gt_nodes'])})", zorder=6
+                )
+                # Label highest GT botanical node (Apex)
+                apex_idx = sort_z[-1]
+                apex_x_cm = data["gt_nodes"][apex_idx, 0] * 100
+                apex_z_cm = data["gt_nodes"][apex_idx, 2] * 100
+                ax_node.text(
+                    apex_x_cm - 0.25, apex_z_cm + 0.12,
+                    f"GT Top ({apex_z_cm:.1f}cm)",
+                    color="#38bdf8", fontsize=8, fontweight="bold", ha="right", va="bottom",
+                    bbox=dict(boxstyle="round,pad=0.2", facecolor="#0f172a", edgecolor="#00e5ff", alpha=0.85),
+                    zorder=8
                 )
 
             # Predicted 3D nodes (Magenta diamonds)
             if len(data["pred_nodes"]) > 0:
                 ax_node.scatter(
                     data["pred_nodes"][:, 0] * 100, data["pred_nodes"][:, 2] * 100,
-                    c="#f43f5e", marker="D", s=60, edgecolors="white", linewidth=1.2,
-                    label=f"Pred Node (K={len(data['pred_nodes'])})", zorder=5
+                    c="#f43f5e", marker="D", s=85, edgecolors="white", linewidth=1.4,
+                    label=f"Pred Node (K={len(data['pred_nodes'])})", zorder=7
                 )
 
             # Draw displacement error vectors
@@ -447,14 +459,33 @@ def evaluate_self_consistency_batch(
                     g_near = data["gt_nodes"][np.argmin(dists)]
                     ax_node.plot(
                         [g_near[0] * 100, p[0] * 100], [g_near[2] * 100, p[2] * 100],
-                        color="#94a3b8", linestyle=":", linewidth=1.0, alpha=0.7, zorder=3
+                        color="#94a3b8", linestyle=":", linewidth=1.1, alpha=0.7, zorder=4
                     )
+
+            # Symmetrically center X-axis around 0 so plant stem sits prominently in the center
+            all_x = []
+            all_z = []
+            if len(data["gt_nodes"]) > 0:
+                all_x.append(data["gt_nodes"][:, 0] * 100)
+                all_z.append(data["gt_nodes"][:, 2] * 100)
+            if len(data["pred_nodes"]) > 0:
+                all_x.append(data["pred_nodes"][:, 0] * 100)
+                all_z.append(data["pred_nodes"][:, 2] * 100)
+
+            if all_x:
+                all_x_arr = np.concatenate(all_x)
+                all_z_arr = np.concatenate(all_z)
+                x_limit = max(float(np.abs(all_x_arr).max() * 1.3), 2.0)
+                z_min = min(-1.0, float(all_z_arr.min() * 1.15))
+                z_max = max(1.5, float(all_z_arr.max() * 1.35))
+                ax_node.set_xlim(-x_limit, x_limit)
+                ax_node.set_ylim(z_min, z_max)
 
             ax_node.set_xlabel(f"X Width [cm]\nRMSE: {data['node_rmse_cm']:.1f} cm", color="#38bdf8", fontsize=9, fontweight="bold")
             ax_node.set_ylabel("Z Height [cm]", color="#cbd5e1", fontsize=9)
             ax_node.tick_params(colors="#94a3b8", labelsize=8)
             ax_node.grid(True, linestyle="--", alpha=0.25, color="#94a3b8")
-            ax_node.legend(facecolor="#12151a", edgecolor="#334155", labelcolor="#f8fafc", fontsize=7.5, loc="upper left")
+            ax_node.legend(facecolor="#12151a", edgecolor="#334155", labelcolor="#f8fafc", fontsize=7.5, loc="upper right")
 
         panel_path = os.path.join(output_dir, f"hierarchical_self_consistency_epoch_{epoch:03d}.png")
         fig.savefig(panel_path, dpi=120, bbox_inches="tight", facecolor=fig.get_facecolor())
