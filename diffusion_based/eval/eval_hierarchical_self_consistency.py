@@ -213,9 +213,16 @@ def evaluate_self_consistency_batch(
                 pass
 
         # 4. Differentiably render predicted 3D plant mesh
+        pred_point_cloud = None
         if active_parts.shape[0] > 0:
             try:
                 mesh = renderer.geo_builder.build_mesh_from_part_tensor(active_parts, device=device)
+                if "vertices" in mesh and mesh["vertices"].shape[0] > 0:
+                    v_pred_np = (mesh["vertices"].detach().cpu().numpy() * 100.0)  # [cm]
+                    sub_n_p = min(len(v_pred_np), 800)
+                    sub_idx_p = np.random.choice(len(v_pred_np), sub_n_p, replace=False)
+                    pred_point_cloud = v_pred_np[sub_idx_p]
+
                 rendered_rgbd = renderer.forward(
                     mesh,
                     azimuth_deg=0.0,
@@ -346,6 +353,7 @@ def evaluate_self_consistency_batch(
             "pred_nodes": pred_nodes,
             "node_rmse_cm": node_rmse_cm,
             "gt_point_cloud": gt_point_cloud,
+            "pred_point_cloud": pred_point_cloud,
             "pred_num_phy": pred_num_phy,
             "gt_num_phy": len(gt_nodes),
         })
@@ -430,36 +438,51 @@ def evaluate_self_consistency_batch(
             if row_idx == 0:
                 ax3d.set_title(col_titles[6], fontsize=10, fontweight="bold", color="#f43f5e", pad=8)
 
-            # 1. Dense GT plant mesh surface point cloud (emerald green)
+            # 1. Surface Point Clouds (GT Emerald Green vs Pred Amber/Orange)
             if data.get("gt_point_cloud") is not None and len(data["gt_point_cloud"]) > 0:
                 pts = data["gt_point_cloud"]
                 ax3d.scatter(
                     pts[:, 0], pts[:, 1], pts[:, 2],
-                    c="#10b981", s=5, alpha=0.35, label="GT Surface PC", depthshade=True
+                    c="#10b981", s=3.5, alpha=0.22, label="GT Surface PC", depthshade=True
+                )
+            if data.get("pred_point_cloud") is not None and len(data["pred_point_cloud"]) > 0:
+                pred_pts = data["pred_point_cloud"]
+                ax3d.scatter(
+                    pred_pts[:, 0], pred_pts[:, 1], pred_pts[:, 2],
+                    c="#fb923c", s=3.5, alpha=0.22, label="Pred Surface PC", depthshade=True
                 )
 
-            # 2. GT Botanical stem spine & nodes (cyan)
-            if len(data["gt_nodes"]) > 0:
+            # 2. Stem Spines (GT bold cyan vs Pred magenta dashed)
+            if len(data["gt_nodes"]) > 1:
                 sort_z = np.argsort(data["gt_nodes"][:, 2])
-                if len(data["gt_nodes"]) > 1:
-                    ax3d.plot(
-                        data["gt_nodes"][sort_z, 0] * 100, data["gt_nodes"][sort_z, 1] * 100, data["gt_nodes"][sort_z, 2] * 100,
-                        color="#00e5ff", linestyle="-", linewidth=2.8, alpha=0.85, zorder=7,
-                        label="GT Stem Spine"
-                    )
+                ax3d.plot(
+                    data["gt_nodes"][sort_z, 0] * 100, data["gt_nodes"][sort_z, 1] * 100, data["gt_nodes"][sort_z, 2] * 100,
+                    color="#00e5ff", linestyle="-", linewidth=3.8, alpha=0.95, zorder=10,
+                    label="GT Stem Spine"
+                )
+
+            if len(data["pred_nodes"]) > 1:
+                pred_sort_z = np.argsort(data["pred_nodes"][:, 2])
+                ax3d.plot(
+                    data["pred_nodes"][pred_sort_z, 0] * 100, data["pred_nodes"][pred_sort_z, 1] * 100, data["pred_nodes"][pred_sort_z, 2] * 100,
+                    color="#f43f5e", linestyle="--", linewidth=2.6, alpha=0.90, zorder=11,
+                    label="Pred Stem Spine"
+                )
+
+            # 3. Botanical Nodes (Crisp beads on strings)
+            if len(data["gt_nodes"]) > 0:
                 ax3d.scatter(
                     data["gt_nodes"][:, 0] * 100, data["gt_nodes"][:, 1] * 100, data["gt_nodes"][:, 2] * 100,
-                    c="#00e5ff", s=110, edgecolors="white", linewidth=1.5,
-                    label=f"GT Node (N={len(data['gt_nodes'])})", zorder=8
+                    c="#00e5ff", s=30, edgecolors="white", linewidth=0.9,
+                    label=f"GT Node (N={len(data['gt_nodes'])})", zorder=12
                 )
 
-            # 3. Predicted 3D Anchor Nodes (magenta diamonds)
             if len(data["pred_nodes"]) > 0:
                 pred_phy_lbl = f", Est={data['pred_num_phy']:.1f}" if data.get("pred_num_phy") is not None else ""
                 ax3d.scatter(
                     data["pred_nodes"][:, 0] * 100, data["pred_nodes"][:, 1] * 100, data["pred_nodes"][:, 2] * 100,
-                    c="#f43f5e", marker="D", s=75, edgecolors="white", linewidth=1.3,
-                    label=f"Pred Node (K={len(data['pred_nodes'])}{pred_phy_lbl})", zorder=9
+                    c="#f43f5e", marker="D", s=26, edgecolors="white", linewidth=0.9,
+                    label=f"Pred Node (K={len(data['pred_nodes'])}{pred_phy_lbl})", zorder=13
                 )
 
             # 4. 3D Error displacement vectors
@@ -469,14 +492,14 @@ def evaluate_self_consistency_batch(
                     g_near = data["gt_nodes"][np.argmin(dists)]
                     ax3d.plot(
                         [g_near[0] * 100, p[0] * 100], [g_near[1] * 100, p[1] * 100], [g_near[2] * 100, p[2] * 100],
-                        color="#94a3b8", linestyle=":", linewidth=1.0, alpha=0.7, zorder=5
+                        color="#94a3b8", linestyle=":", linewidth=0.9, alpha=0.55, zorder=8
                     )
 
             ax3d.set_xlabel("X [cm]", color="#38bdf8", labelpad=-4, fontsize=7.5)
             ax3d.set_ylabel("Y [cm]", color="#cbd5e1", labelpad=-4, fontsize=7.5)
             ax3d.set_zlabel("Z [cm]", color="#a78bfa", labelpad=-4, fontsize=7.5)
             ax3d.tick_params(colors="#94a3b8", labelsize=6.5)
-            ax3d.legend(facecolor="#12151a", edgecolor="#334155", labelcolor="#f8fafc", fontsize=6.5, loc="upper left")
+            ax3d.legend(facecolor="#12151a", edgecolor="#334155", labelcolor="#f8fafc", fontsize=6.2, loc="upper left")
 
         panel_path = os.path.join(output_dir, f"hierarchical_self_consistency_epoch_{epoch:03d}.png")
         fig.savefig(panel_path, dpi=120, bbox_inches="tight", facecolor=fig.get_facecolor())
