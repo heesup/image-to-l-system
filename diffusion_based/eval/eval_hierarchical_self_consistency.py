@@ -107,7 +107,7 @@ def extract_stem_segments(parts: Optional[torch.Tensor]) -> List[Tuple[np.ndarra
 
 def make_2x2_rgb(img_tensor: torch.Tensor) -> np.ndarray:
     """Tiled 2x2 grid of RGB multi-scale zoom pyramid (1x, 2x, 4x, 8x)."""
-    if img_tensor.shape[0] < 16:
+    if img_tensor.shape[0] < 12:
         return (img_tensor[:3] * 0.5 + 0.5).clamp(0, 1).permute(1, 2, 0).cpu().numpy()
     rgbs = []
     for s in range(4):
@@ -126,7 +126,10 @@ def make_2x2_rgb(img_tensor: torch.Tensor) -> np.ndarray:
 def make_2x2_depth(img_tensor: torch.Tensor, cmap_name: str = "viridis") -> np.ndarray:
     """Tiled 2x2 grid of Depth multi-scale zoom pyramid (1x, 2x, 4x, 8x) in viridis."""
     cmap = plt.get_cmap(cmap_name)
-    if img_tensor.shape[0] < 16:
+    if img_tensor.shape[0] < 4:
+        h, w = img_tensor.shape[1], img_tensor.shape[2]
+        return np.zeros((h, w, 3), dtype=np.float32)
+    elif img_tensor.shape[0] < 16:
         d = img_tensor[3].cpu().numpy()
         norm_d = np.clip(d / max(0.15, float(d.max())), 0.0, 1.0)
         return cmap(norm_d)[:, :, :3]
@@ -211,6 +214,7 @@ def evaluate_self_consistency_batch(
         gt_3d_depth = input_depth
         gt_point_cloud = None
         gt_parts = None
+        gt_mesh = None
         if "nodes" in val_batch:
             try:
                 gt_nodes_b = val_batch["nodes"][b].to(device)
@@ -294,6 +298,41 @@ def evaluate_self_consistency_batch(
         ious.append(iou)
         depth_maes.append(depth_mae_3d_gt)
         peak_height_diffs.append(peak_err)
+
+        # Oblique 3D Real Mesh Composite (Cyan: GT, Amber: Pred, Blend: Overlap)
+        comp_img = None
+        try:
+            gt_cyan = None
+            if gt_mesh is not None and "vertices" in gt_mesh and gt_mesh["vertices"].shape[0] > 0:
+                gt_cyan_mesh = dict(gt_mesh)
+                gt_cyan_mesh["colors"] = torch.tensor([0.0, 0.90, 1.0], device=device).expand_as(gt_mesh["colors"])
+                gt_cyan = renderer.forward(
+                    gt_cyan_mesh, elevation_deg=30.0, azimuth_deg=-50.0, camera_height=4.0, focus_plant=True, include_depth=True
+                )
+
+            pred_amber = None
+            if active_parts.shape[0] > 0 and "vertices" in mesh and mesh["vertices"].shape[0] > 0:
+                pred_amber_mesh = dict(mesh)
+                pred_amber_mesh["colors"] = torch.tensor([0.98, 0.57, 0.24], device=device).expand_as(mesh["colors"])
+                pred_amber = renderer.forward(
+                    pred_amber_mesh, elevation_deg=30.0, azimuth_deg=-50.0, camera_height=4.0, focus_plant=True, include_depth=True
+                )
+
+            if gt_cyan is not None and pred_amber is not None:
+                mask_pred = (pred_amber[3] > 0.005).unsqueeze(0).expand(3, -1, -1)
+                mask_gt = (gt_cyan[3] > 0.005).unsqueeze(0).expand(3, -1, -1)
+                comp = torch.zeros_like(gt_cyan[:3])
+                comp = comp + renderer.COLOR_GROUND.to(device).view(3, 1, 1) * (~(mask_pred | mask_gt)).float()
+                comp = torch.where(mask_gt & ~mask_pred, gt_cyan[:3], comp)
+                comp = torch.where(mask_pred & ~mask_gt, pred_amber[:3], comp)
+                comp = torch.where(mask_pred & mask_gt, pred_amber[:3] * 0.7 + gt_cyan[:3] * 0.3, comp)
+                comp_img = comp.permute(1, 2, 0).clamp(0, 1).cpu().numpy()
+            elif gt_cyan is not None:
+                comp_img = gt_cyan[:3].permute(1, 2, 0).clamp(0, 1).cpu().numpy()
+            elif pred_amber is not None:
+                comp_img = pred_amber[:3].permute(1, 2, 0).clamp(0, 1).cpu().numpy()
+        except Exception:
+            comp_img = None
 
         dap_val = int(daps[b].item()) if daps is not None else 0
 
@@ -398,6 +437,7 @@ def evaluate_self_consistency_batch(
             "gt_num_phy": len(gt_nodes),
             "gt_stem_segments": gt_stem_segments,
             "pred_stem_segments": pred_stem_segments,
+            "comp_img": comp_img,
         })
 
     # 6. Build Diagnostic Visualization Figure (7 Columns: Helios Ref + 2x2 RGB + 2x2 Depth + 3D Preds & Error + True 3D Point Cloud)
@@ -417,22 +457,22 @@ def evaluate_self_consistency_batch(
             "0. Helios Raytrace\n(Reference - Not Trained)",
             "1. Drone RGB Pyramid\n(2x2: 1x, 2x / 4x, 8x)",
             "2. Drone Depth Pyramid\n(2x2: 1x, 2x / 4x, 8x)",
-            "3. Pred 3D Mesh\n(Reconstruction)",
-            "4. Pred 3D Depth\n(CHM Height)",
-            "5. Depth Error Heatmap\n|Pred - GT 3D|",
-            "6. 3D Point Cloud & Skeleton Nodes\n(GT Cyan vs Pred Magenta)",
+            "3. Pred 3D Mesh\n(Top-Down Reconstruction)",
+            "4. Pred 3D Depth\n(Canopy Height CHM)",
+            "5. Signed Depth Error\n(Blue: Under, Red: Over)",
+            "6. Oblique 3D Real Mesh\n(Cyan: GT, Amber: Pred)",
         ]
 
         for row_idx, data in enumerate(panels_data):
             vmax_d = max(0.3, float(data["gt_3d_depth"].max()))
 
-            # Create 2D subplots for Columns 0 to 5
+            # Create 2D subplots for all 7 Columns (0 to 6)
             axes_row = []
-            for col_idx in range(6):
+            for col_idx in range(7):
                 ax = fig.add_subplot(gs[row_idx, col_idx])
                 if row_idx == 0:
-                    color = "#fbbf24" if col_idx == 0 else ("#38bdf8" if col_idx in (1, 2) else "#34d399")
-                    ax.set_title(col_titles[col_idx], fontsize=10, fontweight="bold", color=color, pad=8)
+                    color = "#fbbf24" if col_idx == 0 else ("#38bdf8" if col_idx in (1, 2) else ("#34d399" if col_idx in (3, 4) else ("#38bdf8" if col_idx == 5 else "#00e5ff")))
+                    ax.set_title(col_titles[col_idx], fontsize=9.5, fontweight="bold", color=color, pad=8)
                 axes_row.append(ax)
 
             # Col 0: Helios Raytrace Reference
@@ -467,95 +507,20 @@ def evaluate_self_consistency_batch(
             axes_row[4].imshow(data["pred_depth"], cmap="viridis", vmin=0.0, vmax=vmax_d)
             axes_row[4].axis("off")
 
-            # Col 5: Depth Error Heatmap
-            diff = np.abs(data["pred_depth"] - data["gt_3d_depth"])
-            axes_row[5].imshow(diff, cmap="magma", vmin=0.0, vmax=0.20)
-            axes_row[5].set_xlabel(f"Depth MAE: {data['depth_mae']*100:.2f} cm", fontsize=10, color="#f87171")
+            # Col 5: Signed Depth Error Heatmap (BWR: Blue=Under/GT missing, Red=Over/Pred extra)
+            signed_diff = data["pred_depth"] - data["gt_3d_depth"]
+            axes_row[5].imshow(signed_diff, cmap="bwr", vmin=-0.15, vmax=0.15)
+            axes_row[5].set_xlabel(f"MAE: {data['depth_mae']*100:.2f} cm\n(Blue: Under, Red: Over)", fontsize=8.5, color="#38bdf8")
             axes_row[5].axis("off")
 
-            # Col 6: True 3D Point Cloud & Botanical Nodes (3D Perspective Projection)
-            ax3d = fig.add_subplot(gs[row_idx, 6], projection="3d")
-            ax3d.set_facecolor("#181c24")
-            ax3d.view_init(elev=22, azim=-55)
-            if row_idx == 0:
-                ax3d.set_title(col_titles[6], fontsize=10, fontweight="bold", color="#f43f5e", pad=8)
-
-            # 1. Surface Point Clouds (GT Emerald Green vs Pred Amber/Orange)
-            if data.get("gt_point_cloud") is not None and len(data["gt_point_cloud"]) > 0:
-                pts = data["gt_point_cloud"]
-                ax3d.scatter(
-                    pts[:, 0], pts[:, 1], pts[:, 2],
-                    c="#10b981", s=3.5, alpha=0.22, label="GT Surface PC", depthshade=True
-                )
-            if data.get("pred_point_cloud") is not None and len(data["pred_point_cloud"]) > 0:
-                pred_pts = data["pred_point_cloud"]
-                ax3d.scatter(
-                    pred_pts[:, 0], pred_pts[:, 1], pred_pts[:, 2],
-                    c="#fb923c", s=3.5, alpha=0.22, label="Pred Surface PC", depthshade=True
-                )
-
-            # 2. True Botanical Stem Trees (GT bold cyan vs Pred magenta dashed)
-            gt_segs = data.get("gt_stem_segments", [])
-            for i, (b_pos, tp_pos) in enumerate(gt_segs):
-                lbl = "GT Stem Tree" if i == 0 else ""
-                ax3d.plot(
-                    [b_pos[0], tp_pos[0]], [b_pos[1], tp_pos[1]], [b_pos[2], tp_pos[2]],
-                    color="#00e5ff", linestyle="-", linewidth=3.5, alpha=0.95, zorder=10,
-                    label=lbl
-                )
-            if len(gt_segs) == 0 and len(data["gt_nodes"]) > 1:
-                sort_z = np.argsort(data["gt_nodes"][:, 2])
-                ax3d.plot(
-                    data["gt_nodes"][sort_z, 0] * 100, data["gt_nodes"][sort_z, 1] * 100, data["gt_nodes"][sort_z, 2] * 100,
-                    color="#00e5ff", linestyle="-", linewidth=2.5, alpha=0.7, zorder=10, label="GT Stem"
-                )
-
-            pred_segs = data.get("pred_stem_segments", [])
-            for i, (b_pos, tp_pos) in enumerate(pred_segs):
-                lbl = "Pred Stem Tree" if i == 0 else ""
-                ax3d.plot(
-                    [b_pos[0], tp_pos[0]], [b_pos[1], tp_pos[1]], [b_pos[2], tp_pos[2]],
-                    color="#f43f5e", linestyle="--", linewidth=2.4, alpha=0.90, zorder=11,
-                    label=lbl
-                )
-            if len(pred_segs) == 0 and len(data["pred_nodes"]) > 1:
-                pred_sort_z = np.argsort(data["pred_nodes"][:, 2])
-                ax3d.plot(
-                    data["pred_nodes"][pred_sort_z, 0] * 100, data["pred_nodes"][pred_sort_z, 1] * 100, data["pred_nodes"][pred_sort_z, 2] * 100,
-                    color="#f43f5e", linestyle="--", linewidth=2.0, alpha=0.7, zorder=11, label="Pred Stem"
-                )
-
-            # 3. Botanical Nodes (Crisp beads on strings)
-            if len(data["gt_nodes"]) > 0:
-                ax3d.scatter(
-                    data["gt_nodes"][:, 0] * 100, data["gt_nodes"][:, 1] * 100, data["gt_nodes"][:, 2] * 100,
-                    c="#00e5ff", s=30, edgecolors="white", linewidth=0.9,
-                    label=f"GT Node (N={len(data['gt_nodes'])})", zorder=12
-                )
-
-            if len(data["pred_nodes"]) > 0:
-                pred_phy_lbl = f", Est={data['pred_num_phy']:.1f}" if data.get("pred_num_phy") is not None else ""
-                ax3d.scatter(
-                    data["pred_nodes"][:, 0] * 100, data["pred_nodes"][:, 1] * 100, data["pred_nodes"][:, 2] * 100,
-                    c="#f43f5e", marker="D", s=26, edgecolors="white", linewidth=0.9,
-                    label=f"Pred Node (K={len(data['pred_nodes'])}{pred_phy_lbl})", zorder=13
-                )
-
-            # 4. 3D Error displacement vectors
-            if len(data["gt_nodes"]) > 0 and len(data["pred_nodes"]) > 0:
-                for p in data["pred_nodes"]:
-                    dists = np.linalg.norm(data["gt_nodes"] - p, axis=1)
-                    g_near = data["gt_nodes"][np.argmin(dists)]
-                    ax3d.plot(
-                        [g_near[0] * 100, p[0] * 100], [g_near[1] * 100, p[1] * 100], [g_near[2] * 100, p[2] * 100],
-                        color="#94a3b8", linestyle=":", linewidth=0.9, alpha=0.55, zorder=8
-                    )
-
-            ax3d.set_xlabel("X [cm]", color="#38bdf8", labelpad=-4, fontsize=7.5)
-            ax3d.set_ylabel("Y [cm]", color="#cbd5e1", labelpad=-4, fontsize=7.5)
-            ax3d.set_zlabel("Z [cm]", color="#a78bfa", labelpad=-4, fontsize=7.5)
-            ax3d.tick_params(colors="#94a3b8", labelsize=6.5)
-            ax3d.legend(facecolor="#12151a", edgecolor="#334155", labelcolor="#f8fafc", fontsize=6.2, loc="upper left")
+            # Col 6: Oblique 3D Real Mesh Composite (Cyan: GT, Amber: Pred, Blend: Overlap)
+            if data.get("comp_img") is not None:
+                axes_row[6].imshow(data["comp_img"])
+                rmse_str = f" | RMSE: {data['node_rmse_cm']:.1f} cm" if data.get("node_rmse_cm") else ""
+                axes_row[6].set_xlabel(f"Real 3D Mesh{rmse_str}\n(Cyan: GT, Amber: Pred)", fontsize=8.5, color="#00e5ff")
+            else:
+                axes_row[6].text(0.5, 0.5, "Mesh N/A", color="#94a3b8", ha="center", va="center")
+            axes_row[6].axis("off")
 
         panel_path = os.path.join(output_dir, f"hierarchical_self_consistency_epoch_{epoch:03d}.png")
         fig.savefig(panel_path, dpi=120, bbox_inches="tight", facecolor=fig.get_facecolor())
