@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from diffusion_based.models.vit_image_encoder import ViTImageEncoder
+from diffusion_based.models.dinov2_ray_encoder import DINOv2RayEncoder
 from diffusion_based.dataset.part_array_dataset import (
     BASE_SCALE,
     SCALE_SCALE,
@@ -69,7 +69,7 @@ class CoarseSkeletalTransformer(nn.Module):
     """Stage 1: Deterministic Set Transformer predicting coarse 3D skeletal anchors.
 
     Predicts 3D base coordinates, 6D orientation, and existence logits for K anchors.
-    Also includes an auxiliary DAP prediction head for in-the-wild inputs without metadata.
+    Uses DETR3D / PETR style 3D reference coordinates and 3D positional encoding.
     """
 
     def __init__(
@@ -83,11 +83,23 @@ class CoarseSkeletalTransformer(nn.Module):
         self.max_anchors = max_anchors
         self.embed_dim = embed_dim
 
-        # Matryoshka nested query embeddings
+        # Content query
         self.anchor_queries = nn.Parameter(torch.randn(max_anchors, embed_dim) * 0.02)
-        self.anchor_pos_emb = nn.Embedding(max_anchors, embed_dim)
 
-        # Decoder layers for cross-attention to image tokens
+        # 3D Reference Points (DETR3D / PETR style): initialized across canonical plant envelope
+        # x, y in [-0.5, 0.5], z vertically ascending in [0.0, 1.0]
+        init_ref = torch.randn(max_anchors, 3) * 0.15
+        init_ref[:, 2] = torch.linspace(0.0, 1.0, max_anchors)  # Vertical upward growth prior
+        self.ref_points = nn.Parameter(init_ref)
+
+        # 3D Positional Encoder for reference points
+        self.ref_pos_mlp = nn.Sequential(
+            nn.Linear(3, embed_dim),
+            nn.GELU(),
+            nn.Linear(embed_dim, embed_dim),
+        )
+
+        # Decoder layers for cross-attention to 3D visual tokens
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=embed_dim,
             nhead=num_heads,
@@ -100,7 +112,7 @@ class CoarseSkeletalTransformer(nn.Module):
         self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
 
         # Prediction Heads
-        # 1. Anchor 3D base position (x, y, z) in normalized scale (multiplied by BASE_SCALE=20.0)
+        # 1. Delta 3D position relative to 3D reference points
         self.pos_head = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
             nn.GELU(),
@@ -135,7 +147,7 @@ class CoarseSkeletalTransformer(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         """
         Args:
-            image_tokens: (B, T, embed_dim) visual tokens from ViT.
+            image_tokens: (B, T, embed_dim) 3D-aware visual tokens from DINOv2RayEncoder.
             active_k: Optional sliced anchor count (e.g. 16, 64, 128, 512).
         Returns:
             Dict containing:
@@ -147,24 +159,24 @@ class CoarseSkeletalTransformer(nn.Module):
         """
         B = image_tokens.shape[0]
         K = active_k if active_k is not None else self.max_anchors
-        device = image_tokens.device
 
-        # Slice Matryoshka queries for target scale
-        queries = self.anchor_queries[:K].unsqueeze(0).expand(B, -1, -1)
-        pos_emb = self.anchor_pos_emb(torch.arange(K, device=device)).unsqueeze(0).expand(B, -1, -1)
-        q = queries + pos_emb
+        # Query = Content embedding + 3D Positional Encoding of reference points
+        q_content = self.anchor_queries[:K].unsqueeze(0).expand(B, -1, -1)
+        q_pos = self.ref_pos_mlp(self.ref_points[:K]).unsqueeze(0).expand(B, -1, -1)
+        q = q_content + q_pos
 
-        # Cross-attend with image tokens
+        # Cross-attend with 3D-aware image tokens
         anchor_features = self.decoder(q, image_tokens)
 
-        # Heads
-        anchor_pos = self.pos_head(anchor_features)
+        # Heads: predict coordinate offset from 3D reference points
+        delta_pos = self.pos_head(anchor_features)
+        anchor_pos = self.ref_points[:K].unsqueeze(0) + delta_pos
         anchor_rot = self.rot_head(anchor_features)
         anchor_logits = self.exist_head(anchor_features)
 
-        # Auxiliary DAP estimation from global image token pool
-        pooled_img = image_tokens.mean(dim=1)
-        pred_dap = F.relu(self.dap_head(pooled_img)) * 100.0  # Scale ~[0, 100]
+        # Auxiliary DAP estimation from global image token pool (token 0 is CLS)
+        cls_token = image_tokens[:, 0]
+        pred_dap = F.relu(self.dap_head(cls_token)) * 100.0  # Scale ~[0, 100]
 
         return {
             "anchor_pos": anchor_pos,
@@ -370,14 +382,11 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         self.num_classes = num_classes
         self.embed_dim = embed_dim
 
-        # 1. Multi-scale ViT Image Encoder (RGB + CHM depth: 4 channels)
-        self.image_encoder = ViTImageEncoder(
-            image_size=image_size,
-            patch_size=patch_size,
-            in_channels=4,
+        # 1. Pretrained DINOv2 Backbone with 3D Camera Ray Positional Embedding (PETR style)
+        self.image_encoder = DINOv2RayEncoder(
+            pretrained=True,
+            freeze_backbone=False,
             embed_dim=embed_dim,
-            num_layers=vit_layers,
-            num_heads=vit_heads,
         )
 
         # 2. Stage 1 Coarse Skeletal Transformer

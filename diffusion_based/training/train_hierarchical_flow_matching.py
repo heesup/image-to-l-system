@@ -665,9 +665,28 @@ def main():
         state_dict = ckpt.get("model_state_dict", ckpt)
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
         if rank == 0:
-            print(f"Warm-start loaded successfully! Missing keys (newly initialized): {len(missing)}, Unexpected: {len(unexpected)}")
+            print(f"Warm-start loaded successfully! Missing keys: {len(missing)}, Unexpected: {len(unexpected)}")
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    # Parameter groups: DINOv2 backbone uses 0.1x learning rate (e.g. 2e-5) to preserve foundation priors
+    backbone_params = []
+    other_params = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if "image_encoder.backbone" in name:
+            backbone_params.append(param)
+        else:
+            other_params.append(param)
+
+    if rank == 0:
+        print(f"Optimizer setup: {len(backbone_params)} DINOv2 backbone tensors (lr={args.lr * 0.1:.1e}), "
+              f"{len(other_params)} 3D/decoder tensors (lr={args.lr:.1e})")
+
+    param_groups = [
+        {"params": backbone_params, "lr": args.lr * 0.1},
+        {"params": other_params, "lr": args.lr},
+    ]
+    optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
     flow_scheduler = FlowMatchingScheduler()
     matcher = HierarchicalBotanicalMatcher(slots_per_anchor=args.slots_per_anchor).to(device)
