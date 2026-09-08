@@ -210,6 +210,7 @@ def evaluate_self_consistency_batch(
         gt_3d_rgb = input_rgb
         gt_3d_depth = input_depth
         gt_point_cloud = None
+        gt_parts = None
         if "nodes" in val_batch:
             try:
                 gt_nodes_b = val_batch["nodes"][b].to(device)
@@ -370,17 +371,13 @@ def evaluate_self_consistency_batch(
         # Extract True Botanical Stem Segments (Internode tubes)
         pred_stem_segments = extract_stem_segments(active_parts)
         gt_stem_segments = []
-        if "nodes" in val_batch:
+        if gt_parts is not None and gt_parts.shape[0] > 0:
             try:
-                gt_parts = decode_predictions_to_part_tensor(
-                    gt_nodes_raw[:, FM_BASE_START:],
-                    torch.from_numpy(gt_types_b).to(device) if isinstance(gt_types_b, np.ndarray) else gt_types_b,
-                    torch.from_numpy(gt_exist_b).to(device) if isinstance(gt_exist_b, np.ndarray) else gt_exist_b,
-                    device=device,
-                )
                 gt_stem_segments = extract_stem_segments(gt_parts)
             except Exception:
                 gt_stem_segments = []
+
+        pred_num_phy = float(sample_out["pred_num_phytomers"][b].item()) if ("pred_num_phytomers" in sample_out and sample_out["pred_num_phytomers"] is not None) else None
 
         panels_data.append({
             "dap": dap_val,
