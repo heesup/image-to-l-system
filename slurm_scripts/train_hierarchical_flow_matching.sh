@@ -71,6 +71,6 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     --render_ratio 0.25 \
     --save_every 25 \
     --wandb_project part-flow-matching \
-    --wandb_run_name "hierarchical-latent-flow-matching-cowpea"
+    --wandb_run_name "hierarchical-dinov2-phytomer-fm-500ep"
 
 echo "Training Completed at $(date)"
