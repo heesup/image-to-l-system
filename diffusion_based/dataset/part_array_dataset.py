@@ -88,6 +88,17 @@ FM_SCALE_END = FM_ROT_END + 3     # 25
 FM_CURV = FM_SCALE_END            # 25
 FM_NODE_DIM = FM_CURV + 1         # 26
 
+# Two-Stage 13D Pure Geometry Layout (no one-hot block):
+#   [Base(3), Rot6D(6), Scale(3), Curvature(1)] = 13D
+GEOM_BASE_START = 0
+GEOM_BASE_END = 3
+GEOM_ROT_START = 3
+GEOM_ROT_END = 9
+GEOM_SCALE_START = 9
+GEOM_SCALE_END = 12
+GEOM_CURV = 12
+GEOM_NODE_DIM = 13
+
 # Curvature normalization: cowpea shard curvature values concentrate in
 # [-60, 60] deg/m with std ~18.3; scale by 1/60 to keep ODE magnitudes ~O(1)
 # comparable to the other normalized blocks.
@@ -117,6 +128,26 @@ def encode_fm(part: torch.Tensor) -> torch.Tensor:
     return out
 
 
+def encode_fm_geom(part: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Convert a canonical (N, 14) part tensor to (geom_13d, organ_type_labels).
+
+    Returns:
+        geom: (N, 13) continuous geometry targets [Base*20, Rot6D, Scale*50, Curv*CURV_SCALE].
+        labels: (N,) int64 categorical labels in [0, 12].
+    """
+    N = part.shape[0]
+    labels = part[:, P_COL_ORGAN_TYPE].long().clamp(0, NUM_ORGAN_CATEGORIES - 1)
+    geom = torch.zeros((N, GEOM_NODE_DIM), dtype=part.dtype, device=part.device)
+
+    active_mask = labels > ORGAN_NONE
+    geom[active_mask, GEOM_BASE_START:GEOM_BASE_END] = part[active_mask, P_COL_BASE_X:P_COL_BASE_Z + 1] * BASE_SCALE
+    geom[active_mask, GEOM_ROT_START:GEOM_ROT_END] = part[active_mask, P_COL_ROT_0:P_COL_ROT_5 + 1]
+    geom[active_mask, GEOM_SCALE_START:GEOM_SCALE_END] = part[active_mask, P_COL_SCALE_X:P_COL_SCALE_Z + 1] * SCALE_SCALE
+    if part.shape[1] > 13:
+        geom[active_mask, GEOM_CURV] = part[active_mask, 13] * CURV_SCALE
+    return geom, labels
+
+
 def decode_fm(fm: torch.Tensor) -> torch.Tensor:
     """Convert a 26D FM node tensor back to a canonical (N, 14) part tensor.
 
@@ -132,6 +163,27 @@ def decode_fm(fm: torch.Tensor) -> torch.Tensor:
     out[:, P_COL_ROT_0:P_COL_ROT_5 + 1] = fm[:, FM_ROT_START:FM_ROT_END]
     out[:, P_COL_SCALE_X:P_COL_SCALE_Z + 1] = fm[:, FM_SCALE_START:FM_SCALE_END] / SCALE_SCALE
     out[:, 13] = fm[:, FM_CURV] / CURV_SCALE
+    return out
+
+
+def decode_fm_twostage(geom: torch.Tensor, type_logits: torch.Tensor) -> torch.Tensor:
+    """Convert 13D geometry + 13-class logits to a canonical (N, 14) part tensor.
+
+    Args:
+        geom: (N, 13) [base*20(3), rot6d(6), scale*50(3), curv*CURV_SCALE(1)].
+        type_logits: (N, 13) discrete organ-type logits.
+
+    Returns:
+        (N, 14) canonical part tensor: [organ_type, base(3), rot6d(6), scale(3), curvature(1)].
+    """
+    N = geom.shape[0]
+    out = torch.zeros((N, 14), dtype=geom.dtype, device=geom.device)
+    ot = type_logits.argmax(dim=-1)
+    out[:, P_COL_ORGAN_TYPE] = ot.float()
+    out[:, P_COL_BASE_X:P_COL_BASE_Z + 1] = geom[:, GEOM_BASE_START:GEOM_BASE_END] / BASE_SCALE
+    out[:, P_COL_ROT_0:P_COL_ROT_5 + 1] = geom[:, GEOM_ROT_START:GEOM_ROT_END]
+    out[:, P_COL_SCALE_X:P_COL_SCALE_Z + 1] = geom[:, GEOM_SCALE_START:GEOM_SCALE_END] / SCALE_SCALE
+    out[:, 13] = geom[:, GEOM_CURV] / CURV_SCALE
     return out
 
 
@@ -216,6 +268,7 @@ class PartArrayDataset(Dataset):
         exclude_globs: List[str] = None,
         include_globs: List[str] = None,
         cache_dir: str = None,
+        species: Optional[str] = "cowpea",
     ):
         self.data_root = os.path.abspath(data_root)
         self.max_nodes = max_nodes
@@ -224,6 +277,7 @@ class PartArrayDataset(Dataset):
         self.node_dim = FM_NODE_DIM
         self.device = device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.cache_dir = cache_dir
+        self.species = species
         self._cached_renderer = None
         self._image_cache = {}
         self._tensor_cache = {}
@@ -237,12 +291,21 @@ class PartArrayDataset(Dataset):
         xml_paths = sorted(glob.glob(os.path.join(self.data_root, "**", "*_plant_*.xml"), recursive=True))
         if not xml_paths:
             xml_paths = sorted(glob.glob(os.path.join(self.data_root, "*_plant_*.xml")))
-        xml_paths = [p for p in xml_paths if "/_tmp_" not in p and "_tmp_" not in os.path.basename(p)]
-        # Species filter: when a crop-named cache is in use, restrict to that crop's XMLs
-        if self.cache_dir is not None:
-            crop = os.path.basename(os.path.normpath(self.cache_dir)).split("_")[0]
-            if crop in ("cowpea", "bean", "sorghum", "soybean", "maize"):
-                xml_paths = [p for p in xml_paths if f"/{crop}/" in p or os.sep + crop + os.sep in p]
+        xml_paths = [
+            p for p in xml_paths 
+            if "/_tmp_" not in p and "_tmp_" not in os.path.basename(p) and f"{os.sep}tmp{os.sep}" not in p
+        ]
+        # Species filter: strictly isolate requested species (e.g. cowpea)
+        target_species = self.species
+        if target_species is None and self.cache_dir is not None:
+            c = os.path.basename(os.path.normpath(self.cache_dir)).split("_")[0]
+            if c in ("cowpea", "bean", "sorghum", "soybean", "maize"):
+                target_species = c
+        if target_species:
+            xml_paths = [
+                p for p in xml_paths 
+                if f"/{target_species}/" in p or f"{os.sep}{target_species}{os.sep}" in p or os.path.basename(p).startswith(f"{target_species}_")
+            ]
         if include_globs:
             xml_paths = [p for p in xml_paths if any(_fnmatch.fnmatch(os.path.basename(p), pat) for pat in include_globs)]
         elif exclude_globs:
@@ -300,11 +363,15 @@ class PartArrayDataset(Dataset):
                                 except Exception:
                                     pass
                             data["dap"] = torch.tensor(dap, dtype=torch.float32)
-                        # nodes padding: crop to max_nodes
+                        # nodes padding/crop to max_nodes
                         if data["nodes"].shape[0] > self.max_nodes:
                             data["nodes"] = data["nodes"][: self.max_nodes]
-                            if "existence_mask" in data:
-                                data["existence_mask"] = data["existence_mask"][: self.max_nodes]
+                        elif data["nodes"].shape[0] < self.max_nodes:
+                            pad_n = self.max_nodes - data["nodes"].shape[0]
+                            data["nodes"] = F.pad(data["nodes"], (0, 0, 0, pad_n))
+                        data["existence_mask"] = (data["nodes"][:, EMPTY_IDX] < 0.5).float()
+                        data["prefix"] = sample["prefix"]
+                        data["jpeg"] = sample["jpeg"]
                         return data
                 except Exception:
                     pass

@@ -38,6 +38,7 @@ train_*.pid
 generate_dataset.log
 dataset/helios_data/
 dataset/helios_data*
+dataset/helios_test_bush/
 dataset/cache/
 dataset/cache_cowpea_100k/
 dataset/cache*/

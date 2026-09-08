@@ -33,14 +33,14 @@ NUM_JOBS=40
 DAP_MIN=1
 DAP_MAX=100
 SEEDS=100
-TOTAL_SAMPLES=100000
+TOTAL_SAMPLES=10000
 SHARD_SIZE=100
-IMAGE_SIZE=512
+IMAGE_SIZE=256
 MAX_SLOTS=4096
 WORKERS_PER_NODE=4
 PARTITION="low"
 ACCOUNT="publicgrp"
-TIME_LIMIT="08:00:00"
+TIME_LIMIT="04:00:00"
 CPUS_PER_JOB=8
 MEM_PER_JOB="32G"
 EXCLUDE_NODES=""
@@ -49,6 +49,9 @@ RUN_XML=true
 RUN_SHARDS=true
 SUBMIT=false
 DRY_RUN=false
+
+SEEDS_SPECIFIED=false
+TOTAL_SAMPLES_SPECIFIED=false
 
 # Command line parsing
 while [[ $# -gt 0 ]]; do
@@ -79,6 +82,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --seeds)
             SEEDS="$2"
+            SEEDS_SPECIFIED=true
             shift 2
             ;;
         --dap-min)
@@ -91,6 +95,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --total-samples)
             TOTAL_SAMPLES="$2"
+            TOTAL_SAMPLES_SPECIFIED=true
             shift 2
             ;;
         --shard-size)
@@ -135,11 +140,24 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown argument: $1"
-            echo "Usage: $0 [--submit] [--dry-run] [--plant-types P] [--seeds S] [--total-samples N] [--max-slots M] [--skip-xml] [--skip-shards]"
+            echo "Usage: $0 [--submit] [--dry-run] [--plant-types P] [--seeds S | --total-samples N] [--max-slots M] [--skip-xml] [--skip-shards]"
             exit 1
             ;;
     esac
 done
+
+TOTAL_DAPS=$((DAP_MAX - DAP_MIN + 1))
+
+# Automatically synchronize SEEDS and TOTAL_SAMPLES:
+# Specifying either one automatically dictates the other.
+if [[ "$TOTAL_SAMPLES_SPECIFIED" == true && "$SEEDS_SPECIFIED" == false ]]; then
+    SEEDS=$(( (TOTAL_SAMPLES + TOTAL_DAPS - 1) / TOTAL_DAPS ))
+    TOTAL_SAMPLES=$(( TOTAL_DAPS * SEEDS ))
+elif [[ "$SEEDS_SPECIFIED" == true && "$TOTAL_SAMPLES_SPECIFIED" == false ]]; then
+    TOTAL_SAMPLES=$(( TOTAL_DAPS * SEEDS ))
+elif [[ "$TOTAL_SAMPLES_SPECIFIED" == false && "$SEEDS_SPECIFIED" == false ]]; then
+    TOTAL_SAMPLES=$(( TOTAL_DAPS * SEEDS ))
+fi
 
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 BATCH_LOG_DIR="${LOGS_DIR}/unified_${PLANT_TYPES}_${TIMESTAMP}"
@@ -158,7 +176,6 @@ mkdir -p "${BATCH_LOG_DIR}"
 mkdir -p "${DATASET_DIR}/${PLANT_TYPES}"
 mkdir -p "${SHARDS_DIR}"
 
-TOTAL_DAPS=$((DAP_MAX - DAP_MIN + 1))
 DAPS_PER_JOB=$(( (TOTAL_DAPS + NUM_JOBS - 1) / NUM_JOBS ))
 SAMPLES_PER_WORKER=$(( TOTAL_SAMPLES / NUM_JOBS ))
 
@@ -199,7 +216,6 @@ for ((job_idx=0; job_idx<NUM_JOBS; job_idx++)); do
     JOB_NAME="helios_pipe_${job_idx}_dap${JOB_DAP_START}-${JOB_DAP_END}"
     JOB_SCRIPT="${BATCH_LOG_DIR}/job_${job_idx}.sh"
     JOB_LOG="${BATCH_LOG_DIR}/${JOB_NAME}_%j.log"
-
     EXCLUDE_DIRECTIVE=""
     if [[ -n "$EXCLUDE_NODES" ]]; then
         EXCLUDE_DIRECTIVE="#SBATCH --exclude=${EXCLUDE_NODES}"
@@ -238,80 +254,86 @@ cd ${REPO_ROOT}
 
 # 1. GPU Health Check & Fault-Tolerant Auto-Resubmit
 GPU_HEALTH_OK=true
-if ! command -v nvidia-smi &> /dev/null; then
-    GPU_HEALTH_OK=false
-elif ! nvidia-smi &> /dev/null || nvidia-smi 2>&1 | grep -qiE "Failed to get device handle|Unknown Error|No devices were found|GPU is lost"; then
-    GPU_HEALTH_OK=false
-elif ! ${PYTHON_BIN} -c "import torch; assert torch.cuda.is_available() and torch.cuda.device_count() > 0; torch.zeros(1).cuda()" &> /dev/null; then
-    GPU_HEALTH_OK=false
-fi
+    if ! command -v nvidia-smi &> /dev/null; then
+        GPU_HEALTH_OK=false
+    elif ! nvidia-smi &> /dev/null || nvidia-smi 2>&1 | grep -qiE "Failed to get device handle|Unknown Error|No devices were found|GPU is lost"; then
+        GPU_HEALTH_OK=false
+    elif ! ${PYTHON_BIN} -c "import torch; assert torch.cuda.is_available() and torch.cuda.device_count() > 0; torch.zeros(1).cuda()" &> /dev/null; then
+        GPU_HEALTH_OK=false
+    fi
 
-if [[ "\$GPU_HEALTH_OK" == false ]]; then
-    echo ""
-    echo "============================================================"
-    echo "⚠️ [FAULTY GPU DETECTED] Allocated GPU on node \${SLURM_NODELIST} is unresponsive or broken!"
-
-    SENTINEL_FILE="${BATCH_LOG_DIR}/.tarpit_${job_idx}"
-    echo "\${SLURM_JOB_ID}" > "\${SENTINEL_FILE}"
-
-    # Loop: keep re-submitting until a replacement verifiably completes all shards
-    ATTEMPT=0
-    while true; do
-        ATTEMPT=\$((ATTEMPT + 1))
-        echo "1. [Attempt \${ATTEMPT}] Re-submitting replacement job for ${JOB_NAME}..."
-        NEW_JOB_ID=\$(sbatch "${JOB_SCRIPT}" | grep -oP 'Submitted batch job \K\d+')
-        if [[ -z "\${NEW_JOB_ID}" ]]; then
-            echo "   ERROR: sbatch failed to return a job ID. Retrying in 120s..."
-            sleep 120
-            continue
-        fi
-
-        # Derive the log path SLURM will write for the replacement job
-        NEW_LOG="${BATCH_LOG_DIR}/${JOB_NAME}_\${NEW_JOB_ID}.log"
-        echo "   Replacement job submitted: \${NEW_JOB_ID}"
-        echo "   Watching log: \${NEW_LOG}"
-        echo "2. Holding faulty GPU slot — polling until replacement verifiably succeeds..."
+    if [[ "\$GPU_HEALTH_OK" == false ]]; then
+        echo ""
         echo "============================================================"
+        echo "⚠️ [FAULTY GPU DETECTED] Allocated GPU on node \${SLURM_NODELIST} is unresponsive or broken!"
 
-        # Wait for the replacement job to leave the SLURM queue
-        while squeue -j "\${NEW_JOB_ID}" -h &> /dev/null; do
-            sleep 60
-        done
+        SENTINEL_FILE="${BATCH_LOG_DIR}/.tarpit_${job_idx}"
+        echo "\${SLURM_JOB_ID}" > "\${SENTINEL_FILE}"
 
-        # Job left the queue — check WHY by inspecting its log
-        if [[ -f "\${NEW_LOG}" ]] && grep -q "successfully completed all phases" "\${NEW_LOG}"; then
-            echo "[Tarpit] ✅ Replacement job \${NEW_JOB_ID} completed successfully. Releasing faulty GPU slot."
-            rm -f "\${SENTINEL_FILE}"
-            exit 1
-        else
-            # Determine failure reason from log
-            REASON="unknown"
-            if [[ -f "\${NEW_LOG}" ]]; then
-                if grep -qi "CANCELLED\|preempt" "\${NEW_LOG}"; then
-                    REASON="preempted/cancelled"
-                elif grep -qi "OOM\|out of memory\|Killed" "\${NEW_LOG}"; then
-                    REASON="OOM"
-                elif grep -qi "FAULTY GPU DETECTED" "\${NEW_LOG}"; then
-                    REASON="landed on another faulty GPU"
-                elif grep -qi "Error\|Traceback" "\${NEW_LOG}"; then
-                    REASON="runtime error"
-                fi
-            else
-                REASON="log file not found (job may not have started)"
+        # Loop: keep re-submitting until a replacement verifiably completes all shards
+        ATTEMPT=0
+        while true; do
+            ATTEMPT=\$((ATTEMPT + 1))
+            echo "1. [Attempt \${ATTEMPT}] Re-submitting replacement job for ${JOB_NAME}..."
+            NEW_JOB_ID=\$(sbatch "${JOB_SCRIPT}" | grep -oP 'Submitted batch job \K\d+')
+            if [[ -z "\${NEW_JOB_ID}" ]]; then
+                echo "   ERROR: sbatch failed to return a job ID. Retrying in 120s..."
+                sleep 120
+                continue
             fi
-            echo "[Tarpit] ⚠️  Replacement job \${NEW_JOB_ID} did NOT complete successfully (reason: \${REASON})."
-            echo "         Re-submitting a new replacement in 60s..."
-            sleep 60
-        fi
-    done
-fi
 
+            # Derive the log path SLURM will write for the replacement job
+            NEW_LOG="${BATCH_LOG_DIR}/${JOB_NAME}_\${NEW_JOB_ID}.log"
+            echo "   Replacement job submitted: \${NEW_JOB_ID}"
+            echo "   Watching log: \${NEW_LOG}"
+            echo "2. Holding faulty GPU slot — polling until replacement verifiably succeeds..."
+            echo "============================================================"
 
+            # Wait for the replacement job to leave the SLURM queue
+            while squeue -j "\${NEW_JOB_ID}" -h &> /dev/null; do
+                sleep 60
+            done
 
-echo "GPU: \$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n 1)"
+            # Job left the queue — check WHY by inspecting its log
+            if [[ -f "\${NEW_LOG}" ]] && grep -q "successfully completed all phases" "\${NEW_LOG}"; then
+                echo "[Tarpit] ✅ Replacement job \${NEW_JOB_ID} completed successfully. Releasing faulty GPU slot."
+                rm -f "\${SENTINEL_FILE}"
+                exit 1
+            else
+                # Determine failure reason from log
+                REASON="unknown"
+                if [[ -f "\${NEW_LOG}" ]]; then
+                    if grep -qi "CANCELLED\|preempt" "\${NEW_LOG}"; then
+                        REASON="preempted/cancelled"
+                    elif grep -qi "OOM\|out of memory\|Killed" "\${NEW_LOG}"; then
+                        REASON="OOM"
+                    elif grep -qi "FAULTY GPU DETECTED" "\${NEW_LOG}"; then
+                        REASON="landed on another faulty GPU"
+                    elif grep -qi "Error\|Traceback" "\${NEW_LOG}"; then
+                        REASON="runtime error"
+                    fi
+                else
+                    REASON="log file not found (job may not have started)"
+                fi
+                echo "[Tarpit] ⚠️  Replacement job \${NEW_JOB_ID} did NOT complete successfully (reason: \${REASON})."
+                echo "         Re-submitting a new replacement in 60s..."
+                sleep 60
+            fi
+        done
+    fi
+    echo "GPU: \$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n 1)"
+
 export TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6;8.9;9.0+PTX"
 export PYTHONUNBUFFERED=1
 export PYTHONPATH="${REPO_ROOT}:\${PYTHONPATH}"
+
+cleanup_tmp() {
+    if [[ -n "\${SLURM_JOB_ID}" ]]; then
+        rm -rf "${DATASET_DIR}/tmp/job_\${SLURM_JOB_ID}" 2>/dev/null || true
+    fi
+    rmdir "${DATASET_DIR}/tmp" 2>/dev/null || true
+}
+trap cleanup_tmp EXIT INT TERM
 
 # -----------------------------------------------------------------------------
 # Phase 1: Helios C++ Plant Simulation & XML Synthesis
@@ -347,9 +369,10 @@ if [[ "${RUN_SHARDS}" == true ]]; then
         --species "${PLANT_TYPES}" \\
         --data-root "${DATASET_DIR}" \\
         --output-dir "${SHARDS_DIR}" \\
-        --total-samples ${TOTAL_SAMPLES} \\
-        --num-workers ${NUM_JOBS} \\
-        --worker-id ${job_idx} \\
+        --dap-min ${JOB_DAP_START} \\
+        --dap-max ${JOB_DAP_END} \\
+        --num-workers 1 \\
+        --worker-id 0 \\
         --shard-size ${SHARD_SIZE} \\
         --image-size ${IMAGE_SIZE} \\
         --max-slots ${MAX_SLOTS} \\

@@ -54,8 +54,11 @@ def render_one(job_args):
     if not overwrite and _complete(species_dir, name):
         return {"plant_type": plant_type, "genotype": genotype, "dap": dap, "seed": seed, "status": "skip", "elapsed": 0.0}
 
-    # Isolated temporary rendering folder per worker
-    tmp_dir = os.path.join(output_dir, f"_tmp_{os.getpid()}_{plant_type}_{dap}_{seed}")
+    # Isolated temporary rendering folder per worker under <output_dir>/tmp/job_<id>/
+    job_tag = os.environ.get("SLURM_JOB_ID", str(os.getpid()))
+    tmp_parent = os.path.join(output_dir, "tmp", f"job_{job_tag}")
+    os.makedirs(tmp_parent, exist_ok=True)
+    tmp_dir = os.path.join(tmp_parent, f"_tmp_{os.getpid()}_{plant_type}_{dap}_{seed}")
     os.makedirs(tmp_dir, exist_ok=True)
 
     # Resolve species-specific config if available
@@ -102,22 +105,29 @@ def render_one(job_args):
                         shutil.move(src, os.path.join(species_dir, f"{name}{suffix}"))
                 status = "ok"
 
-        try:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-        except Exception:
-            pass
-
         if status == "ok":
             return {"plant_type": plant_type, "genotype": genotype, "dap": dap, "seed": seed, "status": "ok", "elapsed": elapsed}
         return {"plant_type": plant_type, "genotype": genotype, "dap": dap, "seed": seed, "status": "fail", "elapsed": elapsed,
                 "stderr": (result.stderr or "")[-500:]}
     except Exception as e:
-        try:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-        except Exception:
-            pass
         return {"plant_type": plant_type, "genotype": genotype, "dap": dap, "seed": seed, "status": "error", "elapsed": time.time() - t0,
                 "stderr": str(e)[-500:]}
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def cleanup_tmp_dirs(output_dir: str):
+    """Clean up only this job's isolated tmp directory under <output_dir>/tmp/job_<tag>."""
+    job_tag = os.environ.get("SLURM_JOB_ID", str(os.getpid()))
+    job_tmp_parent = os.path.join(output_dir, "tmp", f"job_{job_tag}")
+    if os.path.exists(job_tmp_parent):
+        shutil.rmtree(job_tmp_parent, ignore_errors=True)
+    try:
+        tmp_parent = os.path.join(output_dir, "tmp")
+        if os.path.exists(tmp_parent) and not os.listdir(tmp_parent):
+            os.rmdir(tmp_parent)
+    except Exception:
+        pass
 
 
 def main():
@@ -138,38 +148,47 @@ def main():
     parser.add_argument("--overwrite", action="store_true", help="overwrite existing generated samples")
     args = parser.parse_args()
 
-    os.makedirs(args.output_dir, exist_ok=True)
-    args.output_dir = os.path.abspath(args.output_dir)
-    assert os.path.exists(MAIN_BIN), f"main binary not found: {MAIN_BIN}"
-    assert os.path.exists(BASE_PARAMS), f"params.json not found: {BASE_PARAMS}"
+    import atexit
+    import signal
 
-    plant_types = [p.strip().lower() for p in args.plant_types.split(",") if p.strip()]
-    
+    cleanup = lambda: cleanup_tmp_dirs(args.output_dir)
+    atexit.register(cleanup)
+
+    def _sig_handler(signum, frame):
+        cleanup()
+        sys.exit(128 + signum)
+
+    try:
+        signal.signal(signal.SIGTERM, _sig_handler)
+        signal.signal(signal.SIGINT, _sig_handler)
+    except Exception:
+        pass
+
+    species_list = [s.strip() for s in args.plant_types.split(",") if s.strip()]
+    genotype_arg = args.genotypes.strip()
+
     jobs = []
-    for plant_type in plant_types:
-        if args.genotypes == "all":
-            gts = GENOTYPE_PRESETS.get(plant_type, ["random"])
+    job_id = 0
+    for sp in species_list:
+        if genotype_arg == "all":
+            gts = GENOTYPE_PRESETS.get(sp, ["random"])
+        elif genotype_arg == "random":
+            gts = ["random"]
         else:
-            gts = [g.strip().lower() for g in args.genotypes.split(",") if g.strip()]
+            gts = [g.strip() for g in genotype_arg.split(",") if g.strip()]
 
-        for gt in gts:
-            for dap in range(args.dap_min, args.dap_max + 1):
-                for seed in range(args.seeds):
-                    jobs.append((plant_type, gt, dap, seed, args.output_dir, BASE_PARAMS, len(jobs), args.overwrite, args.renderer))
+        for dap in range(args.dap_min, args.dap_max + 1):
+            for s in range(args.seeds):
+                gt = gts[(dap + s) % len(gts)] if gts != ["random"] else "random"
+                jobs.append((sp, gt, dap, s, args.output_dir, BASE_PARAMS, job_id, args.overwrite, args.renderer))
+                job_id += 1
 
     total = len(jobs)
-    print("=" * 65)
-    print(f"HELIOS MULTI-SPECIES DATASET GENERATOR")
-    print("=" * 65)
-    print(f"Plant Types:   {plant_types}")
-    print(f"Genotypes:     {args.genotypes}")
-    print(f"DAP Range:     {args.dap_min} to {args.dap_max}")
-    print(f"Seeds / DAP:   {args.seeds}")
-    print(f"Total Samples: {total}")
-    print(f"Output Root:   {args.output_dir}")
-    print(f"Renderer:      {args.renderer}")
-    print(f"Workers:       {args.workers}")
-    print("=" * 65)
+    print(f"Helios Generator: {len(species_list)} species ({','.join(species_list)}), "
+          f"DAP {args.dap_min}-{args.dap_max}, {args.seeds} seeds/dap -> {total} samples total")
+    print(f"Output directory: {args.output_dir}")
+    print(f"Workers: {args.workers} concurrent processes | Renderer: {args.renderer}")
+    print("-" * 65)
 
     done = 0
     stats = {"ok": 0, "fail": 0, "skip": 0, "error": 0}
@@ -179,58 +198,61 @@ def main():
     retries_left = {j: args.max_retries for j in jobs}
     active_futures = {}
 
-    with ProcessPoolExecutor(max_workers=args.workers) as ex:
-        while pending and len(active_futures) < args.workers * 2:
-            job = pending.pop(0)
-            fut = ex.submit(render_one, job)
-            active_futures[fut] = job
+    try:
+        with ProcessPoolExecutor(max_workers=args.workers) as ex:
+            while pending and len(active_futures) < args.workers * 2:
+                job = pending.pop(0)
+                fut = ex.submit(render_one, job)
+                active_futures[fut] = job
 
-        while active_futures:
-            done_futs = []
-            for fut in as_completed(active_futures):
-                done_futs.append(fut)
-                break
+            while active_futures:
+                done_futs = []
+                for fut in as_completed(active_futures):
+                    done_futs.append(fut)
+                    break
 
-            for fut in done_futs:
-                job = active_futures.pop(fut)
-                res = fut.result()
-                done += 1
-                status = res["status"]
-                stats[status] = stats.get(status, 0) + 1
+                for fut in done_futs:
+                    job = active_futures.pop(fut)
+                    res = fut.result()
+                    done += 1
+                    status = res["status"]
+                    stats[status] = stats.get(status, 0) + 1
 
-                species_dir = os.path.join(args.output_dir, res["plant_type"])
-                log_path = os.path.join(species_dir, "_generation_log.jsonl")
-                os.makedirs(species_dir, exist_ok=True)
+                    species_dir = os.path.join(args.output_dir, res["plant_type"])
+                    log_path = os.path.join(species_dir, "_generation_log.jsonl")
+                    os.makedirs(species_dir, exist_ok=True)
 
-                if status == "ok":
-                    print(f"[{done}/{total}] {res['plant_type'].upper()}:{res['genotype']} dap{res['dap']:03d}_seed{res['seed']:02d} OK "
-                          f"({res['elapsed']:.1f}s)", flush=True)
-                elif status == "skip":
-                    print(f"[{done}/{total}] {res['plant_type'].upper()}:{res['genotype']} dap{res['dap']:03d}_seed{res['seed']:02d} skip", flush=True)
-                else:
-                    print(f"[{done}/{total}] {res['plant_type'].upper()}:{res['genotype']} dap{res['dap']:03d}_seed{res['seed']:02d} "
-                          f"{status}: {res.get('stderr', '')[-200:]}", flush=True)
-                    if retries_left[job] > 0:
-                        retries_left[job] -= 1
-                        pending.append(job)
+                    if status == "ok":
+                        print(f"[{done}/{total}] {res['plant_type'].upper()}:{res['genotype']} dap{res['dap']:03d}_seed{res['seed']:02d} OK "
+                              f"({res['elapsed']:.1f}s)", flush=True)
+                    elif status == "skip":
+                        print(f"[{done}/{total}] {res['plant_type'].upper()}:{res['genotype']} dap{res['dap']:03d}_seed{res['seed']:02d} skip", flush=True)
+                    else:
+                        print(f"[{done}/{total}] {res['plant_type'].upper()}:{res['genotype']} dap{res['dap']:03d}_seed{res['seed']:02d} "
+                              f"{status}: {res.get('stderr', '')[-200:]}", flush=True)
+                        if retries_left[job] > 0:
+                            retries_left[job] -= 1
+                            pending.append(job)
 
-                with open(log_path, "a") as f:
-                    f.write(json.dumps({"plant_type": res["plant_type"], "genotype": res["genotype"],
-                                        "dap": res["dap"], "seed": res["seed"],
-                                        "status": status, "elapsed": res["elapsed"]}) + "\n")
+                    with open(log_path, "a") as f:
+                        f.write(json.dumps({"plant_type": res["plant_type"], "genotype": res["genotype"],
+                                            "dap": res["dap"], "seed": res["seed"],
+                                            "status": status, "elapsed": res["elapsed"]}) + "\n")
 
-                while pending and len(active_futures) < args.workers * 2:
-                    next_job = pending.pop(0)
-                    new_fut = ex.submit(render_one, next_job)
-                    active_futures[new_fut] = next_job
+                    while pending and len(active_futures) < args.workers * 2:
+                        next_job = pending.pop(0)
+                        new_fut = ex.submit(render_one, next_job)
+                        active_futures[new_fut] = next_job
 
-                elapsed = time.time() - t_start
-                rate = done / max(elapsed, 1e-6)
-                remaining = len(pending) + len(active_futures)
-                eta = remaining / max(rate, 1e-6)
-                if done % 10 == 0 or not active_futures:
-                    print(f"  Progress: {done}/{total} done, {stats['ok']} ok, {stats['skip']} skip, "
-                          f"{stats['fail'] + stats['error']} fail, ETA {eta/60:.1f} min", flush=True)
+                    elapsed = time.time() - t_start
+                    rate = done / max(elapsed, 1e-6)
+                    remaining = len(pending) + len(active_futures)
+                    eta = remaining / max(rate, 1e-6)
+                    if done % 10 == 0 or not active_futures:
+                        print(f"  Progress: {done}/{total} done, {stats['ok']} ok, {stats['skip']} skip, "
+                              f"{stats['fail'] + stats['error']} fail, ETA {eta/60:.1f} min", flush=True)
+    finally:
+        cleanup()
 
     print("\n" + "=" * 65)
     print(f"DATASET GENERATION COMPLETE: {stats}")

@@ -216,11 +216,12 @@ class HeliosPyTorchRenderer(nn.Module):
         focus_plant: bool = True,
         hfov_override_deg: Optional[float] = None,
         include_depth: bool = False,
+        include_semantics: bool = False,
         fixed_camera_bounds: Optional[Dict[str, Any]] = None,
         image_size: Optional[int] = None,
         zoom_factor: float = 1.0,
         reference_window_size: Optional[float] = None,
-    ) -> torch.Tensor:
+    ) -> Any:
         verts = mesh_dict['vertices']     # (V, 3)
         faces = mesh_dict['faces']        # (F, 3)
         normals = mesh_dict['normals']    # (V, 3)
@@ -239,6 +240,10 @@ class HeliosPyTorchRenderer(nn.Module):
                 bg = torch.zeros((3, H, W), device=device)
             if include_depth:
                 bg = torch.cat([bg, torch.zeros((1, H, W), device=device)], dim=0)
+            if include_semantics:
+                bg_sem = torch.zeros((13, H, W), device=device, dtype=torch.float32)
+                bg_sem[0] = 1.0
+                return bg, bg_sem
             return bg
 
         # Camera Matrices matching Helios C++ --focus-plant & Multi-Scale Pyramid
@@ -298,13 +303,26 @@ class HeliosPyTorchRenderer(nn.Module):
                         opacities = opacities.unsqueeze(-1)
 
                 if include_depth:
-                    # 5-Channel Unified Interpolation (RGB 3ch + CHM 1ch + Opacity/Alpha 1ch)
                     chm_verts = torch.clamp(verts[:, 2:3].float(), min=0.0)  # (V, 1) in physical meters
-                    rgbda_attrs = torch.cat([shaded_colors.float(), chm_verts, opacities], dim=-1).unsqueeze(0).contiguous()  # (1, V, 5)
-                    interp_out, _ = dr.interpolate(rgbda_attrs, rast_out, faces_i32)  # (1, H, W, 5)
-                    rgb_rast = interp_out[..., :3]
-                    depth_rast = interp_out[..., 3:4]
-                    alpha_rast = interp_out[..., 4:5]
+
+                    if include_semantics:
+                        organ_probs = mesh_dict.get('organ_probs', None)
+                        if organ_probs is None:
+                            organ_probs = torch.zeros((verts.shape[0], 13), device=device, dtype=torch.float32)
+                            organ_probs[:, 0] = 1.0
+                        num_sem = organ_probs.shape[-1]
+                        unified_attrs = torch.cat([shaded_colors.float(), chm_verts, opacities, organ_probs.float()], dim=-1).unsqueeze(0).contiguous()
+                        interp_out, _ = dr.interpolate(unified_attrs, rast_out, faces_i32)
+                        rgb_rast = interp_out[..., :3]
+                        depth_rast = interp_out[..., 3:4]
+                        alpha_rast = interp_out[..., 4:5]
+                        sem_rast = interp_out[..., 5:5 + num_sem]
+                    else:
+                        rgbda_attrs = torch.cat([shaded_colors.float(), chm_verts, opacities], dim=-1).unsqueeze(0).contiguous()  # (1, V, 5)
+                        interp_out, _ = dr.interpolate(rgbda_attrs, rast_out, faces_i32)  # (1, H, W, 5)
+                        rgb_rast = interp_out[..., :3]
+                        depth_rast = interp_out[..., 3:4]
+                        alpha_rast = interp_out[..., 4:5]
 
                     if background == "ground":
                         bg_rgb = self.COLOR_GROUND.to(device=device, dtype=torch.float32).view(1, 1, 1, 3)
@@ -323,7 +341,20 @@ class HeliosPyTorchRenderer(nn.Module):
                     rgbd_out = torch.where(mask, rgbd_comp, bg)
                     if differentiable and _HAS_NVDIFFRAST:
                         rgbd_out = dr.antialias(rgbd_out, rast_out, v_clip.unsqueeze(0), faces_i32)
-                    return rgbd_out.squeeze(0).permute(2, 0, 1).flip(1)  # (4, H, W); match Helios row-0 = bottom
+
+                    rgbd_final = rgbd_out.squeeze(0).permute(2, 0, 1).flip(1).contiguous()  # (4, H, W); match Helios row-0 = bottom
+
+                    if include_semantics:
+                        bg_sem = torch.zeros((1, 1, 1, num_sem), device=device, dtype=torch.float32)
+                        bg_sem[..., 0] = 1.0  # Class 0 = ORGAN_NONE / GROUND
+                        sem_comp = alpha_rast * sem_rast + (1.0 - alpha_rast) * bg_sem
+                        sem_out = torch.where(mask, sem_comp, bg_sem)
+                        if differentiable and _HAS_NVDIFFRAST:
+                            sem_out = dr.antialias(sem_out.contiguous(), rast_out, v_clip.unsqueeze(0), faces_i32)
+                        sem_final = sem_out.squeeze(0).permute(2, 0, 1).flip(1).contiguous()  # (C, H, W)
+                        return rgbd_final, sem_final
+
+                    return rgbd_final
 
                 # Standard 3-Channel RGB with Soft Opacity
                 rgba_attrs = torch.cat([shaded_colors.float(), opacities], dim=-1).unsqueeze(0).contiguous()  # (1, V, 4)
@@ -343,7 +374,7 @@ class HeliosPyTorchRenderer(nn.Module):
                 rgb_out = torch.where(mask, rgb_comp, bg)
                 if differentiable and _HAS_NVDIFFRAST:
                     rgb_out = dr.antialias(rgb_out, rast_out, v_clip.unsqueeze(0), faces_i32)
-                return rgb_out.squeeze(0).permute(2, 0, 1).flip(1)  # (3, H, W); match Helios row-0 = bottom
+                return rgb_out.squeeze(0).permute(2, 0, 1).flip(1).contiguous()  # (3, H, W); match Helios row-0 = bottom
 
         # Fallback: original slow PyTorch CPU/GPU loop rasterizer
         z_buffer = torch.full((H, W), 1e9, dtype=torch.float32, device=device)

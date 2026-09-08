@@ -38,6 +38,7 @@ class ViTImageEncoder(nn.Module):
         super().__init__()
         self.image_size = image_size
         self.patch_size = patch_size
+        self.in_channels = in_channels
         self.embed_dim = embed_dim
         self.num_patches = (image_size // patch_size) ** 2
         self.patch_embed = nn.Conv2d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
@@ -69,8 +70,13 @@ class ViTImageEncoder(nn.Module):
             For 16-ch pyramid input, tokens from the 4 zoom views are averaged
             per spatial position so the output shape stays (B, Np+1, D).
         """
+        in_ch = self.patch_embed.in_channels
         if x.shape[1] == 1:
-            x = x.repeat(1, 3, 1, 1)
+            x = x.repeat(1, 4, 1, 1) if in_ch == 4 else x.repeat(1, 3, 1, 1)
+        elif x.shape[1] == 3 and in_ch == 4:
+            # Auto-pad missing depth channel with zeros
+            depth_dummy = torch.zeros((x.shape[0], 1, x.shape[2], x.shape[3]), dtype=x.dtype, device=x.device)
+            x = torch.cat([x, depth_dummy], dim=1)
         if x.shape[1] == 16:
             # pyramid-concat: (B, 4 zooms * 4ch, H, W) -> average per-zoom patch embeddings
             zoom_embeddings = []

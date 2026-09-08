@@ -83,6 +83,8 @@ def parse_args():
     parser.add_argument("--max-slots", type=int, default=4096)
     parser.add_argument("--max-templates", type=int, default=50)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--dap-min", type=float, default=None, help="Filter XMLs by minimum DAP")
+    parser.add_argument("--dap-max", type=float, default=None, help="Filter XMLs by maximum DAP")
     parsed = parser.parse_args()
     crop = "all" if parsed.species == "all" else parsed.species
     if parsed.output_dir is None:
@@ -94,7 +96,7 @@ def parse_args():
     return parsed
 
 
-def load_species_xml_samples(data_root: str, species: str) -> List[Dict[str, Any]]:
+def load_species_xml_samples(data_root: str, species: str, dap_min: Optional[float] = None, dap_max: Optional[float] = None) -> List[Dict[str, Any]]:
     """Discovers plant XML files for the given crop (or both with 'all')."""
     if species == "all":
         search_path = os.path.join(data_root, "**", "*_plant_*.xml")
@@ -113,6 +115,10 @@ def load_species_xml_samples(data_root: str, species: str) -> List[Dict[str, Any
         m = re.search(r"dap(\d+)", bn)
         if m:
             dap = float(m.group(1))
+        if dap_min is not None and dap < dap_min:
+            continue
+        if dap_max is not None and dap > dap_max:
+            continue
         samples.append({"xml": x, "dap": dap, "filename": bn})
     return samples
 
@@ -183,18 +189,25 @@ def generate_cache(
     max_templates: int,
     device_str: str,
     use_pyramid: bool,
+    dap_min: Optional[float] = None,
+    dap_max: Optional[float] = None,
 ):
     """One .pt per sample, written to <output_dir>/<prefix>.pt (PartArrayDataset fast path)."""
     os.makedirs(output_dir, exist_ok=True)
     device = torch.device(device_str)
-    all_xml = load_species_xml_samples(data_root, species)
+    all_xml = load_species_xml_samples(data_root, species, dap_min=dap_min, dap_max=dap_max)
     if not all_xml:
-        raise FileNotFoundError(f"No XML plant models for species '{species}' in {data_root}")
+        raise FileNotFoundError(f"No XML plant models for species '{species}' in {data_root} (dap_range: {dap_min}-{dap_max})")
 
-    per_worker = (len(all_xml) + num_workers - 1) // num_workers
-    lo = worker_id * per_worker
-    hi = min(lo + per_worker, len(all_xml))
-    shard_slice = all_xml[lo:hi]
+    if num_workers <= 1 or (dap_min is not None and dap_max is not None and num_workers == 1):
+        lo = 0
+        hi = len(all_xml)
+        shard_slice = all_xml
+    else:
+        per_worker = (len(all_xml) + num_workers - 1) // num_workers
+        lo = worker_id * per_worker
+        hi = min(lo + per_worker, len(all_xml))
+        shard_slice = all_xml[lo:hi]
     print(f"[Cache worker {worker_id}/{num_workers}] {lo} -> {hi} ({hi - lo} samples) -> {output_dir}")
 
     renderer = HeliosPyTorchRenderer(image_size=image_size, device=device)
@@ -348,6 +361,7 @@ def main():
             total_samples=args.total_samples, num_workers=args.num_workers,
             worker_id=args.worker_id, image_size=args.image_size, max_slots=args.max_slots,
             max_templates=args.max_templates, device_str=args.device, use_pyramid=use_pyramid,
+            dap_min=args.dap_min, dap_max=args.dap_max,
         )
     else:
         generate_shards_packed(

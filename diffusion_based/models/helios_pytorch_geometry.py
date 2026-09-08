@@ -429,6 +429,26 @@ def rotate_vector_about_axis(vec: torch.Tensor, axis: torch.Tensor, angle_rad: t
     return vec * cos_a + torch.linalg.cross(axis, vec) * sin_a + axis * torch.dot(axis, vec) * (1.0 - cos_a)
 
 
+def _rodrigues_batch(axis: torch.Tensor, angle_rad: torch.Tensor) -> torch.Tensor:
+    """Batch Rodrigues rotation matrices: axis (M, 3), angle_rad (M,) or (M, 1) -> (M, 3, 3)."""
+    norm = torch.linalg.norm(axis, dim=-1, keepdim=True).clamp(min=1e-6)
+    u = axis / norm
+    if angle_rad.ndim == 2:
+        angle_rad = angle_rad.squeeze(-1)
+    c = torch.cos(angle_rad)
+    s = torch.sin(angle_rad)
+    c1 = 1.0 - c
+
+    x, y, z = u[:, 0], u[:, 1], u[:, 2]
+
+    R = torch.stack([
+        torch.stack([c + x*x*c1,     x*y*c1 - z*s,   x*z*c1 + y*s], dim=-1),
+        torch.stack([y*x*c1 + z*s,   c + y*y*c1,     y*z*c1 - x*s], dim=-1),
+        torch.stack([z*x*c1 - y*s,   z*y*c1 + x*s,   c + z*z*c1], dim=-1),
+    ], dim=1)
+    return R
+
+
 def rodrigues_matrix_torch(axis: torch.Tensor, angle_rad: torch.Tensor, device=torch.device('cpu')) -> torch.Tensor:
     """Return 3x3 rotation matrix for Rodrigues rotation about unit vector 'axis' by 'angle_rad'."""
     if not isinstance(angle_rad, torch.Tensor):
@@ -1109,7 +1129,7 @@ class HeliosPlantGeometryBuilder:
                         if float(node_exist.item()) > existence_threshold:
                             rows.append(_make_row_rot(
                                 ORGAN_LEAF, leaf_base, R_leaf,
-                                scale=torch.stack([l_scale, torch.tensor(0.0, device=device), torch.tensor(0.0, device=device)]),
+                                scale=torch.stack([l_scale, l_scale, l_scale]),
                             ))
                         else:
                             rows.append(torch.zeros(NUM_FEATURES_PART, device=device))
@@ -1314,6 +1334,7 @@ class HeliosPlantGeometryBuilder:
         self,
         part_tensor: torch.Tensor,
         existence: Optional[torch.Tensor] = None,
+        organ_probs: Optional[torch.Tensor] = None,
         device: torch.device = torch.device('cpu'),
         leaf_mode: Optional[str] = None,
         existence_threshold: float = 0.5,
@@ -1340,6 +1361,11 @@ class HeliosPlantGeometryBuilder:
           - XML Ground Truth: defaults to 1.0 (fully opaque, crisp solid rendering).
           - Diffusion / Optimization: can be in (0, 1), rendering the organ softly/translucent
             and allowing dense photometric image loss gradients to directly flow back to existence!
+
+        organ_probs:
+          - Optional continuous organ class probabilities in [0, 1] per organ row (N, C).
+          - Interpolated to 2D screen pixels via nvdiffrast for direct semantic backpropagation
+            into the organ classification one-hot logits!
         """
         from diffusion_based.models.plant_organ_array import (
             ORGAN_NONE, ORGAN_ROOT_META, ORGAN_SHOOT_META, ORGAN_INTERNODE,
@@ -1369,12 +1395,21 @@ class HeliosPlantGeometryBuilder:
             if exist.ndim > 1:
                 exist = exist.squeeze(-1)
 
+        if organ_probs is not None:
+            probs = organ_probs.to(device).float()
+            num_classes = probs.shape[-1]
+        else:
+            probs = None
+            num_classes = 13
+
         ot = p[:, 0].long()
         base_pos = p[:, 1:4]
         rot_6d = p[:, 4:10]
         scale = p[:, 10:13]
         curvature = p[:, 13]
-        active_mask = (ot != ORGAN_NONE) & (exist > 1e-4) & (scale[:, 0] > 1e-5)
+        dist_xy = torch.sqrt(base_pos[:, 0] ** 2 + base_pos[:, 1] ** 2)
+        valid_pos = (dist_xy < 0.60) & (base_pos[:, 2] > -0.12) & (base_pos[:, 2] < 0.90)
+        active_mask = (ot != ORGAN_NONE) & (exist > 1e-4) & (scale[:, 0] > 1e-5) & valid_pos
 
         # Per-organ physicality clamp on curvature magnitude so wild optimizer
         # swings cannot create degenerate loops (full circle bend).
@@ -1400,6 +1435,7 @@ class HeliosPlantGeometryBuilder:
         all_colors = []
         all_opacities = []
         all_organs = []
+        all_probs = []
         vert_offset = 0
 
         # Pre-cache leaf meshes indexed by variant (0=unifoliate, 1=left, 2=tip, 3=right)
@@ -1418,15 +1454,13 @@ class HeliosPlantGeometryBuilder:
             if eff_leaf_mode == "generic":
                 if variant == 0:
                     tex_name_use = "CowpeaLeaf_unifoliate_centered.png"
-                elif variant == 1:
-                    tex_name_use = "CowpeaLeaf_left_centered.png"
-                elif variant == 2:
-                    tex_name_use = "CowpeaLeaf_tip_centered.png"
                 else:
-                    tex_name_use = "CowpeaLeaf_right_centered.png"
-                v_lf, f_lf = self.asset_mgr.get_generic_leaf_mesh(
-                    texture_name=tex_name_use,
-                    Nx=16, Ny=16,
+                    tex_name_use = "CowpeaLeaf_generic_centered.png"
+                v_lf, f_lf = self.asset_mgr.get_mesh_device(obj_name, device)
+            elif eff_leaf_mode == "parametric":
+                from diffusion_based.models.parametric_cowpea_leaf import generate_parametric_cowpea_leaf_mesh
+                v_lf, f_lf = generate_parametric_cowpea_leaf_mesh(
+                    variant=variant,
                     aspect_ratio=0.7,
                     midrib_fold_fraction=0.2,
                     longitudinal_curvature=-0.2,
@@ -1446,6 +1480,7 @@ class HeliosPlantGeometryBuilder:
         R_a = R_mats[active_mask]
         scale_a = scale[active_mask].clamp(min=1e-6)
         curv_a = curvature[active_mask]
+        probs_a = probs[active_mask] if probs is not None else None
 
         # -------------------------------------------------------------
         # 1. BATCH LEAVES (ORGAN_LEAF=5)
@@ -1458,12 +1493,15 @@ class HeliosPlantGeometryBuilder:
             M = int(leaf_mask.sum().item())
             R_l = R_a[leaf_mask]
             pos_l = base_pos_a[leaf_mask]
-            s_l = scale_a[leaf_mask][:, 0:1]  # uniform leaf scale (length)
+            s_l = scale_a[leaf_mask][:, 0:1].clamp(min=1e-4, max=0.25)  # uniform leaf scale (length)
             # scale_z (col 12) = blade aspect ratio modifier: multiplies blade
             # WIDTH (proto local +y) relative to length. scale_z == s (canonical
             # uniform [s, s, s]) => factor 1.0 => identical to old geometry.
+            # If scale_z is 0 / uninitialized (legacy [s, 0, 0]), default to 1.0.
             s_z = scale_a[leaf_mask][:, 2:3]
-            width_factor = (s_z / s_l.clamp(min=1e-6)).clamp(0.2, 5.0)
+            has_sz = (s_z > 1e-4)
+            ratio = torch.where(has_sz, s_z / s_l.clamp(min=1e-6), torch.ones_like(s_z))
+            width_factor = torch.where(has_sz, ratio.clamp(0.2, 5.0), torch.ones_like(s_z))
             exist_l = exist_a[leaf_mask]
 
             # Anisotropic proto scale: x (length) and z by s_l, y (width) by
@@ -1487,12 +1525,18 @@ class HeliosPlantGeometryBuilder:
             op_flat = exist_l.unsqueeze(1).expand(M, V).reshape(-1, 1)
             o_flat = torch.full((v_flat.shape[0],), 2, dtype=torch.int64, device=device)
 
+            if probs_a is not None:
+                p_flat = probs_a[leaf_mask].unsqueeze(1).expand(M, V, num_classes).reshape(-1, num_classes)
+            else:
+                p_flat = F.one_hot(ot_a[leaf_mask], num_classes=num_classes).float().unsqueeze(1).expand(M, V, num_classes).reshape(-1, num_classes)
+
             all_verts.append(v_flat)
             all_faces.append(f_batch)
             all_normals.append(n_flat)
             all_colors.append(c_flat)
             all_opacities.append(op_flat)
             all_organs.append(o_flat)
+            all_probs.append(p_flat)
             vert_offset += v_flat.shape[0]
 
         # -------------------------------------------------------------
@@ -1624,97 +1668,93 @@ class HeliosPlantGeometryBuilder:
             o_vals = torch.where(is_inode, torch.tensor(0, device=device), torch.tensor(1, device=device))
             o_flat = o_vals.unsqueeze(1).expand(M, V_t).reshape(-1)
 
+            if probs_a is not None:
+                p_flat = probs_a[tube_mask].unsqueeze(1).expand(M, V_t, num_classes).reshape(-1, num_classes)
+            else:
+                p_flat = F.one_hot(ot_a[tube_mask], num_classes=num_classes).float().unsqueeze(1).expand(M, V_t, num_classes).reshape(-1, num_classes)
+
             all_verts.append(v_flat)
             all_faces.append(f_batch)
             all_normals.append(n_flat)
             all_colors.append(c_flat)
             all_opacities.append(op_flat)
             all_organs.append(o_flat)
+            all_probs.append(p_flat)
             vert_offset += v_flat.shape[0]
 
         # -------------------------------------------------------------
         # 3. BATCH CURVED TUBES (ORGAN_PEDUNCLE=6 with upward gravitropic curvature)
         # -------------------------------------------------------------
+        ped_mask = (ot_a == ORGAN_PEDUNCLE)
         if ped_mask.any():
-            n_seg = 6
-            _, proto_f = _make_straight_tube_prototype(n_seg, n_rad, device)
-
             M = int(ped_mask.sum().item())
             R_ped = R_a[ped_mask]
             pos_ped = base_pos_a[ped_mask]
             s_ped = scale_a[ped_mask]
             exist_ped = exist_a[ped_mask]
+            curv_ped = curv_a[ped_mask]
 
             lengths = s_ped[:, 0].clamp(min=1e-3)
-            radii = s_ped[:, 1].clamp(min=1e-4)
+            radii_0 = s_ped[:, 1].clamp(min=1e-4)
+            radii_1 = radii_0 * 0.75
 
             fwd = R_ped[:, :, 1]
             e0 = R_ped[:, :, 0]
             e1 = R_ped[:, :, 2]
+            n_seg = 6
+            _, proto_f = _make_straight_tube_prototype(n_seg, n_rad, device)
 
             z_axis = torch.tensor([0.0, 0.0, 1.0], device=device)
-            dr = lengths / float(n_seg)
-            curv_val = 160.0
+            dr = (lengths / float(n_seg)).unsqueeze(-1)
 
             ring_centers = [pos_ped]
             ring_e0 = [e0]
             ring_e1 = [e1]
 
             cur_axis = fwd.clone()
-            cur_p = pos_ped.clone()
             cur_e0 = e0.clone()
             cur_e1 = e1.clone()
 
-            for s in range(n_seg):
+            for seg_i in range(n_seg):
                 h_bend = torch.linalg.cross(cur_axis, z_axis.expand_as(cur_axis))
                 h_norm = torch.linalg.norm(h_bend, dim=-1, keepdim=True)
                 valid = (h_norm > 1e-4).squeeze(-1)
-
-                h_unit = torch.where(
-                    h_norm > 1e-4,
-                    h_bend / (h_norm + 1e-8),
-                    torch.tensor([1.0, 0.0, 0.0], device=device).expand_as(cur_axis)
+                axis_rot = torch.where(
+                    valid.unsqueeze(-1),
+                    h_bend / h_norm.clamp(min=1e-6),
+                    cur_e0
                 )
-                theta_curv = math.radians(curv_val) * dr
-                theta_from_target = torch.acos(cur_axis[:, 2].clamp(-1.0, 1.0))
+                d_theta = torch.deg2rad(curv_ped * (lengths / float(n_seg)))
+                R_step = _rodrigues_batch(axis_rot, d_theta)
 
-                cos_t = torch.cos(theta_curv).unsqueeze(-1)
-                sin_t = torch.sin(theta_curv).unsqueeze(-1)
-
-                k_cross_v = torch.linalg.cross(h_unit, cur_axis)
-                k_dot_v = (h_unit * cur_axis).sum(dim=-1, keepdim=True)
-                rot_axis = cur_axis * cos_t + k_cross_v * sin_t + h_unit * k_dot_v * (1.0 - cos_t)
-                rot_axis = rot_axis / (torch.linalg.norm(rot_axis, dim=-1, keepdim=True) + 1e-8)
-
-                exceed = (theta_curv.abs() >= theta_from_target).unsqueeze(-1)
-                target = z_axis.expand_as(cur_axis)
-                next_axis = torch.where(exceed, target, rot_axis)
-                cur_axis = torch.where(valid.unsqueeze(-1), next_axis, target)
-
-                k_cross_e0 = torch.linalg.cross(h_unit, cur_e0)
-                k_dot_e0 = (h_unit * cur_e0).sum(dim=-1, keepdim=True)
-                cur_e0 = cur_e0 * cos_t + k_cross_e0 * sin_t + h_unit * k_dot_e0 * (1.0 - cos_t)
-                cur_e0 = cur_e0 / (torch.linalg.norm(cur_e0, dim=-1, keepdim=True) + 1e-8)
+                cur_axis = torch.bmm(R_step, cur_axis.unsqueeze(-1)).squeeze(-1)
+                cur_axis = cur_axis / torch.linalg.norm(cur_axis, dim=-1, keepdim=True).clamp(min=1e-6)
+                cur_e0 = torch.bmm(R_step, cur_e0.unsqueeze(-1)).squeeze(-1)
+                cur_e0 = cur_e0 / torch.linalg.norm(cur_e0, dim=-1, keepdim=True).clamp(min=1e-6)
                 cur_e1 = torch.linalg.cross(cur_axis, cur_e0)
-                cur_e1 = cur_e1 / (torch.linalg.norm(cur_e1, dim=-1, keepdim=True) + 1e-8)
+                cur_e1 = cur_e1 / torch.linalg.norm(cur_e1, dim=-1, keepdim=True).clamp(min=1e-6)
 
-                cur_p = cur_p + cur_axis * dr.unsqueeze(-1)
-                ring_centers.append(cur_p.clone())
-                ring_e0.append(cur_e0.clone())
-                ring_e1.append(cur_e1.clone())
+                next_center = ring_centers[-1] + cur_axis * dr
+                ring_centers.append(next_center)
+                ring_e0.append(cur_e0)
+                ring_e1.append(cur_e1)
 
             angles = torch.linspace(0.0, 2.0 * math.pi, n_rad + 1, device=device)[:-1]
-            ca = torch.cos(angles)
-            sa = torch.sin(angles)
+            ca = torch.cos(angles).view(1, n_rad, 1)
+            sa = torch.sin(angles).view(1, n_rad, 1)
 
             rings = []
             normals_list = []
-            for seg_i in range(n_seg + 1):
-                c_i = ring_centers[seg_i]
-                e0_i = ring_e0[seg_i]
-                e1_i = ring_e1[seg_i]
-                rad_vec = ca.unsqueeze(0).unsqueeze(2) * e0_i.unsqueeze(1) + sa.unsqueeze(0).unsqueeze(2) * e1_i.unsqueeze(1)
-                ring_v = c_i.unsqueeze(1) + rad_vec * radii.unsqueeze(1).unsqueeze(2)
+            n_rings = n_seg + 1
+            for r_idx in range(n_rings):
+                t_val = float(r_idx) / float(n_seg)
+                r_curr = (radii_0 * (1.0 - t_val) + radii_1 * t_val).view(-1, 1, 1)
+                c_curr = ring_centers[r_idx].unsqueeze(1)
+                e0_curr = ring_e0[r_idx].unsqueeze(1)
+                e1_curr = ring_e1[r_idx].unsqueeze(1)
+
+                rad_vec = ca * e0_curr + sa * e1_curr
+                ring_v = c_curr + r_curr * rad_vec
                 rings.append(ring_v)
                 normals_list.append(rad_vec)
 
@@ -1730,12 +1770,18 @@ class HeliosPlantGeometryBuilder:
             op_flat = exist_ped.unsqueeze(1).expand(M, V_ped).reshape(-1, 1)
             o_flat = torch.full((v_flat.shape[0],), 3, dtype=torch.long, device=device)
 
+            if probs_a is not None:
+                p_flat = probs_a[ped_mask].unsqueeze(1).expand(M, V_ped, num_classes).reshape(-1, num_classes)
+            else:
+                p_flat = F.one_hot(ot_a[ped_mask], num_classes=num_classes).float().unsqueeze(1).expand(M, V_ped, num_classes).reshape(-1, num_classes)
+
             all_verts.append(v_flat)
             all_faces.append(f_batch)
             all_normals.append(n_ped)
             all_colors.append(c_flat)
             all_opacities.append(op_flat)
             all_organs.append(o_flat)
+            all_probs.append(p_flat)
             vert_offset += v_flat.shape[0]
 
         # -------------------------------------------------------------
@@ -1749,7 +1795,7 @@ class HeliosPlantGeometryBuilder:
                 M = int(pod_mask.sum().item())
                 R_p = R_a[pod_mask]
                 pos_p = base_pos_a[pod_mask]
-                s_p = scale_a[pod_mask][:, 0:1]
+                s_p = scale_a[pod_mask][:, 0:1].clamp(min=1e-4, max=0.18)
                 exist_pod = exist_a[pod_mask]
 
                 v_scaled = v_pod.unsqueeze(0) * s_p.unsqueeze(1)
@@ -1766,12 +1812,18 @@ class HeliosPlantGeometryBuilder:
                 op_flat = exist_pod.unsqueeze(1).expand(M, V).reshape(-1, 1)
                 o_flat = torch.full((v_flat.shape[0],), 5, dtype=torch.int64, device=device)
 
+                if probs_a is not None:
+                    p_flat = probs_a[pod_mask].unsqueeze(1).expand(M, V, num_classes).reshape(-1, num_classes)
+                else:
+                    p_flat = F.one_hot(ot_a[pod_mask], num_classes=num_classes).float().unsqueeze(1).expand(M, V, num_classes).reshape(-1, num_classes)
+
                 all_verts.append(v_flat)
                 all_faces.append(f_batch)
                 all_normals.append(n_flat)
                 all_colors.append(c_flat)
                 all_opacities.append(op_flat)
                 all_organs.append(o_flat)
+                all_probs.append(p_flat)
                 vert_offset += v_flat.shape[0]
             except Exception:
                 pass
@@ -1792,7 +1844,7 @@ class HeliosPlantGeometryBuilder:
                     M = int(fm.sum().item())
                     R_f = R_a[fm]
                     pos_f = base_pos_a[fm]
-                    s_f = scale_a[fm][:, 0:1]
+                    s_f = scale_a[fm][:, 0:1].clamp(min=1e-4, max=0.035)
                     exist_fl = exist_a[fm]
 
                     v_scaled = v_fl.unsqueeze(0) * s_f.unsqueeze(1)
@@ -1809,12 +1861,18 @@ class HeliosPlantGeometryBuilder:
                     op_flat = exist_fl.unsqueeze(1).expand(M, V).reshape(-1, 1)
                     o_flat = torch.full((v_flat.shape[0],), 4, dtype=torch.int64, device=device)
 
+                    if probs_a is not None:
+                        p_flat = probs_a[fm].unsqueeze(1).expand(M, V, num_classes).reshape(-1, num_classes)
+                    else:
+                        p_flat = F.one_hot(ot_a[fm], num_classes=num_classes).float().unsqueeze(1).expand(M, V, num_classes).reshape(-1, num_classes)
+
                     all_verts.append(v_flat)
                     all_faces.append(f_batch)
                     all_normals.append(n_flat)
                     all_colors.append(c_flat)
                     all_opacities.append(op_flat)
                     all_organs.append(o_flat)
+                    all_probs.append(p_flat)
                     vert_offset += v_flat.shape[0]
                 except Exception:
                     pass
@@ -1824,7 +1882,8 @@ class HeliosPlantGeometryBuilder:
             empty_f = torch.zeros((0, 3), dtype=torch.int64, device=device)
             empty_op = torch.zeros((0, 1), dtype=torch.float32, device=device)
             empty_o = torch.zeros((0,), dtype=torch.int64, device=device)
-            return {'vertices': empty3, 'faces': empty_f, 'normals': empty3, 'colors': empty3, 'opacities': empty_op, 'organ_types': empty_o}
+            empty_p = torch.zeros((0, num_classes), dtype=torch.float32, device=device)
+            return {'vertices': empty3, 'faces': empty_f, 'normals': empty3, 'colors': empty3, 'opacities': empty_op, 'organ_types': empty_o, 'organ_probs': empty_p}
 
         return {
             'vertices': torch.cat(all_verts, dim=0),
@@ -1832,7 +1891,8 @@ class HeliosPlantGeometryBuilder:
             'normals': torch.cat(all_normals, dim=0),
             'colors': torch.cat(all_colors, dim=0),
             'opacities': torch.cat(all_opacities, dim=0),
-            'organ_types': torch.cat(all_organs, dim=0)
+            'organ_types': torch.cat(all_organs, dim=0),
+            'organ_probs': torch.cat(all_probs, dim=0) if all_probs else torch.zeros((0, num_classes), device=device)
         }
 
 
