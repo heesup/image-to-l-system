@@ -174,6 +174,85 @@ class TestHierarchicalFlowMatching(unittest.TestCase):
         self.assertIn("cos_color_loss", metrics)
         self.assertIn("cls_acc", metrics)
 
+    def test_role_partitioned_matcher(self):
+        """Verify that GT organs match strictly to their canonical phytomer slots:
+        Slot 0 = Stem, Slot 1 = Petiole, Slots 2..4 = Leaves, Slot 5 = Peduncle, Slots 6..7 = Flower/Fruit.
+        Also verifies that unifoliate (2 leaves) leaves slot 4 unmatched without error.
+        """
+        matcher = HierarchicalBotanicalMatcher(slots_per_anchor=8)
+
+        pred_anchor_pos = torch.zeros(1, 1, 3, device=self.device)  # 1 anchor at origin
+        pred_anchor_logits = torch.tensor([[[5.0]]], device=self.device)  # Confident anchor
+        pred_fine_geom = torch.randn(1, 8, 16, device=self.device)
+        pred_fine_logits = torch.ones(1, 8, 1, device=self.device) * 2.0  # Confident existence
+
+        # Case 1: Complete Reproductive Phytomer (1 stem, 1 petiole, 3 leaves, 1 peduncle, 2 flowers = 8 organs)
+        tgt_labels_full = torch.tensor([3, 4, 5, 5, 5, 6, 10, 10], device=self.device)
+        tgt_geoms_full = torch.randn(8, 16, device=self.device)
+        tgt_pos_full = torch.zeros(8, 3, device=self.device)
+
+        matches = matcher(
+            pred_anchor_pos=pred_anchor_pos,
+            pred_anchor_logits=pred_anchor_logits,
+            pred_fine_geom=pred_fine_geom,
+            pred_fine_logits=pred_fine_logits,
+            tgt_geoms=[tgt_geoms_full],
+            tgt_labels=[tgt_labels_full],
+            tgt_positions=[tgt_pos_full],
+        )
+
+        m = matches[0]
+        fine_src = m["fine_src_idx"]
+        fine_tgt = m["fine_tgt_idx"]
+
+        # Map slot to matched target type
+        slot_to_tgt_type = {}
+        for s, t in zip(fine_src.tolist(), fine_tgt.tolist()):
+            slot_to_tgt_type[s] = tgt_labels_full[t].item()
+
+        # Slot 0 MUST be Stem (type 3)
+        self.assertEqual(slot_to_tgt_type[0], 3, "Slot 0 must match Stem")
+        # Slot 1 MUST be Petiole (type 4)
+        self.assertEqual(slot_to_tgt_type[1], 4, "Slot 1 must match Petiole")
+        # Slots 2, 3, 4 MUST be Leaflets (type 5)
+        for s in [2, 3, 4]:
+            self.assertEqual(slot_to_tgt_type[s], 5, f"Slot {s} must match Leaflet")
+        # Slot 5 MUST be Peduncle (type 6)
+        self.assertEqual(slot_to_tgt_type[5], 6, "Slot 5 must match Peduncle")
+        # Slots 6, 7 MUST be Reproductive (type 10)
+        for s in [6, 7]:
+            self.assertEqual(slot_to_tgt_type[s], 10, f"Slot {s} must match Flower")
+
+        # Case 2: Unifoliate Seedling Node (1 stem, 2 leaves = 3 organs)
+        tgt_labels_unifoliate = torch.tensor([3, 5, 5], device=self.device)
+        tgt_geoms_unifoliate = torch.randn(3, 16, device=self.device)
+        tgt_pos_unifoliate = torch.zeros(3, 3, device=self.device)
+
+        matches_uni = matcher(
+            pred_anchor_pos=pred_anchor_pos,
+            pred_anchor_logits=pred_anchor_logits,
+            pred_fine_geom=pred_fine_geom,
+            pred_fine_logits=pred_fine_logits,
+            tgt_geoms=[tgt_geoms_unifoliate],
+            tgt_labels=[tgt_labels_unifoliate],
+            tgt_positions=[tgt_pos_unifoliate],
+        )
+
+        m_uni = matches_uni[0]
+        src_uni = m_uni["fine_src_idx"].tolist()
+        tgt_uni = m_uni["fine_tgt_idx"].tolist()
+
+        slot_to_uni_type = {s: tgt_labels_unifoliate[t].item() for s, t in zip(src_uni, tgt_uni)}
+        self.assertEqual(slot_to_uni_type[0], 3, "Slot 0 must match Stem in unifoliate")
+        # The 2 leaves MUST match within leaf slots {2, 3, 4}
+        matched_leaf_slots = [s for s in src_uni if slot_to_uni_type[s] == 5]
+        self.assertEqual(len(matched_leaf_slots), 2, "Exactly 2 leaf slots must be matched")
+        for s in matched_leaf_slots:
+            self.assertIn(s, [2, 3, 4], f"Matched leaf slot {s} must be in [2, 3, 4]")
+        # Petiole (Slot 1), Peduncle (Slot 5), Repro (Slots 6, 7) must NOT be matched
+        for s in [1, 5, 6, 7]:
+            self.assertNotIn(s, src_uni, f"Slot {s} must remain unmatched for unifoliate node")
+
 
 if __name__ == "__main__":
     unittest.main()

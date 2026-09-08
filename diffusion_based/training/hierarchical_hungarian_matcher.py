@@ -118,12 +118,20 @@ class HierarchicalBotanicalMatcher(nn.Module):
             anc_tgt = torch.as_tensor(anc_tgt_np, dtype=torch.int64, device=device)
 
             # -------------------------------------------------------------
-            # 3. Stage 2: Fine Intra-Cluster Matching (Fast M=8 Bipartite)
+            # 3. Stage 2: Fine Intra-Cluster Matching (Role-Partitioned M=8)
             # -------------------------------------------------------------
+            # Canonical Phytomer Slot Roles for M=8:
+            #   Slot 0: Internode/Stem (Types 1, 2, 3)
+            #   Slot 1: Petiole (Type 4)
+            #   Slots 2, 3, 4: Leaflets (Type 5)
+            #   Slot 5: Peduncle (Type 6)
+            #   Slots 6, 7: Reproductive: Buds, Flowers, Pods (Types 7..12)
             all_fine_src = []
             all_fine_tgt = []
 
-            pred_fine_prob_b = F.softmax(pred_fine_logits[b], dim=-1)  # (N_fine, num_classes)
+            has_multiclass = pred_fine_logits[b].shape[-1] > 1
+            if has_multiclass:
+                pred_fine_prob_b = F.softmax(pred_fine_logits[b], dim=-1)  # (N_fine, num_classes)
             pred_fine_geom_b = pred_fine_geom[b]                        # (N_fine, node_dim)
 
             for a_idx, c_idx in zip(anc_src, anc_tgt):
@@ -137,30 +145,104 @@ class HierarchicalBotanicalMatcher(nn.Module):
                 if len(cluster_gt_indices) == 0:
                     continue
 
-                # Local classification / existence cost
-                if pred_fine_prob_b.shape[-1] > 1:
-                    sub_prob = pred_fine_prob_b[slot_indices]  # (M, num_classes)
-                    sub_tgt_labels = t_label[cluster_gt_indices]  # (n_gt,)
-                    local_cls_cost = -sub_prob[:, sub_tgt_labels]  # (M, n_gt)
+                cluster_labels = t_label[cluster_gt_indices]
+
+                # Partition GT cluster organs by functional role
+                gt_by_role = {
+                    0: cluster_gt_indices[(cluster_labels >= 1) & (cluster_labels <= 3)],  # Stem / Internode
+                    1: cluster_gt_indices[cluster_labels == 4],                           # Petiole
+                    2: cluster_gt_indices[cluster_labels == 5],                           # Leaflets
+                    3: cluster_gt_indices[cluster_labels == 6],                           # Peduncle
+                    4: cluster_gt_indices[cluster_labels >= 7],                           # Reproductive
+                }
+
+                # Dedicated slot indices for each functional role in this anchor
+                slots_by_role = {
+                    0: slot_indices[0:1],  # Slot 0: Internode
+                    1: slot_indices[1:2],  # Slot 1: Petiole
+                    2: slot_indices[2:5],  # Slots 2, 3, 4: Leaflets
+                    3: slot_indices[5:6],  # Slot 5: Peduncle
+                    4: slot_indices[6:8],  # Slots 6, 7: Reproductive
+                }
+
+                matched_slots_list = []
+                matched_gt_list = []
+
+                # 1. Role-constrained bipartite matching within each functional category
+                for r in range(5):
+                    r_slots = slots_by_role[r]
+                    r_gt = gt_by_role[r]
+                    n_s = len(r_slots)
+                    n_g = len(r_gt)
+
+                    if n_s == 0 or n_g == 0:
+                        continue
+
+                    if n_s == 1 and n_g == 1:
+                        # 1:1 direct match (e.g. 1 stem to Slot 0, or 1 petiole to Slot 1)
+                        matched_slots_list.append(r_slots)
+                        matched_gt_list.append(r_gt)
+                    else:
+                        # Small bipartite matching within this specific role (e.g. <= 3x3 for leaves)
+                        sub_slots = r_slots
+                        sub_gt = r_gt
+                        if pred_fine_geom_b.shape[-1] == 16:
+                            cost_geom = torch.cdist(pred_fine_geom_b[sub_slots], t_geom[sub_gt], p=1) / 16.0
+                        else:
+                            cost_geom = torch.cdist(pred_fine_geom_b[sub_slots, :3], t_geom[sub_gt, :3], p=1)
+
+                        if has_multiclass:
+                            sub_prob = pred_fine_prob_b[sub_slots]
+                            sub_tgt_labels = t_label[sub_gt]
+                            cost_cls = -sub_prob[:, sub_tgt_labels]
+                        else:
+                            sub_exist = torch.sigmoid(pred_fine_logits[b][sub_slots])
+                            cost_cls = -sub_exist.expand(-1, len(sub_gt))
+
+                        local_cost = self.cost_cls * cost_cls + self.cost_geom * cost_geom
+                        r_src_np, r_tgt_np = linear_sum_assignment(local_cost.cpu().numpy())
+
+                        matched_slots_list.append(sub_slots[r_src_np])
+                        matched_gt_list.append(sub_gt[r_tgt_np])
+
+                # 2. Overflow matching: if any GT organs were left over (e.g. 4th leaf or 3rd flower),
+                # match them to any remaining unassigned slots in this anchor
+                if matched_slots_list:
+                    cur_matched_s = torch.cat(matched_slots_list)
+                    cur_matched_g = torch.cat(matched_gt_list)
+                    matched_s_set = set(cur_matched_s.tolist())
+                    matched_g_set = set(cur_matched_g.tolist())
                 else:
-                    sub_exist = torch.sigmoid(pred_fine_logits[b][slot_indices])  # (M, 1)
-                    local_cls_cost = -sub_exist.expand(-1, len(cluster_gt_indices))  # (M, n_gt)
+                    cur_matched_s = torch.empty(0, dtype=torch.int64, device=device)
+                    cur_matched_g = torch.empty(0, dtype=torch.int64, device=device)
+                    matched_s_set = set()
+                    matched_g_set = set()
 
-                # Local representation cost (16D latent distance or legacy 3D position)
-                if pred_fine_geom_b.shape[-1] == 16:
-                    local_geom_cost = torch.cdist(pred_fine_geom_b[slot_indices], t_geom[cluster_gt_indices], p=1) / 16.0
-                else:
-                    sub_p_geom = pred_fine_geom_b[slot_indices, :3]  # (M, 3)
-                    sub_t_geom = t_geom[cluster_gt_indices, :3]      # (n_gt, 3)
-                    local_geom_cost = torch.cdist(sub_p_geom, sub_t_geom, p=1)  # (M, n_gt)
+                free_slots = [s for s in slot_indices if s.item() not in matched_s_set]
+                leftover_gt = [g for g in cluster_gt_indices if g.item() not in matched_g_set]
 
-                local_total = self.cost_cls * local_cls_cost + self.cost_geom * local_geom_cost
-                local_total_cpu = local_total.cpu().numpy()
+                if free_slots and leftover_gt:
+                    fs_t = torch.stack(free_slots)
+                    lg_t = torch.stack(leftover_gt)
+                    if pred_fine_geom_b.shape[-1] == 16:
+                        cost_geom_rem = torch.cdist(pred_fine_geom_b[fs_t], t_geom[lg_t], p=1) / 16.0
+                    else:
+                        cost_geom_rem = torch.cdist(pred_fine_geom_b[fs_t, :3], t_geom[lg_t, :3], p=1)
 
-                sub_src_np, sub_tgt_np = linear_sum_assignment(local_total_cpu)
+                    if has_multiclass:
+                        cost_cls_rem = -pred_fine_prob_b[fs_t][:, t_label[lg_t]]
+                    else:
+                        sub_exist = torch.sigmoid(pred_fine_logits[b][fs_t])
+                        cost_cls_rem = -sub_exist.expand(-1, len(lg_t))
 
-                all_fine_src.append(slot_indices[sub_src_np])
-                all_fine_tgt.append(cluster_gt_indices[sub_tgt_np])
+                    rem_cost = self.cost_cls * cost_cls_rem + self.cost_geom * cost_geom_rem
+                    rem_src_np, rem_tgt_np = linear_sum_assignment(rem_cost.cpu().numpy())
+                    matched_slots_list.append(fs_t[rem_src_np])
+                    matched_gt_list.append(lg_t[rem_tgt_np])
+
+                if matched_slots_list:
+                    all_fine_src.append(torch.cat(matched_slots_list))
+                    all_fine_tgt.append(torch.cat(matched_gt_list))
 
             if all_fine_src:
                 fine_src = torch.cat(all_fine_src, dim=0)

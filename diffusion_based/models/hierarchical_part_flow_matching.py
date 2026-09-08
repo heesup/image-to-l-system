@@ -175,11 +175,25 @@ class CoarseSkeletalTransformer(nn.Module):
         }
 
 
+# =============================================================================
+# CANONICAL PHYTOMER ROLES FOR M=8 FINE SLOTS
+# =============================================================================
+ROLE_INTERNODE = 0      # Slot 0: Main/lateral stem segment
+ROLE_PETIOLE = 1        # Slot 1: Leaf stalk (connects node to leaflets)
+ROLE_LEAF = 2           # Slots 2, 3, 4: Trifoliate leaflets (terminal, left, right)
+ROLE_PEDUNCLE = 3       # Slot 5: Inflorescence stem (flower stalk)
+ROLE_REPRODUCTIVE = 4   # Slots 6, 7: Flowers (closed/open), Pods, or Dormant Buds
+NUM_PHYTOMER_ROLES = 5
+
+SLOT_ROLE_MAPPING = [0, 1, 2, 2, 2, 3, 4, 4]
+SLOT_SUB_ROLE_MAPPING = [0, 0, 0, 1, 2, 0, 0, 1]  # Sub-index within role
+
+
 class FineBotanicalFlowMatchingDecoder(nn.Module):
     """Stage 2: Flow Matching Decoder predicting microscopic organ velocity field.
 
-    Dispatches M fine slots per active anchor (M=8: 1 stem + 3 leaflets + 2 buds + 2 spare).
-    Performs residual flow matching around the anchor coordinates.
+    Dispatches M fine slots per active anchor (M=8: 1 stem + 1 petiole + 3 leaflets + 1 peduncle + 2 reproductive).
+    Performs joint intra-block kinematic attention within each phytomer, followed by global cross-attention.
     """
 
     def __init__(
@@ -197,8 +211,10 @@ class FineBotanicalFlowMatchingDecoder(nn.Module):
         self.num_classes = num_classes
         self.embed_dim = embed_dim
 
-        # Intra-anchor role embedding: Role 0=Stalk, Roles 1-3=Trifoliolate, Roles 4-7=Aux/Buds
-        self.role_emb = nn.Embedding(slots_per_anchor, embed_dim)
+        # Canonical Phytomer Functional Role Embeddings (Stem, Petiole, Leaf, Peduncle, Reproductive)
+        self.functional_role_emb = nn.Embedding(NUM_PHYTOMER_ROLES, embed_dim)
+        self.slot_pos_emb = nn.Embedding(slots_per_anchor, embed_dim)
+        self.role_emb = self.slot_pos_emb  # Backward compatibility alias
 
         # Continuous geometry projection
         self.geom_proj = nn.Linear(node_dim, embed_dim)
@@ -208,6 +224,17 @@ class FineBotanicalFlowMatchingDecoder(nn.Module):
             nn.Linear(embed_dim, embed_dim),
             nn.GELU(),
             nn.Linear(embed_dim, embed_dim),
+        )
+
+        # Intra-Phytomer Block Multi-Head Self-Attention:
+        # Allows the M=8 organs within each local phytomer block to coordinate joint kinematics
+        # (petiole pitch, leaflet spread, stem orientation) prior to global image conditioning
+        self.block_norm = nn.LayerNorm(embed_dim)
+        self.block_self_attn = nn.MultiheadAttention(
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            dropout=0.05,
+            batch_first=True,
         )
 
         # Cross-layer decoder
@@ -222,7 +249,7 @@ class FineBotanicalFlowMatchingDecoder(nn.Module):
         )
         self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
 
-        # Continuous geometry velocity head (v_theta predicting d/dt of 13D geometry)
+        # Continuous geometry velocity head (v_theta predicting d/dt of 16D latent)
         self.velocity_head = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
             nn.GELU(),
@@ -275,9 +302,12 @@ class FineBotanicalFlowMatchingDecoder(nn.Module):
         # (B, K, D) -> (B, K, 1, D) -> (B, K, M, D) -> (B, N_fine, D)
         expanded_anchors = anchor_features.unsqueeze(2).expand(-1, -1, M, -1).reshape(B, N_fine, self.embed_dim)
 
-        # 2. Local organ role embedding: (M, D) expanded across B and K
-        role_ids = torch.arange(M, device=device).unsqueeze(0).expand(K, -1).reshape(-1)  # (N_fine,)
-        role_embs = self.role_emb(role_ids).unsqueeze(0).expand(B, -1, -1)
+        # 2. Canonical Phytomer Role + Positional Embeddings
+        # Map slot positions [0..M-1] to botanical functional roles [0..4]
+        role_map_tensor = torch.as_tensor(SLOT_ROLE_MAPPING[:M], dtype=torch.long, device=device)
+        slot_pos_tensor = torch.arange(M, device=device)
+        block_role_embs = self.functional_role_emb(role_map_tensor) + self.slot_pos_emb(slot_pos_tensor)  # (M, D)
+        role_embs = block_role_embs.unsqueeze(0).expand(K, -1, -1).reshape(1, N_fine, self.embed_dim).expand(B, -1, -1)
 
         # 3. Geometry projection
         geom_embs = self.geom_proj(noisy_fine_nodes)
@@ -288,13 +318,20 @@ class FineBotanicalFlowMatchingDecoder(nn.Module):
         # Composite query representation
         queries = geom_embs + expanded_anchors + role_embs + t_emb
 
-        # 5. Decoder cross-attention to image tokens
+        # 5. Intra-Phytomer Block Multi-Head Self-Attention:
+        # Reshape to (B * K, M, D) so local organs directly communicate joint kinematics
+        q_block = queries.view(B * K, M, self.embed_dim)
+        q_norm = self.block_norm(q_block)
+        block_attn_out, _ = self.block_self_attn(q_norm, q_norm, q_norm)
+        queries = (q_block + block_attn_out).view(B, N_fine, self.embed_dim)
+
+        # 6. Global Decoder cross-attention to image tokens & anchor memory
         # Concatenate image tokens with anchor features as memory for full multi-scale conditioning
         memory = torch.cat([image_tokens, anchor_features], dim=1)
 
         x = self.decoder(queries, memory)
 
-        # 6. Heads
+        # 7. Heads
         pred_velocity = self.velocity_head(x)
         pred_exist_logits = self.exist_head(x)
 
