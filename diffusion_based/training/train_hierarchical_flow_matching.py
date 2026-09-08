@@ -583,6 +583,7 @@ def main():
     parser.add_argument("--render_ratio", type=float, default=1.0, help="Ratio of batch to render differentiably (0.0 to 1.0, default: 1.0 = 100 percent full batch)")
     parser.add_argument("--render_sub_batch", type=int, default=None, help="Explicit sub-batch size for in-loop differentiable rendering per GPU (overrides render_ratio if set)")
     parser.add_argument("--save_every", type=int, default=25)
+    parser.add_argument("--init_checkpoint", type=str, default=None, help="Path to checkpoint to initialize weights from (strict=False)")
     parser.add_argument("--wandb_project", type=str, default="part-flow-matching")
     parser.add_argument("--wandb_run_name", type=str, default="hierarchical-matryoshka-cowpea")
     args = parser.parse_args()
@@ -655,6 +656,16 @@ def main():
     total_params = sum(p.numel() for p in model.parameters()) / 1e6
     if rank == 0:
         print(f"Hierarchical Matryoshka FM Model Parameter Count: {total_params:.2f}M")
+
+    # Optional Warm-Start Initialization (e.g. from prior checkpoint with strict=False)
+    if args.init_checkpoint and os.path.isfile(args.init_checkpoint):
+        if rank == 0:
+            print(f"Loading warm-start checkpoint from: {args.init_checkpoint}")
+        ckpt = torch.load(args.init_checkpoint, map_location=device)
+        state_dict = ckpt.get("model_state_dict", ckpt)
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        if rank == 0:
+            print(f"Warm-start loaded successfully! Missing keys (newly initialized): {len(missing)}, Unexpected: {len(unexpected)}")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
