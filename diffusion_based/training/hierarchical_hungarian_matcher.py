@@ -83,16 +83,26 @@ class HierarchicalBotanicalMatcher(nn.Module):
             else:
                 gt_positions = t_geom[:, 0:3]    # (M_i, 3)
 
-            # Extract stem/petiole structural nodes as natural cluster centers (classes 3=INTERNODE, 4=PETIOLE)
-            is_structural = (t_label == 3) | (t_label == 4)
-            structural_indices = torch.nonzero(is_structural, as_tuple=True)[0]
-
-            if len(structural_indices) > 0:
-                cluster_centers = gt_positions[structural_indices]  # (num_clusters, 3)
+            # Extract true botanical Phytomer Node centers:
+            # The petiole base (class 4) is physically the exact insertion point (Node) of the phytomer.
+            petiole_indices = torch.nonzero(t_label == 4, as_tuple=True)[0]
+            if len(petiole_indices) > 0:
+                cluster_centers = gt_positions[petiole_indices]  # (N_phytomers, 3)
+                # Also capture basal/terminal internodes that have no petiole (e.g. distance > 4cm from all petioles)
+                internode_indices = torch.nonzero(t_label == 3, as_tuple=True)[0]
+                if len(internode_indices) > 0:
+                    dist_in_to_pet = torch.cdist(gt_positions[internode_indices], cluster_centers).min(dim=1).values
+                    standalone_in = internode_indices[dist_in_to_pet > 0.04]
+                    if len(standalone_in) > 0:
+                        cluster_centers = torch.cat([cluster_centers, gt_positions[standalone_in]], dim=0)
             else:
-                # Fallback: K-means / spatial grid clustering
-                num_clusters = min(K, max(1, M_i // M))
-                cluster_centers = gt_positions[:num_clusters]
+                # Early seedling fallback: use internodes or all active organs
+                internode_indices = torch.nonzero(t_label == 3, as_tuple=True)[0]
+                if len(internode_indices) > 0:
+                    cluster_centers = gt_positions[internode_indices]
+                else:
+                    num_clusters = min(K, max(1, M_i // M))
+                    cluster_centers = gt_positions[:num_clusters]
 
             num_gt_clusters = cluster_centers.shape[0]
 
