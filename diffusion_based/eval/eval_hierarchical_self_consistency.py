@@ -340,14 +340,16 @@ def evaluate_self_consistency_batch(
         jpeg_path = None
         if "jpeg" in val_batch and val_batch["jpeg"] is not None:
             jpegs = val_batch["jpeg"]
-            if isinstance(jpegs, (list, tuple)) and b < len(jpegs):
+            if isinstance(jpegs, (list, tuple)) and b < len(jpegs) and jpegs[b]:
                 jpeg_path = jpegs[b]
-        elif "prefix" in val_batch and val_batch["prefix"] is not None:
+        if not jpeg_path and "prefix" in val_batch and val_batch["prefix"] is not None:
             prefixes = val_batch["prefix"]
-            if isinstance(prefixes, (list, tuple)) and b < len(prefixes):
-                candidate = os.path.join("dataset/helios_data/cowpea", f"{prefixes[b]}_rad.jpeg")
-                if os.path.exists(candidate):
-                    jpeg_path = candidate
+            if isinstance(prefixes, (list, tuple)) and b < len(prefixes) and prefixes[b]:
+                for sfx in ("_rad.jpeg", "_vis.jpeg"):
+                    candidate = os.path.join("dataset/helios_data/cowpea", f"{prefixes[b]}{sfx}")
+                    if os.path.exists(candidate):
+                        jpeg_path = candidate
+                        break
 
         im_helios = None
         if jpeg_path and os.path.exists(jpeg_path):
