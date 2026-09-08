@@ -440,15 +440,15 @@ def evaluate_self_consistency_batch(
             "comp_img": comp_img,
         })
 
-    # 6. Build Diagnostic Visualization Figure (7 Columns: Helios Ref + 2x2 RGB + 2x2 Depth + 3D Preds & Error + True 3D Point Cloud)
+    # 6. Build Diagnostic Visualization Figure (8 Columns: Ref + RGB + Depth + Pred RGB + Pred Depth + Depth Error + Real Solid Mesh + 3D Botanical Skeleton & Nodes)
     if panels_data:
         n_rows = len(panels_data)
-        fig = plt.figure(figsize=(24.5, 3.5 * n_rows), facecolor="#12151a")
-        gs = fig.add_gridspec(n_rows, 7, wspace=0.14, hspace=0.25, left=0.03, right=0.97, top=0.82, bottom=0.04)
+        fig = plt.figure(figsize=(28.0, 3.5 * n_rows), facecolor="#12151a")
+        gs = fig.add_gridspec(n_rows, 8, wspace=0.15, hspace=0.25, left=0.02, right=0.98, top=0.84, bottom=0.04)
 
         mean_node_rmse = np.mean([d["node_rmse_cm"] for d in panels_data])
         fig.suptitle(
-            f"Hierarchical Flow Matching: 3D Reconstruction & 3D Point Cloud Node Estimation (Epoch {epoch:03d})\n"
+            f"Hierarchical Flow Matching: 3D Reconstruction, Real Mesh & Botanical Skeleton (Epoch {epoch:03d})\n"
             f"Mean Silhouette IoU: {np.mean(ious)*100:.1f}% | Depth MAE: {np.mean(depth_maes)*100:.2f} cm | Node RMSE: {mean_node_rmse:.1f} cm",
             fontsize=15, fontweight="bold", color="#f0f4f8", y=0.96
         )
@@ -460,13 +460,14 @@ def evaluate_self_consistency_batch(
             "3. Pred 3D Mesh\n(Top-Down Reconstruction)",
             "4. Pred 3D Depth\n(Canopy Height CHM)",
             "5. Signed Depth Error\n(Blue: Under, Red: Over)",
-            "6. Oblique 3D Real Mesh\n(Cyan: GT, Amber: Pred)",
+            "6. Real 3D Solid Mesh\n(Oblique 30° Composite)",
+            "7. 3D Botanical Skeleton\n(Stem Trees & Nodes)",
         ]
 
         for row_idx, data in enumerate(panels_data):
             vmax_d = max(0.3, float(data["gt_3d_depth"].max()))
 
-            # Create 2D subplots for all 7 Columns (0 to 6)
+            # Create 2D subplots for Columns 0 to 6
             axes_row = []
             for col_idx in range(7):
                 ax = fig.add_subplot(gs[row_idx, col_idx])
@@ -516,11 +517,57 @@ def evaluate_self_consistency_batch(
             # Col 6: Oblique 3D Real Mesh Composite (Cyan: GT, Amber: Pred, Blend: Overlap)
             if data.get("comp_img") is not None:
                 axes_row[6].imshow(data["comp_img"])
-                rmse_str = f" | RMSE: {data['node_rmse_cm']:.1f} cm" if data.get("node_rmse_cm") else ""
-                axes_row[6].set_xlabel(f"Real 3D Mesh{rmse_str}\n(Cyan: GT, Amber: Pred)", fontsize=8.5, color="#00e5ff")
+                axes_row[6].set_xlabel("Real 3D Mesh Composite\n(Cyan: GT, Amber: Pred)", fontsize=8.5, color="#00e5ff")
             else:
                 axes_row[6].text(0.5, 0.5, "Mesh N/A", color="#94a3b8", ha="center", va="center")
             axes_row[6].axis("off")
+
+            # Col 7: 3D Botanical Skeleton & Nodes (Matplotlib 3D)
+            ax7 = fig.add_subplot(gs[row_idx, 7], projection="3d")
+            ax7.set_facecolor("#181c24")
+            ax7.view_init(elev=24, azim=-55)
+            if row_idx == 0:
+                ax7.set_title(col_titles[7], fontsize=9.5, fontweight="bold", color="#e879f9", pad=8)
+
+            # Draw GT stem segments (internode tubes)
+            gt_segs = data.get("gt_stem_segments", [])
+            for i, (b_pos, tp_pos) in enumerate(gt_segs):
+                lbl = "GT Stem Tree" if i == 0 else ""
+                ax7.plot([b_pos[0], tp_pos[0]], [b_pos[1], tp_pos[1]], [b_pos[2], tp_pos[2]],
+                         color="#00e5ff", linestyle="-", linewidth=3.2, alpha=0.95, zorder=10, label=lbl)
+
+            # Draw Pred stem segments (internode tubes)
+            pred_segs = data.get("pred_stem_segments", [])
+            for i, (b_pos, tp_pos) in enumerate(pred_segs):
+                lbl = "Pred Stem Tree" if i == 0 else ""
+                ax7.plot([b_pos[0], tp_pos[0]], [b_pos[1], tp_pos[1]], [b_pos[2], tp_pos[2]],
+                         color="#f43f5e", linestyle="--", linewidth=2.4, alpha=0.90, zorder=11, label=lbl)
+
+            # Draw GT Nodes
+            if len(data["gt_nodes"]) > 0:
+                ax7.scatter(data["gt_nodes"][:, 0] * 100, data["gt_nodes"][:, 1] * 100, data["gt_nodes"][:, 2] * 100,
+                            c="#00e5ff", s=32, edgecolors="white", linewidth=0.9, zorder=12,
+                            label=f"GT Node (N={len(data['gt_nodes'])})")
+
+            # Draw Pred Nodes
+            if len(data["pred_nodes"]) > 0:
+                ax7.scatter(data["pred_nodes"][:, 0] * 100, data["pred_nodes"][:, 1] * 100, data["pred_nodes"][:, 2] * 100,
+                            c="#f43f5e", marker="s", s=28, edgecolors="black", linewidth=0.8, zorder=13,
+                            label=f"Pred Node (K={len(data['pred_nodes'])})")
+
+            ax7.tick_params(colors="#94a3b8", labelsize=6.5, pad=0.5)
+            for pane in [ax7.xaxis.pane, ax7.yaxis.pane, ax7.zaxis.pane]:
+                pane.set_facecolor("#1e2330")
+                pane.set_edgecolor("#334155")
+
+            ax7.set_xlabel("X [cm]", fontsize=7, color="#94a3b8", labelpad=-3)
+            ax7.set_ylabel("Y [cm]", fontsize=7, color="#94a3b8", labelpad=-3)
+            ax7.set_zlabel("Z [cm]", fontsize=7, color="#94a3b8", labelpad=-3)
+
+            rmse_str = f"Node RMSE: {data['node_rmse_cm']:.1f} cm"
+            ax7.text2D(0.05, 0.88, rmse_str, transform=ax7.transAxes, color="#e879f9", fontsize=8, fontweight="bold")
+            if row_idx == 0:
+                ax7.legend(loc="upper right", fontsize=6.0, facecolor="#0f172a", edgecolor="#334155", labelcolor="#f8fafc", framealpha=0.8)
 
         panel_path = os.path.join(output_dir, f"hierarchical_self_consistency_epoch_{epoch:03d}.png")
         fig.savefig(panel_path, dpi=120, bbox_inches="tight", facecolor=fig.get_facecolor())
