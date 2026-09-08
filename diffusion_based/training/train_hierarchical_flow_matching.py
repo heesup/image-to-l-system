@@ -210,6 +210,19 @@ def forward_backward_step(
                     t_cls = tgt_labels_list[b][fine_tgt]
                     correct_cls += (pred_cls_m == t_cls).sum().item()
 
+        # Idle slot velocity damping: gently regularize velocity of unmatched slots towards 0
+        # so unassigned reproductive / spare slots do not drift into empty space
+        all_fine_idx = torch.arange(active_fine, device=device)
+        if num_fine_m > 0:
+            idle_mask = torch.ones(active_fine, dtype=torch.bool, device=device)
+            idle_mask[fine_src] = False
+            idle_src = all_fine_idx[idle_mask]
+        else:
+            idle_src = all_fine_idx
+        if len(idle_src) > 0:
+            p_v_idle = pred_velocity[b, idle_src]
+            loss_fine_vel_acc += 0.05 * (p_v_idle ** 2).sum() / float(node_dim)
+
         # Fine slot existence loss across all fine slots (BCE with pos_weight=12.0)
         pos_weight_fine = torch.tensor([12.0], device=device)
         loss_fine_exist_acc += F.binary_cross_entropy_with_logits(
@@ -342,7 +355,7 @@ def forward_backward_step(
 
     # Composite Loss (Macro Prior + 3D Node Scaffold + Intra-Phytomer Flow Matching + Photometric)
     loss = (
-        2.0 * loss_anchor_pos
+        4.0 * loss_anchor_pos
         + 1.0 * loss_anchor_exist
         + 2.0 * loss_fine_vel
         + 1.0 * loss_fine_exist
@@ -709,11 +722,11 @@ def main():
             other_params.append(param)
 
     if rank == 0:
-        print(f"Optimizer setup: {len(backbone_params)} DINOv2 backbone tensors (lr={args.lr * 0.1:.1e}), "
+        print(f"Optimizer setup: {len(backbone_params)} DINOv2 backbone tensors (lr={args.lr * 0.3:.1e}), "
               f"{len(other_params)} 3D/decoder tensors (lr={args.lr:.1e})")
 
     param_groups = [
-        {"params": backbone_params, "lr": args.lr * 0.1},
+        {"params": backbone_params, "lr": args.lr * 0.3},
         {"params": other_params, "lr": args.lr},
     ]
     optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)

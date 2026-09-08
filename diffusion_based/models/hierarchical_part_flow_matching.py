@@ -674,7 +674,9 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         for b in range(B):
             k_b = min(int(budgets[b].item()), N_fine)
             top_k_indices = torch.topk(combined_prob[b], k_b).indices
-            slot_active[b, top_k_indices] = 1.0
+            # Only keep top-k slots that have meaningful probability (> 0.15) to prevent dormant ghost organs
+            valid_topk = top_k_indices[combined_prob[b, top_k_indices] > 0.15]
+            slot_active[b, valid_topk] = 1.0
             # Also keep high-confidence slots (e.g. > 0.35)
             slot_active[b, combined_prob[b] > 0.35] = 1.0
 

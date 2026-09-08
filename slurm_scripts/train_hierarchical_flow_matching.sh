@@ -32,8 +32,8 @@ VRAM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | he
 # Python Runtime Profiling: Automatically probes model parameters and autograd activations
 # to achieve safe GPU VRAM utilization on any GPU architecture (H100, A100, RTX 6000 Ada).
 # Can be manually overridden via FORCE_BATCH_SIZE=<int>.
-BATCH_ARG=${FORCE_BATCH_SIZE:-24}
-TARGET_RATIO=0.85
+BATCH_ARG=${FORCE_BATCH_SIZE:-48}
+TARGET_RATIO=0.88
 
 echo "================================================================================"
 echo "Starting Hierarchical Matryoshka Botanical Flow Matching Training"
