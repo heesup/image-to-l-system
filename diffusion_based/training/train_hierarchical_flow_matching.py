@@ -701,16 +701,6 @@ def main():
     if rank == 0:
         print(f"Hierarchical Matryoshka FM Model Parameter Count: {total_params:.2f}M")
 
-    # Optional Warm-Start Initialization (e.g. from prior checkpoint with strict=False)
-    if args.init_checkpoint and os.path.isfile(args.init_checkpoint):
-        if rank == 0:
-            print(f"Loading warm-start checkpoint from: {args.init_checkpoint}")
-        ckpt = torch.load(args.init_checkpoint, map_location=device)
-        state_dict = ckpt.get("model_state_dict", ckpt)
-        missing, unexpected = model.load_state_dict(state_dict, strict=False)
-        if rank == 0:
-            print(f"Warm-start loaded successfully! Missing keys: {len(missing)}, Unexpected: {len(unexpected)}")
-
     # Parameter groups: DINOv2 backbone uses 0.1x learning rate (e.g. 2e-5) to preserve foundation priors
     backbone_params = []
     other_params = []
@@ -731,7 +721,33 @@ def main():
         {"params": other_params, "lr": args.lr},
     ]
     optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)
-    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
+
+    # Optional Warm-Start Initialization or Full State Resume
+    start_epoch = 1
+    if args.init_checkpoint and os.path.isfile(args.init_checkpoint):
+        if rank == 0:
+            print(f"Loading checkpoint from: {args.init_checkpoint}")
+        ckpt = torch.load(args.init_checkpoint, map_location=device)
+        state_dict = ckpt.get("model_state_dict", ckpt)
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        if rank == 0:
+            print(f"Model weights loaded successfully! Missing keys: {len(missing)}, Unexpected: {len(unexpected)}")
+        if args.resume and isinstance(ckpt, dict) and "epoch" in ckpt:
+            start_epoch = ckpt["epoch"] + 1
+            if "optimizer_state_dict" in ckpt:
+                try:
+                    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+                    if rank == 0:
+                        print("Optimizer state successfully restored from checkpoint.")
+                except Exception as e:
+                    if rank == 0:
+                        print(f"Warning: could not restore optimizer state: {e}")
+            if rank == 0:
+                print(f"Resuming training loop from epoch {start_epoch} of {args.epochs}")
+
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=args.epochs, eta_min=1e-6, last_epoch=start_epoch - 2 if start_epoch > 1 else -1
+    )
     flow_scheduler = FlowMatchingScheduler()
     matcher = HierarchicalBotanicalMatcher(slots_per_anchor=args.slots_per_anchor).to(device)
 
@@ -787,7 +803,7 @@ def main():
         )
 
     # Training Loop
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         if is_ddp and sampler is not None:
             sampler.set_epoch(epoch)
 

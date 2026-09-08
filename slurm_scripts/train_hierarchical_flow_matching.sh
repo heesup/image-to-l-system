@@ -46,8 +46,19 @@ echo "==========================================================================
 # Pick a dynamic port to avoid collision
 MASTER_PORT=$(shuf -i 29500-29999 -n 1)
 
+# Checkpoint Resume configuration
+EXTRA_ARGS=""
+if [ -n "${INIT_CHECKPOINT}" ] && [ -f "${INIT_CHECKPOINT}" ]; then
+    EXTRA_ARGS="--init_checkpoint ${INIT_CHECKPOINT}"
+    if [ "${RESUME:-1}" = "1" ]; then
+        EXTRA_ARGS="${EXTRA_ARGS} --resume"
+    fi
+    echo "Resuming from checkpoint: ${INIT_CHECKPOINT}"
+fi
+
 ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     diffusion_based/training/train_hierarchical_flow_matching.py \
+    ${EXTRA_ARGS} \
     --data_dir dataset/helios_data/cowpea \
     --cache_dir dataset/cache/cowpea_curv26 \
     --output_dir diffusion_based/checkpoints/hierarchical_latent_fm \
