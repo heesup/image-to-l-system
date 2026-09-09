@@ -10,26 +10,15 @@ This directory tracks **only actively running work** for the **Image-to-L-System
 
 ---
 
-## 🚨 CURRENT SYSTEM STATE (2026-09-08 ~17:30 PDT)
+## 🚨 CURRENT SYSTEM STATE (2026-09-08 ~18:45 PDT)
 
 | Component | Status | Details |
 | :--- | :---: | :--- |
-| **Main Training Job** | 🟢 RUNNING | Job `38146809`, Epoch 26/500, gpu-10-54, 4× RTX 6000 Ada, 40.5 GB VRAM |
-| **Helios Dataset Synthesis** | 🟡 IN PROGRESS | 40 shards (38147132–38147171), ~51,880/~120,000 XMLs done |
-| **Cache Tensors Available** | ~22,600 `.pt` | In `dataset/cache/cowpea_curv26/` |
-| **Per-Epoch Eval Panels** | ⚠️ PENDING | Job 38146809 started before `--eval_every`. Restart with INIT_CHECKPOINT at Epoch 25 |
+| **Main Training Job** | 🟢 RUNNING | Job `38146809`, **Epoch 54/500**, gpu-10-54, 4× RTX 6000 Ada, 37.2 GB VRAM (78.6%), TIME_LEFT ~20h |
+| **Saved Checkpoints** | 🟢 READY | `hierarchical_fm_epoch_025.pt`, `hierarchical_fm_epoch_050.pt` (both 1.4 GB) |
+| **Helios Dataset Synthesis** | 🟢 IN PROGRESS | 40 shards, **65,488 / ~120,000 XMLs (54.6%)**, **35,266 cache `.pt` tensors** |
+| **Epoch 50 Self-Consistency** | 🟢 EVALUATED | IoU: 9.7%, Depth MAE: 8.25 cm, Node RMSE: 1.7 cm, Loss: 3.58 |
 | **OnDemand Desktop** | 🟢 RUNNING | Job `38147219`, gpu-5-58 — **DO NOT CANCEL** |
-
-### ⚡ Most Urgent Action
-```bash
-# 1. Check if Epoch 25 checkpoint is ready
-ls -lh diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_025.pt
-
-# 2. If it exists → cancel old job → re-submit with resume (gets --eval_every 1)
-scancel 38146809
-INIT_CHECKPOINT=diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_025.pt \
-  sbatch slurm_scripts/train_hierarchical_flow_matching.sh
-```
 
 ---
 
@@ -38,6 +27,7 @@ INIT_CHECKPOINT=diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_
 | Document | Purpose |
 | :--- | :--- |
 | **[AGENT_TAKEOVER_GUIDE.md](AGENT_TAKEOVER_GUIDE.md)** | Master handover: full system state, all 2026-09-08 changes, next steps, gotchas, commit history |
+| **[`docs/results/20260908_epoch050_skeleton_geometry_and_chamfer_bias_analysis.md`](../results/20260908_epoch050_skeleton_geometry_and_chamfer_bias_analysis.md)** | Technical analysis of Epoch 50 results (`AncPos: 0.009` vs Column 6 skeleton distortion) |
 
 ---
 
@@ -45,7 +35,8 @@ INIT_CHECKPOINT=diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_
 
 | Priority | Task | Notes |
 | :--- | :--- | :--- |
-| **P1** | Epoch 25 checkpoint → cancel 38146809 → re-submit with `INIT_CHECKPOINT` | Activates `--eval_every 1` + `--resume` |
-| **P2** | Monitor Helios shard completion | Target 120k XMLs + cache |
-| **P3** | Once all shards done → expand training with fuller dataset | ~120k samples available |
-| **P4** | Inspect `hierarchical_self_consistency_epoch_050.png` vs `epoch_100.png` | Check dormant slot damping effectiveness |
+| **P1** | Let Job `38146809` continue past Epoch 75 / 100 | Checkpoint `epoch_075.pt` and next visual panel expected in ~20–30 min |
+| **P2** | Track Helios shard completion | Currently 65.5k XMLs / 35.3k cache tensors; target 120k |
+| **P3** | Monitor 6D rotation convergence in Stage 3 | Verify outward radial branch divergence in Epoch 75/100 panels |
+| **P4** | Evaluate Bidirectional Chamfer Distance | Add max/mean distance from GT $\to$ Pred to avoid one-way clustering metric bias |
+| **P5** | Expand training to full 120k dataset | Once all Helios shards complete, launch next 500-epoch scaling run |
