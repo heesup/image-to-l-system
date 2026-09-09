@@ -159,6 +159,7 @@ def evaluate_self_consistency_batch(
     output_dir: str = "docs/results/assets",
     num_samples_to_plot: int = 3,
     vae: Optional[torch.nn.Module] = None,
+    phytomer_vae: Optional[torch.nn.Module] = None,
 ) -> Dict[str, float]:
     """Runs end-to-end self-consistency check on validation batch.
 
@@ -166,6 +167,7 @@ def evaluate_self_consistency_batch(
       - val/silhouette_iou
       - val/depth_mae_meters
       - val/peak_height_error_meters
+      - val/cos_color_loss, val/dice_loss (training-loss parity, all panel samples)
     Saves diagnostic panel to docs/results/assets/hierarchical_self_consistency_epoch_{epoch:03d}.png
     """
     model.eval()
@@ -177,7 +179,7 @@ def evaluate_self_consistency_batch(
         daps = daps.to(device)
 
     B = images.shape[0]
-    sample_out = raw_model.sample_ode(images=images, daps=daps, num_steps=20, vae=vae)
+    sample_out = raw_model.sample_ode(images=images, daps=daps, num_steps=20, vae=vae, phytomer_vae=phytomer_vae)
 
     pred_geoms = sample_out["pred_geometry"]  # (B, N, 13) or (B, N, 16)
     pred_classes = sample_out["pred_cls"]     # (B, N)
@@ -186,6 +188,8 @@ def evaluate_self_consistency_batch(
     ious = []
     depth_maes = []
     peak_height_diffs = []
+    cos_losses = []
+    dice_losses = []
     panels_data = []
 
     os.makedirs(output_dir, exist_ok=True)
@@ -298,6 +302,39 @@ def evaluate_self_consistency_batch(
         ious.append(iou)
         depth_maes.append(depth_mae_3d_gt)
         peak_height_diffs.append(peak_err)
+
+        # 5b. Self-Consistency Cosine Color & Silhouette Dice (training-loss parity:
+        # computed on the SAME normalization & mask definitions as the training
+        # photometric losses, over ALL evaluated panel samples at full render).
+        try:
+            # GT tensors: dataset cache stores RGB in [-1, 1], depth in meters.
+            gt_rgb_t = input_img[:3].to(device).float()
+            gt_depth_t = input_img[3].to(device).float().clamp(min=0.0)
+            pred_rgb_t = rendered_rgbd[:3].clamp(0.0, 1.0)  # renderer outputs [0, 1]
+            pred_rgb_t = (pred_rgb_t - 0.5) / 0.5           # -> [-1, 1] like dataset GT
+            pred_depth_t = rendered_rgbd[3].clamp(min=0.0)
+
+            canopy_m = (gt_depth_t > 0.005) | (pred_depth_t > 0.005)
+            eps = 1e-6
+            dot = (pred_rgb_t * gt_rgb_t).sum(dim=0)
+            n_p = torch.sqrt((pred_rgb_t ** 2).sum(dim=0) + eps)
+            n_g = torch.sqrt((gt_rgb_t ** 2).sum(dim=0) + eps)
+            cos_sim = (dot / (n_p * n_g)).clamp(-1.0, 1.0)
+            if canopy_m.sum() > 0:
+                cos_loss = float((1.0 - cos_sim[canopy_m]).mean().item())
+            else:
+                cos_loss = float((1.0 - cos_sim).mean().item())
+
+            pred_soft = torch.sigmoid((pred_depth_t - 0.005) * 100.0)
+            gt_soft = (gt_depth_t > 0.005).float()
+            inter = (pred_soft * gt_soft).sum()
+            denom = pred_soft.sum() + gt_soft.sum()
+            dice_loss = float(1.0 - (2.0 * inter + 1e-4) / (denom + 1e-4))
+        except Exception:
+            cos_loss = 1.0
+            dice_loss = 1.0
+        cos_losses.append(cos_loss)
+        dice_losses.append(dice_loss)
 
         # Oblique 3D Real Mesh Composite (Cyan: GT, Amber: Pred, Blend: Overlap)
         comp_img = None
@@ -631,8 +668,12 @@ def evaluate_self_consistency_batch(
         "val/silhouette_iou": float(np.mean(ious)) if ious else 0.0,
         "val/depth_mae": float(np.mean(depth_maes)) if depth_maes else 0.0,
         "val/peak_height_error": float(np.mean(peak_height_diffs)) if peak_height_diffs else 0.0,
+        "val/cos_color_loss": float(np.mean(cos_losses)) if cos_losses else 0.0,
+        "val/dice_loss": float(np.mean(dice_losses)) if dice_losses else 0.0,
         "val/node_rmse_cm": float(np.mean([d["node_rmse_cm"] for d in panels_data])) if panels_data else 0.0,
         "silhouette_iou": float(np.mean(ious)) if ious else 0.0,
         "depth_mae": float(np.mean(depth_maes)) if depth_maes else 0.0,
         "peak_height_error": float(np.mean(peak_height_diffs)) if peak_height_diffs else 0.0,
+        "cos_color_loss": float(np.mean(cos_losses)) if cos_losses else 0.0,
+        "dice_loss": float(np.mean(dice_losses)) if dice_losses else 0.0,
     }

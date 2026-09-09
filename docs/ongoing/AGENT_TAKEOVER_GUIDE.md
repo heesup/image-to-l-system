@@ -1,6 +1,6 @@
 # Agent Takeover & Engineering Handover Guide
 **Project: Image-to-L-System / 3D Inverse Procedural Plant Reconstruction**  
-**Last Updated:** 2026-09-08 ~18:45 PDT (Post-Epoch 50 Milestone & Botanical Skeleton Analysis)  
+**Last Updated:** 2026-09-09 ~23:30 PDT (XML-Phytomer Clustering + Structural Assembly + Profiling)  
 **Primary Author/Agent:** Antigravity Autonomous Agent (Pair programming with Heesup Yun)  
 **Environment:** Linux, Python 3.10+, Mamba (`mamba activate digital-crops`), CUDA, PyTorch, `nvdiffrast`, Helios C++ OptiX Raytracer.  
 
@@ -10,17 +10,18 @@
 
 ```bash
 # Where is training right now?
-tail -n 10 slurm_scripts/logs/hierarchical_fm_38146809.log
+tail -n 10 slurm_scripts/logs/hierarchical_fm_38183271.log
 
 # All running/pending jobs
 squeue -u lion397
 
 # Dataset size
-find dataset/helios_data/cowpea -name "*.xml" | wc -l   # target ~120,000 (currently ~65.5k)
-find dataset/cache/cowpea_curv26 -name "*.pt" | wc -l   # target ~120,000 (currently ~35.3k)
+find dataset/helios_data/cowpea -name "*.xml" | wc -l   # 100,000
+find dataset/cache/cowpea_curv26 -name "*.pt" | wc -l   # 100,000 (all have phytomer_ids)
 
 # Available checkpoints
 ls -lh diffusion_based/checkpoints/hierarchical_latent_fm/*.pt
+ls -lh diffusion_based/checkpoints/phytomer_vae_xml/*.pt
 ```
 
 ---
@@ -37,14 +38,25 @@ Given a single monocular top-view RGB-D ($256 \times 256 \times 4$) image contai
 ```
 Input: RGB-D 4ch image (256×256)
        ↓
-[Stage 1] DINOv2 ViT-S/14 → PETR-DETR3D → 512 Anchor points (3D positions)
+[Stage 0] DINOv2 ViT-S/14 → PETR 3D Ray PE → 3D-aware image tokens
        ↓
-[Stage 2] Coarse Flow Matching (4 transformer layers) → DAP-conditioned anchor slot assignment
+[Stage 1] MacroBiologicalHead (CLS token) → DAP + Phytomer count + soft margin existence prior
        ↓
-[Stage 3] Fine Flow Matching (6 transformer layers) → 8 organ slots per anchor (4,096 max slots)
+[Stage 2] CoarseSkeletalTransformer — DETERMINISTIC set transformer (4 TransformerDecoder
+          layers, NO flow matching) → 3D node scaffold: anchor xyz (ref_points + delta),
+          6D rotation, existence logits (GT-DAP Matryoshka slicing, power-of-2 tiers)
+       ↓
+[Stage 3] FineBotanicalFlowMatchingDecoder (6 transformer layers) → 8 organ slots per anchor
+          (4,096 max slots): Rectified Flow Matching velocity over 16D latents,
+          20-step Heun ODE at inference
        ↓
 OrganLatentVAE (frozen) → 16D latent → 14D Part Tensor → Helios XML
 ```
+
+> **Naming note**: "Stage 2" was historically labeled "Coarse Flow Matching" in older docs.
+> Per the ratified design-space decision (Combination 2: Deterministic Scaffold + 16D Latent FM,
+> `docs/archived/design/20260908_cascaded_architecture_design_space_analysis.md`), Stage 2 is a
+> **deterministic regression head** (xyz + 6D rot + existence); flow matching occurs only in Stage 3.
 
 ### Milestone History:
 - ✅ **Phase 1** (ICP / Diff Render / Flow Matching benchmark): Complete.
@@ -123,16 +135,25 @@ Checkpoints saved on disk:
 ```bash
 diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_025.pt  (1.4 GB)
 diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_050.pt  (1.4 GB)
+diffusion_based/checkpoints/phytomer_vae_xml/phytomer_vae_64d_best.pt  (accepted VAE, XML-phytomer clustering)
 ```
+
+### Active Job (2026-09-09 ~23:30 PDT):
+- **Job `38183271`** (gpu-10-54): phytomer-mode training on the FULL 100k dataset,
+  `FLOW_GRANULARITY=phytomer`, frozen `phytomer_vae_xml` checkpoint, render
+  fraction 0.167 + 2-scale pyramid (1x/2x). Epoch 1: ClsAcc 92.6% (was 0.0%
+  before the XML-phytomer fix), step ~8s (render 2.6s, packet build 4.2s).
 
 ### Actionable Choice for Incoming Agent:
 - **Option A (Recommended - Let it run):**  
-  Job `38146809` is healthy, fast (~50s/epoch), has ~20h remaining, and is already past Epoch 54. It will save `epoch_075.pt` around Epoch 75 and evaluate the next panel automatically.
+  Job `38183271` is healthy and past Epoch 1 with ClsAcc 92.6%. It will save
+  `epoch_025.pt` around Epoch 25 and evaluate the next panel automatically.
 - **Option B (Immediate Per-Epoch Eval Panels):**  
-  If you specifically require per-epoch evaluation images (`--eval_every 1`), cancel `38146809` and launch with:
+  If you specifically require per-epoch evaluation images (`--eval_every 1`),
+  cancel `38183271` and launch with:
   ```bash
-  scancel 38146809
-  INIT_CHECKPOINT=diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_050.pt \
+  scancel 38183271
+  INIT_CHECKPOINT=diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_025.pt \
     sbatch slurm_scripts/train_hierarchical_flow_matching.sh
   ```
 
@@ -142,11 +163,15 @@ diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_050.pt 
 
 | Priority | Task | Notes |
 | :--- | :--- | :--- |
-| **P1** | Monitor Job `38146809` to Epoch 75 / Epoch 100 | Check `hierarchical_self_consistency_epoch_075.png` |
-| **P2** | Track Helios dataset generation | Currently 65.5k XMLs / 35.3k cache tensors; target 120k |
-| **P3** | Monitor 6D rotation convergence in Stage 3 | Check whether stem segments align upward/outward in Epoch 75/100 panels |
+| **P1** | Monitor Job `38183271` to Epoch 25 / Epoch 50 | Check `hierarchical_self_consistency_epoch_025.png` |
+| **P2** | Track Helios dataset generation | 100k XMLs / 100k cache tensors (all with `phytomer_ids`) |
+| **P3** | Monitor 6D rotation convergence in Stage 3 | Check whether stem segments align upward/outward in Epoch 25/50 panels |
 | **P4** | Evaluate Bidirectional Chamfer Distance | Add max/mean distance from GT $\to$ Pred to avoid one-way clustering metric bias |
 | **P5** | Expand training to full 120k dataset | Once all Helios shards complete, launch next 500-epoch scaling run |
+| **P6 (NEW 2026-09-09)** | PhytomerVAE-64 validation gate | Training on local TITAN RTX (`diffusion_based/checkpoints/phytomer_vae/`); GO/NO-GO = roundtrip parity vs OrganLatentVAE. See `docs/ongoing/20260909_phytomer_latent_and_local_matching.md` §2 |
+| **P7 (NEW 2026-09-09)** | Stage-3 phytomer integration (ONLY after P6 passes) | Behind `flow_granularity` flag; plan in design doc §2 integration plan |
+| **P8 (NEW 2026-09-09)** | PhytomerVAE GUI app | **DELEGATED to another agent** — PCA latent cloud + 64D sliders → 3D render. Handoff spec in design doc §4.2 |
+| **P9 (NEW 2026-09-09)** | Launch phytomer-mode training | `--flow-granularity phytomer` wired + smoke-tested; launch on the 100k dataset once shards complete |
 
 ---
 
@@ -161,17 +186,24 @@ diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_050.pt 
 │   │   ├── helios_pytorch_geometry.py            ← mesh builder + differentiable mapping
 │   │   ├── helios_pytorch_renderer.py            ← nvdiffrast renderer + multi-scale pyramid
 │   │   └── part_tensor_to_40d.py                 ← closed-form IK + XML assembler
+│   ├── models/
+│   │   ├── organ_latent_vae.py                   ← frozen OrganLatentVAE bridge (16D/organ)
+│   │   ├── phytomer_vae.py                       ← [NEW 2026-09-09] PhytomerVAE (whole-phytomer 64D latent)
+│   │   └── hierarchical_part_flow_matching.py    ← [CRITICAL] 3-stage model + PhytomerFlowMatchingDecoder (flow_granularity)
 │   ├── training/
-│   │   ├── train_hierarchical_flow_matching.py   ← [CRITICAL] main training loop + --eval_every + --resume
-│   │   ├── hierarchical_hungarian_matcher.py     ← [CRITICAL] coarse anchor + local fine bipartite matching
+│   │   ├── train_hierarchical_flow_matching.py   ← [CRITICAL] main training loop + --flow-granularity phytomer (73D bridge targets)
+│   │   ├── train_phytomer_vae.py                 ← [NEW 2026-09-09] PhytomerVAE trainer (canonical packets)
+│   │   ├── hierarchical_hungarian_matcher.py     ← [CRITICAL] coarse anchor + local fine bipartite matching (+soft locality radius opt-in, skip_fine)
 │   │   └── flow_matching.py                      ← Rectified Flow scheduler
 │   ├── dataset/
-│   │   └── part_array_dataset.py                 ← [CRITICAL] cache-first filtering, 16-ch pyramid
+│   │   ├── part_array_dataset.py                 ← [CRITICAL] cache-first filtering, 16-ch pyramid
+│   │   └── phytomer_packets.py                   ← [NEW 2026-09-09] canonical 8-slot packet builder (relative rotations, Option-1 reference)
 │   ├── eval/
 │   │   └── eval_hierarchical_self_consistency.py ← 7-column diagnostic panel generator
 │   └── checkpoints/
 │       ├── hierarchical_latent_fm/               ← training checkpoints (epoch_025.pt, epoch_050.pt, ...)
-│       └── organ_vae/organ_latent_vae_best.pt    ← frozen OrganLatentVAE bridge
+│       ├── organ_vae/organ_latent_vae_best.pt    ← frozen OrganLatentVAE bridge
+│       └── phytomer_vae_relative_d/              ← [NEW] accepted PhytomerVAE-64 (rot 3.16°, relative-rotation)
 ├── slurm_scripts/
 │   ├── train_hierarchical_flow_matching.sh       ← launcher w/ INIT_CHECKPOINT support
 │   └── generate_helios_dataset_jobs.sh           ← TIME_LIMIT="24:00:00"

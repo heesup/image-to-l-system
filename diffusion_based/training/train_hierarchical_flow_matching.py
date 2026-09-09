@@ -7,9 +7,12 @@ Jointly trains:
 """
 
 import os
+import re
 import sys
 import argparse
 import math
+import json
+import random
 import time
 from typing import Dict, List, Optional
 
@@ -30,12 +33,15 @@ from diffusion_based.dataset.part_array_dataset import (
     EMPTY_IDX,
     FM_OT_END,
     FM_BASE_START,
+    FM_SCALE_START,
     GEOM_NODE_DIM,
     NUM_ORGAN_TYPES,
     BASE_SCALE,
     SCALE_SCALE,
     CURV_SCALE,
+    decode_fm,
 )
+from diffusion_based.dataset.dap_bucket_sampler import DAPBucketBatchSampler
 from diffusion_based.models.plant_organ_array import (
     ORGAN_SHOOT_META,
 )
@@ -43,6 +49,24 @@ from diffusion_based.training.flow_matching import FlowMatchingScheduler
 from diffusion_based.models.hierarchical_part_flow_matching import (
     HierarchicalPartFlowMatchingModel,
     compute_matryoshka_slice,
+    estimate_anchor_capacity,
+    ANCHOR_MARGIN,
+    ANCHOR_MARGIN_FLAT,
+    build_phytomer_flow_target,
+    split_phytomer_flow_target,
+    apply_ref_for_flow,
+    PHYTO_FLOW_BASE_START,
+    PHYTO_FLOW_BASE_END,
+    PHYTO_FLOW_ROT_START,
+    PHYTO_FLOW_ROT_END,
+    PHYTO_FLOW_LATENT_START,
+)
+from diffusion_based.models.phytomer_vae import PhytomerVAE
+from diffusion_based.dataset.phytomer_packets import (
+    build_phytomer_packets,
+    decode_packets,
+    rot6d_to_matrix,
+    assemble_packets,
 )
 from diffusion_based.training.hierarchical_hungarian_matcher import (
     HierarchicalBotanicalMatcher,
@@ -66,12 +90,17 @@ def forward_backward_step(
     depth_loss_weight: float = 0.5,
     color_loss_weight: float = 0.2,
     silhouette_loss_weight: float = 2.0,
-    render_ratio: float = 1.0,
-    render_sub_batch: Optional[int] = None,
+    render_fraction: float = 1.0 / 6.0,
+    capacity_schedule: Optional[Dict[str, float]] = None,
+    flow_granularity: str = "organ",
+    phytomer_vae: Optional[nn.Module] = None,
 ) -> Optional[Dict[str, float]]:
     images = batch["image"].to(device)
     nodes = batch["nodes"].to(device)  # (B, N_max, 26)
     existence_mask = batch["existence_mask"].to(device)
+    phytomer_ids = batch.get("phytomer_ids", None)
+    if phytomer_ids is not None:
+        phytomer_ids = phytomer_ids.to(device)
     daps = batch.get("dap", None)
     if daps is not None:
         daps = daps.to(device)
@@ -81,13 +110,69 @@ def forward_backward_step(
     # Extract GT labels and sub-slice for Matryoshka capacity
     type_labels = nodes[:, :, :FM_OT_END].argmax(dim=-1)  # (B, N_max)
     raw_model = model.module if hasattr(model, "module") else model
-    active_k = compute_matryoshka_slice(daps, max_anchors=raw_model.max_anchors)
-    active_fine = active_k * slots_per_anchor
+
+    # Scheduled capacity teacher forcing:
+    #   'gt'   - K from GT DAP (noise-free teacher forcing)
+    #   'pred' - K from the model's own predicted phytomer count, with multiplicative
+    #            log-normal noise (~+30% sigma) so the capacity is >= the clean GT
+    #            slice with high probability (under-allocation guard while exposing
+    #            the model to inference-time capacity distribution).
+    # p_pred = fraction of batches using the predicted path, linearly ramped from 0
+    # at --capacity_warmup_epochs to 1.0 at --capacity_full_epochs.
+    use_pred_capacity = False
+    capacity_pred_prob = 0.0
+    if capacity_schedule is not None and capacity_schedule.get("p_pred", 0.0) > 0.0:
+        capacity_pred_prob = float(capacity_schedule["p_pred"])
+        use_pred_capacity = (torch.rand(1).item() < capacity_pred_prob)
+
+    active_k = compute_matryoshka_slice(
+        dap=daps, max_anchors=raw_model.max_anchors, margin=ANCHOR_MARGIN
+    )
+    if use_pred_capacity:
+        # Two-pass: macro head first (gradient-safe, differentiable count), then
+        # slice by the noisy predicted count (max'ed with GT slice for safety).
+        with torch.no_grad():
+            image_tokens_probe = raw_model.image_encoder(images)
+            macro_probe = raw_model.coarse_stage.macro_head(
+                image_tokens_probe[:, 0], max_k=raw_model.max_anchors
+            )
+            pred_count = macro_probe["pred_num_phytomers"].detach().float().view(-1)
+            # Multiplicative noise: x1.0 median with +30% log-normal sigma, biased
+            # slightly upward (x1.10) so noisy capacity usually exceeds the clean
+            # prediction (under-allocation guard) while exposing the model to the
+            # inference-time capacity distribution.
+            noise = torch.exp(torch.randn_like(pred_count) * 0.30) * 1.10
+            noisy_count = pred_count * noise
+            k_pred = math.ceil(
+                float(noisy_count.max().item()) * ANCHOR_MARGIN + ANCHOR_MARGIN_FLAT
+            )
+            k_pred = int(min(max(k_pred, 8), raw_model.max_anchors))
+            k_gt = compute_matryoshka_slice(
+                dap=daps, max_anchors=raw_model.max_anchors, margin=ANCHOR_MARGIN
+            )
+            active_k = max(k_pred, int(k_gt))
+    active_fine = min(active_k * slots_per_anchor, nodes.shape[1])
+
+    # Per-sample anchor capacity from the calibrated DAP curve. Slots beyond a
+    # sample's own capacity are excluded from GT existence targets so the
+    # existence head is never penalized for not predicting organs that the
+    # sliced anchor bank cannot reach (under-allocation safety valve).
+    per_sample_cap = estimate_anchor_capacity(
+        daps, margin=ANCHOR_MARGIN, flat=ANCHOR_MARGIN_FLAT, max_anchors=active_k
+    )  # (B,) in [8, active_k]
 
     nodes_sub = nodes[:, :active_fine]
     type_labels_sub = type_labels[:, :active_fine]
     existence_mask_sub = existence_mask[:, :active_fine]
+    phytomer_ids_sub = None
+    if phytomer_ids is not None:
+        phytomer_ids_sub = phytomer_ids[:, :active_fine]
     act_mask_sub = (type_labels_sub > ORGAN_SHOOT_META) & (existence_mask_sub > 0.5)
+
+    # Existence-aware per-sample mask: cap each sample's actives to its capacity slice
+    slot_anchor_idx = torch.arange(active_fine, device=device) // slots_per_anchor  # (active_fine,)
+    cap_mask_sub = slot_anchor_idx.unsqueeze(0) < per_sample_cap.to(device).unsqueeze(1)  # (B, active_fine)
+    act_mask_sub = act_mask_sub & cap_mask_sub
 
     node_dim = raw_model.node_dim if hasattr(raw_model, "node_dim") else 16
 
@@ -102,19 +187,142 @@ def forward_backward_step(
         tgt_z1 = nodes_sub[:, :, FM_BASE_START:]
 
     # Flow Matching Prior in 16D: Standard Gaussian N(0, I)
-    z_0 = torch.randn(B, active_fine, node_dim, device=device)
-    t = scheduler.sample_time(B, device)
-    z_t = scheduler.sample_xt(z_0, tgt_z1, t)
+    # (phytomer mode builds its own 9+D bridge prior below)
+    if flow_granularity != "phytomer":
+        z_0 = torch.randn(B, active_fine, node_dim, device=device)
+        t = scheduler.sample_time(B, device)
+        z_t = scheduler.sample_xt(z_0, tgt_z1, t)
+
+    # ------------------------------------------------------------------
+    # PHYTOMER MODE: build the 73D bridge flow target per anchor
+    #   z_1 = [ GT_anchor_pos(3) | GT_anchor_rot(6) | VAE_latent(64) ]
+    # and the bridge prior x_0 = [ scaffold_pos+eps | scaffold_rot+eps | N(0,I) ].
+    # The GT anchor pose comes from the matcher's cluster centers (position)
+    # and the packet reference rotation (Option 1: anchor frame).
+    # ------------------------------------------------------------------
+    prof = {"packet_build": 0.0, "fwd1": 0.0, "fwd2": 0.0, "matcher": 0.0,
+            "target_build": 0.0, "render": 0.0, "loss": 0.0}
+    t0 = time.time()
+    phyto_targets = None
+    if flow_granularity == "phytomer":
+        D = raw_model.phytomer_latent_dim
+        # Per-sample: build canonical packets from the GT nodes, then encode
+        # each packet's latent with the frozen PhytomerVAE. The matcher's
+        # anchor_tgt_pos gives the GT anchor base; the packet reference_rot
+        # gives the GT anchor rotation (the internode frame).
+        phyto_targets = []
+        for b in range(B):
+            act_b = act_mask_sub[b]
+            if not act_b.any():
+                phyto_targets.append(None)
+                continue
+            nodes_b = nodes_sub[b, act_b]
+            ids_b = None
+            if phytomer_ids_sub is not None:
+                ids_b = phytomer_ids_sub[b, act_b]
+            packets, presence, centers, refs = build_phytomer_packets(
+                nodes_b, existence_mask=existence_mask_sub[b, act_b],
+                phytomer_ids=ids_b)
+            if packets.shape[0] == 0:
+                phyto_targets.append(None)
+                continue
+            with torch.no_grad():
+                lat = phytomer_vae.encode(
+                    phytomer_vae.pack_input(packets.to(device), presence.to(device)))[0]
+            # GT anchor pos = cluster center (metres); GT anchor rot = reference.
+            phyto_targets.append({
+                "packets": packets.to(device),
+                "presence": presence.to(device),
+                "centers": centers.to(device),
+                "refs": refs.to(device),
+                "latent": lat,  # (P, D)
+            })
+        # The matcher will provide anchor_tgt_pos per matched anchor; we build
+        # the full (B, K, 9+D) target after matching (below).
+    prof["packet_build"] = time.time() - t0
 
     optimizer.zero_grad()
 
-    with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
-        outputs = model(
-            noisy_fine_nodes=z_t,
-            timesteps=t,
-            images=images,
-            daps=daps,
-        )
+    if flow_granularity == "phytomer":
+        # Bridge prior: x_0 = [scaffold_pos + eps | scaffold_rot + eps | N(0,I)(D)]
+        # The scaffold pose comes from the model's Stage-2 prediction (computed
+        # below in the forward pass); we build x_0 AFTER the forward so we can
+        # use the predicted scaffold as the bridge init. For the first forward
+        # we use a placeholder Gaussian (the velocity target is independent of
+        # x_0's exact value; the bridge init only affects the ODE at inference).
+        D = raw_model.phytomer_latent_dim
+        z_0 = torch.randn(B, active_k, 9 + D, device=device)
+        t = scheduler.sample_time(B, device)
+        # placeholder x_t (will be re-interpolated after forward with scaffold)
+        z_t = z_0.clone()
+    else:
+        t0 = time.time()
+        with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+            outputs = model(
+                noisy_fine_nodes=z_t,
+                timesteps=t,
+                images=images,
+                daps=daps,
+            )
+        prof["fwd1"] = time.time() - t0
+
+    if flow_granularity == "phytomer":
+        t0 = time.time()
+        with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+            outputs = model(
+                noisy_fine_nodes=z_t,
+                timesteps=t,
+                images=images,
+                daps=daps,
+            )
+        prof["fwd1"] = time.time() - t0
+        # Rebuild the bridge prior with the predicted scaffold pose.
+        pred_anchor_pos = outputs["pred_anchor_pos"].float()   # (B, K, 3)
+        pred_anchor_rot = outputs["pred_anchor_rot"].float()   # (B, K, 6)
+        K_eff = pred_anchor_pos.shape[1]
+        z_0 = torch.randn(B, K_eff, 9 + D, device=device)
+        z_0[:, :, PHYTO_FLOW_BASE_START:PHYTO_FLOW_BASE_END] = (
+            pred_anchor_pos + 0.05 * z_0[:, :, PHYTO_FLOW_BASE_START:PHYTO_FLOW_BASE_END])
+        z_0[:, :, PHYTO_FLOW_ROT_START:PHYTO_FLOW_ROT_END] = (
+            pred_anchor_rot + 0.05 * z_0[:, :, PHYTO_FLOW_ROT_START:PHYTO_FLOW_ROT_END])
+        # t=0 bridge init; the true x_t is re-interpolated after matching
+        # (z_1 = [GT_pos | GT_rot | latent] built below).
+        z_t = z_0.clone()
+
+    # Model may resolve a wider anchor slice than the padded GT tensor provides
+    # (active_fine is clamped to nodes.shape[1] above); align the z tensors.
+    K_out = int(outputs["active_k"]) if "active_k" in outputs else active_k
+    if flow_granularity == "phytomer":
+        active_fine = K_out * slots_per_anchor  # legacy flat surface (K*8)
+        if z_t.shape[1] != K_out:
+            if z_t.shape[1] < K_out:
+                pad_n = K_out - z_t.shape[1]
+                z_t = torch.nn.functional.pad(z_t, (0, 0, 0, pad_n))
+                z_0 = torch.nn.functional.pad(z_0, (0, 0, 0, pad_n))
+    else:
+        active_fine = K_out * slots_per_anchor
+        if active_fine != z_t.shape[1]:
+            if z_t.shape[1] < active_fine:
+                pad = active_fine - z_t.shape[1]
+                z_t = torch.nn.functional.pad(z_t, (0, 0, 0, pad))
+                z_0 = torch.nn.functional.pad(z_0, (0, 0, 0, pad))
+                tgt_z1 = torch.nn.functional.pad(tgt_z1, (0, 0, 0, pad))
+    # Pad GT nodes/masks to the model's resolved width so matching/losses stay aligned
+    if active_fine > nodes.shape[1]:
+        pad_n = active_fine - nodes.shape[1]
+        original_width = nodes.shape[1]
+        nodes = torch.nn.functional.pad(nodes, (0, 0, 0, pad_n))
+        type_labels = torch.nn.functional.pad(type_labels, (0, pad_n), value=0)
+        existence_mask = torch.nn.functional.pad(existence_mask, (0, pad_n), value=0.0)
+        nodes_sub = nodes[:, :active_fine]
+        type_labels_sub = type_labels[:, :active_fine]
+        existence_mask_sub = existence_mask[:, :active_fine]
+        # Keep only the originally real slots (padded region is empty)
+        original_mask = torch.arange(active_fine, device=device) < original_width
+        act_mask_sub = torch.nn.functional.pad(act_mask_sub, (0, pad_n), value=False)
+        act_mask_sub = act_mask_sub & original_mask.unsqueeze(0)
+        if active_fine == cap_mask_sub.shape[1]:
+            act_mask_sub = act_mask_sub & cap_mask_sub
 
     pred_anchor_pos = outputs["pred_anchor_pos"].float()              # (B, K, 3)
     pred_anchor_logits = outputs["pred_anchor_logits"].float()          # (B, K, 1)
@@ -139,6 +347,7 @@ def forward_backward_step(
         tgt_positions_list.append(nodes_sub[b, act_b, FM_BASE_START : FM_BASE_START + 3] / BASE_SCALE)
 
     # Hierarchical Bipartite Matching in 16D Latent Space with Soft Margin Modulation
+    t0 = time.time()
     matches = matcher(
         pred_anchor_pos=pred_anchor_pos,
         pred_anchor_logits=pred_anchor_logits,
@@ -148,7 +357,10 @@ def forward_backward_step(
         tgt_labels=tgt_labels_list,
         tgt_positions=tgt_positions_list,
         soft_margin_weights=soft_margin_weights,
+        per_sample_max_phytomers=per_sample_cap,
+        skip_fine=(flow_granularity == "phytomer"),
     )
+    prof["matcher"] = time.time() - t0
 
     # Extract GT phytomer counts from matcher clusters
     gt_phy_counts = torch.tensor(
@@ -157,85 +369,219 @@ def forward_backward_step(
         device=device,
     ).unsqueeze(-1)  # (B, 1)
 
-    # Loss Computation
-    loss_anchor_pos_acc = torch.tensor(0.0, device=device)
-    loss_anchor_exist_acc = torch.tensor(0.0, device=device)
-    loss_fine_vel_acc = torch.tensor(0.0, device=device)
-    loss_fine_exist_acc = torch.tensor(0.0, device=device)
-
-    total_matched_anc = 0
-    total_matched_fine = 0
-    correct_cls = 0
-
-    for b in range(B):
-        m_b = matches[b]
-        anc_src = m_b["anchor_src_idx"]
-        anc_tgt = m_b["anchor_tgt_idx"]
-        fine_src = m_b["fine_src_idx"]
-        fine_tgt = m_b["fine_tgt_idx"]
-
-        num_anc_m = len(anc_src)
-        total_matched_anc += num_anc_m
-        num_fine_m = len(fine_src)
-        total_matched_fine += num_fine_m
-
-        # Stage 1 Anchor Losses
-        if num_anc_m > 0:
-            exist_targets = torch.zeros(active_k, 1, device=device)
+    # ------------------------------------------------------------------
+    # PHYTOMER MODE: build the 73D flow target z_1 per matched anchor and
+    # re-interpolate x_t with the true bridge prior.
+    #   z_1 = [ GT_anchor_pos(3) | GT_anchor_rot(6) | VAE_latent(64) ]
+    # GT anchor pos = matcher cluster center; GT anchor rot = packet reference.
+    # ------------------------------------------------------------------
+    if flow_granularity == "phytomer":
+        D = raw_model.phytomer_latent_dim
+        K_eff = pred_anchor_pos.shape[1]
+        tgt_z1_phyto = torch.zeros(B, K_eff, 9 + D, device=device)
+        slot_presence_target = torch.zeros(B, K_eff, 8, device=device)
+        for b in range(B):
+            m_b = matches[b]
+            anc_src = m_b["anchor_src_idx"]
+            anc_tgt = m_b["anchor_tgt_idx"]
+            if len(anc_src) == 0 or phyto_targets[b] is None:
+                continue
+            pt = phyto_targets[b]
+            # GT anchor pos from matcher cluster centers (metres)
+            gt_pos = m_b["anchor_tgt_pos"]  # (M_anc, 3)
+            # The matcher's anc_tgt indexes its CAPACITY-CLAMPED cluster set, but
+            # pt (packets) is the FULL cluster list. Match by position: each GT
+            # anchor pos corresponds to the packet whose center is nearest.
+            if pt["centers"].shape[0] == 0:
+                continue
+            dist = torch.cdist(gt_pos, pt["centers"])  # (M_anc, P)
+            pkt_idx = dist.argmin(dim=1)               # (M_anc,)
+            # GT anchor rot = packet reference rotation (Option 1 frame)
+            gt_rot = pt["refs"][pkt_idx]    # (M_anc, 6)
+            gt_lat = pt["latent"][pkt_idx]  # (M_anc, D)
+            tgt_z1_phyto[b, anc_src] = build_phytomer_flow_target(gt_pos, gt_rot, gt_lat)
+            slot_presence_target[b, anc_src] = pt["presence"][pkt_idx].float()
+        z_0 = torch.randn(B, K_eff, 9 + D, device=device)
+        z_0[:, :, PHYTO_FLOW_BASE_START:PHYTO_FLOW_BASE_END] = (
+            pred_anchor_pos + 0.05 * z_0[:, :, PHYTO_FLOW_BASE_START:PHYTO_FLOW_BASE_END])
+        z_0[:, :, PHYTO_FLOW_ROT_START:PHYTO_FLOW_ROT_END] = (
+            pred_anchor_rot + 0.05 * z_0[:, :, PHYTO_FLOW_ROT_START:PHYTO_FLOW_ROT_END])
+        z_t = scheduler.sample_xt(z_0, tgt_z1_phyto, t)
+        # Re-run the model forward with the true x_t (bridge init).
+        t0 = time.time()
+        with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+            outputs = model(
+                noisy_fine_nodes=z_t,
+                timesteps=t,
+                images=images,
+                daps=daps,
+            )
+        prof["fwd2"] = time.time() - t0
+        pred_velocity = outputs["pred_velocity"].float()          # (B, K, 9+D)
+        pred_fine_exist_logits = outputs["pred_fine_exist_logits"].float()  # (B, K, 8)
+        clean_z1 = z_t + (1.0 - t.view(B, 1, 1)) * pred_velocity
+        # Velocity target: v = z_1 - z_0 (bridge flow).
+        tgt_velocity = tgt_z1_phyto - z_0
+        # Loss: velocity MSE on matched anchors + slot existence BCE.
+        loss_fine_vel_acc = torch.tensor(0.0, device=device)
+        loss_fine_exist_acc = torch.tensor(0.0, device=device)
+        total_matched_fine = 0
+        correct_cls = 0
+        total_cls_slots = 0
+        # Decode the clean latent once per batch for the class-accuracy metric
+        # (frozen VAE, no grad): (B*K, D) -> (B*K, 8, 13) cls logits.
+        with torch.no_grad():
+            clean_lat = clean_z1[..., PHYTO_FLOW_LATENT_START:]
+            vae_out = phytomer_vae.decode(clean_lat.reshape(-1, D), use_rot_branch=True)
+            pred_cls_all = vae_out["cls_logits"].argmax(-1).reshape(B, K_eff, 8)  # (B, K, 8)
+        for b in range(B):
+            m_b = matches[b]
+            anc_src = m_b["anchor_src_idx"]
+            if len(anc_src) == 0:
+                continue
+            p_v = pred_velocity[b, anc_src]
+            t_v = tgt_velocity[b, anc_src]
+            loss_fine_vel_acc += F.mse_loss(p_v, t_v, reduction="sum") / float(9 + D)
+            total_matched_fine += len(anc_src)
+            # Slot existence BCE (K, 8)
+            exist_t = slot_presence_target[b]
+            pos_w = torch.tensor([12.0], device=device)
+            loss_fine_exist_acc += F.binary_cross_entropy_with_logits(
+                pred_fine_exist_logits[b], exist_t, pos_weight=pos_w)
+            # Class accuracy on matched anchors' present slots (frozen VAE decode).
+            pt = phyto_targets[b]
+            if pt is not None and pt["packets"].shape[0] > 0:
+                dist = torch.cdist(m_b["anchor_tgt_pos"], pt["centers"])
+                pkt_idx = dist.argmin(dim=1)
+                tgt_cls = pt["packets"][pkt_idx, :, :FM_OT_END].argmax(-1)  # (M_anc, 8)
+                pres = pt["presence"][pkt_idx]  # (M_anc, 8)
+                pred_cls_m = pred_cls_all[b, anc_src]
+                correct_cls += ((pred_cls_m == tgt_cls).float() * pres.float()).sum().item()
+                total_cls_slots += int(pres.sum().item())
+        # Idle anchor damping: unmatched anchors' velocity -> 0
+        all_anc = torch.arange(K_eff, device=device)
+        matched_set = torch.zeros(K_eff, dtype=torch.bool, device=device)
+        for b in range(B):
+            m_b = matches[b]
+            if len(m_b["anchor_src_idx"]) > 0:
+                matched_set[m_b["anchor_src_idx"]] = True
+        idle_anc = all_anc[~matched_set]
+        if len(idle_anc) > 0:
+            loss_fine_vel_acc += 0.02 * (pred_velocity[:, idle_anc] ** 2).sum() / float(9 + D)
+        norm_m = max(total_matched_fine, 1)
+        loss_fine_vel = loss_fine_vel_acc / norm_m
+        loss_fine_exist = loss_fine_exist_acc / max(B, 1)
+        # Anchor losses (same as organ mode)
+        loss_anchor_pos_acc = torch.tensor(0.0, device=device)
+        loss_anchor_exist_acc = torch.tensor(0.0, device=device)
+        total_matched_anc = 0
+        for b in range(B):
+            m_b = matches[b]
+            anc_src = m_b["anchor_src_idx"]
+            if len(anc_src) == 0:
+                continue
+            total_matched_anc += len(anc_src)
+            exist_targets = torch.zeros(K_eff, 1, device=device)
             exist_targets[anc_src] = 1.0
             pos_weight_anc = torch.tensor([8.0], device=device)
             loss_anchor_exist_acc += F.binary_cross_entropy_with_logits(
-                pred_anchor_logits[b], exist_targets, pos_weight=pos_weight_anc
-            )
-
+                pred_anchor_logits[b], exist_targets, pos_weight=pos_weight_anc)
             if "anchor_tgt_pos" in m_b and len(m_b["anchor_tgt_pos"]) > 0:
                 p_anc = pred_anchor_pos[b, anc_src]
                 t_anc = m_b["anchor_tgt_pos"]
                 loss_anchor_pos_acc += F.smooth_l1_loss(p_anc, t_anc, reduction="sum")
+        norm_anc = max(total_matched_anc, 1)
+        loss_anchor_pos = loss_anchor_pos_acc / norm_anc
+        loss_anchor_exist = loss_anchor_exist_acc / max(B, 1)
+        # Skip the organ-mode loss loop below.
+        phyto_mode_done = True
+    else:
+        phyto_mode_done = False
 
-        # Stage 2 Fine Losses
-        exist_targets_fine = torch.zeros(active_fine, 1, device=device)
-        if num_fine_m > 0:
-            exist_targets_fine[fine_src] = 1.0
+    # Loss Computation
+    if not phyto_mode_done:
+        loss_anchor_pos_acc = torch.tensor(0.0, device=device)
+        loss_anchor_exist_acc = torch.tensor(0.0, device=device)
+        loss_fine_vel_acc = torch.tensor(0.0, device=device)
+        loss_fine_exist_acc = torch.tensor(0.0, device=device)
 
-            p_v = pred_velocity[b, fine_src]
-            t_geom = tgt_geoms_list[b][fine_tgt]
-            t_v = t_geom - z_0[b, fine_src]
-            loss_fine_vel_acc += F.mse_loss(p_v, t_v, reduction="sum") / float(node_dim)
+        total_matched_anc = 0
+        total_matched_fine = 0
+        correct_cls = 0
+        total_cls_slots = 0
 
-            # VAE classification accuracy check on matched slots
-            if vae is not None:
-                with torch.no_grad():
-                    pred_cls_m = vae.decode(clean_z1[b, fine_src])["cls_logits"].argmax(dim=-1)
-                    t_cls = tgt_labels_list[b][fine_tgt]
-                    correct_cls += (pred_cls_m == t_cls).sum().item()
+        for b in range(B):
+            m_b = matches[b]
+            anc_src = m_b["anchor_src_idx"]
+            anc_tgt = m_b["anchor_tgt_idx"]
+            fine_src = m_b["fine_src_idx"]
+            fine_tgt = m_b["fine_tgt_idx"]
 
-        # Idle slot velocity damping: gently regularize velocity of unmatched slots towards 0
-        # so unassigned reproductive / spare slots do not drift into empty space
-        all_fine_idx = torch.arange(active_fine, device=device)
-        if num_fine_m > 0:
-            idle_mask = torch.ones(active_fine, dtype=torch.bool, device=device)
-            idle_mask[fine_src] = False
-            idle_src = all_fine_idx[idle_mask]
-        else:
-            idle_src = all_fine_idx
-        if len(idle_src) > 0:
-            p_v_idle = pred_velocity[b, idle_src]
-            loss_fine_vel_acc += 0.05 * (p_v_idle ** 2).sum() / float(node_dim)
+            num_anc_m = len(anc_src)
+            total_matched_anc += num_anc_m
+            num_fine_m = len(fine_src)
+            total_matched_fine += num_fine_m
 
-        # Fine slot existence loss across all fine slots (BCE with pos_weight=12.0)
-        pos_weight_fine = torch.tensor([12.0], device=device)
-        loss_fine_exist_acc += F.binary_cross_entropy_with_logits(
-            pred_fine_exist_logits[b], exist_targets_fine, pos_weight=pos_weight_fine
-        )
+            # Stage 1 Anchor Losses
+            if num_anc_m > 0:
+                exist_targets = torch.zeros(active_k, 1, device=device)
+                exist_targets[anc_src] = 1.0
+                pos_weight_anc = torch.tensor([8.0], device=device)
+                loss_anchor_exist_acc += F.binary_cross_entropy_with_logits(
+                    pred_anchor_logits[b], exist_targets, pos_weight=pos_weight_anc
+                )
 
-    norm_m = max(total_matched_fine, 1)
-    norm_anc = max(total_matched_anc, 1)
+                if "anchor_tgt_pos" in m_b and len(m_b["anchor_tgt_pos"]) > 0:
+                    p_anc = pred_anchor_pos[b, anc_src]
+                    t_anc = m_b["anchor_tgt_pos"]
+                    loss_anchor_pos_acc += F.smooth_l1_loss(p_anc, t_anc, reduction="sum")
 
-    loss_anchor_pos = loss_anchor_pos_acc / norm_anc
-    loss_anchor_exist = loss_anchor_exist_acc / max(B, 1)
-    loss_fine_vel = loss_fine_vel_acc / norm_m
-    loss_fine_exist = loss_fine_exist_acc / max(B, 1)
+            # Stage 2 Fine Losses
+            exist_targets_fine = torch.zeros(active_fine, 1, device=device)
+            if num_fine_m > 0:
+                exist_targets_fine[fine_src] = 1.0
+
+                p_v = pred_velocity[b, fine_src]
+                t_geom = tgt_geoms_list[b][fine_tgt]
+                t_v = t_geom - z_0[b, fine_src]
+                loss_fine_vel_acc += F.mse_loss(p_v, t_v, reduction="sum") / float(node_dim)
+
+                # VAE classification accuracy check on matched slots
+                if vae is not None:
+                    with torch.no_grad():
+                        pred_cls_m = vae.decode(clean_z1[b, fine_src])["cls_logits"].argmax(dim=-1)
+                        t_cls = tgt_labels_list[b][fine_tgt]
+                        correct_cls += (pred_cls_m == t_cls).sum().item()
+
+            # Idle slot velocity damping: gently regularize velocity of unmatched slots towards 0
+            # so unassigned reproductive / spare slots do not drift into empty space
+            all_fine_idx = torch.arange(active_fine, device=device)
+            if num_fine_m > 0:
+                idle_mask = torch.ones(active_fine, dtype=torch.bool, device=device)
+                idle_mask[fine_src] = False
+                idle_src = all_fine_idx[idle_mask]
+            else:
+                idle_src = all_fine_idx
+            if len(idle_src) > 0:
+                p_v_idle = pred_velocity[b, idle_src]
+                # 0.02 (was 0.05): with capacity clamp + top-k guard + pred-capacity path,
+                # unmatched-slot drift is already triple-suppressed; avoid over-regularizing
+                # genuinely dormant reproductive slots.
+                loss_fine_vel_acc += 0.02 * (p_v_idle ** 2).sum() / float(node_dim)
+
+            # Fine slot existence loss across all fine slots (BCE with pos_weight=12.0)
+            pos_weight_fine = torch.tensor([12.0], device=device)
+            loss_fine_exist_acc += F.binary_cross_entropy_with_logits(
+                pred_fine_exist_logits[b], exist_targets_fine, pos_weight=pos_weight_fine
+            )
+
+        norm_m = max(total_matched_fine, 1)
+        norm_anc = max(total_matched_anc, 1)
+
+        loss_anchor_pos = loss_anchor_pos_acc / norm_anc
+        loss_anchor_exist = loss_anchor_exist_acc / max(B, 1)
+        loss_fine_vel = loss_fine_vel_acc / norm_m
+        loss_fine_exist = loss_fine_exist_acc / max(B, 1)
 
     # Stage 1: Macro Losses (Phytomer Count & Plant Age DAP)
     loss_phy_count = torch.tensor(0.0, device=device)
@@ -247,17 +593,20 @@ def forward_backward_step(
         loss_dap = F.smooth_l1_loss(pred_dap.squeeze(-1), daps.float()) * 0.05
 
     # In-Loop Differentiable Optical Grounding (1-Step Clean Prediction -> 4-Scale Multi-Scale Pyramid Depth + Silhouette Dice + Cosine Color)
+    # render_fraction is batch-relative: n_render = round(B * fraction), clamped to
+    # [1, B]. Fraction (not absolute count) keeps per-sample photometric visit rate
+    # constant across batch sizes — the 2026-09-08 incident (batch 24->48 with a
+    # frozen absolute sub-batch halved supervision) cannot recur.
     loss_depth = torch.tensor(0.0, device=device)
     loss_cos = torch.tensor(0.0, device=device)
     loss_dice = torch.tensor(0.0, device=device)
 
     if renderer is not None and (depth_loss_weight > 0.0 or color_loss_weight > 0.0 or silhouette_loss_weight > 0.0):
-        if render_sub_batch is not None and render_sub_batch > 0:
-            n_render = min(B, render_sub_batch)
-        else:
-            n_render = max(1, int(round(B * max(0.0, min(1.0, render_ratio))))) if render_ratio > 0.0 else 0
+        f = max(0.0, min(1.0, float(render_fraction)))
+        n_render = max(1, min(B, int(round(B * f)))) if f > 0.0 else 0
 
         if n_render > 0:
+            t0 = time.time()
             if n_render < B:
                 render_indices = torch.randperm(B, device=device)[:n_render]
             else:
@@ -267,12 +616,30 @@ def forward_backward_step(
             loss_cos_acc = torch.tensor(0.0, device=device)
             loss_dice_acc = torch.tensor(0.0, device=device)
 
-            pyramid_scales = [1.0, 2.0, 4.0, 8.0]
+            # Multi-scale pyramid: 1x/2x only (4x/8x zoom covers a single leaf —
+            # small, noisy gradients; profiling 2026-09-09: render = 70% of step
+            # time, 4-scale -> 2-scale halves it with negligible supervision loss).
+            pyramid_scales = [1.0, 2.0]
             num_scales = len(pyramid_scales)
 
             for b_idx in range(n_render):
                 real_b = render_indices[b_idx].item()
-                if vae is not None:
+                if flow_granularity == "phytomer":
+                    # Decode the 73D flow vector: split pose + latent, decode the
+                    # latent to a relative packet, structurally assemble slot bases
+                    # from the petiole geometry, re-anchor with the refined pose.
+                    pos, rot, lat = split_phytomer_flow_target(clean_z1[real_b], D)
+                    out_vae = phytomer_vae.decode(lat)  # (K, 8, 26), zeroed base
+                    packet_hat = assemble_packets(out_vae["recon_packets"], rot)
+                    abs_packets = apply_ref_for_flow(
+                        packet_hat.unsqueeze(0), pos.unsqueeze(0), rot.unsqueeze(0)
+                    )[0]
+                    flat_abs = abs_packets.reshape(-1, 26)
+                    keep = out_vae["cls_logits"].argmax(-1).reshape(-1) > 0
+                    part_14d = decode_fm(flat_abs[keep])
+                    exist_b = torch.sigmoid(pred_fine_exist_logits[real_b]).reshape(-1)[keep]
+                    probs = F.softmax(out_vae["cls_logits"], dim=-1).reshape(-1, 13)[keep]
+                elif vae is not None:
                     # Differentiably decode 16D latents into 14D part tensor via frozen VAE!
                     part_14d, probs = vae.decode_to_part_tensor(clean_z1[real_b])
                     exist_b = torch.sigmoid(pred_fine_exist_logits[real_b]).squeeze(-1)
@@ -352,10 +719,13 @@ def forward_backward_step(
             loss_depth = loss_depth_acc / max(n_render, 1)
             loss_cos = loss_cos_acc / max(n_render, 1)
             loss_dice = loss_dice_acc / max(n_render, 1)
+            prof["render"] = time.time() - t0
 
     # Composite Loss (Macro Prior + 3D Node Scaffold + Intra-Phytomer Flow Matching + Photometric)
+    # anchor_pos weight: 2.0 (pre-0389ca5 value that produced the balanced-data panels);
+    # the 4.0 from 0389ca5 was compensating for the young-skewed 4-DAP dataset.
     loss = (
-        4.0 * loss_anchor_pos
+        2.0 * loss_anchor_pos
         + 1.0 * loss_anchor_exist
         + 2.0 * loss_fine_vel
         + 1.0 * loss_fine_exist
@@ -371,7 +741,10 @@ def forward_backward_step(
 
     loss.backward()
 
-    cls_accuracy = (correct_cls / norm_m) if norm_m > 0 else 0.0
+    # Class accuracy: organ mode counts matched fine slots; phytomer mode counts
+    # present slots of matched anchors (frozen VAE decode of the clean latent).
+    cls_denom = total_cls_slots if flow_granularity == "phytomer" else norm_m
+    cls_accuracy = (correct_cls / cls_denom) if cls_denom > 0 else 0.0
 
     return {
         "loss": loss.item(),
@@ -387,6 +760,7 @@ def forward_backward_step(
         "cos_color_loss": loss_cos.item(),
         "silhouette_dice_loss": loss_dice.item(),
         "cls_acc": cls_accuracy,
+        "prof": prof,
     }
 
 
@@ -406,8 +780,9 @@ def probe_optimal_batch_size(
     depth_loss_weight: float = 0.5,
     color_loss_weight: float = 0.2,
     silhouette_loss_weight: float = 2.0,
-    render_ratio: float = 1.0,
-    render_sub_batch: Optional[int] = None,
+    render_fraction: float = 1.0 / 6.0,
+    flow_granularity: str = "organ",
+    phytomer_vae: Optional[nn.Module] = None,
 ) -> int:
     """
     Directly measures base model/optimizer memory and per-sample activation memory on this GPU
@@ -459,8 +834,9 @@ def probe_optimal_batch_size(
         depth_loss_weight=depth_loss_weight,
         color_loss_weight=color_loss_weight,
         silhouette_loss_weight=silhouette_loss_weight,
-        render_ratio=render_ratio,
-        render_sub_batch=render_sub_batch,
+        render_fraction=render_fraction,
+        flow_granularity=flow_granularity,
+        phytomer_vae=phytomer_vae,
     )
 
     peak_probe_bytes = torch.cuda.max_memory_allocated(device)
@@ -501,6 +877,49 @@ def probe_optimal_batch_size(
     return optimal_batch
 
 
+# =============================================================================
+# FIXED STRATIFIED EVAL SET (self-consistency as a reproducible dataset metric)
+# =============================================================================
+# The previous eval drew `next(iter(dataloader))` — a random batch whose composition
+# (and thus IoU/Cos/Dice) swung ±30pt between panels. The fixed set is stratified by
+# DAP bucket, chosen deterministically at launch, and persisted to JSON so panels
+# and metrics are comparable across epochs and runs.
+
+def build_eval_indices(dataset: PartArrayDataset, samples_per_bucket: int = 2, seed: int = 1234) -> List[int]:
+    """Deterministically selects a DAP-stratified eval subset from dataset.samples.
+
+    Returns sorted dataset indices. The selection (index, prefix, dap) is saved by
+    the caller to eval_set.json for cross-run reproducibility.
+    """
+    import json as _json
+    from collections import defaultdict as _dd
+
+    by_bucket: Dict[int, List[int]] = _dd(list)
+    for idx, s in enumerate(dataset.samples):
+        m = re.search(r"dap(\d+)", s["prefix"])
+        dap = int(m.group(1)) if m else 30
+        by_bucket[(dap - 1) // 10].append(idx)
+
+    rng = random.Random(seed)
+    chosen: List[int] = []
+    for bucket in sorted(by_bucket.keys()):
+        pool = sorted(by_bucket[bucket])
+        rng.shuffle(pool)
+        chosen.extend(pool[:samples_per_bucket])
+    return sorted(chosen)
+
+
+def collate_eval_set(dataset: PartArrayDataset, indices: List[int], device: torch.device) -> Dict[str, torch.Tensor]:
+    """Collates the fixed eval set directly from the dataset (bypasses the sampler)."""
+    items = [dataset[i] for i in indices]
+    batch = {}
+    keys = [k for k in items[0].keys() if isinstance(items[0][k], torch.Tensor)]
+    for k in keys:
+        batch[k] = torch.stack([it[k] for it in items]).to(device)
+    # non-tensor extras (jpeg/prefix) are not needed by the evaluator
+    return batch
+
+
 def train_one_epoch(
     model: HierarchicalPartFlowMatchingModel,
     dataloader: DataLoader,
@@ -515,10 +934,23 @@ def train_one_epoch(
     depth_loss_weight: float = 0.5,
     color_loss_weight: float = 0.2,
     silhouette_loss_weight: float = 2.0,
-    render_ratio: float = 1.0,
-    render_sub_batch: Optional[int] = None,
+    render_fraction: float = 1.0 / 6.0,
+    capacity_warmup_epochs: int = 0,
+    capacity_full_epochs: int = 0,
+    flow_granularity: str = "organ",
+    phytomer_vae: Optional[nn.Module] = None,
+    **kwargs,
 ) -> Dict[str, float]:
     model.train()
+    # Scheduled capacity teacher-forcing decay: linear ramp of the predicted-
+    # phytomer capacity path probability p_pred from 0 at warmup to 1 at full.
+    p_pred = 0.0
+    if capacity_full_epochs > capacity_warmup_epochs:
+        frac = (epoch - capacity_warmup_epochs) / float(capacity_full_epochs - capacity_warmup_epochs)
+        p_pred = max(0.0, min(1.0, frac))
+    capacity_schedule = {"p_pred": p_pred}
+    # Optional per-step LR warmup callback (set by main(); scales optimizer lrs linearly)
+    lr_warmup_cb = kwargs.pop("lr_warmup_cb", None)
     total_loss = 0.0
     total_anchor_pos_loss = 0.0
     total_anchor_exist_loss = 0.0
@@ -536,6 +968,10 @@ def train_one_epoch(
     slots_per_anchor = model.slots_per_anchor if not hasattr(model, "module") else model.module.slots_per_anchor
 
     for batch_idx, batch in enumerate(dataloader):
+        # Per-step LR warmup scaling (before optimizer.step inside fwd/bwd)
+        if lr_warmup_cb is not None:
+            lr_warmup_cb()
+        t_step0 = time.time()
         step_metrics = forward_backward_step(
             model=model,
             batch=batch,
@@ -549,14 +985,27 @@ def train_one_epoch(
             depth_loss_weight=depth_loss_weight,
             color_loss_weight=color_loss_weight,
             silhouette_loss_weight=silhouette_loss_weight,
-            render_ratio=render_ratio,
-            render_sub_batch=render_sub_batch,
+            render_fraction=render_fraction,
+            capacity_schedule=capacity_schedule,
+            flow_granularity=flow_granularity,
+            phytomer_vae=phytomer_vae,
         )
+        t_step1 = time.time()
         if step_metrics is None:
+            if lr_warmup_cb is not None:
+                warmup_n = getattr(lr_warmup_cb, "advance", None)
+                if warmup_n is not None:
+                    warmup_n()
             continue
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
+        t_step2 = time.time()
+
+        if lr_warmup_cb is not None:
+            warmup_n = getattr(lr_warmup_cb, "advance", None)
+            if warmup_n is not None:
+                warmup_n()
 
         total_loss += step_metrics["loss"]
         total_anchor_pos_loss += step_metrics["anchor_pos_loss"]
@@ -574,6 +1023,7 @@ def train_one_epoch(
 
         print_freq = max(1, len(dataloader) // 5)
         if rank == 0 and ((batch_idx + 1) % print_freq == 0 or (batch_idx + 1) == len(dataloader)):
+            p = step_metrics.get("prof", {})
             print(
                 f"  [Epoch {epoch:02d}] Step {batch_idx+1:03d}/{len(dataloader):03d} | "
                 f"Loss: {step_metrics['loss']:.4f} (Vel: {step_metrics['fine_vel_loss']:.4f}, "
@@ -581,7 +1031,10 @@ def train_one_epoch(
                 f"PhyLoss: {step_metrics.get('phy_count_loss', 0.0):.4f} [Pred:{step_metrics.get('pred_phy_mean', 0.0):.1f}/GT:{step_metrics.get('gt_phy_mean', 0.0):.1f}], "
                 f"Exist: {step_metrics['fine_exist_loss']:.4f}, Depth: {step_metrics['dense_depth_loss']:.4f}, "
                 f"Dice: {step_metrics['silhouette_dice_loss']:.4f}, "
-                f"Acc: {step_metrics['cls_acc']*100:.1f}%)",
+                f"Acc: {step_metrics['cls_acc']*100:.1f}%) | "
+                f"fwd/bwd {t_step1-t_step0:.2f}s opt {t_step2-t_step1:.2f}s | "
+                f"pkt {p.get('packet_build',0):.2f} fwd1 {p.get('fwd1',0):.2f} fwd2 {p.get('fwd2',0):.2f} "
+                f"match {p.get('matcher',0):.2f} render {p.get('render',0):.2f}",
                 flush=True,
             )
 
@@ -598,6 +1051,7 @@ def train_one_epoch(
         "cos_color_loss": total_cos_color_loss / max(count, 1),
         "silhouette_dice_loss": total_dice_loss / max(count, 1),
         "cls_acc": total_cls_acc / max(count, 1),
+        "capacity_p_pred": p_pred,
     }
 
 
@@ -613,6 +1067,14 @@ def main():
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument("--max_anchors", type=int, default=512)
     parser.add_argument("--slots_per_anchor", type=int, default=8)
+    parser.add_argument("--anchor_locality_radius", type=float, default=None,
+                        help="Soft locality radius (meters) for anchor matching: quadratic "
+                             "penalty beyond R on top of L1 position cost. Calibrated "
+                             "2026-09-09: R=0.10-0.15 covers >99%% of plausible matches "
+                             "(GT NN-dist median 2.5cm vs anchor RMSE ~2cm). None = disabled "
+                             "(exact legacy parity). Recommended: 0.12 with weight 50.0.")
+    parser.add_argument("--anchor_locality_weight", type=float, default=50.0,
+                        help="Weight of the soft locality penalty (see --anchor_locality_radius).")
     parser.add_argument("--embed_dim", type=int, default=384)
     parser.add_argument("--vit_layers", type=int, default=8)
     parser.add_argument("--vit_heads", type=int, default=8)
@@ -620,14 +1082,27 @@ def main():
     parser.add_argument("--fine_layers", type=int, default=6)
     parser.add_argument("--node_dim", type=int, default=16, help="Latent dimensionality for fine organ flow matching")
     parser.add_argument("--organ_vae_checkpoint", type=str, default="diffusion_based/checkpoints/organ_vae/organ_latent_vae_best.pt", help="Path to pretrained OrganLatentVAE checkpoint")
+    parser.add_argument("--flow_granularity", type=str, default="organ", choices=["organ", "phytomer"],
+                        help="Stage-3 flow granularity: 'organ' = per-organ slots (8K x 16D, pose as conditioning); "
+                             "'phytomer' = per-anchor 9+D vector [base(3) | rot(6) | latent(D)] refining the scaffold pose (bridge flow).")
+    parser.add_argument("--phytomer_latent_dim", type=int, default=64, help="PhytomerVAE latent dim (flow_granularity=phytomer)")
+    parser.add_argument("--phytomer_vae_checkpoint", type=str, default="diffusion_based/checkpoints/phytomer_vae_relative_d/phytomer_vae_64d_best.pt",
+                        help="Path to frozen PhytomerVAE checkpoint (flow_granularity=phytomer)")
     parser.add_argument("--depth_weight", type=float, default=0.5, help="Weight for in-loop differentiable dense depth loss")
     parser.add_argument("--color_weight", type=float, default=0.2, help="Weight for in-loop differentiable cosine color loss")
     parser.add_argument("--silhouette_weight", type=float, default=2.0, help="Weight for in-loop differentiable silhouette Dice loss")
-    parser.add_argument("--render_ratio", type=float, default=1.0, help="Ratio of batch to render differentiably (0.0 to 1.0, default: 1.0 = 100 percent full batch)")
-    parser.add_argument("--render_sub_batch", type=int, default=None, help="Explicit sub-batch size for in-loop differentiable rendering per GPU (overrides render_ratio if set)")
+    parser.add_argument("--render_fraction", type=float, default=1.0 / 6.0, help="Fraction of the batch rendered differentiably per step (batch-relative: n_render = round(B * fraction), clamped [1, B]). 1/6 restores the per-sample photometric visit rate of the 2026-09-07 runs; 1.0 renders the full batch (requires small batch — check VRAM).")
     parser.add_argument("--save_every", type=int, default=25)
-    parser.add_argument("--eval_every", type=int, default=1, help="Validation image generation interval in epochs (default: 1)")
+    parser.add_argument("--eval_every", type=int, default=25, help="Validation image generation interval in epochs (default: 25)")
+    parser.add_argument("--eval_min_interval_minutes", type=int, default=30, help="Time-based eval fallback: force an eval panel if at least this many minutes elapsed since the last one (0 disables). Keeps diagnostic cadence roughly constant as dataset size grows per-epoch time.")
+    parser.add_argument("--eval_samples_per_bucket", type=int, default=2, help="Fixed stratified eval set: samples per 10-DAP bucket (2 => ~20 samples).")
+    parser.add_argument("--eval_seed", type=int, default=1234, help="Deterministic seed for the fixed stratified eval set.")
+    parser.add_argument("--backbone_lr_ratio", type=float, default=0.15, help="Backbone lr = args.lr * ratio (0.15: gentler foundation adaptation on 100k balanced data)")
+    parser.add_argument("--warmup_epochs", type=int, default=3, help="Linear LR warmup epochs (0.1x -> 1.0x per step; 0 disables)")
     parser.add_argument("--init_checkpoint", type=str, default=None, help="Path to checkpoint to initialize weights from (strict=False)")
+    parser.add_argument("--dap_buckets", type=int, default=8, help="Number of DAP buckets for capacity-homogeneous batching (0 = plain shuffle)")
+    parser.add_argument("--capacity_warmup_epochs", type=int, default=50, help="Epochs of pure GT-DAP capacity teacher forcing before predicted-phytomer capacity ramps in")
+    parser.add_argument("--capacity_full_epochs", type=int, default=150, help="Epoch at which predicted-phytomer capacity path reaches p_pred=1.0 (0 = disable ramp entirely)")
     parser.add_argument("--wandb_project", type=str, default="part-flow-matching")
     parser.add_argument("--wandb_run_name", type=str, default="hierarchical-matryoshka-cowpea")
     args = parser.parse_args()
@@ -695,7 +1170,29 @@ def main():
         vit_heads=args.vit_heads,
         coarse_layers=args.coarse_layers,
         fine_layers=args.fine_layers,
+        flow_granularity=args.flow_granularity,
+        phytomer_latent_dim=args.phytomer_latent_dim,
     ).to(device)
+
+    # Frozen PhytomerVAE (flow_granularity=phytomer): encodes/decodes the
+    # anchor-relative 8-slot packet latent. Loaded once, frozen.
+    phytomer_vae = None
+    if args.flow_granularity == "phytomer":
+        if not os.path.exists(args.phytomer_vae_checkpoint):
+            raise FileNotFoundError(
+                f"PhytomerVAE checkpoint not found: {args.phytomer_vae_checkpoint} "
+                f"(required for --flow-granularity phytomer)")
+        if rank == 0:
+            print(f"Loading frozen PhytomerVAE from {args.phytomer_vae_checkpoint}...")
+        phytomer_vae = PhytomerVAE(
+            latent_dim=args.phytomer_latent_dim, hidden_dim=256).to(device)
+        phytomer_vae.load_state_dict(torch.load(
+            args.phytomer_vae_checkpoint, map_location=device, weights_only=True))
+        phytomer_vae.eval()
+        for p in phytomer_vae.parameters():
+            p.requires_grad = False
+        if rank == 0:
+            print(f"PhytomerVAE-{args.phytomer_latent_dim}D frozen and ready.")
 
     total_params = sum(p.numel() for p in model.parameters()) / 1e6
     if rank == 0:
@@ -713,11 +1210,11 @@ def main():
             other_params.append(param)
 
     if rank == 0:
-        print(f"Optimizer setup: {len(backbone_params)} DINOv2 backbone tensors (lr={args.lr * 0.3:.1e}), "
+        print(f"Optimizer setup: {len(backbone_params)} DINOv2 backbone tensors (lr={args.lr * args.backbone_lr_ratio:.1e}), "
               f"{len(other_params)} 3D/decoder tensors (lr={args.lr:.1e})")
 
     param_groups = [
-        {"params": backbone_params, "lr": args.lr * 0.3},
+        {"params": backbone_params, "lr": args.lr * args.backbone_lr_ratio},
         {"params": other_params, "lr": args.lr},
     ]
     optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)
@@ -745,11 +1242,51 @@ def main():
             if rank == 0:
                 print(f"Resuming training loop from epoch {start_epoch} of {args.epochs}")
 
+    # Cosine decay over the full run.
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.epochs, eta_min=1e-6, last_epoch=start_epoch - 2 if start_epoch > 1 else -1
     )
+    # Linear LR warmup for the first --warmup_epochs (default 3): removes the ep-1 loss
+    # spike (166 -> 13.6 over 5 epochs in job 38146809) and protects the freshly
+    # loaded DINOv2 backbone. Implemented as a per-step multiplier on top of the
+    # cosine schedule (no optimizer state changes, DDP-safe).
+    # NOTE: warmup_total_steps is finalized after the DataLoader is built (below).
+    warmup_epochs = max(0, args.warmup_epochs)
+    warmup_state = {"total_steps": 0, "n": 0}
+
+    def current_warmup_scale() -> float:
+        if warmup_state["total_steps"] == 0:
+            return 1.0
+        if start_epoch > 1:
+            return 1.0  # resumed runs already passed warmup
+        n = min(warmup_state["n"], warmup_state["total_steps"])
+        return 0.1 + 0.9 * (n / warmup_state["total_steps"])
+
+    def apply_warmup_scaling() -> None:
+        if warmup_state["total_steps"] == 0 or start_epoch > 1:
+            return
+        scale = current_warmup_scale()
+        for group in optimizer.param_groups:
+            group["lr"] = group["initial_lr"] * scale
+
+    def lr_warmup_cb() -> None:
+        apply_warmup_scaling()
+
+    def lr_warmup_advance() -> None:
+        warmup_state["n"] += 1
+
+    lr_warmup_cb.advance = lr_warmup_advance  # type: ignore[attr-defined]
+
+    # Snapshot base lrs for warmup scaling
+    for group in optimizer.param_groups:
+        group["initial_lr"] = group["lr"]
+
     flow_scheduler = FlowMatchingScheduler()
-    matcher = HierarchicalBotanicalMatcher(slots_per_anchor=args.slots_per_anchor).to(device)
+    matcher = HierarchicalBotanicalMatcher(
+        slots_per_anchor=args.slots_per_anchor,
+        anchor_locality_radius=args.anchor_locality_radius,
+        anchor_locality_weight=args.anchor_locality_weight,
+    ).to(device)
 
     # Dynamic Batch Sizing (Python-side Profiling)
     if str(args.batch_size).lower() == "auto":
@@ -767,8 +1304,9 @@ def main():
             depth_loss_weight=args.depth_weight,
             color_loss_weight=args.color_weight,
             silhouette_loss_weight=args.silhouette_weight,
-            render_ratio=args.render_ratio,
-            render_sub_batch=args.render_sub_batch,
+            render_fraction=args.render_fraction,
+            flow_granularity=args.flow_granularity,
+            phytomer_vae=phytomer_vae,
         )
     else:
         resolved_batch_size = int(args.batch_size)
@@ -780,19 +1318,46 @@ def main():
         resolved_batch_size = int(batch_tensor.item())
 
     # Build DataLoader with resolved batch size
-    sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True) if is_ddp else None
-    dataloader = DataLoader(
-        dataset,
-        batch_size=resolved_batch_size,
-        sampler=sampler,
-        shuffle=(sampler is None),
-        num_workers=4,
-        pin_memory=True,
-        drop_last=True,
-    )
+    # DAP-bucketed batching keeps each mini-batch developmentally homogeneous so the
+    # anchor-slice capacity matches the botanical content (large Stage 3 FLOPs saving).
+    if args.dap_buckets > 0:
+        sample_daps = []
+        for s in dataset.samples:
+            m = re.search(r"dap(\d+)", s["prefix"])
+            sample_daps.append(float(m.group(1)) if m else 30.0)
+        sampler = DAPBucketBatchSampler(
+            daps=sample_daps,
+            batch_size=resolved_batch_size,
+            num_buckets=args.dap_buckets,
+            shuffle=True,
+            world_size=world_size,
+            rank=rank,
+        )
+        dataloader = DataLoader(
+            dataset,
+            batch_sampler=sampler,
+            num_workers=4,
+            pin_memory=True,
+        )
+    else:
+        sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True) if is_ddp else None
+        dataloader = DataLoader(
+            dataset,
+            batch_size=resolved_batch_size,
+            sampler=sampler,
+            shuffle=(sampler is None),
+            num_workers=4,
+            pin_memory=True,
+            drop_last=True,
+        )
 
     if rank == 0:
         print(f"Final Configuration: Batch per GPU = {resolved_batch_size} | Global Batch = {resolved_batch_size * world_size}")
+
+    # Finalize warmup step budget now that the DataLoader length is known
+    warmup_state["total_steps"] = warmup_epochs * max(1, len(dataloader))
+    if rank == 0 and warmup_state["total_steps"] > 0:
+        print(f"LR warmup: {warmup_epochs} epochs ({warmup_state['total_steps']} steps), 0.1x -> 1.0x linear")
 
     if is_ddp:
         model = nn.parallel.DistributedDataParallel(
@@ -803,8 +1368,21 @@ def main():
         )
 
     # Training Loop
+    # Fixed stratified eval set: deterministic, persisted, comparable across epochs/runs.
+    eval_indices = build_eval_indices(
+        dataset, samples_per_bucket=args.eval_samples_per_bucket, seed=args.eval_seed
+    )
+    if rank == 0:
+        eval_meta = [{"index": i, "prefix": dataset.samples[i]["prefix"]} for i in eval_indices]
+        eval_set_path = os.path.join(args.output_dir, "eval_set.json")
+        with open(eval_set_path, "w") as f:
+            json.dump({"seed": args.eval_seed, "samples_per_bucket": args.eval_samples_per_bucket,
+                       "indices": eval_indices, "samples": eval_meta}, f, indent=2)
+        print(f"Fixed eval set: {len(eval_indices)} samples -> {eval_set_path}")
+
+    last_eval_time = {"t": time.time()}
     for epoch in range(start_epoch, args.epochs + 1):
-        if is_ddp and sampler is not None:
+        if sampler is not None and hasattr(sampler, "set_epoch"):
             sampler.set_epoch(epoch)
 
         epoch_metrics = train_one_epoch(
@@ -821,10 +1399,17 @@ def main():
             depth_loss_weight=args.depth_weight,
             color_loss_weight=args.color_weight,
             silhouette_loss_weight=args.silhouette_weight,
-            render_ratio=args.render_ratio,
-            render_sub_batch=args.render_sub_batch,
+            render_fraction=args.render_fraction,
+            capacity_warmup_epochs=args.capacity_warmup_epochs,
+            capacity_full_epochs=args.capacity_full_epochs,
+            flow_granularity=args.flow_granularity,
+            phytomer_vae=phytomer_vae,
+            lr_warmup_cb=lr_warmup_cb,
         )
         lr_scheduler.step()
+        # Restore the cosine-schedule lr after warmup epochs finish (warmup only
+        # scales within the warmup window; cosine takes over cleanly afterwards).
+        apply_warmup_scaling()
 
         if rank == 0:
             max_vram_gb = torch.cuda.max_memory_allocated(device) / (1024 ** 3)
@@ -841,6 +1426,7 @@ def main():
                 f"CosLoss: {epoch_metrics['cos_color_loss']:.4f} | "
                 f"DiceLoss: {epoch_metrics['silhouette_dice_loss']:.4f} | "
                 f"ClsAcc: {epoch_metrics['cls_acc']*100:.1f}% | "
+                f"CapPredP: {epoch_metrics['capacity_p_pred']:.2f} | "
                 f"VRAM: {max_vram_gb:.1f}/{total_vram_gb:.1f} GB ({vram_pct:.1f}%)"
             )
             wandb.log({
@@ -856,6 +1442,7 @@ def main():
                 "train/cos_color_loss": epoch_metrics["cos_color_loss"],
                 "train/silhouette_dice_loss": epoch_metrics["silhouette_dice_loss"],
                 "train/cls_acc": epoch_metrics["cls_acc"],
+                "train/capacity_p_pred": epoch_metrics["capacity_p_pred"],
                 "train/vram_allocated_gb": max_vram_gb,
                 "train/vram_utilization_pct": vram_pct,
                 "lr": optimizer.param_groups[0]["lr"],
@@ -873,11 +1460,25 @@ def main():
                 print(f"Saved checkpoint to {save_path}", flush=True)
 
             # Differentiable Renderer Self-Consistency Check (Silhouette IoU & CHM Depth MAE & 3D Nodes)
-            # Evaluated every args.eval_every epochs (default: 1 epoch)
-            if epoch % args.eval_every == 0 or epoch == args.epochs:
+            # Triggered by (a) the --eval_every epoch cadence, or (b) a time-based
+            # fallback: as the dataset grows, per-epoch time grows, so a pure epoch
+            # cadence would silently stretch diagnostic panels to hours. The time
+            # fallback forces a panel whenever --eval_min_interval_minutes elapsed.
+            now = time.time()
+            minutes_since_eval = (now - last_eval_time["t"]) / 60.0
+            time_due = (
+                args.eval_min_interval_minutes > 0
+                and minutes_since_eval >= args.eval_min_interval_minutes
+                and epoch > start_epoch  # skip the resume-instant eval
+            )
+            epoch_due = (epoch % args.eval_every == 0) or (epoch == args.epochs)
+            if epoch_due or time_due:
+                if time_due and not epoch_due and rank == 0:
+                    print(f"  [Eval trigger] {minutes_since_eval:.0f} min since last panel (> {args.eval_min_interval_minutes})", flush=True)
+                last_eval_time["t"] = time.time()
                 try:
                     raw_model = model.module if hasattr(model, "module") else model
-                    val_batch = next(iter(dataloader))
+                    val_batch = collate_eval_set(dataset, eval_indices, device)
                     importlib.reload(ehsc)
                     val_metrics = ehsc.evaluate_self_consistency_batch(
                         model=raw_model,
@@ -888,13 +1489,25 @@ def main():
                         output_dir="docs/results/assets",
                         num_samples_to_plot=4,
                         vae=vae,
+                        phytomer_vae=phytomer_vae,
                     )
                     print(
                         f"  [Self-Consistency Epoch {epoch:03d}] Silhouette IoU: {val_metrics['silhouette_iou']*100:.1f}% | "
                         f"Depth MAE: {val_metrics['depth_mae']*100:.2f} cm | "
-                        f"Node RMSE: {val_metrics.get('val/node_rmse_cm', val_metrics.get('node_rmse_cm', 0.0)):.1f} cm",
+                        f"Cos: {val_metrics.get('cos_color_loss', 0.0):.3f} | "
+                        f"Dice: {val_metrics.get('dice_loss', 0.0):.3f} | "
+                        f"Node RMSE: {val_metrics.get('val/node_rmse_cm', val_metrics.get('node_rmse_cm', 0.0)):.1f} cm "
+                        f"(n={len(eval_indices)} fixed-set)",
                         flush=True,
                     )
+                    wandb.log({
+                        "epoch": epoch,
+                        "val/silhouette_iou": val_metrics["silhouette_iou"],
+                        "val/depth_mae_m": val_metrics["depth_mae"],
+                        "val/cos_color_loss": val_metrics.get("cos_color_loss", 0.0),
+                        "val/dice_loss": val_metrics.get("dice_loss", 0.0),
+                        "val/node_rmse_cm": val_metrics.get("val/node_rmse_cm", 0.0),
+                    })
                 except Exception as e:
                     print(f"  [Self-Consistency Warning] Evaluation skipped: {e}", flush=True)
 

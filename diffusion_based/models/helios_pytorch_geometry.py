@@ -1451,12 +1451,18 @@ class HeliosPlantGeometryBuilder:
             if variant in _leaf_cache:
                 return _leaf_cache[variant]
             obj_name, tex_name = _leaf_obj_map.get(variant, _leaf_obj_map[2])
+            tex_name_use = tex_name
             if eff_leaf_mode == "generic":
                 if variant == 0:
                     tex_name_use = "CowpeaLeaf_unifoliate_centered.png"
                 else:
                     tex_name_use = "CowpeaLeaf_generic_centered.png"
                 v_lf, f_lf = self.asset_mgr.get_mesh_device(obj_name, device)
+            elif eff_leaf_mode == "lowpoly":
+                # Lightweight alpha-cutout leaf (~80 verts vs 1458 highres OBJ):
+                # for interactive visualization when polygon budget matters.
+                v_lf, f_lf = self.asset_mgr.get_generic_leaf_mesh(
+                    tex_name_use, Nx=8, Ny=8, device=device)
             elif eff_leaf_mode == "parametric":
                 from diffusion_based.models.parametric_cowpea_leaf import generate_parametric_cowpea_leaf_mesh
                 v_lf, f_lf = generate_parametric_cowpea_leaf_mesh(

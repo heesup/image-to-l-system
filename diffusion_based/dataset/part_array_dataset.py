@@ -372,6 +372,15 @@ class PartArrayDataset(Dataset):
                         elif data["nodes"].shape[0] < self.max_nodes:
                             pad_n = self.max_nodes - data["nodes"].shape[0]
                             data["nodes"] = F.pad(data["nodes"], (0, 0, 0, pad_n))
+                        # phytomer_ids (N, 2) must align with the padded nodes.
+                        if "phytomer_ids" in data:
+                            ids = data["phytomer_ids"]
+                            if ids.shape[0] > self.max_nodes:
+                                data["phytomer_ids"] = ids[: self.max_nodes]
+                            elif ids.shape[0] < self.max_nodes:
+                                pad_n = self.max_nodes - ids.shape[0]
+                                data["phytomer_ids"] = F.pad(
+                                    ids, (0, 0, 0, pad_n), value=-1)
                         data["existence_mask"] = (data["nodes"][:, EMPTY_IDX] < 0.5).float()
                         data["prefix"] = sample["prefix"]
                         data["jpeg"] = sample["jpeg"]
