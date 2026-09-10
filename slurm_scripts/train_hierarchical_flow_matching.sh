@@ -59,6 +59,7 @@ echo "Flow granularity: ${FLOW_GRANULARITY:-organ} (phytomer = 73D bridge flow [
 echo "Phytomer VAE: ${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_v2/phytomer_vae_64d_best.pt}"
 echo "Pkt cache dir: ${PKT_CACHE_DIR:-dataset/cache/cowpea_curv26_pkt} (missing samples fall back to on-the-fly)"
 echo "Backbone: ${BACKBONE}${FREEZE_ARGS:+ (frozen)} | Output: ${OUTPUT_DIR} | Epochs: ${EPOCHS}"
+echo "Train subset: ${MAX_TRAIN_SAMPLES:-0} (0 = full dataset)"
 echo "Date: $(date)"
 echo "================================================================================"
 
@@ -109,6 +110,7 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     --eval_min_interval_minutes "${EVAL_MIN_INTERVAL_MINUTES:-30}" \
     --eval_samples_per_bucket "${EVAL_SAMPLES_PER_BUCKET:-2}" \
     --dap_buckets "${DAP_BUCKETS:-8}" \
+    --max_train_samples "${MAX_TRAIN_SAMPLES:-0}" \
     --capacity_warmup_epochs "${CAPACITY_WARMUP:-50}" \
     --capacity_full_epochs "${CAPACITY_FULL:-150}" \
     --wandb_project part-flow-matching \

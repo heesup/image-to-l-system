@@ -930,14 +930,18 @@ def build_eval_indices(dataset: PartArrayDataset, samples_per_bucket: int = 2, s
     return sorted(chosen)
 
 
-def collate_eval_set(dataset: PartArrayDataset, indices: List[int], device: torch.device) -> Dict[str, torch.Tensor]:
+def collate_eval_set(dataset: PartArrayDataset, indices: List[int], device: torch.device) -> Dict[str, Any]:
     """Collates the fixed eval set directly from the dataset (bypasses the sampler)."""
     items = [dataset[i] for i in indices]
     batch = {}
     keys = [k for k in items[0].keys() if isinstance(items[0][k], torch.Tensor)]
     for k in keys:
         batch[k] = torch.stack([it[k] for it in items]).to(device)
-    # non-tensor extras (jpeg/prefix) are not needed by the evaluator
+    # Preserve non-tensor extras (jpeg/prefix) — the evaluator uses them for the
+    # Helios Raytrace reference column (Col 0).
+    for k in ("jpeg", "prefix"):
+        if k in items[0]:
+            batch[k] = [it[k] for it in items]
     return batch
 
 
@@ -1139,6 +1143,8 @@ def main():
     parser.add_argument("--warmup_epochs", type=int, default=3, help="Linear LR warmup epochs (0.1x -> 1.0x per step; 0 disables)")
     parser.add_argument("--init_checkpoint", type=str, default=None, help="Path to checkpoint to initialize weights from (strict=False)")
     parser.add_argument("--dap_buckets", type=int, default=8, help="Number of DAP buckets for capacity-homogeneous batching (0 = plain shuffle)")
+    parser.add_argument("--max_train_samples", type=int, default=0,
+                        help="DAP-stratified subset of the dataset for fast convergence smoke tests (0 = full dataset)")
     parser.add_argument("--capacity_warmup_epochs", type=int, default=50, help="Epochs of pure GT-DAP capacity teacher forcing before predicted-phytomer capacity ramps in")
     parser.add_argument("--capacity_full_epochs", type=int, default=150, help="Epoch at which predicted-phytomer capacity path reaches p_pred=1.0 (0 = disable ramp entirely)")
     parser.add_argument("--wandb_project", type=str, default="part-flow-matching")
@@ -1177,6 +1183,28 @@ def main():
         species="cowpea",
         image_size=128,
     )
+    if args.max_train_samples > 0 and args.max_train_samples < len(dataset.samples):
+        # DAP-stratified subset (same bucket logic as the eval set) so young and
+        # mature plants stay represented in fast smoke tests.
+        import random as _random
+        by_bucket: Dict[int, List[int]] = {}
+        for idx, sm in enumerate(dataset.samples):
+            m = re.search(r"dap(\d+)", sm["prefix"])
+            dap = int(m.group(1)) if m else 30
+            by_bucket.setdefault((dap - 1) // 10, []).append(idx)
+        rng = _random.Random(42)
+        keep: List[int] = []
+        buckets = sorted(by_bucket.keys())
+        per_bucket = max(1, args.max_train_samples // max(1, len(buckets)))
+        for bkt in buckets:
+            pool = sorted(by_bucket[bkt])
+            rng.shuffle(pool)
+            keep.extend(pool[:per_bucket])
+        keep = sorted(keep)[: args.max_train_samples]
+        dataset.samples = [dataset.samples[i] for i in keep]
+        if rank == 0:
+            daps = sorted({int(re.search(r"dap(\d+)", sm["prefix"]).group(1)) for sm in dataset.samples if re.search(r"dap(\d+)", sm["prefix"])})
+            print(f"Train subset: {len(dataset.samples)} samples (max_train_samples={args.max_train_samples}), DAP range {daps[0]}-{daps[-1]}")
 
     # Differentiable Renderer for in-loop optical grounding and evaluation
     renderer = HeliosPyTorchRenderer(image_size=128, device=device).to(device)
