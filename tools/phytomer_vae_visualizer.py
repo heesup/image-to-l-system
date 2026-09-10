@@ -9,14 +9,15 @@ centers, packets, dap, meta.json).
 
 Usage (workspace root):
     .../bin/python tools/phytomer_vae_visualizer.py \
-        --cache /tmp/opencode/phytomer_gui_cache \
-        --ckpt diffusion_based/checkpoints/phytomer_vae_structural/phytomer_vae_64d_best.pt \
+        --cache dataset/cache/phytomer_gui_cache \
+        --ckpt diffusion_based/checkpoints/phytomer_vae_xml/phytomer_vae_64d_best.pt \
         --server-name 0.0.0.0 --server-port 7860
 """
 
 import argparse
 import json
 import os
+import pickle
 import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -94,13 +95,34 @@ class PhytomerVisualizer:
         self.slider_lo = zmin - pad
         self.slider_hi = zmax + pad
 
+        # Latent dims are NOT equal: std spans ~0.05 (dead) .. ~1.15 (live).
+        # Raw sliders are shown variance-sorted (live first) with σ in labels.
+        self.z_std = self.z.std(dim=0).numpy()
+        self.dim_order = np.argsort(-self.z_std)
+
+        # Coarse PCA control: pca16 (16 comps, 98.2% var) → top-10 ≈ 81%.
+        # Each PC move shifts many correlated dims → always visibly changes.
+        with open(os.path.join(cache_dir, "pca16.pt"), "rb") as f:
+            pca16 = pickle.load(f)
+        self.n_pc = 10
+        self.pc_comps = np.ascontiguousarray(pca16.components_[: self.n_pc]).astype(np.float32)
+        self.pc_mean = pca16.mean_.astype(np.float32)
+        self.pc_sigma = np.sqrt(pca16.explained_variance_[: self.n_pc]).astype(np.float32)
+        # PC slider bounds: DATA range (+pad), not ±3σ — outlier packets sit
+        # beyond 3σ and gradio raises ValueError setting a slider out of range.
+        scores = (self.z.numpy() - self.pc_mean) @ self.pc_comps.T
+        smin, smax = scores.min(0), scores.max(0)
+        spad = 0.05 * (smax - smin) + 1e-3
+        self.pc_lo = (smin - spad).astype(np.float32)
+        self.pc_hi = (smax + spad).astype(np.float32)
+
         # Organ-type combination per packet (unique ID per present-type set).
         # Groups the 13 organ types into 7 functional categories; the combo is
         # the sorted tuple of categories present in the packet.
         self.combo_ids, self.combo_names = self._compute_combos()
 
         # 2D scatter image (matplotlib) + pixel->point mapping.
-        self._pca2d_img, self._pca2d_ax = self._render_pca2d("slots", "viridis")
+        self._pca2d_img, self._pca2d_ax = self._render_pca2d("combo", "viridis")
 
     # ------------------------------------------------------------- combos
     def _compute_combos(self):
@@ -274,6 +296,27 @@ class PhytomerVisualizer:
                 center = np.zeros(3)
         return center, ref
 
+    # ------------------------------------------------- PC / slider mapping
+    def _z_from_pc(self, alphas: np.ndarray) -> np.ndarray:
+        """PC slider values (n_pc,) -> full z (64,)."""
+        return self.pc_mean + np.asarray(alphas, dtype=np.float32) @ self.pc_comps
+
+    def _pc_from_z(self, z: np.ndarray) -> np.ndarray:
+        """Full z (64,) -> PC scores (n_pc,) by projection."""
+        return (np.asarray(z, dtype=np.float32) - self.pc_mean) @ self.pc_comps.T
+
+    def _sliders_out(self, z: np.ndarray):
+        """z (64,) -> [64 variance-ordered raw values] + [n_pc scores]."""
+        z = np.asarray(z, dtype=np.float32)
+        pc = np.clip(self._pc_from_z(z), self.pc_lo, self.pc_hi)
+        return [float(z[i]) for i in self.dim_order] + [float(a) for a in pc]
+
+    def _z_from_ordered(self, values) -> np.ndarray:
+        """Variance-ordered raw slider values -> z (64,)."""
+        z = np.zeros(self.latent_dim, dtype=np.float32)
+        z[self.dim_order] = np.asarray(values, dtype=np.float32)
+        return z
+
     def _decode(self, z: np.ndarray, ref_mode: str, ref_idx: int):
         """z (64,) -> (relative packet, presence, center, ref_rot6d).
 
@@ -318,34 +361,64 @@ class PhytomerVisualizer:
     def _export_glb(self, rel: torch.Tensor, presence: torch.Tensor,
                     center: np.ndarray, ref: np.ndarray, leaf_quality: str,
                     tag: str) -> str:
-        """Builds the mesh and exports it as a GLB file for gr.Model3D."""
+        """Builds the mesh and exports it as a GLB file for gr.Model3D.
+
+        Each export gets a UNIQUE path: concurrent Gradio events previously
+        raced on a fixed per-tag path (one event reading a half-written file
+        from another → "not a glb" assert). Stale files are pruned.
+        """
+        import uuid
         mesh = self._build_mesh(rel, presence, center, ref, leaf_quality)
         import trimesh
+        V = mesh["vertices"].cpu().numpy().astype(np.float64)
+        # Web viewers (three.js) are Y-up; Helios geometry is Z-up.
+        # Rotation (x,y,z)->(x,z,-y) (det=+1, no mirror) so the plant
+        # stands upright instead of lying tipped over in the 3D tab.
+        V = V[:, [0, 2, 1]] * np.array([1.0, 1.0, -1.0])
         t = trimesh.Trimesh(
-            vertices=mesh["vertices"].cpu().numpy(),
+            vertices=V,
             faces=mesh["faces"].cpu().numpy(),
             vertex_colors=(mesh["colors"].cpu().numpy() * 255).astype(np.uint8),
             process=False,
         )
-        os.makedirs("/tmp/opencode/phytomer_glb", exist_ok=True)
-        path = f"/tmp/opencode/phytomer_glb/phytomer_{tag}_{leaf_quality}.glb"
-        t.export(path)
-        self._make_glb_double_sided(path)
+        if len(t.faces) == 0:
+            raise ValueError("empty mesh: no faces to export as GLB")
+        data = t.export(file_type="glb")
+        data = self._patch_glb_double_sided(bytes(data))
+        glb_dir = "/tmp/opencode/phytomer_glb"
+        os.makedirs(glb_dir, exist_ok=True)
+        path = os.path.join(glb_dir, f"phytomer_{tag}_{leaf_quality}_{uuid.uuid4().hex[:8]}.glb")
+        with open(path, "wb") as f:
+            f.write(data)
+        self._prune_glb_dir(glb_dir, keep=20)
         return path
 
     @staticmethod
-    def _make_glb_double_sided(path: str):
-        """Sets doubleSided=True on all glTF materials (leaf backfaces culled).
+    def _prune_glb_dir(glb_dir: str, keep: int = 20):
+        """Deletes oldest GLBs beyond `keep` (unique-path exports accumulate)."""
+        try:
+            files = sorted(
+                (os.path.join(glb_dir, f) for f in os.listdir(glb_dir) if f.endswith(".glb")),
+                key=os.path.getmtime,
+            )
+            for f in files[:-keep]:
+                os.remove(f)
+        except OSError:
+            pass
 
-        Injects a double-sided material and binds it to every mesh primitive
-        (trimesh GLB export omits materials entirely by default; without this
-        the default glTF material is single-sided, so leaf backfaces vanish).
+    @staticmethod
+    def _patch_glb_double_sided(data: bytes) -> bytes:
+        """Returns GLB bytes with a doubleSided material bound to all primitives.
+
+        (Trimesh GLB export omits materials entirely by default; without this
+        the default glTF material is single-sided, so leaf backfaces vanish.)
+        Pure bytes-in/bytes-out — no file read-back, so concurrent exports
+        cannot observe half-written files.
         """
         import struct
         import json as _json
-        with open(path, "rb") as f:
-            data = f.read()
-        assert data[:4] == b"glTF", "not a glb"
+        if data[:4] != b"glTF":
+            raise ValueError(f"trimesh did not return GLB bytes (magic={data[:4]!r})")
         json_len = struct.unpack("<I", data[12:16])[0]
         gltf = _json.loads(data[20:20 + json_len])
 
@@ -371,8 +444,7 @@ class PhytomerVisualizer:
         out += struct.pack("<I", len(new_json)) + b"JSON"
         out += new_json
         out += bin_chunk
-        with open(path, "wb") as f:
-            f.write(bytes(out))
+        return bytes(out)
 
     def _render(self, rel: torch.Tensor, presence: torch.Tensor,
                 center: np.ndarray, ref: np.ndarray, leaf_quality: str = "high"):
@@ -415,7 +487,7 @@ class PhytomerVisualizer:
         msg = f"Loaded packet {idx}"
         if self.dap is not None:
             msg += f" (DAP {self.dap[idx].item():.0f})"
-        return [float(v) for v in z] + [idx, msg]
+        return self._sliders_out(z) + [idx, msg]
 
     def on_load_idx(self, idx: int):
         idx = int(idx) % self.n
@@ -424,24 +496,32 @@ class PhytomerVisualizer:
         if self.dap is not None:
             msg += f" (DAP {self.dap[idx].item():.0f})"
         msg += f" | combo: {'+'.join(self.combo_names[self.combo_ids[idx]])}"
-        return [float(v) for v in z] + [idx, msg]
+        return self._sliders_out(z) + [idx, msg]
 
     def on_sliders(self, leaf_quality: str, *values):
-        z = np.array(values, dtype=np.float32)
+        z = self._z_from_ordered(values)
         rel, presence, center, ref = self._decode(z, "identity", 0)
         rgb, depth, info = self._render(rel, presence, center, ref, leaf_quality)
         glb = self._export_glb(rel, presence, center, ref, leaf_quality, "sliders")
         return rgb, depth, info, glb
 
+    def on_pc_sliders(self, leaf_quality: str, *values):
+        """Coarse PC sliders -> set raw sliders + render (always visible change)."""
+        z = self._z_from_pc(np.array(values, dtype=np.float32))
+        rel, presence, center, ref = self._decode(z, "identity", 0)
+        rgb, depth, info = self._render(rel, presence, center, ref, leaf_quality)
+        glb = self._export_glb(rel, presence, center, ref, leaf_quality, "pc")
+        return [float(z[i]) for i in self.dim_order] + [rgb, depth, info, glb]
+
     def on_random(self):
         z = np.random.randn(self.latent_dim).astype(np.float32)
-        return [float(v) for v in z]
+        return self._sliders_out(z)
 
     def on_reset(self):
-        return [0.0] * self.latent_dim
+        return self._sliders_out(np.zeros(self.latent_dim, dtype=np.float32))
 
     def on_ref_change(self, ref_mode: str, ref_idx: int, leaf_quality: str, *values):
-        z = np.array(values, dtype=np.float32)
+        z = self._z_from_ordered(values)
         rel, presence, center, ref = self._decode(z, ref_mode, int(ref_idx))
         rgb, depth, info = self._render(rel, presence, center, ref, leaf_quality)
         glb = self._export_glb(rel, presence, center, ref, leaf_quality, "ref")
@@ -468,10 +548,10 @@ def build_app(viz: PhytomerVisualizer):
                         pca2d_img = gr.Image(value=viz._pca2d_img, height=520,
                                              label="Click a point to load its latent")
                     with gr.Tab("PCA 3D (rotate)"):
-                        pca3d = gr.Plot(value=viz._scatter3d("slots", "Viridis"))
+                        pca3d = gr.Plot(value=viz._scatter3d("combo", "Viridis"))
                 with gr.Row():
                     color_by = gr.Radio(
-                        ["slots", "dap", "combo", "none"], value="slots", label="Color by")
+                        ["combo", "slots", "dap", "none"], value="combo", label="Color by")
                     colorscale = gr.Dropdown(
                         ["Viridis", "Plasma", "Turbo", "Cividis", "Jet"],
                         value="Viridis", label="Colorscale")
@@ -493,30 +573,45 @@ def build_app(viz: PhytomerVisualizer):
                 leaf_quality = gr.Radio(
                     ["high", "low"], value="high",
                     label="Leaf quality (high = highres OBJ, low = lightweight)")
-                sliders = [
+                # Coarse control: top-10 PCs (~81% of latent variance).
+                # Each PC move shifts many correlated dims → always visible.
+                gr.Markdown("**Coarse (PC sliders — big moves)**")
+                pc_sliders = [
                     gr.Slider(
-                        minimum=slider_lo[i], maximum=slider_hi[i],
-                        value=0.0, step=0.01,
-                        label=f"z[{i}]  (μ {z_mean[i]:+.2f})",
+                        minimum=float(viz.pc_lo[k]),
+                        maximum=float(viz.pc_hi[k]),
+                        value=0.0, step=float((viz.pc_hi[k] - viz.pc_lo[k]) / 500),
+                        label=f"PC{k} ({viz.meta['pca_evr'][k]*100:.1f}%)" if k < 3
+                              else f"PC{k}",
                     )
-                    for i in range(viz.latent_dim)
+                    for k in range(viz.n_pc)
                 ]
+                with gr.Accordion("Raw 64D (variance-sorted, σ in label)", open=False):
+                    sliders = [
+                        gr.Slider(
+                            minimum=slider_lo[i], maximum=slider_hi[i],
+                            value=0.0, step=0.01,
+                            label=f"z[{i}] σ={viz.z_std[i]:.2f}",
+                        )
+                        for i in viz.dim_order
+                    ]
 
             # ---------------- right: render ----------------
             with gr.Column(scale=5):
-                with gr.Tabs():
+                with gr.Tabs(selected="web3d"):
                     with gr.Tab("RGB"):
                         rgb_out = gr.Image(label="RGB render", height=420)
                     with gr.Tab("Depth"):
                         depth_out = gr.Image(label="Depth render", height=420)
-                    with gr.Tab("3D (web)"):
+                    with gr.Tab("3D (web)", id="web3d"):
                         model3d = gr.Model3D(label="3D mesh", height=420,
                                              clear_color=(0.06, 0.08, 0.1, 1.0))
                 info_out = gr.Textbox(label="Packet (relative frame)", lines=8, max_lines=12)
 
         # ---- events ----
-        pca2d_img.select(viz.on_pca2d_click, None, sliders + [load_idx, status])
-        btn_load.click(viz.on_load_idx, load_idx, sliders + [load_idx, status])
+        slider_outs = sliders + pc_sliders
+        pca2d_img.select(viz.on_pca2d_click, None, slider_outs + [load_idx, status])
+        btn_load.click(viz.on_load_idx, load_idx, slider_outs + [load_idx, status])
         color_by.change(
             lambda cb, cs: viz._render_pca2d(cb, cs.lower())[0], [color_by, colorscale], pca2d_img)
         colorscale.change(
@@ -524,13 +619,18 @@ def build_app(viz: PhytomerVisualizer):
         color_by.change(lambda cb, cs: viz._scatter3d(cb, cs), [color_by, colorscale], pca3d)
         colorscale.change(lambda cb, cs: viz._scatter3d(cb, cs), [color_by, colorscale], pca3d)
 
-        btn_random.click(viz.on_random, None, sliders)
-        btn_reset.click(viz.on_reset, None, sliders)
+        btn_random.click(viz.on_random, None, slider_outs)
+        btn_reset.click(viz.on_reset, None, slider_outs)
 
         slider_inputs = sliders
+        # NOTE: .release (not .change) — dragging fires dozens of change
+        # events that flood the queue (stuck "QUEUED"); render on release.
         for s in sliders:
-            s.change(viz.on_sliders, [leaf_quality] + slider_inputs,
-                     [rgb_out, depth_out, info_out, model3d])
+            s.release(viz.on_sliders, [leaf_quality] + slider_inputs,
+                      [rgb_out, depth_out, info_out, model3d])
+        for s in pc_sliders:
+            s.release(viz.on_pc_sliders, [leaf_quality] + pc_sliders,
+                      sliders + [rgb_out, depth_out, info_out, model3d])
         ref_mode.change(viz.on_ref_change, [ref_mode, ref_idx, leaf_quality] + slider_inputs,
                         [rgb_out, depth_out, info_out, model3d])
         ref_idx.change(viz.on_ref_change, [ref_mode, ref_idx, leaf_quality] + slider_inputs,
@@ -552,7 +652,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cache", type=str, default="dataset/cache/phytomer_gui_cache")
     parser.add_argument("--ckpt", type=str,
-                        default="diffusion_based/checkpoints/phytomer_vae_structural/phytomer_vae_64d_best.pt")
+                        default="diffusion_based/checkpoints/phytomer_vae_xml/phytomer_vae_64d_best.pt")
     parser.add_argument("--server-name", type=str, default="0.0.0.0")
     parser.add_argument("--server-port", type=int, default=7860)
     parser.add_argument("--device", type=str, default="cuda:0")

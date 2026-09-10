@@ -316,8 +316,8 @@ fallback `--eval_min_interval_minutes 30`.
 
 ### 9.3 Fraction Ablation Ladder (decides how far "full rendering" goes)
 
-**Measured render cost** (TITAN RTX 24GB local, `tools/benchmark_render_cost.py`,
-real cache samples, mesh build + 4-scale pyramid fwd + backward):
+**Measured render cost** (TITAN RTX 24GB local, real cache samples,
+mesh build + 4-scale pyramid fwd + backward):
 
 | DAP | organs | mesh | fwd | bwd | total/sample |
 |---:|---:|---:|---:|---:|---:|
@@ -355,9 +355,9 @@ config by ~2–3× and make Config C essentially free.
 | A-opt: B48 f=1/6 | ~1.4 s/step | **~3.5–4** |
 | C-opt: B16 f=1.0 | ~0.8 s/step | **~7** |
 
-- **A and B launch in parallel** on separate nodes via `slurm_scripts/submit_ablation_when_frozen.sh`
-  (waits for the 100k freeze, prints DAP balance, cancels the interim job on request,
-  submits A to the Ada partition and B to `low`/H100 if available).
+- **A and B launch in parallel** on separate nodes (waits for the 100k freeze,
+  prints DAP balance, cancels the interim job on request, submits A to the Ada
+  partition and B to `low`/H100 if available).
 - **Decision gate at day ~4-6**: compare `val/dice_loss`, `val/cos_color_loss`,
   `val/silhouette_iou` at matched wall-clock. If B clearly beats A → launch C
   (batch 16, fraction 1.0) for the densest self-consistency signal.
@@ -368,13 +368,8 @@ config by ~2–3× and make Config C essentially free.
 ### 9.4 Usage
 
 ```bash
-# Watch for dataset freeze, then auto-submit A & B (recommended flow):
-nohup bash slurm_scripts/submit_ablation_when_frozen.sh \
-    --cancel-interim 38146809 > slurm_scripts/logs/ablation_watcher.log 2>&1 &
-
-# Dry-run / force options:
-bash slurm_scripts/submit_ablation_when_frozen.sh --dry-run --force
-bash slurm_scripts/submit_ablation_when_frozen.sh --target-samples 100000 --check-interval 600
+# (The auto-watcher submit_ablation_when_frozen.sh was removed in the 2026-09-09
+# cleanup; submit A/B arms directly via slurm_scripts/submit_backbone_ablation.sh.)
 ```
 
 ### 9.5 Open follow-ups

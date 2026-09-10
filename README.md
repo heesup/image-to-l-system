@@ -72,7 +72,7 @@ image-to-l-system/
 ├── docs/
 │   ├── ongoing/AGENT_TAKEOVER_GUIDE.md   # ★ Single source of truth — read this first
 │   └── results/assets/                   # All benchmark figures
-└── scripts/                              # Figure-generation & data utilities
+└── scripts/                              # Helios XML synthesis (generate_helios_dataset.py)
 ```
 
 ---

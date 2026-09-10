@@ -217,9 +217,8 @@ stabilization machinery.
 **Exp F (current approach)**: OFFLINE Hungarian relabeling (optimal assignment
 computed ONCE from converged Exp D, then fresh training on fixed relabeled
 targets with fast canonical loss). No flicker (static targets) + no canonical
-bias (optimal assignment). `tools/relabel_packets_hungarian.py`: bulk GPU
-forward, single CPU transfer, pure-numpy per-packet loop. Warm-start from Exp D
-for clean A/B isolation (same init/settings, only targets differ).
+bias (optimal assignment). Warm-start from Exp D for clean A/B isolation (same
+init/settings, only targets differ).
 
 Render roundtrip (12 plants): PhytomerVAE **64.8% IoU / 6.40cm** vs OrganVAE
 **81.3% / 2.13cm** — the angle gap costs ~16 IoU points. Gate still red.
@@ -520,6 +519,27 @@ the full dataset (5.2cm mean error) — the GT itself was mis-assigned.
 0.0% — the metric was also broken, now computed via frozen VAE decode of the
 clean latent; fixed in the same pass).
 
+### 4.5 STEP-TIME PROFILING (2026-09-09 evening)
+
+Added per-phase timers to `forward_backward_step` (packet_build, fwd1, fwd2,
+matcher, render) and per-step print. Subset (4k) run with render_fraction=1.0:
+
+| phase | time | share |
+|-------|------|-------|
+| render (4-scale, 32 samples) | 1.93-5.22s | **70%** |
+| packet build + VAE encode | 0.27-0.98s | 10% |
+| fwd1 + fwd2 (model) | 0.04s | 1.5% |
+| matcher | 0.01-0.14s | 0.4% |
+| optimizer | 0.01s | 0.4% |
+
+**Actions taken** (user-approved, gradient-balance considered):
+- `render_fraction` 1.0 → **0.167** (5 samples; per-epoch supervision volume
+  unchanged — the 09/07 baseline setting; render gradient is a small fraction of
+  the total loss anyway: vel 2.0 + exist 1.0 + anchor 2.0 dominate).
+- Pyramid 4-scale → **2-scale (1x/2x)**: 4x/8x zoom covers a single leaf —
+  small, noisy gradients; halves render time.
+- Result: render 5.2s → 0.4-0.75s; step ~8s → ~2s.
+
 ### 4.6 PIPELINE REFACTOR — unified cache/pkt generation (2026-09-09 late)
 
 **Question**: "XML -> 40D typed -> Phytomer VAE 가 XML 직접 파이프라인이야? 이 파이프라인
@@ -560,26 +580,57 @@ input) and pkt targets are needed — nodes are recreated by decoding latents.
 (16ch image, `phytomer_ids`, `(P,8,26)` packets, `(P,64)` latent).
 Packet cache 38,610/100,000 — resume with the backfill launcher.
 
-### 4.5 STEP-TIME PROFILING (2026-09-09 evening)
+### 4.7 BACKBONE SCALING A/B + DINOv3/CHMv2 (2026-09-09 late)
 
-Added per-phase timers to `forward_backward_step` (packet_build, fwd1, fwd2,
-matcher, render) and per-step print. Subset (4k) run with render_fraction=1.0:
+**User questions**: "Pretrained DINOv3가 나왔는데 굳이 v2를 쓰는 이유는? DINOv3 중에는
+Canopy Height Model 파인튜닝 된 것도 있었던거같은데?"
 
-| phase | time | share |
-|-------|------|-------|
-| render (4-scale, 32 samples) | 1.93-5.22s | **70%** |
-| packet build + VAE encode | 0.27-0.98s | 10% |
-| fwd1 + fwd2 (model) | 0.04s | 1.5% |
-| matcher | 0.01-0.14s | 0.4% |
-| optimizer | 0.01s | 0.4% |
+**Why DINOv2 so far**: `dinov2_ray_encoder.py` hardcoded
+`torch.hub.load("facebookresearch/dinov2", "dinov2_vits14")` — simplest API,
+auto-download weights, patch-14/224 -> 16x16=256 tokens. A working baseline, not
+a deliberate rejection of v3. DINOv3 (2025-08) adds better dense features,
+patch-16, high-res adaptation and SAT-493M satellite variants; weights are
+license-gated and the repo asks torch>=2.7.1 (env has 2.5.1) — but the cached
+SAT-493M ViT-L/16 checkpoint **loads and runs on 2.5.1** and yields the same
+16x16=256 token grid at 256px, so the swap is architecturally free.
 
-**Actions taken** (user-approved, gradient-balance considered):
-- `render_fraction` 1.0 → **0.167** (5 samples; per-epoch supervision volume
-  unchanged — the 09/07 baseline setting; render gradient is a small fraction of
-  the total loss anyway: vel 2.0 + exist 1.0 + anchor 2.0 dominate).
-- Pyramid 4-scale → **2-scale (1x/2x)**: 4x/8x zoom covers a single leaf —
-  small, noisy gradients; halves render time.
-- Result: render 5.2s → 0.4-0.75s; step ~8s → ~2s.
+**CHMv2**: yes — Canopy Height Maps v2 (2026-03, arXiv 2603.06382) is a DINOv3
+**ViT-L/16 SAT-493M** backbone + DPT head (`facebook/dinov3-vitl16-chmv2-dpt-head`,
+gated). The original 2024 CHM was DINOv2-based. Our renders are top-down
+(elevation 90 deg) and the cache even stores a CHM depth channel, so the
+SAT/CHM vegetation prior is domain-plausible — `dinov3_vitl16_sat` is an A/B
+arm; the CHMv2 DPT head itself is not needed (backbone features only).
+
+**Implementation**:
+- `DINOv2RayEncoder` -> generalized `DINORayEncoder` (old name aliased).
+  Registry: `dinov2_vits14|vitb14|vitl14`, `dinov3_vits16|vitb16|vitl16`,
+  `dinov3_vitl16_sat`; ray grid derived from patch/input size; both families
+  emit (B, 257, embed_dim).
+- `--backbone` + `--freeze_backbone` training args; model constructor params.
+- Launcher env: `BACKBONE`, `FREEZE_BACKBONE=1`, `OUTPUT_DIR`, `EPOCHS`,
+  `SAVE_EVERY` (A/B runs get isolated checkpoint dirs + wandb names).
+- Dispatcher: `slurm_scripts/submit_backbone_ablation.sh` (default arms below,
+  50 epochs, sequential via `--dependency=afterany`).
+- Gated DINOv3 web arms need `DINOV3_WEIGHTS=/path/or/url`.
+
+**Verified**: all 4 cached backbones forward (B,257,384); model totals
+48.2M / 113.0M / 329.7M (v2-S / v2-B / v3-L-SAT); 25/25 tests pass.
+
+**A/B plan (50 epochs, same data/flow)**:
+
+| arm | backbone | params | hypothesis |
+|---|---|---|---|
+| A0 | dinov2_vits14 | 48M | control (current) |
+| A1 | dinov2_vitb14 | 113M | capacity scaling, same family |
+| A2 | dinov3_vitl16_sat | 330M | newer-gen + top-down vegetation prior |
+| A3* | dinov3_vitb16 | 86M | newer-gen at matched capacity (gated weights) |
+
+Compare: ClsAcc, val recon, render IoU/Chamfer, step time, VRAM.
+
+```bash
+./slurm_scripts/submit_backbone_ablation.sh --dry-run
+./slurm_scripts/submit_backbone_ablation.sh --submit
+```
 
 ### 4.2 GUI app (DELEGATED to a separate agent)
 

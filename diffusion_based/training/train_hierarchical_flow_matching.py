@@ -788,7 +788,7 @@ def probe_optimal_batch_size(
     device: torch.device,
     target_vram_ratio: float = 0.90,
     min_batch: int = 8,
-    max_batch: int = 112,
+    max_batch: int = 256,
     rank: int = 0,
     renderer: Optional[HeliosPyTorchRenderer] = None,
     vae: Optional[nn.Module] = None,
@@ -1113,8 +1113,13 @@ def main():
                         help="Stage-3 flow granularity: 'organ' = per-organ slots (8K x 16D, pose as conditioning); "
                              "'phytomer' = per-anchor 9+D vector [base(3) | rot(6) | latent(D)] refining the scaffold pose (bridge flow).")
     parser.add_argument("--phytomer_latent_dim", type=int, default=64, help="PhytomerVAE latent dim (flow_granularity=phytomer)")
-    parser.add_argument("--phytomer_vae_checkpoint", type=str, default="diffusion_based/checkpoints/phytomer_vae_relative_d/phytomer_vae_64d_best.pt",
+    parser.add_argument("--phytomer_vae_checkpoint", type=str, default="diffusion_based/checkpoints/phytomer_vae_xml/phytomer_vae_64d_best.pt",
                         help="Path to frozen PhytomerVAE checkpoint (flow_granularity=phytomer)")
+    parser.add_argument("--backbone", type=str, default="dinov2_vits14",
+                        help="Image backbone: dinov2_vits14 | dinov2_vitb14 | dinov2_vitl14 | "
+                             "dinov3_vits16 | dinov3_vitb16 | dinov3_vitl16 | dinov3_vitl16_sat")
+    parser.add_argument("--freeze_backbone", action="store_true",
+                        help="Freeze the DINO backbone (train only the task heads)")
     parser.add_argument("--depth_weight", type=float, default=0.5, help="Weight for in-loop differentiable dense depth loss")
     parser.add_argument("--color_weight", type=float, default=0.2, help="Weight for in-loop differentiable cosine color loss")
     parser.add_argument("--silhouette_weight", type=float, default=2.0, help="Weight for in-loop differentiable silhouette Dice loss")
@@ -1200,6 +1205,8 @@ def main():
         fine_layers=args.fine_layers,
         flow_granularity=args.flow_granularity,
         phytomer_latent_dim=args.phytomer_latent_dim,
+        backbone=args.backbone,
+        freeze_backbone=args.freeze_backbone,
     ).to(device)
 
     # Frozen PhytomerVAE (flow_granularity=phytomer): encodes/decodes the

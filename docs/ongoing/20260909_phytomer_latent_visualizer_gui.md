@@ -10,7 +10,7 @@ extended with organ-combo coloring, leaf-quality toggle, and Web 3D view.
 
 | Feature | Detail |
 | :--- | :--- |
-| **PCA latent cloud (2D)** | Clickable matplotlib scatter (215,509 packet latents) — click → nearest packet's z loads into sliders |
+| **PCA latent cloud (2D)** | Clickable matplotlib scatter (250,000 packet latents, XML-phytomer) — click → nearest packet's z loads into sliders |
 | **PCA latent cloud (3D)** | Rotatable plotly Scatter3d, hover shows packet idx |
 | **Color by** | `slots` (presence count) / `dap` (1–100) / `combo` (organ-type combination, 24 unique) / `none` |
 | **64D sliders** | Data-range bounds (min/max + 10% pad), Random z ~ N(0,I), Reset |
@@ -24,15 +24,16 @@ extended with organ-combo coloring, leaf-quality toggle, and Web 3D view.
 
 | File | Purpose |
 | :--- | :--- |
-| `tools/precompute_phytomer_latent_pca.py` | One-time cache build: encode packet cache → z (mu), PCA(64→3), optional DAP labels → `/tmp/opencode/phytomer_gui_cache/` |
-| `tools/phytomer_vae_visualizer.py` | Gradio app (loads cache + frozen `phytomer_vae_structural` ckpt) |
+| `tools/precompute_phytomer_latent_pca.py` | Cache build: full rebuild (packets from cache + VAE encode) or `--from-pkt-cache` fast path (reuses stored pkt latents, no encode) → `dataset/cache/phytomer_gui_cache/` |
+| `tools/phytomer_vae_visualizer.py` | Gradio app (loads cache + frozen `phytomer_vae_xml` ckpt, `centers.pt` for exact re-anchor) |
 | `diffusion_based/models/helios_pytorch_geometry.py` | + `"lowpoly"` leaf mode (~80-vert alpha-cutout leaf, `get_generic_leaf_mesh(Nx=8,Ny=8)`) |
 
 ## Run
 
 ```bash
-# 1. Precompute latent cloud + PCA (one-time, ~1-2 min encode + ~7 min DAP labels)
-.../bin/python tools/precompute_phytomer_latent_pca.py --with-dap
+# 1. Precompute latent cloud + PCA (fast path: reuses pkt-cache latents, ~15s)
+.../bin/python tools/precompute_phytomer_latent_pca.py --from-pkt-cache \
+    --max-packets 250000 --out dataset/cache/phytomer_gui_cache
 
 # 2. Launch GUI
 .../bin/python tools/phytomer_vae_visualizer.py \
@@ -70,3 +71,17 @@ Access: VNC browser `localhost:7860` or SSH tunnel `ssh -L 7860:localhost:7860`.
    (`phytomer_vae_visualizer[.]py`) or kill by PID.
 7. **leaf_mode "parametric" is currently broken** (`parametric_cowpea_leaf`
    module absent) — use `generic`/`obj` (highres) or `lowpoly`.
+8. **GUI cache now built from the pkt cache** (`dataset/cache/cowpea_curv26_pkt/`,
+   2026-09-10): `--from-pkt-cache` concatenates stored `{packets, presence,
+   centers, refs, latent}` (fp16→fp32; verified equal to xml-VAE mu encode to
+   ~1e-3) — no packet rebuild, no VAE encode (~13s for 250k). DAP parsed from
+   filenames (`cowpea_dapDDD_`). 250k cap (seed-0 shuffle) keeps the scatter
+   interactive; full cloud would be ~5M packets. PCA evr on XML latents:
+   **12.2/9.7/9.1%**. Combo coloring collapsed 24 → 3 groups (90% pure
+   `{internode, petiole, leaf}`) — expected: exact XML clustering removed the
+   nearest-center mixing that created the spurious combos.
+9. **GLB "not a glb" race fixed** (2026-09-10): concurrent slider events raced
+   on a fixed per-tag export path (read half-written file → assert). Now each
+   export writes a unique uuid path from in-memory `t.export(file_type="glb")`
+   bytes (no read-back), raises `ValueError` (not assert) on bad magic /
+   empty mesh, and prunes to newest 20 GLBs.

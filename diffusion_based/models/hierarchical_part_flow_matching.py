@@ -826,6 +826,8 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         fine_layers: int = 6,
         flow_granularity: str = "organ",
         phytomer_latent_dim: int = 64,
+        backbone: str = "dinov2_vits14",
+        freeze_backbone: bool = False,
     ):
         super().__init__()
         self.max_anchors = max_anchors
@@ -837,10 +839,13 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         self.flow_granularity = flow_granularity
         self.phytomer_latent_dim = phytomer_latent_dim
 
-        # 1. Pretrained DINOv2 Backbone with 3D Camera Ray Positional Embedding (PETR style)
+        # 1. Pretrained DINO Backbone with 3D Camera Ray Positional Embedding (PETR style).
+        #    Swappable via `backbone` for scaling A/B (dinov2_vits14 / vitb14 / vitl14 /
+        #    dinov3_vits16 / vitb16 / vitl16 / vitl16_sat).
         self.image_encoder = DINOv2RayEncoder(
+            backbone=backbone,
             pretrained=True,
-            freeze_backbone=False,
+            freeze_backbone=freeze_backbone,
             embed_dim=embed_dim,
         )
 

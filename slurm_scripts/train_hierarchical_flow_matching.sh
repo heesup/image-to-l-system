@@ -16,9 +16,27 @@ REPO_ROOT="/home/lion397/codes/image-to-l-system"
 PYTHON_BIN="/home/lion397/.conda/envs/digital-crops/bin/python"
 TORCHRUN_BIN="/home/lion397/.conda/envs/digital-crops/bin/torchrun"
 
+# Python Runtime Profiling: Automatically probes model parameters and autograd activations
+# to achieve safe GPU VRAM utilization on any GPU architecture (H100, A100, RTX 6000 Ada).
+# Batch size "auto" = runtime probe (target_vram_ratio of total VRAM); override via FORCE_BATCH_SIZE=<int>.
+BATCH_ARG=${FORCE_BATCH_SIZE:-auto}
+TARGET_RATIO=0.88
+
+# Image backbone for scaling A/B (see diffusion_based/models/dinov2_ray_encoder.py):
+#   dinov2_vits14 (control) | dinov2_vitb14 | dinov2_vitl14 |
+#   dinov3_vits16 | dinov3_vitb16 | dinov3_vitl16 | dinov3_vitl16_sat
+BACKBONE=${BACKBONE:-dinov2_vits14}
+OUTPUT_DIR=${OUTPUT_DIR:-diffusion_based/checkpoints/hierarchical_latent_fm}
+EPOCHS=${EPOCHS:-500}
+SAVE_EVERY=${SAVE_EVERY:-25}
+FREEZE_ARGS=""
+if [ "${FREEZE_BACKBONE:-0}" = "1" ]; then
+    FREEZE_ARGS="--freeze_backbone"
+fi
+
 mkdir -p "${REPO_ROOT}/slurm_scripts/logs"
-mkdir -p "${REPO_ROOT}/diffusion_based/checkpoints/hierarchical_latent_fm"
 cd ${REPO_ROOT}
+mkdir -p "${OUTPUT_DIR}"
 
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=4
@@ -28,12 +46,6 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # GPU count detection
 NPROC=${SLURM_GPUS_ON_NODE:-$(nvidia-smi --list-gpus | wc -l)}
 VRAM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -n 1)
-
-# Python Runtime Profiling: Automatically probes model parameters and autograd activations
-# to achieve safe GPU VRAM utilization on any GPU architecture (H100, A100, RTX 6000 Ada).
-# Can be manually overridden via FORCE_BATCH_SIZE=<int>.
-BATCH_ARG=${FORCE_BATCH_SIZE:-48}
-TARGET_RATIO=0.88
 
 echo "================================================================================"
 echo "Starting Hierarchical Matryoshka Botanical Flow Matching Training"
@@ -46,6 +58,7 @@ echo "Render fraction: ${RENDER_FRACTION:-0.167} of batch per step (batch-relati
 echo "Flow granularity: ${FLOW_GRANULARITY:-organ} (phytomer = 73D bridge flow [base|rot|latent])"
 echo "Phytomer VAE: ${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_xml/phytomer_vae_64d_best.pt}"
 echo "Pkt cache dir: ${PKT_CACHE_DIR:-dataset/cache/cowpea_curv26_pkt} (missing samples fall back to on-the-fly)"
+echo "Backbone: ${BACKBONE}${FREEZE_ARGS:+ (frozen)} | Output: ${OUTPUT_DIR} | Epochs: ${EPOCHS}"
 echo "Date: $(date)"
 echo "================================================================================"
 
@@ -67,14 +80,16 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     ${EXTRA_ARGS} \
     --data_dir dataset/helios_data/cowpea \
     --cache_dir "${CACHE_DIR:-dataset/cache/cowpea_curv26}" \
-    --output_dir diffusion_based/checkpoints/hierarchical_latent_fm \
-    --epochs 500 \
+    --output_dir "${OUTPUT_DIR}" \
+    --epochs "${EPOCHS}" \
     --batch_size "${BATCH_ARG}" \
     --target_vram_ratio "${TARGET_RATIO}" \
     --lr "${LR:-3e-4}" \
     --node_dim 16 \
     --organ_vae_checkpoint diffusion_based/checkpoints/organ_vae/organ_latent_vae_best.pt \
     --flow_granularity "${FLOW_GRANULARITY:-organ}" \
+    --backbone "${BACKBONE}" \
+    ${FREEZE_ARGS} \
     --phytomer_latent_dim "${PHYTOMER_LATENT_DIM:-64}" \
     --phytomer_vae_checkpoint "${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_xml/phytomer_vae_64d_best.pt}" \
     --pkt_cache_dir "${PKT_CACHE_DIR:-dataset/cache/cowpea_curv26_pkt}" \
@@ -89,7 +104,7 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     --color_weight 0.2 \
     --silhouette_weight 2.0 \
     --render_fraction "${RENDER_FRACTION:-0.167}" \
-    --save_every 25 \
+    --save_every "${SAVE_EVERY}" \
     --eval_every "${EVAL_EVERY:-25}" \
     --eval_min_interval_minutes "${EVAL_MIN_INTERVAL_MINUTES:-30}" \
     --eval_samples_per_bucket "${EVAL_SAMPLES_PER_BUCKET:-2}" \

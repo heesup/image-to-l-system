@@ -1,11 +1,21 @@
 """Precompute PhytomerVAE-64 latent cloud + PCA projections for the GUI.
 
-Builds canonical 8-slot phytomer packets from the cache dataset using EXACT
-XML phytomer membership (cache field `phytomer_ids`), encodes them with the
-frozen accepted PhytomerVAE (phytomer_vae_xml, use_rot_branch=True), fits
-PCA(64 -> 3), and saves everything the visualizer needs:
+Two modes:
 
-    /home/lion397/codes/image-to-l-system/dataset/cache/phytomer_gui_cache/
+1. Full build (default): builds canonical 8-slot phytomer packets from the
+   cache dataset using EXACT XML phytomer membership (cache field
+   `phytomer_ids`), encodes them with the frozen accepted PhytomerVAE
+   (phytomer_vae_xml, use_rot_branch=True).
+
+2. Fast path (--from-pkt-cache): reuses packets + frozen-VAE latents already
+   stored in the pkt cache (dataset/cache/cowpea_curv26_pkt/, produced by
+   generate_cache.py with --vae-checkpoint=phytomer_vae_xml). No packet
+   rebuild, no VAE encode; DAP labels are parsed from filenames
+   (cowpea_dapDDD_...). The stored fp16 latents are cast to fp32.
+
+Both save everything the visualizer needs:
+
+    dataset/cache/phytomer_gui_cache/
         z.pt            (P, 64)  mu-encoded latents
         pca.pt          fitted sklearn PCA object
         proj2d.pt       (P, 2)  PCA 2D projection
@@ -20,7 +30,12 @@ PCA(64 -> 3), and saves everything the visualizer needs:
 Usage (workspace root):
     .../bin/python tools/precompute_phytomer_latent_pca.py \
         --ckpt diffusion_based/checkpoints/phytomer_vae_xml/phytomer_vae_64d_best.pt \
-        --out /tmp/opencode/phytomer_gui_cache
+        --out dataset/cache/phytomer_gui_cache
+
+    .../bin/python tools/precompute_phytomer_latent_pca.py --from-pkt-cache \
+        --pkt-dir dataset/cache/cowpea_curv26_pkt \
+        --max-packets 250000 \
+        --out dataset/cache/phytomer_gui_cache
 """
 
 import argparse
@@ -28,6 +43,7 @@ import glob
 import json
 import os
 import random
+import re
 import sys
 import time
 
@@ -40,25 +56,64 @@ from sklearn.decomposition import PCA
 from diffusion_based.models.phytomer_vae import PhytomerVAE
 from diffusion_based.dataset.phytomer_packets import build_phytomer_packets
 
+_DAP_RE = re.compile(r"cowpea_dap(\d+)_")
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--ckpt", type=str,
-                        default="diffusion_based/checkpoints/phytomer_vae_xml/phytomer_vae_64d_best.pt")
-    parser.add_argument("--latent-dim", type=int, default=64)
-    parser.add_argument("--hidden-dim", type=int, default=256)
-    parser.add_argument("--out", type=str, default="dataset/cache/phytomer_gui_cache")
-    parser.add_argument("--cache-dir", type=str, default="dataset/cache/cowpea_curv26")
-    parser.add_argument("--max-files", type=int, default=0,
-                        help="Cap the number of cache files (0 = all). For smoke tests.")
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--device", type=str, default="cuda:0")
-    args = parser.parse_args()
 
-    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
+def _dap_from_filename(path: str) -> float:
+    m = _DAP_RE.search(os.path.basename(path))
+    return float(int(m.group(1))) if m else -1.0
 
-    # ---- 1. Build XML-phytomer packets from cache files (with DAP labels) ----
+
+def _load_from_pkt_cache(args):
+    """Concat packets + stored latents from the pkt cache (no VAE encode)."""
+    files = sorted(glob.glob(os.path.join(args.pkt_dir, "*.pt")))
+    rng = random.Random(args.seed)
+    rng.shuffle(files)
+    print(f"Loading pkt cache: {len(files):,} files, cap {args.max_packets:,} packets...")
+
+    all_packets, all_presence, all_centers, all_refs, all_dap, all_z = [], [], [], [], [], []
+    n_packets = 0
+    t0 = time.time()
+    for i, f in enumerate(files):
+        if n_packets >= args.max_packets:
+            break
+        try:
+            data = torch.load(f, map_location="cpu", weights_only=False)
+        except Exception:
+            continue
+        if not (isinstance(data, dict) and "latent" in data):
+            continue
+        n = data["latent"].shape[0]
+        if n == 0:
+            continue
+        take = min(n, args.max_packets - n_packets)
+        all_packets.append(data["packets"][:take].float())
+        all_presence.append(data["presence"][:take])
+        all_centers.append(data["centers"][:take].float())
+        all_refs.append(data["refs"][:take].float())
+        all_z.append(data["latent"][:take].float())
+        dap = _dap_from_filename(f)
+        all_dap.extend([dap] * take)
+        n_packets += take
+        if (i + 1) % 2000 == 0:
+            print(f"  [{i+1}/{len(files)}] packets={n_packets:,} elapsed={time.time()-t0:.0f}s",
+                  flush=True)
+
+    packets = torch.cat(all_packets, dim=0)
+    presence = torch.cat(all_presence, dim=0)
+    centers = torch.cat(all_centers, dim=0)
+    refs = torch.cat(all_refs, dim=0)
+    dap = torch.tensor(all_dap, dtype=torch.float32)
+    z = torch.cat(all_z, dim=0)
+    print(f"Loaded {z.shape[0]:,} packets (+stored latents) in {time.time()-t0:.0f}s "
+          f"(|z| mean {z.norm(dim=-1).mean().item():.2f}, std {z.std().item():.2f})")
+    source = {"source": "pkt_cache", "pkt_dir": args.pkt_dir,
+              "clustering": "xml_phytomer_ids", "latent": "stored_frozen_vae_mu_fp16"}
+    return packets, presence, centers, refs, dap, z, source
+
+
+def _build_and_encode(args, device):
+    """Build XML-phytomer packets from cache files and encode with the VAE."""
     files = sorted(glob.glob(os.path.join(args.cache_dir, "*.pt")))
     rng = random.Random(args.seed)
     rng.shuffle(files)
@@ -100,7 +155,7 @@ def main():
           f"{time.time()-t0:.0f}s (drop rate "
           f"{stats.get('dropped_organs', 0) / max(stats.get('total_organs', 1), 1) * 100:.2f}%)")
 
-    # ---- 2. Encode with the frozen XML VAE (mu encoding, no sampling) ----
+    # Encode with the frozen XML VAE (mu encoding, no sampling).
     model = PhytomerVAE(latent_dim=args.latent_dim, hidden_dim=args.hidden_dim).to(device)
     model.load_state_dict(torch.load(args.ckpt, map_location=device, weights_only=True))
     model.eval()
@@ -118,8 +173,40 @@ def main():
     z = torch.cat(z_list, dim=0)
     print(f"Encoded {z.shape[0]:,} latents in {time.time() - t0:.0f}s "
           f"(|z| mean {z.norm(dim=-1).mean().item():.2f}, std {z.std().item():.2f})")
+    source = {"source": "cache_rebuild", "cache_dir": args.cache_dir,
+              "clustering": "xml_phytomer_ids"}
+    return packets, presence, centers, refs, dap, z, source
 
-    # ---- 3. PCA fit on the full latent cloud ----
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--ckpt", type=str,
+                        default="diffusion_based/checkpoints/phytomer_vae_xml/phytomer_vae_64d_best.pt")
+    parser.add_argument("--latent-dim", type=int, default=64)
+    parser.add_argument("--hidden-dim", type=int, default=256)
+    parser.add_argument("--out", type=str, default="dataset/cache/phytomer_gui_cache")
+    parser.add_argument("--cache-dir", type=str, default="dataset/cache/cowpea_curv26")
+    parser.add_argument("--from-pkt-cache", action="store_true",
+                        help="Reuse packets+latent stored in the pkt cache "
+                             "(skips packet rebuild and VAE encode).")
+    parser.add_argument("--pkt-dir", type=str, default="dataset/cache/cowpea_curv26_pkt")
+    parser.add_argument("--max-packets", type=int, default=250000,
+                        help="Cap packets in --from-pkt-cache mode (seed-shuffled).")
+    parser.add_argument("--max-files", type=int, default=0,
+                        help="Cap the number of cache files (0 = all). For smoke tests.")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--device", type=str, default="cuda:0")
+    args = parser.parse_args()
+
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
+
+    if args.from_pkt_cache:
+        packets, presence, centers, refs, dap, z, source = _load_from_pkt_cache(args)
+    else:
+        packets, presence, centers, refs, dap, z, source = _build_and_encode(args, device)
+
+    # PCA fit on the latent cloud.
     zn = z.numpy()
     pca = PCA(n_components=3, whiten=False)
     proj3d = pca.fit_transform(zn)
@@ -139,9 +226,9 @@ def main():
         "slider_lo": [float(v) for v in lo],
         "slider_hi": [float(v) for v in hi],
         "ckpt": args.ckpt,
-        "cache_dir": args.cache_dir,
-        "clustering": "xml_phytomer_ids",
+        "seed": args.seed,
     }
+    meta.update(source)
 
     os.makedirs(args.out, exist_ok=True)
     torch.save(z, os.path.join(args.out, "z.pt"))
