@@ -1,5 +1,5 @@
 """
-Train PhytomerVAE on canonical 8-slot phytomer packets from the cache dataset,
+Train PhytomerVAE on canonical 10-slot phytomer packets from the cache dataset,
 then (optionally) precompute per-sample packet targets into a SEPARATE cache
 dir (dataset/cache/<name>_pkt/) using the best checkpoint.
 
@@ -41,7 +41,7 @@ def collect_packets(
     seed: int = 0,
     packet_cache: str = "",
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Extracts (P, 8, 26) packets + (P, 8) presence + (P, 6) reference_rots
+    """Extracts (P, 10, 26) packets + (P, 10) presence + (P, 6) reference_rots
     from cache files.
 
     Returns stacked (packets, presence) float tensors. Results are cached to

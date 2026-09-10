@@ -580,6 +580,36 @@ input) and pkt targets are needed — nodes are recreated by decoding latents.
 (16ch image, `phytomer_ids`, `(P,8,26)` packets, `(P,64)` latent).
 Packet cache 38,610/100,000 — resume with the backfill launcher.
 
+### 4.8 FRUIT/POD FIX + v2 10-SLOT FORMAT (2026-09-09 late)
+
+**User report**: GT render shows pods (yellow) but VAE decode loses them; and
+3+ repro organs exist in the data.
+
+**Measurements (2000 XMLs)**:
+- Fruit base vs CURVED PEDUNCLE TIP: **100% within 5cm, mean 1.1cm, p90 2.6cm**
+  (1206 fruits) — same gravitropic-bend pattern as the petiole-leaflet rule.
+- Fruit base z offset rel. cluster center: mean 0.27m, median 0.30m, p90 0.36m
+  — a rare long-tail offset the VAE averaged to ~0, burying pods at the center.
+- Repro organs per phytomer (XML): 1 = 3.31%, 2 = 3.31%, **3 = 3.29%**, 4+ = 0.
+  The old 2-slot repro capacity truncated the 3rd organ (pkt cache showed 0).
+- Every repro phytomer has a peduncle (2559/2559) — the tip rule is safe.
+
+**v2 format (implemented)**:
+- `NUM_SLOTS` 8 -> **10**; `ROLE_SLOT_RANGES` repro (6,8) -> (6,10).
+- `DETERMINISTIC_ORGAN_TYPES` now includes flowers/fruit (9,10,11): bases are
+  assembled at the CURVED PEDUNCLE TIP (arc-fraction 1.0) — nothing is
+  VAE-learned anymore. `strip_base`/`assemble_packets` updated; roundtrip
+  verified 100% (mean 1.0cm, p90 2.6cm).
+- VAE input 192D -> 240D (10 x (23+1)); `slots_per_anchor` default 8 -> 10
+  (model, matcher, training arg, launcher env `SLOTS_PER_ANCHOR`).
+- Tests updated to 10 slots; 25/25 pass.
+- Pipeline: train v2 VAE (`train_phytomer_vae.sh`, rot-branch, 60 epochs) ->
+  `--pkt-cache-dir` auto-precomputes the 100k pkt cache in v2 format.
+- Old 8-slot pkt cache preserved at `dataset/cache/cowpea_curv26_pkt_v1_8slot/`.
+
+**Status**: v2 VAE training (Job 38202722) Epoch 41/60 val recon 0.0296,
+cls 100%; pkt cache regeneration follows automatically.
+
 ### 4.7 BACKBONE SCALING A/B + DINOv3/CHMv2 (2026-09-09 late)
 
 **User questions**: "Pretrained DINOv3가 나왔는데 굳이 v2를 쓰는 이유는? DINOv3 중에는

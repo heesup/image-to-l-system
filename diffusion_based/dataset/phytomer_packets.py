@@ -1,7 +1,7 @@
 """
 Canonical phytomer packet builder (shared util).
 
-Groups per-organ 26D FM nodes into fixed 8-slot phytomer packets with canonical
+Groups per-organ 26D FM nodes into fixed 10-slot phytomer packets with canonical
 role ordering, for phytomer-level latent modeling (PhytomerVAE) and anchor-only
 flow supervision.
 
@@ -20,7 +20,7 @@ canonical_sort_nodes. Roles that overflow drop extras (measured 2026-09-09 on
 cowpea_curv26, organ-level drop: stem 23.6%, petiole 1.8%, leaflet 29.8%,
 repro 15.3%, 21.1% overall — overwhelmingly neighbor-phytomer organs
 misassigned by nearest-center on dense canopies; identical truncation to
-the current 8-slot anchors, so no supervision regression vs status quo).
+the current 10-slot anchors, so no supervision regression vs status quo).
 
 Positions in packets are ANCHOR-RELATIVE (organ base - cluster center, same
 BASE_SCALE units): the anchor/node position carries global placement, so the
@@ -63,7 +63,7 @@ FM_ROT_END = FM_ROT_START + 6   # 22
 FM_SCALE_START = FM_ROT_END     # 22
 FM_SCALE_END = FM_SCALE_START + 3  # 25
 
-# STRUCTURAL ASSEMBLY (2026-09-09, XML-phytomer re-verification):
+# STRUCTURAL ASSEMBLY (2026-09-09/10, XML-phytomer re-verification):
 # With EXACT XML phytomer membership (cache field `phytomer_ids`), every slot's
 # base is DETERMINISTIC (verified over the full dataset):
 #   slot 0 stem (ROOT_META/SHOOT_META):  base = center
@@ -71,18 +71,25 @@ FM_SCALE_END = FM_SCALE_START + 3  # 25
 #   slots 2-3 lateral leaflets:          base = 0.8 x petiole CURVE (arc frac)
 #   slot 4 terminal leaflet:             base = 1.0 x petiole CURVE (tip)
 #   slot 5 peduncle:                     base = center
-#   slot 6/7 BUD (dormant/active/aborted, types 7,8,12): base = center
+#   slots 6-9 flowers/fruit (types 9-11): base = CURVED PEDUNCLE TIP
+#     (2026-09-10 verified: 100% within 5cm, mean 1.1cm, p90 2.6cm — the
+#     peduncle bends gravitropically exactly like the petiole, so the old
+#     VAE-learned per-plant flower_offset is unnecessary and was the cause of
+#     the "missing pod" artifact: the rare 34cm offset was averaged to ~0 by
+#     the VAE, burying the pod at the cluster center).
+#   slots 6/7 BUD (dormant/active/aborted, types 7,8,12): base = center
 #
-# NOT deterministic (VAE must learn their base):
-#   slots 6/7 flowers & fruit (types 9-11): attach at the CURVED peduncle tip
-#     with per-plant flower_offset (rare, ~3% of packets) — VAE-learned.
+# v2 (2026-09-10): NUM_SLOTS 8 -> 10 (reproductive 2 -> 4 slots) so the 3.29%
+# of phytomers with 3+ flowers/fruits are no longer truncated.
 #
-# ASSEMBLY_TYPE: base == center (zeroed) or petiole-curve point (computed),
-# else base is VAE-learned.
-DETERMINISTIC_ORGAN_TYPES = {1, 2, 3, 4, 6, 7, 8, 12}  # stem, petiole, peduncle, buds
+# ASSEMBLY_TYPE: base == center (zeroed), petiole-curve point (computed), or
+# peduncle-curve tip (computed) — ALL deterministic; nothing is VAE-learned.
+DETERMINISTIC_ORGAN_TYPES = {1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12}  # stem, petiole, peduncle, buds, flowers, fruit
 # Leaflet attach arc-fractions along the petiole curve (XML-phytomer verified:
 # slot 2/3 = 0.800, slot 4 = 0.991-1.000, error <= 0.005).
 LEAFLET_ATTACH_FRAC = {2: 0.8, 3: 0.8, 4: 1.0}
+# Repro (flower/fruit) attach at the CURVED PEDUNCLE TIP (arc-fraction 1.0).
+REPRO_ATTACH_FRAC = 1.0
 
 
 def _petiole_curve_points(
@@ -120,14 +127,14 @@ def _petiole_curve_points(
 def strip_base(packets: torch.Tensor) -> torch.Tensor:
     """Zeroes the base columns of DETERMINISTIC slots (structural assembly).
 
-    Stem/petiole/peduncle/bud bases are exactly the cluster center and leaflet
-    bases are exactly 0.8/1.0 x the petiole curve (XML-phytomer verified), so
-    the latent never needs to predict them. Only flower/fruit bases (rare,
-    per-plant offsets) stay in the latent. The 24 base dims shrink the VAE
-    input 216D -> 192D.
+    Stem/petiole/peduncle/bud bases are exactly the cluster center, leaflet
+    bases are exactly 0.8/1.0 x the petiole curve, and flower/fruit bases are
+    exactly the CURVED PEDUNCLE TIP (all XML-phytomer verified), so the latent
+    never needs to predict any base. The 30 base dims shrink the VAE input
+    240D -> 210D (v2, 10 slots).
     """
     out = packets.clone()
-    ot = out[:, :, :FM_OT_END].argmax(dim=-1)  # (P, 8)
+    ot = out[:, :, :FM_OT_END].argmax(dim=-1)  # (P, 10)
     det = torch.zeros_like(ot, dtype=torch.bool)
     for t in DETERMINISTIC_ORGAN_TYPES:
         det |= ot == t
@@ -142,14 +149,15 @@ def assemble_packets(
     reference_rots: torch.Tensor,
     base_scale: float = 20.0,
 ) -> torch.Tensor:
-    """Reconstructs DETERMINISTIC slot bases from assembly rules; keeps VAE-learned
-    bases for flowers/fruit.
+    """Reconstructs DETERMINISTIC slot bases from assembly rules.
 
     GT-verified deterministic rules (XML-phytomer clustering, full cowpea_curv26):
       stem/petiole/peduncle/bud base = cluster center (error <= 0.07cm p99).
       lateral leaflets (slots 2-3) = 0.8 x the CURVED petiole centerline.
       terminal leaflet (slot 4)    = 1.0 x the CURVED petiole centerline (tip).
-    Flower/fruit bases (rare, per-plant offsets) are passed through unchanged.
+      flowers/fruit (slots 6-9)    = 1.0 x the CURVED PEDUNCLE centerline (tip)
+        (2026-09-10 verified: 100% within 5cm, mean 1.1cm, p90 2.6cm).
+    All bases are deterministic — nothing is VAE-learned (v2).
 
     Base positions are world-frame vectors relative to the cluster center (the
     packet convention); the caller re-applies the anchor center + reference
@@ -161,7 +169,7 @@ def assemble_packets(
     """
     out = packets.clone()
     P = out.shape[0]
-    ot = out[:, :, :FM_OT_END].argmax(dim=-1)  # (P, 8)
+    ot = out[:, :, :FM_OT_END].argmax(dim=-1)  # (P, 10)
     det = torch.zeros_like(ot, dtype=torch.bool)
     for t in DETERMINISTIC_ORGAN_TYPES:
         det |= ot == t
@@ -188,6 +196,22 @@ def assemble_packets(
                 i1 = min(i0 + 1, len(curve) - 1)
                 cpt = curve[i0] * (1 - t) + curve[i1] * t
                 base[p, s] = cpt * base_scale
+        # Flower/fruit bases: arc-fraction point on the CURVED PEDUNCLE
+        # centerline (same gravitropic bend convention as the petiole).
+        if bool(det[p, 5]):
+            R_ped = R_ref[p] @ rot6d_to_matrix(out[p, 5, FM_ROT_START:FM_ROT_END])
+            ped_len = out[p, 5, FM_SCALE_START] / SCALE_SCALE  # metres
+            ped_curv = out[p, 5, FM_CURV] / CURV_SCALE  # deg/m
+            if ped_len >= 1e-4:
+                pcurve = _petiole_curve_points(R_ped, ped_len, ped_curv)
+                idx_f = REPRO_ATTACH_FRAC * (len(pcurve) - 1)
+                i0 = int(idx_f)
+                t = idx_f - i0
+                i1 = min(i0 + 1, len(pcurve) - 1)
+                cpt = pcurve[i0] * (1 - t) + pcurve[i1] * t
+                for s in range(6, NUM_SLOTS):
+                    if bool(det[p, s]):
+                        base[p, s] = cpt * base_scale
     return torch.cat(
         [out[..., :FM_BASE_START], base, out[..., FM_BASE_END:]], dim=-1
     )
@@ -236,14 +260,17 @@ def apply_reference_rotation(rot6d: torch.Tensor, ref_rot6d: torch.Tensor) -> to
     return matrix_to_rot6d(R_org)
 
 # Canonical slot spans per functional role: role -> (start, end) slot indices.
+# v2 (2026-09-10): reproductive capacity 2 -> 4 slots (6..9) so the 3.29% of
+# phytomers with 3+ flowers/fruits are no longer truncated (XML-verified:
+# 3 repro organs = 3.29%, 4+ = 0.00%).
 ROLE_SLOT_RANGES = {
-    0: (0, 1),   # stem
-    1: (1, 2),   # petiole
-    2: (2, 5),   # leaflets x3
-    3: (5, 6),   # peduncle
-    4: (6, 8),   # reproductive x2
+    0: (0, 1),    # stem
+    1: (1, 2),    # petiole
+    2: (2, 5),    # leaflets x3
+    3: (5, 6),    # peduncle
+    4: (6, 10),   # reproductive x4
 }
-NUM_SLOTS = 8
+NUM_SLOTS = 10
 
 # Organ type (t_label) -> role, half-open [lo, hi). Mirrors matcher semantics.
 LABEL_ROLE_RANGES = {
@@ -317,7 +344,7 @@ def build_phytomer_packets(
     reference_rot: Optional[torch.Tensor] = None,
     phytomer_ids: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Packs active organs into canonical 8-slot phytomer packets.
+    """Packs active organs into canonical 10-slot phytomer packets.
 
     Args:
         nodes_26d: (N, 26) FM-layout organ rows (absolute base positions).
@@ -338,9 +365,9 @@ def build_phytomer_packets(
             (nearest-center puts leaflets on the wrong petiole in dense canopies).
 
     Returns:
-        packets: (P, 8, 26) FM rows with ANCHOR-RELATIVE base positions AND
+        packets: (P, 10, 26) FM rows with ANCHOR-RELATIVE base positions AND
                  ANCHOR-RELATIVE (reference-frame) rot6d.
-        presence: (P, 8) bool, True where a real organ occupies the slot.
+        presence: (P, 10) bool, True where a real organ occupies the slot.
         centers: (P, 3) cluster center positions in meters (for re-anchoring).
         reference_rot: (P, 6) ABSOLUTE 6D rotation of each packet's reference
                  frame (the internode slot, or first present slot, or identity).
@@ -503,13 +530,13 @@ def decode_packets(
     """Re-anchors a batch of packets to absolute coordinates (vectorized).
 
     Args:
-        packets: (P, 8, 26) anchor-relative FM rows.
+        packets: (P, 10, 26) anchor-relative FM rows.
         centers: (P, 3) absolute cluster centers (meters).
-        presence: (P, 8) bool slot mask.
+        presence: (P, 10) bool slot mask.
         reference_rots: (P, 6) absolute reference-frame 6D rotations.
 
     Returns:
-        (P, 8, 26) FM rows in absolute (world) frame.
+        (P, 10, 26) FM rows in absolute (world) frame.
     """
     P = packets.shape[0]
     out = packets.clone()
@@ -520,7 +547,7 @@ def decode_packets(
     if reference_rots is not None:
         out[:, :, FM_ROT_START:FM_ROT_END] = apply_reference_rotation(
             out[:, :, FM_ROT_START:FM_ROT_END],
-            reference_rots.unsqueeze(1).expand(P, 8, 6),
+            reference_rots.unsqueeze(1).expand(P, 10, 6),
         )
     return out
 

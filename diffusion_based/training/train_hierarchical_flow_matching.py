@@ -393,8 +393,9 @@ def forward_backward_step(
     if flow_granularity == "phytomer":
         D = raw_model.phytomer_latent_dim
         K_eff = pred_anchor_pos.shape[1]
+        M = raw_model.slots_per_anchor
         tgt_z1_phyto = torch.zeros(B, K_eff, 9 + D, device=device)
-        slot_presence_target = torch.zeros(B, K_eff, 8, device=device)
+        slot_presence_target = torch.zeros(B, K_eff, M, device=device)
         for b in range(B):
             m_b = matches[b]
             anc_src = m_b["anchor_src_idx"]
@@ -433,7 +434,7 @@ def forward_backward_step(
             )
         prof["fwd2"] = time.time() - t0
         pred_velocity = outputs["pred_velocity"].float()          # (B, K, 9+D)
-        pred_fine_exist_logits = outputs["pred_fine_exist_logits"].float()  # (B, K, 8)
+        pred_fine_exist_logits = outputs["pred_fine_exist_logits"].float()  # (B, K, M)
         clean_z1 = z_t + (1.0 - t.view(B, 1, 1)) * pred_velocity
         # Velocity target: v = z_1 - z_0 (bridge flow).
         tgt_velocity = tgt_z1_phyto - z_0
@@ -444,11 +445,11 @@ def forward_backward_step(
         correct_cls = 0
         total_cls_slots = 0
         # Decode the clean latent once per batch for the class-accuracy metric
-        # (frozen VAE, no grad): (B*K, D) -> (B*K, 8, 13) cls logits.
+        # (frozen VAE, no grad): (B*K, D) -> (B*K, M, 13) cls logits.
         with torch.no_grad():
             clean_lat = clean_z1[..., PHYTO_FLOW_LATENT_START:]
             vae_out = phytomer_vae.decode(clean_lat.reshape(-1, D), use_rot_branch=True)
-            pred_cls_all = vae_out["cls_logits"].argmax(-1).reshape(B, K_eff, 8)  # (B, K, 8)
+            pred_cls_all = vae_out["cls_logits"].argmax(-1).reshape(B, K_eff, M)  # (B, K, M)
         for b in range(B):
             m_b = matches[b]
             anc_src = m_b["anchor_src_idx"]
@@ -458,7 +459,7 @@ def forward_backward_step(
             t_v = tgt_velocity[b, anc_src]
             loss_fine_vel_acc += F.mse_loss(p_v, t_v, reduction="sum") / float(9 + D)
             total_matched_fine += len(anc_src)
-            # Slot existence BCE (K, 8)
+            # Slot existence BCE (K, M)
             exist_t = slot_presence_target[b]
             pos_w = torch.tensor([12.0], device=device)
             loss_fine_exist_acc += F.binary_cross_entropy_with_logits(
@@ -468,8 +469,8 @@ def forward_backward_step(
             if pt is not None and pt["packets"].shape[0] > 0:
                 dist = torch.cdist(m_b["anchor_tgt_pos"], pt["centers"])
                 pkt_idx = dist.argmin(dim=1)
-                tgt_cls = pt["packets"][pkt_idx, :, :FM_OT_END].argmax(-1)  # (M_anc, 8)
-                pres = pt["presence"][pkt_idx]  # (M_anc, 8)
+                tgt_cls = pt["packets"][pkt_idx, :, :FM_OT_END].argmax(-1)  # (M_anc, M)
+                pres = pt["presence"][pkt_idx]  # (M_anc, M)
                 pred_cls_m = pred_cls_all[b, anc_src]
                 correct_cls += ((pred_cls_m == tgt_cls).float() * pres.float()).sum().item()
                 total_cls_slots += int(pres.sum().item())
@@ -644,7 +645,7 @@ def forward_backward_step(
                     # latent to a relative packet, structurally assemble slot bases
                     # from the petiole geometry, re-anchor with the refined pose.
                     pos, rot, lat = split_phytomer_flow_target(clean_z1[real_b], D)
-                    out_vae = phytomer_vae.decode(lat)  # (K, 8, 26), zeroed base
+                    out_vae = phytomer_vae.decode(lat)  # (K, M, 26), zeroed base
                     packet_hat = assemble_packets(out_vae["recon_packets"], rot)
                     abs_packets = apply_ref_for_flow(
                         packet_hat.unsqueeze(0), pos.unsqueeze(0), rot.unsqueeze(0)
@@ -1093,7 +1094,7 @@ def main():
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument("--max_anchors", type=int, default=512)
-    parser.add_argument("--slots_per_anchor", type=int, default=8)
+    parser.add_argument("--slots_per_anchor", type=int, default=10, help="Slots per phytomer packet (v2: 10 = stem, petiole, 3 leaflets, peduncle, 4 repro)")
     parser.add_argument("--anchor_locality_radius", type=float, default=None,
                         help="Soft locality radius (meters) for anchor matching: quadratic "
                              "penalty beyond R on top of L1 position cost. Calibrated "
@@ -1113,7 +1114,7 @@ def main():
                         help="Stage-3 flow granularity: 'organ' = per-organ slots (8K x 16D, pose as conditioning); "
                              "'phytomer' = per-anchor 9+D vector [base(3) | rot(6) | latent(D)] refining the scaffold pose (bridge flow).")
     parser.add_argument("--phytomer_latent_dim", type=int, default=64, help="PhytomerVAE latent dim (flow_granularity=phytomer)")
-    parser.add_argument("--phytomer_vae_checkpoint", type=str, default="diffusion_based/checkpoints/phytomer_vae_xml/phytomer_vae_64d_best.pt",
+    parser.add_argument("--phytomer_vae_checkpoint", type=str, default="diffusion_based/checkpoints/phytomer_vae_v2/phytomer_vae_64d_best.pt",
                         help="Path to frozen PhytomerVAE checkpoint (flow_granularity=phytomer)")
     parser.add_argument("--backbone", type=str, default="dinov2_vits14",
                         help="Image backbone: dinov2_vits14 | dinov2_vitb14 | dinov2_vitl14 | "
@@ -1210,7 +1211,7 @@ def main():
     ).to(device)
 
     # Frozen PhytomerVAE (flow_granularity=phytomer): encodes/decodes the
-    # anchor-relative 8-slot packet latent. Loaded once, frozen.
+    # anchor-relative M-slot packet latent. Loaded once, frozen.
     phytomer_vae = None
     if args.flow_granularity == "phytomer":
         if not os.path.exists(args.phytomer_vae_checkpoint):

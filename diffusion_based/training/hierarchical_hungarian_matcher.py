@@ -5,7 +5,7 @@ Matches coarse predicted anchors to ground-truth phytomer clusters,
 then performs ultra-fast local bipartite matching (M=8 slots) within each cluster.
 Replaces the expensive O(4096^3) global Hungarian assignment with two lightweight stages:
   1. Coarse Anchor Matching: O(K^3) with K <= 512 (<1ms)
-  2. Fine Intra-Cluster Matching: O(M^3) with M = 8 (<0.01ms)
+  2. Fine Intra-Cluster Matching: O(M^3) with M = 10 (<0.01ms)
 """
 
 from typing import List, Tuple, Dict, Optional
@@ -24,7 +24,7 @@ class HierarchicalBotanicalMatcher(nn.Module):
         cost_anchor_exist: float = 1.0,
         cost_cls: float = 2.0,
         cost_geom: float = 2.0,
-        slots_per_anchor: int = 8,
+        slots_per_anchor: int = 10,
         anchor_locality_radius: Optional[float] = None,
         anchor_locality_weight: float = 50.0,
     ):
@@ -207,7 +207,7 @@ class HierarchicalBotanicalMatcher(nn.Module):
             if skip_fine:
                 # Phytomer mode: anchor-level matching only. The fine (per-slot)
                 # stage is skipped — the phytomer flow decoder supervises the
-                # whole 8-slot packet per anchor instead.
+                # whole M-slot packet per anchor instead.
                 fine_src = torch.empty(0, dtype=torch.int64, device=device)
                 fine_tgt = torch.empty(0, dtype=torch.int64, device=device)
                 anc_tgt_pos = cluster_centers[anc_tgt] if len(anc_tgt) > 0 else torch.empty((0, 3), device=device)

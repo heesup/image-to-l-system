@@ -56,7 +56,7 @@ echo "Capacity schedule: warmup ${CAPACITY_WARMUP:-50} -> full ${CAPACITY_FULL:-
 echo "Eval cadence: every ${EVAL_EVERY:-25} epochs OR every ${EVAL_MIN_INTERVAL_MINUTES:-30} min (time fallback)"
 echo "Render fraction: ${RENDER_FRACTION:-0.167} of batch per step (batch-relative; 2-scale pyramid 1x/2x — profiling 2026-09-09: render was 70% of step time)"
 echo "Flow granularity: ${FLOW_GRANULARITY:-organ} (phytomer = 73D bridge flow [base|rot|latent])"
-echo "Phytomer VAE: ${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_xml/phytomer_vae_64d_best.pt}"
+echo "Phytomer VAE: ${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_v2/phytomer_vae_64d_best.pt}"
 echo "Pkt cache dir: ${PKT_CACHE_DIR:-dataset/cache/cowpea_curv26_pkt} (missing samples fall back to on-the-fly)"
 echo "Backbone: ${BACKBONE}${FREEZE_ARGS:+ (frozen)} | Output: ${OUTPUT_DIR} | Epochs: ${EPOCHS}"
 echo "Date: $(date)"
@@ -91,10 +91,10 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     --backbone "${BACKBONE}" \
     ${FREEZE_ARGS} \
     --phytomer_latent_dim "${PHYTOMER_LATENT_DIM:-64}" \
-    --phytomer_vae_checkpoint "${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_xml/phytomer_vae_64d_best.pt}" \
+    --phytomer_vae_checkpoint "${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_v2/phytomer_vae_64d_best.pt}" \
     --pkt_cache_dir "${PKT_CACHE_DIR:-dataset/cache/cowpea_curv26_pkt}" \
     --max_anchors 512 \
-    --slots_per_anchor 8 \
+    --slots_per_anchor "${SLOTS_PER_ANCHOR:-10}" \
     --embed_dim 384 \
     --vit_layers 8 \
     --vit_heads 8 \

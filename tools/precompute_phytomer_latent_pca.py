@@ -2,7 +2,7 @@
 
 Two modes:
 
-1. Full build (default): builds canonical 8-slot phytomer packets from the
+1. Full build (default): builds canonical 10-slot phytomer packets from the
    cache dataset using EXACT XML phytomer membership (cache field
    `phytomer_ids`), encodes them with the frozen accepted PhytomerVAE
    (phytomer_vae_xml, use_rot_branch=True).
@@ -20,10 +20,10 @@ Both save everything the visualizer needs:
         pca.pt          fitted sklearn PCA object
         proj2d.pt       (P, 2)  PCA 2D projection
         proj3d.pt       (P, 3)  PCA 3D projection
-        presence.pt     (P, 8)  bool slot mask
+        presence.pt     (P, 10)  bool slot mask
         refs.pt         (P, 6)  absolute reference-frame rot6d per packet
         centers.pt      (P, 3)  absolute cluster centers (metres)
-        packets.pt      (P, 8, 26) relative packets (for re-anchoring)
+        packets.pt      (P, 10, 26) relative packets (for re-anchoring)
         dap.pt          (P,)    DAP label per packet
         meta.json       config + per-dim percentile ranges for sliders
 

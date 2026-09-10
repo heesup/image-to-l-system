@@ -10,7 +10,8 @@
 # Usage:
 #   ./slurm_scripts/generate_phytomer_packets_jobs.sh --dry-run
 #   ./slurm_scripts/generate_phytomer_packets_jobs.sh --submit
-#   ./slurm_scripts/generate_phytomer_packets_jobs.sh --num-jobs 40 --gres gpu:1 --submit
+#   ./slurm_scripts/generate_phytomer_packets_jobs.sh --num-jobs 40 --submit   # GPU nodes (default)
+#   ./slurm_scripts/generate_phytomer_packets_jobs.sh --gres "" --submit        # CPU-only fallback
 # =============================================================================
 
 set -e
@@ -28,11 +29,11 @@ NUM_JOBS=40
 PARTITION="low"
 ACCOUNT="publicgrp"
 CPUS_PER_JOB=8
-GRES_PER_JOB=""       # empty = CPU-only; set "gpu:1" for GPU nodes
+GRES_PER_JOB="gpu:1"   # default GPU nodes (VAE encode is ~10x faster); set "" for CPU-only
 MEM_PER_JOB="32G"
 TIME_LIMIT="06:00:00"
 WORKERS_PER_JOB=8
-DEVICE="cpu"
+DEVICE="cuda:0"
 SUBMIT=0
 
 while [[ $# -gt 0 ]]; do
@@ -52,8 +53,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ -n "$GRES_PER_JOB" ]]; then
-    DEVICE="cuda:0"
+if [[ -z "$GRES_PER_JOB" ]]; then
+    DEVICE="cpu"
 fi
 
 mkdir -p "${LOGS_DIR}"

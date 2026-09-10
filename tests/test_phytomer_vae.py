@@ -13,13 +13,13 @@ from diffusion_based.dataset.phytomer_packets import build_phytomer_packets
 
 def _synthetic_packet_bag(n_packets: int = 32, seed: int = 0):
     torch.manual_seed(seed)
-    packets = torch.zeros(n_packets, 8, 26)
-    presence = torch.zeros(n_packets, 8, dtype=torch.bool)
+    packets = torch.zeros(n_packets, 10, 26)
+    presence = torch.zeros(n_packets, 10, dtype=torch.bool)
     for p in range(n_packets):
         n_org = int(torch.randint(2, 9, (1,)).item())
-        slots = torch.randperm(8)[:n_org]
+        slots = torch.randperm(10)[:n_org]
         for s in slots.tolist():
-            role = {0: 3, 1: 4, 2: 5, 3: 5, 4: 5, 5: 6, 6: 9, 7: 11}[s]
+            role = {0: 3, 1: 4, 2: 5, 3: 5, 4: 5, 5: 6, 6: 9, 7: 10, 8: 11, 9: 11}[s]
             packets[p, s, role] = 1.0
             packets[p, s, 13:16] = (torch.rand(3) - 0.5) * 4.0   # relative base
             packets[p, s, 16:22] = torch.tensor([1, 0, 0, 0, 1, 0], dtype=torch.float32)
@@ -36,8 +36,8 @@ class TestPhytomerVAE(unittest.TestCase):
             packets, presence = _synthetic_packet_bag(16)
             out = vae(packets, presence)
             self.assertEqual(out["z"].shape, (16, latent_dim))
-            self.assertEqual(out["recon_packets"].shape, (16, 8, 26))
-            self.assertEqual(out["cls_logits"].shape, (16, 8, 13))
+            self.assertEqual(out["recon_packets"].shape, (16, 10, 26))
+            self.assertEqual(out["cls_logits"].shape, (16, 10, 13))
             losses = vae.compute_loss(out, packets, presence)
             for k in ("loss", "recon_loss", "loss_cls", "loss_base", "loss_rot",
                       "loss_scale", "loss_curv", "loss_kl", "cls_acc"):
@@ -53,9 +53,9 @@ class TestPhytomerVAE(unittest.TestCase):
     def test_rot_branch_gradients(self):
         """Dedicated rotation branch receives gradients when enabled."""
         vae = PhytomerVAE(latent_dim=32)
-        packets, presence = _synthetic_packet_bag(8)
+        packets, presence = _synthetic_packet_bag(10)
         out = vae(packets, presence, use_rot_branch=True)
-        self.assertEqual(out["rot"].shape, (8, 8, 6))
+        self.assertEqual(out["rot"].shape, (10, 10, 6))
         vae.compute_loss(out, packets, presence)["loss"].backward()
         for name, p in vae.named_parameters():
             if name.startswith("rot_branch") or name.startswith("head_rot_dedicated"):
@@ -65,7 +65,7 @@ class TestPhytomerVAE(unittest.TestCase):
     def test_hungarian_roles_alignment(self):
         """Hungarian role matching: optimal assignment, canonical fallback, determinism."""
         vae = PhytomerVAE(latent_dim=32)
-        packets, presence = _synthetic_packet_bag(8, seed=3)
+        packets, presence = _synthetic_packet_bag(10, seed=3)
         out = vae(packets, presence)
         # loss runs and stays finite with Hungarian alignment on
         losses = vae.compute_loss(out, packets, presence, hungarian_roles=True)
@@ -82,20 +82,20 @@ class TestPhytomerVAE(unittest.TestCase):
         self.assertTrue(((aligned_pres.sum(-1) <= presence.sum(-1)).all()))
         # single-GT role keeps canonical-first placement: one stem organ must
         # land in slot 0 (first slot of its role range)
-        p1 = torch.zeros(1, 8, 26)
+        p1 = torch.zeros(1, 10, 26)
         p1[0, 0, 3] = 1.0; p1[0, 0, 13:16] = torch.tensor([0.0, 0.0, 2.0])
-        pr1 = torch.zeros(1, 8, dtype=torch.bool); pr1[0, 0] = True
+        pr1 = torch.zeros(1, 10, dtype=torch.bool); pr1[0, 0] = True
         a1, ap1 = vae._hungarian_align_targets(
-            {"base": torch.zeros(1, 8, 3), "scale": torch.ones(1, 8, 3),
-             "cls_logits": torch.zeros(1, 8, 13)}, p1, pr1)
+            {"base": torch.zeros(1, 10, 3), "scale": torch.ones(1, 10, 3),
+             "cls_logits": torch.zeros(1, 10, 13)}, p1, pr1)
         self.assertTrue(bool(ap1[0, 0]))
         self.assertEqual(int(ap1.sum().item()), 1)
 
     def test_pack_input_dim(self):
         # Base columns are structurally assembled (deterministic from XML
         # phytomer clustering), so they are removed before encoding:
-        # 8 x (23 + 1) = 192.
-        self.assertEqual(PACKET_IN_DIM, 8 * (26 - 3 + 1))
+        # 10 x (23 + 1) = 240.
+        self.assertEqual(PACKET_IN_DIM, 10 * (26 - 3 + 1))
         vae = PhytomerVAE()
         packets, presence = _synthetic_packet_bag(4)
         self.assertEqual(vae.pack_input(packets, presence).shape, (4, PACKET_IN_DIM))
@@ -103,9 +103,9 @@ class TestPhytomerVAE(unittest.TestCase):
     def test_empty_packet_batch(self):
         """All-absent packets must not NaN (division guards)."""
         vae = PhytomerVAE()
-        packets = torch.zeros(4, 8, 26)
+        packets = torch.zeros(4, 10, 26)
         packets[:, :, 0] = 1.0  # NONE everywhere
-        presence = torch.zeros(4, 8, dtype=torch.bool)
+        presence = torch.zeros(4, 10, dtype=torch.bool)
         out = vae(packets, presence)
         losses = vae.compute_loss(out, packets, presence)
         self.assertTrue(torch.isfinite(losses["loss"]))
@@ -113,7 +113,7 @@ class TestPhytomerVAE(unittest.TestCase):
     def test_symmetry_aware_and_ortho_flags(self):
         """symmetry_aware_rot + ortho_reg produce finite losses and gradients."""
         vae = PhytomerVAE(latent_dim=32)
-        packets, presence = _synthetic_packet_bag(8)
+        packets, presence = _synthetic_packet_bag(10)
         out = vae(packets, presence)
         losses = vae.compute_loss(
             out, packets, presence, rot_weight=4.0,

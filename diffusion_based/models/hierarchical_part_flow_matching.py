@@ -104,7 +104,7 @@ def apply_ref_for_flow(
     refined_rot: torch.Tensor,
     base_scale: float = BASE_SCALE,
 ) -> torch.Tensor:
-    """Re-anchors (B, K, 8, 26) relative packets using the REFINED anchor pose.
+    """Re-anchors (B, K, M, 26) relative packets using the REFINED anchor pose.
 
     Option 1 semantics: the refined anchor rotation is the reference frame for
     the packet; the refined anchor base position re-adds absolute placement.
@@ -488,7 +488,7 @@ class FineBotanicalFlowMatchingDecoder(nn.Module):
 
     def __init__(
         self,
-        slots_per_anchor: int = 8,
+        slots_per_anchor: int = 10,
         node_dim: int = 16,  # 16D latent vector from OrganLatentVAE
         num_classes: int = NUM_ORGAN_TYPES,  # 13 organ categories
         embed_dim: int = 384,
@@ -734,7 +734,7 @@ class PhytomerFlowMatchingDecoder(nn.Module):
             nn.Linear(embed_dim, self.node_flow_dim),
         )
 
-        # Per-slot existence logits (B, K, 8) — separate gating head, NOT flow-matched.
+        # Per-slot existence logits (B, K, M) — separate gating head, NOT flow-matched.
         # Predicts which of the 8 canonical organs are present in this phytomer.
         self.slots_per_phytomer = 8
         self.exist_head = nn.Sequential(
@@ -772,7 +772,7 @@ class PhytomerFlowMatchingDecoder(nn.Module):
             anchor_rot: Optional (B, K, 6) Stage-2 scaffold rotations.
         Returns:
             'pred_velocity': (B, K, 9 + D) velocity field.
-            'pred_slot_exist_logits': (B, K, 8) per-slot existence logits.
+            'pred_slot_exist_logits': (B, K, M) per-slot existence logits.
         """
         B, K, _ = noisy_flow.shape
         device = noisy_flow.device
@@ -814,7 +814,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
     def __init__(
         self,
         max_anchors: int = 512,
-        slots_per_anchor: int = 8,
+        slots_per_anchor: int = 10,
         node_dim: int = 16,
         num_classes: int = NUM_ORGAN_TYPES,
         image_size: int = 128,
@@ -832,7 +832,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         super().__init__()
         self.max_anchors = max_anchors
         self.slots_per_anchor = slots_per_anchor
-        self.max_fine_slots = max_anchors * slots_per_anchor  # 512 * 8 = 4,096
+        self.max_fine_slots = max_anchors * slots_per_anchor  # 512 * 10 = 5,120
         self.node_dim = node_dim
         self.num_classes = num_classes
         self.embed_dim = embed_dim
@@ -1088,13 +1088,13 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         if self.flow_granularity == "phytomer":
             final_out = self.fine_stage(
                 noisy_flow=x, timesteps=torch.ones((B,), device=device), **forward_kwargs)
-            pred_slot_exist_logits = final_out["pred_slot_exist_logits"]        # (B, K, 8)
-            pred_slot_exist = torch.sigmoid(pred_slot_exist_logits)             # (B, K, 8)
-            combined_prob = pred_slot_exist * anchor_existence.unsqueeze(-1)    # (B, K, 8)
-            slot_active = (combined_prob > 0.35).float().reshape(B, active_k * 8)
+            pred_slot_exist_logits = final_out["pred_slot_exist_logits"]        # (B, K, M)
+            pred_slot_exist = torch.sigmoid(pred_slot_exist_logits)             # (B, K, M)
+            combined_prob = pred_slot_exist * anchor_existence.unsqueeze(-1)    # (B, K, M)
+            slot_active = (combined_prob > 0.35).float().reshape(B, active_k * M)
             pred_latent = x          # (B, K, 9+D) flow vector (caller reference)
             pred_fine_exist_logits = pred_slot_exist_logits
-            N_fine = active_k * 8    # flat slot surface for legacy callers
+            N_fine = active_k * M    # flat slot surface for legacy callers
         else:
             final_out = self.fine_stage(
                 noisy_fine_nodes=x, timesteps=torch.ones((B,), device=device), **forward_kwargs)
@@ -1146,28 +1146,28 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             res["phytomer_latent"] = latent
             res["pred_slot_exist_logits"] = final_out["pred_slot_exist_logits"]
             if phytomer_vae is not None:
-                out = phytomer_vae.decode(latent.reshape(-1, self.phytomer_latent_dim))  # (B*K, 8, 26)
-                probs = F.softmax(out["cls_logits"], dim=-1)  # (B*K, 8, 13)
+                out = phytomer_vae.decode(latent.reshape(-1, self.phytomer_latent_dim))  # (B*K, M, 26)
+                probs = F.softmax(out["cls_logits"], dim=-1)  # (B*K, M, 13)
                 pred_cls = out["cls_logits"].argmax(-1)
-                packet_hat = out["recon_packets"].reshape(B, active_k, 8, 26)
+                packet_hat = out["recon_packets"].reshape(B, active_k, M, 26)
                 # Structurally assemble slot bases from the petiole geometry
                 # (deterministic), then re-anchor with the refined anchor pose.
                 packet_hat = assemble_packets(
-                    packet_hat.reshape(-1, 8, 26),
+                    packet_hat.reshape(-1, M, 26),
                     refined_rot.reshape(-1, 6),
-                ).reshape(B, active_k, 8, 26)
+                ).reshape(B, active_k, M, 26)
                 abs_packets = apply_ref_for_flow(packet_hat, refined_pos, refined_rot)
-                flat_abs = abs_packets.reshape(B, active_k * 8, 26)
-                keep = pred_cls.reshape(B, active_k * 8) > 0
+                flat_abs = abs_packets.reshape(B, active_k * M, 26)
+                keep = pred_cls.reshape(B, active_k * M) > 0
                 res["part_14d"] = decode_fm(flat_abs)
                 res["organ_probs"] = probs
-                res["pred_cls"] = pred_cls.reshape(B, active_k * 8)
-                res["pred_cls_logits"] = out["cls_logits"].reshape(B, active_k * 8, -1)
+                res["pred_cls"] = pred_cls.reshape(B, active_k * M)
+                res["pred_cls_logits"] = out["cls_logits"].reshape(B, active_k * M, -1)
                 res["pred_geometry"] = flat_abs[..., FM_BASE_START:]
             else:
                 res["pred_geometry"] = x
-                res["pred_cls"] = torch.zeros((B, active_k * 8), dtype=torch.long, device=device)
-                res["pred_cls_logits"] = torch.zeros((B, active_k * 8, self.num_classes), device=device)
+                res["pred_cls"] = torch.zeros((B, active_k * M), dtype=torch.long, device=device)
+                res["pred_cls_logits"] = torch.zeros((B, active_k * M, self.num_classes), device=device)
         else:
             # If VAE is provided, decode 16D latent into physical 14D part tensor and geometry
             if vae is not None:

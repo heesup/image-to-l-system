@@ -43,11 +43,12 @@ class TestPhytomerPackets(unittest.TestCase):
         ]
         nodes = torch.stack(rows)
         packets, presence, centers, refs = build_phytomer_packets(nodes)
-        self.assertEqual(packets.shape, (1, 8, 26))
-        self.assertTrue(presence.all())
-        # Slot roles: 0->internode(3), 1->petiole(4), 2-4->leaf(5), 5->peduncle(6), 6-7->repro
+        self.assertEqual(packets.shape, (1, 10, 26))
+        # 8 organs fill slots 0-7; slots 8-9 stay empty (v2 repro capacity 4).
+        self.assertEqual(presence[0].tolist(), [True] * 8 + [False, False])
+        # Slot roles: 0->internode(3), 1->petiole(4), 2-4->leaf(5), 5->peduncle(6), 6-9->repro
         got = packets[0, :, :FM_OT_END].argmax(-1).tolist()
-        self.assertEqual(got, [3, 4, 5, 5, 5, 6, 9, 10])
+        self.assertEqual(got, [3, 4, 5, 5, 5, 6, 9, 10, 0, 0])
         # Center is the petiole base
         self.assertTrue(torch.allclose(centers[0], torch.tensor([0.0, 0.0, 0.12]), atol=1e-6))
         # Relative base of slot 1 (petiole) must be ~zero
@@ -75,10 +76,10 @@ class TestPhytomerPackets(unittest.TestCase):
         ]
         nodes = torch.stack(rows)
         packets, presence, centers, refs = build_phytomer_packets(nodes)
-        self.assertEqual(packets.shape, (1, 8, 26))
-        self.assertEqual(presence[0].tolist(), [True, True, False, False, False, False, False, False])
+        self.assertEqual(packets.shape, (1, 10, 26))
+        self.assertEqual(presence[0].tolist(), [True, True, False, False, False, False, False, False, False, False])
         # Absent slots: NONE one-hot + EXACT zero geometry (no center leakage)
-        for s in range(2, 8):
+        for s in range(2, 10):
             self.assertEqual(packets[0, s, :FM_OT_END].argmax().item(), 0)
             self.assertTrue((packets[0, s, FM_BASE_START:] == 0).all())
         back = decode_packet(packets[0], centers[0], presence[0], refs[0])
@@ -104,8 +105,8 @@ class TestPhytomerPackets(unittest.TestCase):
     def test_empty_input(self):
         nodes = torch.zeros((10, FM_NODE_DIM))
         packets, presence, centers, refs = build_phytomer_packets(nodes)
-        self.assertEqual(packets.shape, (0, 8, 26))
-        self.assertEqual(presence.shape, (0, 8))
+        self.assertEqual(packets.shape, (0, 10, 26))
+        self.assertEqual(presence.shape, (0, 10))
         self.assertEqual(centers.shape, (0, 3))
         self.assertEqual(refs.shape, (0, 6))
 

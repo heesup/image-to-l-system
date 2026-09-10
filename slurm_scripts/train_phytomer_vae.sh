@@ -10,9 +10,11 @@
 #SBATCH --mem=32G
 #SBATCH --time=06:00:00
 
-# Trains PhytomerVAE (phytomer-level latent) on canonical 8-slot packets.
+# Trains PhytomerVAE (phytomer-level latent) on canonical 10-slot packets (v2).
 # Single GPU is sufficient (tiny MLP VAE, ~1M params).
 # Override via env: LATENT_DIM=64 EPOCHS=60 MAX_FILES=4000
+# After training, PKT_CACHE_DIR=dataset/cache/cowpea_curv26_pkt precomputes the
+# per-sample packet targets with the best checkpoint (v2 10-slot format).
 set -e
 
 REPO_ROOT="/home/lion397/codes/image-to-l-system"
@@ -42,8 +44,11 @@ ${PYTHON_BIN} diffusion_based/training/train_phytomer_vae.py \
     --beta-kl 1e-3 \
     --max-files "${MAX_FILES:-4000}" \
     --seed "${SEED:-0}" \
-    --packet-cache "/tmp/opencode/phytomer_packets_${MAX_FILES:-4000}.pt" \
-    --checkpoint-dir diffusion_based/checkpoints/phytomer_vae \
+    --packet-cache "/tmp/opencode/phytomer_packets_${MAX_FILES:-4000}_v2.pt" \
+    --checkpoint-dir "${CHECKPOINT_DIR:-diffusion_based/checkpoints/phytomer_vae}" \
+    --rot-branch \
+    --pkt-cache-dir "${PKT_CACHE_DIR:-}" \
+    --pkt-workers "${PKT_WORKERS:-28}" \
     --device cuda:0
 
 echo "PhytomerVAE Training Completed at $(date)"

@@ -1,7 +1,7 @@
 """
 Phytomer-level Variational Autoencoder (PhytomerVAE).
 
-Compresses one canonical 8-slot phytomer packet (8 x 26D FM organ rows +
+Compresses one canonical 10-slot phytomer packet (10 x 26D FM organ rows +
 8-bit presence mask = 216D) into a compact spherical standard Gaussian
 latent z in R^D ~ N(0, I), D in {32, 64, 128} (default 64).
 
@@ -45,15 +45,15 @@ from diffusion_based.dataset.phytomer_packets import (
 
 SLOT_DIM = FM_NODE_DIM            # 26D FM organ row
 # Base columns are REMOVED before encoding: with EXACT XML phytomer clustering
-# every slot's base is deterministic (stem/petiole/peduncle/bud = center,
-# leaflets = 0.8/1.0 x the petiole curve — verified 0.00cm over the full
-# dataset). Only flower/fruit bases (rare, per-plant offsets) are VAE-learned.
-# 8 x (23 + presence bit) = 192.
-PACKET_IN_DIM = NUM_SLOTS * (SLOT_DIM - 3 + 1)  # 8 x (23 + 1) = 192
+# EVERY slot's base is deterministic (stem/petiole/peduncle/bud = center,
+# leaflets = 0.8/1.0 x the petiole curve, flowers/fruit = curved peduncle tip —
+# all verified over the full dataset). Nothing is VAE-learned (v2).
+# 10 x (23 + presence bit) = 240.
+PACKET_IN_DIM = NUM_SLOTS * (SLOT_DIM - 3 + 1)  # 10 x (23 + 1) = 240
 
 
 class PhytomerVAE(nn.Module):
-    """Compact phytomer-level VAE: (8 x 26D + 8 presence) -> z in R^D -> 8 x 26D."""
+    """Compact phytomer-level VAE: (10 x 26D + 10 presence) -> z in R^D -> 10 x 26D."""
 
     def __init__(
         self,
@@ -71,8 +71,8 @@ class PhytomerVAE(nn.Module):
         self.num_classes = num_classes
         # Base columns are REMOVED before encoding: with EXACT XML phytomer
         # clustering every slot's base is deterministic (stem/petiole/peduncle/
-        # bud = center, leaflets = 0.8/1.0 x the petiole curve). Only
-        # flower/fruit bases (rare) are VAE-learned. 8 x (23 + 1) = 192.
+        # bud = center, leaflets = 0.8/1.0 x the petiole curve, flowers/fruit =
+        # curved peduncle tip). 10 x (23 + 1) = 240.
         self.in_dim = slots_per_phytomer * (slot_dim - 3 + 1)
 
         # Encoder: packet -> hidden -> (mu, logvar)
@@ -119,7 +119,7 @@ class PhytomerVAE(nn.Module):
         self.head_rot_dedicated = nn.Linear(hidden_dim // 2, slots_per_phytomer * 6)
 
     def pack_input(self, packets: torch.Tensor, presence: torch.Tensor) -> torch.Tensor:
-        """Flattens (P, 8, 26) + (P, 8) presence -> (P, 192) encoder input.
+        """Flattens (P, 10, 26) + (P, 10) presence -> (P, 240) encoder input.
 
         Base columns are REMOVED: with EXACT XML phytomer clustering every slot's
         base is deterministic (stem/petiole/peduncle/bud = center, leaflets =
@@ -129,7 +129,7 @@ class PhytomerVAE(nn.Module):
         P = packets.shape[0]
         keep = torch.ones(packets.shape[-1], dtype=torch.bool, device=packets.device)
         keep[FM_BASE_START:FM_BASE_END] = False
-        stripped = packets[..., keep]  # (P, 8, 23)
+        stripped = packets[..., keep]  # (P, 10, 23)
         return torch.cat([stripped.reshape(P, -1), presence.float().reshape(P, -1)], dim=-1)
 
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -148,7 +148,7 @@ class PhytomerVAE(nn.Module):
         return mu
 
     def decode(self, z: torch.Tensor, use_rot_branch: bool = False) -> Dict[str, torch.Tensor]:
-        """Decodes (P, D) latents into (P, 8, 26) FM packets.
+        """Decodes (P, D) latents into (P, 10, 26) FM packets.
 
         Base columns are ZERO: with EXACT XML phytomer clustering every slot's
         base is deterministic (stem/petiole/peduncle/bud = center, leaflets =
@@ -162,14 +162,14 @@ class PhytomerVAE(nn.Module):
         P = z.shape[0]
         S = self.slots_per_phytomer
         h = self.decoder_backbone(z)
-        pred_cls_logits = self.head_cls(h).reshape(P, S, self.num_classes)     # (P, 8, 13)
-        pred_base = torch.zeros(P, S, 3, device=z.device, dtype=z.dtype)       # (P, 8, 3) zeroed
+        pred_cls_logits = self.head_cls(h).reshape(P, S, self.num_classes)     # (P, 10, 13)
+        pred_base = torch.zeros(P, S, 3, device=z.device, dtype=z.dtype)       # (P, 10, 3) zeroed
         if use_rot_branch:
-            pred_rot = self.head_rot_dedicated(self.rot_branch(z)).reshape(P, S, 6)  # (P, 8, 6)
+            pred_rot = self.head_rot_dedicated(self.rot_branch(z)).reshape(P, S, 6)  # (P, 10, 6)
         else:
-            pred_rot = self.head_rot(h).reshape(P, S, 6)                       # (P, 8, 6)
-        pred_scale = F.softplus(self.head_scale(h)).reshape(P, S, 3) + 1e-4    # (P, 8, 3)
-        pred_curv = self.head_curv(h).reshape(P, S, 1)                         # (P, 8, 1)
+            pred_rot = self.head_rot(h).reshape(P, S, 6)                       # (P, 10, 6)
+        pred_scale = F.softplus(self.head_scale(h)).reshape(P, S, 3) + 1e-4    # (P, 10, 3)
+        pred_curv = self.head_curv(h).reshape(P, S, 1)                         # (P, 10, 1)
 
         pred_probs = F.softmax(pred_cls_logits, dim=-1)
         pred_26d = torch.cat([pred_probs, pred_base, pred_rot, pred_scale, pred_curv], dim=-1)
@@ -179,7 +179,7 @@ class PhytomerVAE(nn.Module):
             "rot": pred_rot,
             "scale": pred_scale,
             "curv": pred_curv,
-            "recon_packets": pred_26d,  # (P, 8, 26), relative coords
+            "recon_packets": pred_26d,  # (P, 10, 26), relative coords
         }
 
     def forward(
@@ -217,7 +217,7 @@ class PhytomerVAE(nn.Module):
         """
         P, S, _ = target_packets.shape
         device = target_packets.device
-        pred_scale = pred["scale"].detach()                  # (P, 8, 3)
+        pred_scale = pred["scale"].detach()                  # (P, 10, 3)
         pred_cls = pred["cls_logits"].argmax(-1).detach()    # (P, 8)
         tgt_scale = target_packets[:, :, FM_SCALE_START:FM_SCALE_END]
         tgt_cls = target_packets[:, :, :FM_OT_END].argmax(-1)
@@ -264,7 +264,7 @@ class PhytomerVAE(nn.Module):
         ortho_reg_weight: float = 0.0,
         hungarian_roles: bool = False,
     ) -> Dict[str, torch.Tensor]:
-        """Masked composite VAE loss over the 8-slot packet.
+        """Masked composite VAE loss over the 10-slot packet.
 
         Present organs: full reconstruction weight (same block weights as
         OrganLatentVAE: cls 1 / base 3 / rot 2 / scale 3 / curv 0.5).
@@ -317,7 +317,7 @@ class PhytomerVAE(nn.Module):
         ).reshape_as(pres) * w).sum() / (n_present + absent_weight * n_absent)
 
         def _masked_smooth(pred_t: torch.Tensor, tgt_t: torch.Tensor) -> torch.Tensor:
-            # pred_t/tgt_t: (P, 8, D)
+            # pred_t/tgt_t: (P, 10, D)
             err = F.smooth_l1_loss(pred_t, tgt_t, reduction="none").mean(dim=-1)  # (P, 8)
             return (err * w).sum() / (n_present + absent_weight * n_absent)
 
@@ -359,7 +359,7 @@ class PhytomerVAE(nn.Module):
             f_pred = F.normalize(pred["rot"][..., 3:6], dim=-1)
             f_tgt = F.normalize(tgt_rot[..., 3:6].detach(), dim=-1)
             f_cos = (f_pred * f_tgt).sum(dim=-1).clamp(-1.0, 1.0)
-            tube_loss = 1.0 - f_cos  # (P, 8), spin-invariant
+            tube_loss = 1.0 - f_cos  # (P, 10), spin-invariant
             tube = torch.zeros(self.slots_per_phytomer, dtype=torch.bool, device=pres.device)
             tube[[0, 1, 5]] = True  # stem, petiole, peduncle slots
             tube = tube.unsqueeze(0).expand_as(pres)
