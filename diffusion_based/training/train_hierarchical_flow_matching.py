@@ -81,6 +81,13 @@ import importlib
 import diffusion_based.eval.eval_hierarchical_self_consistency as ehsc
 
 
+def _sync_cuda():
+    """GPU flush for truthful wall-time section timers (CUDA is async).
+    ~10us per call — negligible against second-scale sections."""
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+
 def forward_backward_step(
     model: nn.Module,
     batch: Dict[str, torch.Tensor],
@@ -134,7 +141,7 @@ def forward_backward_step(
 
     # Probe tokens WITH grad (reused by the model forward below — saves one full
     # DINOv2 forward per step). Only the count scalar is detached for slicing.
-    _sync()
+    _sync_cuda()
     t_probe = time.time()
     image_tokens = raw_model.image_encoder(images)
     active_k = compute_matryoshka_slice(
@@ -221,12 +228,7 @@ def forward_backward_step(
             "target_build": 0.0, "render": 0.0, "loss": 0.0,
             "backward": 0.0, "probe": 0.0, "other": 0.0}
 
-    def _sync():
-        # Accurate wall-time section timers need a GPU flush (CUDA is async);
-        # ~10us per sync, negligible against second-scale sections.
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-    _sync()
+    _sync_cuda()
     _t_fbs = time.time()
     t0 = time.time()
     phyto_targets = None
@@ -297,7 +299,7 @@ def forward_backward_step(
         # placeholder x_t (will be re-interpolated after forward with scaffold)
         z_t = z_0.clone()
     else:
-        _sync()
+        _sync_cuda()
         t0 = time.time()
         with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
             outputs = model(
@@ -692,7 +694,7 @@ def forward_backward_step(
         # retained per user decision — no straight-through hand-off).
         render_grad_on = bool(render_grad)
         if n_render > 0:
-            _sync()
+            _sync_cuda()
             t0 = time.time()
             if n_render < B:
                 render_indices = torch.randperm(B, device=device)[:n_render]
@@ -842,10 +844,10 @@ def forward_backward_step(
     if torch.isnan(loss) or torch.isinf(loss):
         return None
 
-    _sync()
+    _sync_cuda()
     t_bwd = time.time()
     loss.backward()
-    _sync()
+    _sync_cuda()
     prof["backward"] = time.time() - t_bwd
     # Residual (data staging, probe decode, python overhead): total minus parts.
     prof["other"] = max(0.0, (time.time() - _t_fbs) - sum(
