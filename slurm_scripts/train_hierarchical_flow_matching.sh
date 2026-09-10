@@ -86,6 +86,9 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     --batch_size "${BATCH_ARG}" \
     --target_vram_ratio "${TARGET_RATIO}" \
     --lr "${LR:-3e-4}" \
+    --backbone_lr_ratio "${BACKBONE_LR_RATIO:-0.3}" \
+    --phy_count_weight "${PHY_COUNT_WEIGHT:-2.0}" \
+    --init_phytomer_count "${INIT_PHYTOMER_COUNT:-50.0}" \
     --node_dim 16 \
     --organ_vae_checkpoint diffusion_based/checkpoints/organ_vae/organ_latent_vae_best.pt \
     --flow_granularity "${FLOW_GRANULARITY:-organ}" \

@@ -94,6 +94,7 @@ def forward_backward_step(
     capacity_schedule: Optional[Dict[str, float]] = None,
     flow_granularity: str = "organ",
     phytomer_vae: Optional[nn.Module] = None,
+    phy_count_weight: float = 2.0,
 ) -> Optional[Dict[str, float]]:
     images = batch["image"].to(device)
     nodes = batch["nodes"].to(device)  # (B, N_max, 26)
@@ -750,7 +751,7 @@ def forward_backward_step(
         + 1.0 * loss_anchor_exist
         + 2.0 * loss_fine_vel
         + 1.0 * loss_fine_exist
-        + 0.5 * loss_phy_count
+        + phy_count_weight * loss_phy_count
         + loss_dap
         + depth_loss_weight * loss_depth
         + color_loss_weight * loss_cos
@@ -858,6 +859,7 @@ def probe_optimal_batch_size(
         render_fraction=render_fraction,
         flow_granularity=flow_granularity,
         phytomer_vae=phytomer_vae,
+        phy_count_weight=phy_count_weight,
     )
 
     peak_probe_bytes = torch.cuda.max_memory_allocated(device)
@@ -972,6 +974,7 @@ def train_one_epoch(
     capacity_full_epochs: int = 0,
     flow_granularity: str = "organ",
     phytomer_vae: Optional[nn.Module] = None,
+    phy_count_weight: float = 2.0,
     **kwargs,
 ) -> Dict[str, float]:
     model.train()
@@ -1022,6 +1025,7 @@ def train_one_epoch(
             capacity_schedule=capacity_schedule,
             flow_granularity=flow_granularity,
             phytomer_vae=phytomer_vae,
+            phy_count_weight=phy_count_weight,
         )
         t_step1 = time.time()
         if step_metrics is None:
@@ -1139,7 +1143,10 @@ def main():
     parser.add_argument("--eval_min_interval_minutes", type=int, default=30, help="Time-based eval fallback: force an eval panel if at least this many minutes elapsed since the last one (0 disables). Keeps diagnostic cadence roughly constant as dataset size grows per-epoch time.")
     parser.add_argument("--eval_samples_per_bucket", type=int, default=2, help="Fixed stratified eval set: samples per 10-DAP bucket (2 => ~20 samples).")
     parser.add_argument("--eval_seed", type=int, default=1234, help="Deterministic seed for the fixed stratified eval set.")
-    parser.add_argument("--backbone_lr_ratio", type=float, default=0.15, help="Backbone lr = args.lr * ratio (0.15: gentler foundation adaptation on 100k balanced data)")
+    parser.add_argument("--backbone_lr_ratio", type=float, default=0.3, help="Backbone lr = args.lr * ratio (0.3: restored 2026-09-08 value; 0.15 starved macro-head CLS features)")
+    parser.add_argument("--phy_count_weight", type=float, default=2.0, help="Loss weight for phytomer-count (was 0.5 — macro head learned ~6x slower than the Sep-8 organ run)")
+    parser.add_argument("--init_phytomer_count", type=float, default=50.0,
+                        help="Bias-init phy_head so pred_num starts near the dataset mean; removes the dead-anchor existence gate at epoch 0")
     parser.add_argument("--warmup_epochs", type=int, default=3, help="Linear LR warmup epochs (0.1x -> 1.0x per step; 0 disables)")
     parser.add_argument("--init_checkpoint", type=str, default=None, help="Path to checkpoint to initialize weights from (strict=False)")
     parser.add_argument("--dap_buckets", type=int, default=8, help="Number of DAP buckets for capacity-homogeneous batching (0 = plain shuffle)")
@@ -1241,6 +1248,7 @@ def main():
         phytomer_latent_dim=args.phytomer_latent_dim,
         backbone=args.backbone,
         freeze_backbone=args.freeze_backbone,
+        init_phytomer_count=args.init_phytomer_count,
     ).to(device)
 
     # Frozen PhytomerVAE (flow_granularity=phytomer): encodes/decodes the
@@ -1475,6 +1483,7 @@ def main():
             capacity_full_epochs=args.capacity_full_epochs,
             flow_granularity=args.flow_granularity,
             phytomer_vae=phytomer_vae,
+            phy_count_weight=args.phy_count_weight,
             lr_warmup_cb=lr_warmup_cb,
         )
         lr_scheduler.step()

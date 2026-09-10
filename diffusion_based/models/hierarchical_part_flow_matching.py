@@ -228,6 +228,7 @@ class MacroBiologicalHead(nn.Module):
         embed_dim: int = 384,
         default_margin: float = 1.0,
         default_tau: float = 0.8,
+        init_phytomer_count: float = 50.0,
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -242,6 +243,13 @@ class MacroBiologicalHead(nn.Module):
         )
         self.dap_head = nn.Linear(embed_dim // 2, 1)
         self.phy_head = nn.Linear(embed_dim // 2, 1)
+        # Bias-init the count head so pred_num starts near the dataset mean instead
+        # of the activation floor (elu(x)+1 min = 1.0). elu is positive-leaning above
+        # 0, so bias b gives pred ~= elu(b)+1 ~= b+1; b = ln(mean) puts pred ~ mean.
+        # Without this the pred-count prior (init_logits) suppresses all anchors
+        # beyond k~2 for the first epochs -> nothing gets rendered (IoU 0%).
+        with torch.no_grad():
+            self.phy_head.bias.fill_(math.log(max(init_phytomer_count, 1.1) - 1.0))
 
     def forward(
         self,
@@ -286,10 +294,13 @@ class CoarseSkeletalTransformer(nn.Module):
         embed_dim: int = 384,
         num_heads: int = 8,
         num_layers: int = 4,
+        init_phytomer_count: float = 50.0,
+        dap_clue: bool = True,
     ):
         super().__init__()
         self.max_anchors = max_anchors
         self.embed_dim = embed_dim
+        self.dap_clue = dap_clue
 
         # Content query
         self.anchor_queries = nn.Parameter(torch.randn(max_anchors, embed_dim) * 0.02)
@@ -320,7 +331,20 @@ class CoarseSkeletalTransformer(nn.Module):
         self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
 
         # Stage 1: Macro Biological Head
-        self.macro_head = MacroBiologicalHead(embed_dim=embed_dim)
+        self.macro_head = MacroBiologicalHead(embed_dim=embed_dim,
+                                              init_phytomer_count=init_phytomer_count)
+
+        # DAP clue embedding: broadcasts the predicted plant age to every anchor
+        # query so Stage 2/3 condition on the developmental stage (like the macro
+        # count prior). Normalized DAP -> MLP; zero-init out layer keeps the
+        # initial behavior identical to the unconditioned model.
+        self.dap_embed = nn.Sequential(
+            nn.Linear(1, embed_dim // 2),
+            nn.GELU(),
+            nn.Linear(embed_dim // 2, embed_dim),
+        )
+        nn.init.zeros_(self.dap_embed[-1].weight)
+        nn.init.zeros_(self.dap_embed[-1].bias)
 
         # Stage 2 Prediction Heads
         # 1. Delta 3D position relative to 3D reference points
@@ -360,6 +384,7 @@ class CoarseSkeletalTransformer(nn.Module):
         capacity_mode: str = "given",
         margin: float = ANCHOR_MARGIN,
         flat: float = ANCHOR_MARGIN_FLAT,
+        pred_dap: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """Stage 1 + Stage 2 forward pass.
 
@@ -412,10 +437,16 @@ class CoarseSkeletalTransformer(nn.Module):
         else:
             raise ValueError(f"Unknown capacity_mode: {capacity_mode}")
 
-        # Query = Content embedding + 3D Positional Encoding of reference points
+        # Query = Content embedding + 3D Positional Encoding + DAP clue.
+        # The predicted DAP (from Stage 1) is broadcast to all anchors as a
+        # developmental-stage prior; zero-init keeps the start state unchanged
+        # while loss_dap gradients teach the head, and dap_embed learns to use it.
         q_content = self.anchor_queries[:K].unsqueeze(0).expand(B, -1, -1)
         q_pos = self.ref_pos_mlp(self.ref_points[:K]).unsqueeze(0).expand(B, -1, -1)
         q = q_content + q_pos
+        if self.dap_clue and pred_dap is not None:
+            d = (pred_dap.float().view(B, 1) / 100.0)  # normalize to [0, 1]
+            q = q + self.dap_embed(d).unsqueeze(1).expand(-1, K, -1)
 
         # Cross-attend with 3D-aware image tokens
         anchor_features = self.decoder(q, image_tokens)
@@ -829,6 +860,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         phytomer_latent_dim: int = 64,
         backbone: str = "dinov2_vits14",
         freeze_backbone: bool = False,
+        init_phytomer_count: float = 50.0,
     ):
         super().__init__()
         self.max_anchors = max_anchors
@@ -856,6 +888,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             embed_dim=embed_dim,
             num_heads=vit_heads,
             num_layers=coarse_layers,
+            init_phytomer_count=init_phytomer_count,
         )
 
         # 3. Stage 3: Fine Botanical Flow Matching Decoder conditioned on 3D Scaffold.
@@ -883,6 +916,14 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                 num_heads=vit_heads,
                 num_layers=fine_layers,
             )
+
+    def probe_pred_dap(self, image_tokens: torch.Tensor) -> torch.Tensor:
+        """Two-pass helper: reads Stage 1's predicted DAP from the CLS token (no grad
+        needed for the clue itself — the clue is an input, loss_dap keeps the head
+        supervised)."""
+        cls_token = image_tokens[:, 0]
+        with torch.no_grad():
+            return self.coarse_stage.macro_head(cls_token, max_k=self.max_anchors)["pred_dap"]
 
     def forward(
         self,
@@ -912,12 +953,16 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         # 1. Vision perception: 3D-aware multi-scale tokens
         image_tokens = self.image_encoder(images)
 
-        # 2. Anchor bank slicing
+        # 2. Anchor bank slicing. The predicted DAP is passed as a stage clue so
+        #    Stage 2/3 condition on the developmental stage (dap_embed); in the
+        #    GT-DAP teacher-forcing path the GT value substitutes for reliability.
         if capacity_mode == "given":
             active_k = compute_matryoshka_slice(dap=daps, num_phytomers=num_phytomers, max_anchors=self.max_anchors)
-            coarse_out = self.coarse_stage(image_tokens, active_k=active_k)
+            clue_dap = daps  # GT DAP as the clue during teacher forcing
+            coarse_out = self.coarse_stage(image_tokens, active_k=active_k, pred_dap=clue_dap)
         else:
-            coarse_out = self.coarse_stage(image_tokens, capacity_mode=capacity_mode)
+            clue = self.probe_pred_dap(image_tokens)
+            coarse_out = self.coarse_stage(image_tokens, capacity_mode=capacity_mode, pred_dap=clue)
 
         anchor_features = coarse_out["anchor_features"]
         anchor_pos = coarse_out["anchor_pos"]
@@ -1011,14 +1056,18 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         # provided (self-consistency evaluation), take the max of both signals so the
         # capacity covers the more generous estimate without falling back to full 512.
         image_tokens = self.image_encoder(images)
-        coarse_pred = self.coarse_stage(image_tokens, capacity_mode="pred_phyto")
+        clue_dap = self.probe_pred_dap(image_tokens)
+        coarse_pred = self.coarse_stage(image_tokens, capacity_mode="pred_phyto", pred_dap=clue_dap)
         k_pred = int(coarse_pred["active_k"])
         if daps is not None:
             k_dap = compute_matryoshka_slice(dap=daps, max_anchors=self.max_anchors)
             active_k = max(k_pred, int(k_dap))
             # Re-run Stage 2 with the wider slice (macro head result is unaffected; the
-            # soft margin prior is resliced deterministically inside forward).
-            coarse_out = self.coarse_stage(image_tokens, active_k=active_k)
+            # soft margin prior is resliced deterministically inside forward). The clue
+            # is the PREDICTED DAP at inference (no GT leakage); when GT DAP is given
+            # the clue is the GT (same as the teacher-forcing path).
+            clue = daps
+            coarse_out = self.coarse_stage(image_tokens, active_k=active_k, pred_dap=clue)
             coarse_out["pred_num_phytomers"] = coarse_pred["pred_num_phytomers"]
             coarse_out["pred_dap"] = coarse_pred["pred_dap"]
         else:
