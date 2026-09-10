@@ -150,7 +150,12 @@ def forward_backward_step(
             k_gt = compute_matryoshka_slice(
                 dap=daps, max_anchors=raw_model.max_anchors, margin=ANCHOR_MARGIN
             )
+            # Under-allocation guard: never slice below the GT-DAP curve, but
+            # cap the predicted path at 2x the GT slice so an early over-predicting
+            # macro head cannot explode the anchor bank (and step time) to
+            # max_anchors during the first epochs.
             active_k = max(k_pred, int(k_gt))
+            active_k = min(active_k, max(int(k_gt) * 2, 8))
     active_fine = min(active_k * slots_per_anchor, nodes.shape[1])
 
     # Per-sample anchor capacity from the calibrated DAP curve. Slots beyond a

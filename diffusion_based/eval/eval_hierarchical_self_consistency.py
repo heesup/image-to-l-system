@@ -194,7 +194,12 @@ def evaluate_self_consistency_batch(
 
     os.makedirs(output_dir, exist_ok=True)
 
-    for b in range(min(B, num_samples_to_plot)):
+    # Plot samples SPREAD across the DAP range (sorted set -> first, last, and
+    # evenly spaced in between), not just the first `num_samples_to_plot` —
+    # the eval set is DAP-stratified and sorted, so taking the head would always
+    # show only the youngest plants.
+    plot_idx = np.linspace(0, B - 1, min(B, num_samples_to_plot)).round().astype(int)
+    for b in sorted(set(plot_idx.tolist())):
         # 1. Decode predicted parts
         if "part_14d" in sample_out:
             pred_14d_b = sample_out["part_14d"][b]
