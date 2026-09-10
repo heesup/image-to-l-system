@@ -139,6 +139,11 @@ def anchor_scale(packets: torch.Tensor) -> torch.Tensor:
     v3 (2026-09-10): packet scales are stored NORMALIZED by s_a in the VAE
     input/targets; the 76D flow state carries s_a explicitly and decode
     multiplies it back (see normalize_packet_scales / denormalize_packet_scales).
+
+    Physical floors (raw FM units, x50): length >= 0.25 (5mm), radius >= 0.025
+    (0.5mm) — well below any real organ, but they prevent degenerate tiny
+    denominators (e.g. s_a ~1e-5 from an empty-ish slot) from exploding the
+    normalized values and destabilizing VAE training.
     """
     P, S, _ = packets.shape
     ot = packets[:, :, :FM_OT_END].argmax(dim=-1)          # (P, S)
@@ -152,8 +157,11 @@ def anchor_scale(packets: torch.Tensor) -> torch.Tensor:
     s_a = scale[torch.arange(P, device=packets.device), idx]  # (P, 3)
     any_present = present.any(dim=-1, keepdim=True)        # (P, 1)
     s_a = torch.where(any_present, s_a, torch.ones_like(s_a))
-    # guard degenerate components (e.g. the unused 3rd scale dim ~= 0)
-    s_a = torch.where(s_a.abs() > 1e-6, s_a, torch.ones_like(s_a))
+    # Physical floors per component: [length, radius, unused].
+    # Clamp magnitude from below, preserving sign (avoids tiny denominators).
+    floors = torch.tensor([0.25, 0.025, 1.0], dtype=s_a.dtype, device=s_a.device)
+    s_a = torch.where(s_a.abs() >= floors, s_a,
+                      torch.where(s_a < 0, -floors, floors))
     return s_a
 
 
@@ -165,6 +173,11 @@ def normalize_packet_scales(packets: torch.Tensor, s_a: torch.Tensor) -> torch.T
     denom = torch.where(s_a.abs() > 1e-6, s_a, torch.ones_like(s_a))  # (P, 3)
     out[:, :, FM_SCALE_START:FM_SCALE_END] = (
         out[:, :, FM_SCALE_START:FM_SCALE_END] / denom.unsqueeze(1))
+    # Belt-and-suspenders: clamp extreme ratios (e.g. a 1m main-stem internode
+    # normalized by a 6cm petiole is legitimately ~16, but nothing physical
+    # exceeds ~200x). Prevents inf/nan from ever reaching VAE training.
+    out[:, :, FM_SCALE_START:FM_SCALE_END] = (
+        out[:, :, FM_SCALE_START:FM_SCALE_END].clamp(-200.0, 200.0))
     return out
 
 
