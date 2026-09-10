@@ -462,6 +462,7 @@ def generate_pkt(
                     "centers": it["centers"],
                     "refs": it["refs"],
                     "latent": lats[off:off + n].half(),
+                    "pkt_version": PKT_VERSION,
                 }
                 off += n
                 torch.save(d, it["out_path"])
@@ -472,6 +473,7 @@ def generate_pkt(
                     "presence": it["presence"],
                     "centers": it["centers"],
                     "refs": it["refs"],
+                    "pkt_version": PKT_VERSION,
                 }, it["out_path"])
         for b in batch:
             done += 1
