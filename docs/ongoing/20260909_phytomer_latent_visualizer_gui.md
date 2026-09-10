@@ -80,6 +80,11 @@ Access: VNC browser `localhost:7860` or SSH tunnel `ssh -L 7860:localhost:7860`.
    **12.2/9.7/9.1%**. Combo coloring collapsed 24 → 3 groups (90% pure
    `{internode, petiole, leaf}`) — expected: exact XML clustering removed the
    nearest-center mixing that created the spurious combos.
+9. **GLB "not a glb" race fixed** (2026-09-10): concurrent slider events raced
+   on a fixed per-tag export path (read half-written file → assert). Now each
+   export writes a unique uuid path from in-memory `t.export(file_type="glb")`
+   bytes (no read-back), raises `ValueError` (not assert) on bad magic /
+   empty mesh, and prunes to newest 20 GLBs.
 10. **v2 10-slot migration** (2026-09-10): visualizer + cache moved to
     `phytomer_vae_v2` (NUM_SLOTS 10, repro x4, VAE in 240D, latent still 64D).
     GUI cache rebuilt from regenerated pkt cache (250k, PCA evr
@@ -99,9 +104,8 @@ Access: VNC browser `localhost:7860` or SSH tunnel `ssh -L 7860:localhost:7860`.
     bases passed through unchanged). Fix: leaf(5) added to the det set →
     leaflet bases recompute on the curved petiole (0.8/0.8/1.0). GT residual
     vs the curve rule: slot2 0.19cm / slot3 0.10cm / slot4 0.23cm mean.
-    NOTE slot0 (stem) has a 1.2cm-mean residual by design (center = petiole
-    base, internode base differs); slot6 fruit p99 33cm = rare long-tail
-    offsets (pre-existing). Packet + VAE unit tests 15/15 pass.
+    NOTE slot6 fruit p99 33cm = rare long-tail offsets (pre-existing).
+    Packet + VAE unit tests 15/15 pass.
 13. **"Petiole 1개 vs 3개" clarification** (2026-09-10, no code change): user
     expected 3 petioles per node (one per leaf). XML ground truth says
     otherwise — 110/111 phytomers have EXACTLY 1 petiole + 3 leaves
@@ -135,8 +139,11 @@ Access: VNC browser `localhost:7860` or SSH tunnel `ssh -L 7860:localhost:7860`.
     retraining of the VAE needed; phytomer-mode training renders will render
     stems correctly connected (previous runs had stems stabbed through nodes —
     small visual loss-noise, now removed).
-9. **GLB "not a glb" race fixed** (2026-09-10): concurrent slider events raced
-   on a fixed per-tag export path (read half-written file → assert). Now each
-   export writes a unique uuid path from in-memory `t.export(file_type="glb")`
-   bytes (no read-back), raises `ValueError` (not assert) on bad magic /
-   empty mesh, and prunes to newest 20 GLBs.
+16. **UX round** (2026-09-10): Color by default → `combo`; coarse **PC sliders**
+    (top-10, ~81% var) added as primary control with raw 64D collapsed into a
+    variance-sorted accordion; sliders use `.release` (not `.change`) to stop
+    queue flooding ("QUEUED"); PC slider bounds are data min/max + pad (±3σ
+    rejected outliers → `ValueError ... greater than maximum`); clicking a PCA
+    point / loading an idx now also sets `ref_idx` so the render updates in one
+    cascade; Web 3D is the default render tab; GLB export keeps Helios Z-up so
+    RGB and Web 3D show the identical view.

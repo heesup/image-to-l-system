@@ -1,6 +1,6 @@
 # Agent Takeover & Engineering Handover Guide
 **Project: Image-to-L-System / 3D Inverse Procedural Plant Reconstruction**  
-**Last Updated:** 2026-09-09 ~23:30 PDT (XML-Phytomer Clustering + Structural Assembly + Profiling)  
+**Last Updated:** 2026-09-10 PDT (v2 10-slot migration + packet cache complete + GUI hardening + stem/leaflet base-rule fixes)  
 **Primary Author/Agent:** Antigravity Autonomous Agent (Pair programming with Heesup Yun)  
 **Environment:** Linux, Python 3.10+, Mamba (`mamba activate digital-crops`), CUDA, PyTorch, `nvdiffrast`, Helios C++ OptiX Raytracer.  
 
@@ -21,7 +21,7 @@ find dataset/cache/cowpea_curv26 -name "*.pt" | wc -l   # 100,000 (all have phyt
 
 # Available checkpoints
 ls -lh diffusion_based/checkpoints/hierarchical_latent_fm/*.pt
-ls -lh diffusion_based/checkpoints/phytomer_vae_xml/*.pt
+ls -lh diffusion_based/checkpoints/phytomer_vae_v2/*.pt
 ```
 
 ---
@@ -135,29 +135,36 @@ Checkpoints saved on disk:
 ```bash
 diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_025.pt  (1.4 GB)
 diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_050.pt  (1.4 GB)
-diffusion_based/checkpoints/phytomer_vae_xml/phytomer_vae_64d_best.pt  (accepted VAE, XML-phytomer clustering)
+diffusion_based/checkpoints/phytomer_vae_v2/phytomer_vae_64d_best.pt  (ACCEPTED v2: 10-slot, VAE 240D in, val recon 0.0263, cls 100%)
 ```
 
-### Current state (2026-09-09 late) — JOBS STOPPED BY USER REQUEST:
-- **Job `38183271`** (phytomer training) was **cancelled** so the dataset
-  generation pipeline could be refactored. Last state: Epoch 1 ClsAcc 92.6%,
-  step ~2s with render_fraction 0.167 + 2-scale pyramid.
+### Current state (2026-09-10) — v2 10-slot migration complete:
+- **Job `38183271`** (phytomer training) remains cancelled; resume per P2.
 - **Phytomer packet cache**: `dataset/cache/cowpea_curv26_pkt/` holds
-  **38,610 / 100,000** samples (all with frozen-VAE `latent`). The remaining
-  ~61k are built by the new XML-direct backfill (see Next Steps).
+  **100,000 / 100,000** v2 10-slot samples (frozen-VAE latent included;
+  regenerated 2026-09-10, 0 errors). v1 8-slot backed up as
+  `cowpea_curv26_pkt_v1_8slot/`.
+- **VAE v2**: `phytomer_vae_v2/` (NUM_SLOTS 10 — repro x4 to stop the 3.29%
+  3-repro overflow loss, VAE input 240D, latent still 64D). val recon 0.0263,
+  cls 100%. Prior accepted `phytomer_vae_xml/` (8-slot) kept for lineage.
+- **Assembly rules verified** (2026-09-10): stem base = −fwd·L (internode tip
+  = node), leaflets 0.8/0.8/1.0 petiole curve, flowers/fruit @ peduncle tip.
+  `ORGAN_LEAF=5` restored to `DETERMINISTIC_ORGAN_TYPES` (leaflet-center bug).
 - **Pipeline refactored** (see §4.6 of the 2026-09-09 doc):
   `generate_tensor_shards.py` → `generate_cache.py` with `cache`/`pkt` modes;
   `phytomer_ids` + packet targets (+ VAE latent) are now produced **inside**
   dataset generation. `add_phytomer_ids_to_cache.py` and the standalone
   `precompute_phytomer_packets*.py` tools were deleted.
+- **tools/ cleaned** (2026-09-10): only active scripts remain —
+  `phytomer_vae_visualizer.py`, `precompute_phytomer_latent_pca.py`,
+  `calibrate_anchor_capacity.py`. One-off eval/diag/relabel tools deleted.
 
 ### Resume (recommended order):
 ```bash
-# 1. Finish the packet cache (XML-direct, ~1GB XML I/O, no re-render)
-bash slurm_scripts/generate_phytomer_packets_jobs.sh --num-jobs 40 --gres gpu:1 --submit
+# 1. (done) packet cache complete — skip backfill
 
 # 2. Relaunch phytomer training with the pkt fast path
-PHYTOMER_VAE_CHECKPOINT=diffusion_based/checkpoints/phytomer_vae_xml/phytomer_vae_64d_best.pt \
+PHYTOMER_VAE_CHECKPOINT=diffusion_based/checkpoints/phytomer_vae_v2/phytomer_vae_64d_best.pt \
   PKT_CACHE_DIR=dataset/cache/cowpea_curv26_pkt \
   sbatch slurm_scripts/train_hierarchical_flow_matching.sh
 ```
@@ -168,15 +175,15 @@ PHYTOMER_VAE_CHECKPOINT=diffusion_based/checkpoints/phytomer_vae_xml/phytomer_va
 
 | Priority | Task | Notes |
 | :--- | :--- | :--- |
-| **P1** | Finish pkt backfill | `bash slurm_scripts/generate_phytomer_packets_jobs.sh --num-jobs 40 --gres gpu:1 --submit` → 100k |
-| **P2** | Relaunch phytomer training | `PKT_CACHE_DIR=dataset/cache/cowpea_curv26_pkt PHYTOMER_VAE_CHECKPOINT=.../phytomer_vae_xml/phytomer_vae_64d_best.pt sbatch slurm_scripts/train_hierarchical_flow_matching.sh` |
+| **P1** | ~~Finish pkt backfill~~ | **DONE** — 100k/100k v2 10-slot (2026-09-10) |
+| **P2** | Relaunch phytomer training | `PHYTOMER_VAE_CHECKPOINT=.../phytomer_vae_v2/phytomer_vae_64d_best.pt PKT_CACHE_DIR=dataset/cache/cowpea_curv26_pkt sbatch slurm_scripts/train_hierarchical_flow_matching.sh` |
 | **P3** | Monitor 6D rotation convergence in Stage 3 | Check whether stem segments align upward/outward in Epoch 25/50 panels |
 | **P4** | Evaluate Bidirectional Chamfer Distance | Add max/mean distance from GT $\to$ Pred to avoid one-way clustering metric bias |
 | **P5** | Dataset scaling beyond 100k | 100k XML+cache complete; future crops/DAPs use the unified `generate_helios_dataset_jobs.sh` pipeline |
-| **P6** | PhytomerVAE-64 validation gate | **PASSED** — `phytomer_vae_xml` val recon 0.0261, cls 100.0% |
-| **P7** | Stage-3 phytomer integration | **WIRED** — `flow_granularity=phytomer` (73D bridge targets) |
-| **P8** | PhytomerVAE GUI app | **DONE** — `tools/phytomer_vae_visualizer.py` (see GUI doc) |
-| **P9** | Launch phytomer-mode training | **PENDING** — resume after pkt backfill (P1/P2 above) |
+| **P6** | PhytomerVAE-64 validation gate | **PASSED** — v2 10-slot val recon 0.0263, cls 100.0% |
+| **P7** | Stage-3 phytomer integration | **WIRED** — `flow_granularity=phytomer` (73D bridge targets); slots_per_anchor=10 |
+| **P8** | PhytomerVAE GUI app | **DONE + hardened** — `tools/phytomer_vae_visualizer.py` (see GUI doc notes 8–16) |
+| **P9** | Launch phytomer-mode training | **PENDING** — VAE retrain NOT needed (base rules are decode-side; see GUI doc note 15) |
 
 ---
 
@@ -209,7 +216,7 @@ PHYTOMER_VAE_CHECKPOINT=diffusion_based/checkpoints/phytomer_vae_xml/phytomer_va
 │   └── checkpoints/
 │       ├── hierarchical_latent_fm/               ← training checkpoints (epoch_025.pt, epoch_050.pt, ...)
 │       ├── organ_vae/organ_latent_vae_best.pt    ← frozen OrganLatentVAE bridge
-│       └── phytomer_vae_xml/                     ← [ACCEPTED] PhytomerVAE-64, XML-phytomer clustering (val recon 0.0261, cls 100%)
+│       └── phytomer_vae_v2/                      ← [ACCEPTED] PhytomerVAE-64 v2, 10-slot (val recon 0.0263, cls 100%); lineage: phytomer_vae_xml/
 ├── slurm_scripts/
 │   ├── train_hierarchical_flow_matching.sh       ← launcher w/ INIT_CHECKPOINT / PKT_CACHE_DIR support
 │   ├── generate_helios_dataset_jobs.sh           ← full pipeline: XML synth + cache (+ pkt/latent) in one pass
@@ -217,7 +224,7 @@ PHYTOMER_VAE_CHECKPOINT=diffusion_based/checkpoints/phytomer_vae_xml/phytomer_va
 ├── dataset/
 │   ├── helios_data/cowpea/                       ← 100,000 XML files (complete)
 │   ├── cache/cowpea_curv26/                      ← 100,000 cached .pt (image+nodes+phytomer_ids, complete)
-│   └── cache/cowpea_curv26_pkt/                  ← 38,610 pkt targets (latent; backfill in progress)
+│   └── cache/cowpea_curv26_pkt/                  ← 100,000 v2 10-slot pkt targets (latent; v1 8-slot in cowpea_curv26_pkt_v1_8slot/)
 └── docs/
     ├── ongoing/
     │   ├── README.md                             ← ongoing status dashboard

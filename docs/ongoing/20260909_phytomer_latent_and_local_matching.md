@@ -662,23 +662,29 @@ Compare: ClsAcc, val recon, render IoU/Chamfer, step time, VRAM.
 ./slurm_scripts/submit_backbone_ablation.sh --submit
 ```
 
-### 4.2 GUI app (DELEGATED to a separate agent)
+### 4.2 GUI app (COMPLETED 2026-09-09/10 — see dedicated doc)
 
-A Python GUI visualizing the 64D phytomer latent is delegated to another agent.
-Requirements for the handoff:
-- **PCA latent cloud**: load the frozen PhytomerVAE + packet cache
-  (`/tmp/opencode/phytomer_packets_4k_rel.pt`), encode packets → 64D latents,
-  PCA to 2D/3D, scatter plot; clicking a point decodes that latent.
+**Status**: DONE + hardened. Full spec/implementation/gotchas moved to
+`docs/ongoing/20260909_phytomer_latent_visualizer_gui.md` (notes 1–16 cover
+structural decode, PCA-click mechanics, GLB race fix, PC sliders, the
+leaflet-center bug (ORGAN_LEAF=5), and the stem base = −fwd·L correction —
+the latter two are decode-side only, so VAE retraining was NOT needed).
+
+Original handoff requirements (historical):
+- **PCA latent cloud**: load the frozen PhytomerVAE + packet cache, encode
+  packets → 64D latents, PCA to 2D/3D, scatter plot; clicking a point decodes
+  that latent.
 - **64D sliders**: adjust each latent dim; decode → relative packet →
-  `apply_ref_for_flow` with a chosen reference rot → 3D render (matplotlib 3D or
-  trimesh; the renderer is `HeliosPyTorchRenderer`).
+  `apply_ref_for_flow` with a chosen reference rot → 3D render
+  (`HeliosPyTorchRenderer`).
 - **Reference frame**: default identity; optionally pick a real packet's ref.
-- **Files**: `diffusion_based/models/phytomer_vae.py` (decode), 
-  `diffusion_based/dataset/phytomer_packets.py` (decode_packets/apply_reference_rotation,
-  assemble_packets), checkpoint `diffusion_based/checkpoints/phytomer_vae_structural/phytomer_vae_64d_best.pt`.
+- **Files**: `diffusion_based/models/phytomer_vae.py` (decode),
+  `diffusion_based/dataset/phytomer_packets.py` (decode_packets/
+  apply_reference_rotation, assemble_packets), checkpoint
+  `diffusion_based/checkpoints/phytomer_vae_v2/phytomer_vae_64d_best.pt` (v2).
 - **Note**: `--rot-branch` checkpoints require `use_rot_branch=True` at decode;
-  decode returns ZEROED base — call `assemble_packets(recon_packets, refs)` before
-  `decode_packets`/`apply_ref_for_flow` to reconstruct slot bases.
+  decode returns ZEROED base — call `assemble_packets(recon_packets, refs)`
+  before `decode_packets`/`apply_ref_for_flow` to reconstruct slot bases.
 
 ---
 
