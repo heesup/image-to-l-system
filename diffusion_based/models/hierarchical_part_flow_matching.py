@@ -1161,7 +1161,9 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                 abs_packets = apply_ref_for_flow(packet_hat, refined_pos, refined_rot)
                 flat_abs = abs_packets.reshape(B, active_k * M, 26)
                 keep = pred_cls.reshape(B, active_k * M) > 0
-                res["part_14d"] = decode_fm(flat_abs)
+                # decode_fm is 2D-only: decode per sample and stack.
+                res["part_14d"] = torch.stack(
+                    [decode_fm(flat_abs[b]) for b in range(B)])
                 res["organ_probs"] = probs
                 res["pred_cls"] = pred_cls.reshape(B, active_k * M)
                 res["pred_cls_logits"] = out["cls_logits"].reshape(B, active_k * M, -1)
