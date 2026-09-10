@@ -70,6 +70,8 @@ PYRAMID_ZOOMS = [1.0, 2.0, 4.0, 8.0]
 DEFAULT_VAE_CHECKPOINT = os.path.join(
     repo_root, "diffusion_based", "checkpoints", "phytomer_vae_xml", "phytomer_vae_64d_best.pt")
 
+PKT_VERSION = 3  # 1: 8-slot, 2: 10-slot absolute latent, 3: 10-slot + normalized-space latent
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Plant Dataset Cache Generator (cache / pkt modes)")
@@ -422,7 +424,8 @@ def generate_pkt(
         if os.path.exists(out_path):
             try:
                 d = torch.load(out_path, map_location="cpu", weights_only=True)
-                if "packets" in d and (vae is None or "latent" in d):
+                if ("packets" in d and d.get("pkt_version", 0) >= PKT_VERSION
+                        and (vae is None or "latent" in d)):
                     done_count += 1
                     continue
             except Exception:
