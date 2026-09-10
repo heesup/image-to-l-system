@@ -359,7 +359,8 @@ class _XmlPktDataset(Dataset):
         if os.path.exists(out_path):
             try:
                 d = torch.load(out_path, map_location="cpu", weights_only=True)
-                if "packets" in d and (not self.need_latent or "latent" in d):
+                if ("packets" in d and d.get("pkt_version", 0) >= PKT_VERSION
+                        and (not self.need_latent or "latent" in d)):
                     return {"status": "skip", "prefix": prefix, "out_path": out_path}
             except Exception:
                 pass
