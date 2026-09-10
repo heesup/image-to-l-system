@@ -139,6 +139,12 @@ def forward_backward_step(
         capacity_pred_prob = float(capacity_schedule["p_pred"])
         use_pred_capacity = (torch.rand(1).item() < capacity_pred_prob)
 
+    prof = {"packet_build": 0.0, "fwd1": 0.0, "fwd2": 0.0, "matcher": 0.0,
+            "target_build": 0.0, "render": 0.0, "loss": 0.0,
+            "backward": 0.0, "probe": 0.0, "other": 0.0}
+    _sync_cuda()
+    _t_fbs = time.time()
+
     # Probe tokens WITH grad (reused by the model forward below — saves one full
     # DINOv2 forward per step). Only the count scalar is detached for slicing.
     _sync_cuda()
@@ -224,12 +230,6 @@ def forward_backward_step(
     # The GT anchor pose comes from the matcher's cluster centers (position)
     # and the packet reference rotation (Option 1: anchor frame).
     # ------------------------------------------------------------------
-    prof = {"packet_build": 0.0, "fwd1": 0.0, "fwd2": 0.0, "matcher": 0.0,
-            "target_build": 0.0, "render": 0.0, "loss": 0.0,
-            "backward": 0.0, "probe": 0.0, "other": 0.0}
-
-    _sync_cuda()
-    _t_fbs = time.time()
     t0 = time.time()
     phyto_targets = None
     if flow_granularity == "phytomer":
