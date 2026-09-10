@@ -805,6 +805,7 @@ def probe_optimal_batch_size(
     render_fraction: float = 1.0 / 6.0,
     flow_granularity: str = "organ",
     phytomer_vae: Optional[nn.Module] = None,
+    phy_count_weight: float = 2.0,
 ) -> int:
     """
     Directly measures base model/optimizer memory and per-sample activation memory on this GPU
@@ -1384,6 +1385,7 @@ def main():
             render_fraction=args.render_fraction,
             flow_granularity=args.flow_granularity,
             phytomer_vae=phytomer_vae,
+            phy_count_weight=args.phy_count_weight,
         )
     else:
         resolved_batch_size = int(args.batch_size)
