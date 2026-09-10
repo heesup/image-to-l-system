@@ -84,7 +84,7 @@ FM_SCALE_END = FM_SCALE_START + 3  # 25
 #
 # ASSEMBLY_TYPE: base == center (zeroed), petiole-curve point (computed), or
 # peduncle-curve tip (computed) — ALL deterministic; nothing is VAE-learned.
-DETERMINISTIC_ORGAN_TYPES = {1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12}  # stem, petiole, peduncle, buds, flowers, fruit
+DETERMINISTIC_ORGAN_TYPES = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}  # stem, petiole, leaflets, peduncle, buds, flowers, fruit
 # Leaflet attach arc-fractions along the petiole curve (XML-phytomer verified:
 # slot 2/3 = 0.800, slot 4 = 0.991-1.000, error <= 0.005).
 LEAFLET_ATTACH_FRAC = {2: 0.8, 3: 0.8, 4: 1.0}
@@ -152,7 +152,12 @@ def assemble_packets(
     """Reconstructs DETERMINISTIC slot bases from assembly rules.
 
     GT-verified deterministic rules (XML-phytomer clustering, full cowpea_curv26):
-      stem/petiole/peduncle/bud base = cluster center (error <= 0.07cm p99).
+      stem (slot 0) base = -fwd x internode_length (the internode TIP = the
+        node where the petiole attaches; 2026-09-10 re-verified: residual
+        median 0.02cm p99 0.13cm over 20k clusters; the old "base = center"
+        rule had 2.7cm error because the internode tube spans PREVIOUS node
+        -> this node).
+      petiole/bud base = cluster center (error <= 0.07cm p99).
       lateral leaflets (slots 2-3) = 0.8 x the CURVED petiole centerline.
       terminal leaflet (slot 4)    = 1.0 x the CURVED petiole centerline (tip).
       flowers/fruit (slots 6-9)    = 1.0 x the CURVED PEDUNCLE centerline (tip)
@@ -180,6 +185,14 @@ def assemble_packets(
     # Leaflet bases: arc-fraction point on the CURVED petiole centerline.
     R_ref = rot6d_to_matrix(reference_rots)  # (P, 3, 3)
     for p in range(P):
+        # Stem (slot 0): the internode connects the PREVIOUS node to THIS node,
+        # so its base is one internode back along its own axis from the center:
+        # base = -fwd * length (fwd = local Y column, matching the renderer).
+        # GT-verified (median residual 0.02cm over 8k+ clusters).
+        if bool(det[p, 0]) and ot[p, 0] == 3:
+            R_ino = R_ref[p] @ rot6d_to_matrix(out[p, 0, FM_ROT_START:FM_ROT_END])
+            ino_len = out[p, 0, FM_SCALE_START] / SCALE_SCALE  # metres
+            base[p, 0] = -(R_ino[:, 1] * ino_len) * base_scale
         if not bool(det[p, 1]):
             continue
         R_pet = R_ref[p] @ rot6d_to_matrix(out[p, 1, FM_ROT_START:FM_ROT_END])

@@ -92,6 +92,49 @@ Access: VNC browser `localhost:7860` or SSH tunnel `ssh -L 7860:localhost:7860`.
     rot 0.0029 (vs 0.0084). 64D was oversized (consistent with 16PC/98%).
     Ckpts removed (log: `/tmp/opencode/vae_32d_train.log`); v2-32D is a cheap
     future option if latent compactness ever matters.
+12. **Leaflet bases at node-center FIXED** (2026-09-10): v2's
+    `DETERMINISTIC_ORGAN_TYPES` dropped `ORGAN_LEAF=5` — `assemble_packets`
+    skipped leaflet slots, so VAE-decoded leaflets kept the zeroed base
+    (pinned at the node center; GT roundtrip "100%" was vacuous since GT
+    bases passed through unchanged). Fix: leaf(5) added to the det set →
+    leaflet bases recompute on the curved petiole (0.8/0.8/1.0). GT residual
+    vs the curve rule: slot2 0.19cm / slot3 0.10cm / slot4 0.23cm mean.
+    NOTE slot0 (stem) has a 1.2cm-mean residual by design (center = petiole
+    base, internode base differs); slot6 fruit p99 33cm = rare long-tail
+    offsets (pre-existing). Packet + VAE unit tests 15/15 pass.
+13. **"Petiole 1개 vs 3개" clarification** (2026-09-10, no code change): user
+    expected 3 petioles per node (one per leaf). XML ground truth says
+    otherwise — 110/111 phytomers have EXACTLY 1 petiole + 3 leaves
+    (trifoliate; 1 phytomer has 2 petioles). Helios C++ original and the
+    pytorch renderer both draw 1 petiole tube + 3 blade OBJs (cowpea leaf
+    OBJs have no petiolule, unlike Bean/Tomato). Mesh audit: leaf verts sit
+    exactly at the 0.8-frac curve base (382 verts within 1cm of leaflet2 base
+    at (1.4,4.5,-4.8)cm vs node at origin); laterals' blades point 67–85° away
+    from the node direction (terminal 160°, classic trifoliate). The apparent
+    "leaflets at node" in identity mode = top-down camera (elev 90°) +
+    petiole pointing down-forward (fwd≈(0.2,0.63,-0.75)) → foreshortened tube.
+    3-panel proof: `docs/results/assets/fig_phytomer_trifoliate_structure.png`
+    (A tubes-only real-ref / B full GT real-ref / C identity top-down).
+14. **Stem base rule corrected** (2026-09-10, user caught it): the internode
+    tube spans PREVIOUS node -> THIS node, so its base is one internode back
+    along its own axis: `base = -fwd * length` (fwd = local Y column, matching
+    the renderer's tube fwd). The old "base = center" rule placed the stem
+    THROUGH the node (2.7cm median error), making the petiole appear to sprout
+    from the stem's midpoint/bottom. New rule verified over 20k clusters:
+    residual median 0.02cm / p99 0.13cm; GUI-cache re-audit slot0
+    0.016cm mean. Numerical proof: stem tip + petiole base == node (0,0,0).
+    15/15 tests pass.
+15. **Training impact assessment** (2026-09-10): VAE training UNAFFECTED —
+    `strip_base()` zeroes ALL deterministic bases before encoding (240D input)
+    and the loss target is `tgt_base = 0` for every slot, so neither encoder
+    input nor target changed. The rule lives in `assemble_packets` (decode-side
+    re-anchoring): affects (a) GUI/eval renders of decoded packets — now
+    botanically correct, (b) the differentiable render branch in phytomer-mode
+    training (decode→assemble→render), and (c) the pkt cache stem-base values
+    are untouched (GT bases stored as-is; the cache is rule-free). Net: no
+    retraining of the VAE needed; phytomer-mode training renders will render
+    stems correctly connected (previous runs had stems stabbed through nodes —
+    small visual loss-noise, now removed).
 9. **GLB "not a glb" race fixed** (2026-09-10): concurrent slider events raced
    on a fixed per-tag export path (read half-written file → assert). Now each
    export writes a unique uuid path from in-memory `t.export(file_type="glb")`
