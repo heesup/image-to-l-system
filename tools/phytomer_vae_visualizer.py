@@ -4,8 +4,8 @@ PCA latent cloud (2D clickable + 3D rotatable) + 64D latent sliders -> decode
 -> re-anchor (reference frame) -> HeliosPyTorchRenderer RGB + depth.
 
 Data: precomputed by tools/precompute_phytomer_latent_pca.py into
-/tmp/opencode/phytomer_gui_cache/ (z, pca, proj2d/3d, presence, refs,
-packets, dap, meta.json).
+dataset/cache/phytomer_gui_cache/ (z, pca, proj2d/3d, presence, refs,
+centers, packets, dap, meta.json).
 
 Usage (workspace root):
     .../bin/python tools/phytomer_vae_visualizer.py \
@@ -73,6 +73,9 @@ class PhytomerVisualizer:
         self.presence = torch.load(os.path.join(cache_dir, "presence.pt"), map_location="cpu")
         self.refs = torch.load(os.path.join(cache_dir, "refs.pt"), map_location="cpu")
         self.packets = torch.load(os.path.join(cache_dir, "packets.pt"), map_location="cpu")
+        centers_path = os.path.join(cache_dir, "centers.pt")
+        self.centers = (torch.load(centers_path, map_location="cpu")
+                        if os.path.exists(centers_path) else None)
         dap_path = os.path.join(cache_dir, "dap.pt")
         self.dap = torch.load(dap_path, map_location="cpu") if os.path.exists(dap_path) else None
         self.n = self.z.shape[0]
@@ -255,18 +258,20 @@ class PhytomerVisualizer:
     def _anchor_for_packet(self, idx: int):
         """Returns (center_m, ref_rot6d) for a real packet.
 
-        The cache stores anchor-relative packets; the packet's own reference
-        frame is the slot-0 internode rotation (or first present slot). The
-        cluster center is recovered as the negative of the slot-0 relative
-        base (slot 0 is the internode whose base IS the node position).
+        Uses the stored cluster center (precompute saves centers.pt); falls
+        back to recovering it from the slot-0 relative base (slot 0 is the
+        internode whose base IS the node position).
         """
-        p = self.packets[idx]
-        pr = self.presence[idx]
         ref = self.refs[idx].numpy()
-        if bool(pr[0]):
-            center = -(p[0, FM_BASE_START:FM_BASE_START + 3].numpy()) / BASE_SCALE
+        if self.centers is not None:
+            center = self.centers[idx].numpy()
         else:
-            center = np.zeros(3)
+            p = self.packets[idx]
+            pr = self.presence[idx]
+            if bool(pr[0]):
+                center = -(p[0, FM_BASE_START:FM_BASE_START + 3].numpy()) / BASE_SCALE
+            else:
+                center = np.zeros(3)
         return center, ref
 
     def _decode(self, z: np.ndarray, ref_mode: str, ref_idx: int):
@@ -545,7 +550,7 @@ def build_app(viz: PhytomerVisualizer):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cache", type=str, default="/tmp/opencode/phytomer_gui_cache")
+    parser.add_argument("--cache", type=str, default="dataset/cache/phytomer_gui_cache")
     parser.add_argument("--ckpt", type=str,
                         default="diffusion_based/checkpoints/phytomer_vae_structural/phytomer_vae_64d_best.pt")
     parser.add_argument("--server-name", type=str, default="0.0.0.0")

@@ -269,6 +269,7 @@ class PartArrayDataset(Dataset):
         include_globs: List[str] = None,
         cache_dir: str = None,
         species: Optional[str] = "cowpea",
+        pkt_cache_dir: str = None,
     ):
         self.data_root = os.path.abspath(data_root)
         self.max_nodes = max_nodes
@@ -277,10 +278,12 @@ class PartArrayDataset(Dataset):
         self.node_dim = FM_NODE_DIM
         self.device = device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.cache_dir = cache_dir
+        self.pkt_cache_dir = pkt_cache_dir
         self.species = species
         self._cached_renderer = None
         self._image_cache = {}
         self._tensor_cache = {}
+        self._pkt_cache = {}
 
         self._transform_tensor = transforms.Compose([
             transforms.Resize((image_size, image_size)),
@@ -384,6 +387,13 @@ class PartArrayDataset(Dataset):
                         data["existence_mask"] = (data["nodes"][:, EMPTY_IDX] < 0.5).float()
                         data["prefix"] = sample["prefix"]
                         data["jpeg"] = sample["jpeg"]
+                        # Precomputed phytomer packet targets: embedded in the main
+                        # cache (new generate_cache.py pipeline) or, for legacy
+                        # datasets, in a separate pkt cache dir.
+                        if "pkt" not in data and self.pkt_cache_dir:
+                            pkt_path = os.path.join(self.pkt_cache_dir, f"{sample['prefix']}.pt")
+                            if os.path.exists(pkt_path):
+                                data["pkt"] = torch.load(pkt_path, map_location="cpu", weights_only=True)
                         return data
                 except Exception:
                     pass

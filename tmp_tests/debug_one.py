@@ -1,7 +1,7 @@
 import os, sys, traceback
 sys.path.insert(0, os.getcwd())
 import torch
-from diffusion_based.dataset.generate_tensor_shards import load_species_xml_samples, encode_sample
+from diffusion_based.dataset.generate_cache import load_species_xml_samples, encode_sample
 from diffusion_based.models.plant_organ_array import PlantOrganArray
 from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 

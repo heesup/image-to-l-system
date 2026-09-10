@@ -1,14 +1,20 @@
 """
-Train PhytomerVAE on canonical 8-slot phytomer packets from the cache dataset.
+Train PhytomerVAE on canonical 8-slot phytomer packets from the cache dataset,
+then (optionally) precompute per-sample packet targets into a SEPARATE cache
+dir (dataset/cache/<name>_pkt/) using the best checkpoint.
 
-Packet extraction mirrors HierarchicalBotanicalMatcher clustering
-(petiole bases + standalone internodes), so training targets are exactly the
-supervision units the anchor-level flow matcher will consume.
+Packet extraction uses EXACT XML phytomer membership (cache field
+`phytomer_ids`), so training targets are exactly the supervision units the
+anchor-level flow matcher will consume.
+
+The pkt cache replaces the training loop's per-step packet build + VAE encode
+(0.2-4.2s/step — the #2 bottleneck after render) with a cache lookup.
 
 Usage (workspace root):
     /home/lion397/.conda/envs/digital-crops/bin/python \\
         diffusion_based/training/train_phytomer_vae.py \\
-        --latent-dim 64 --epochs 60 --max-files 4000
+        --latent-dim 64 --epochs 60 --max-files 4000 \\
+        --pkt-cache-dir dataset/cache/cowpea_curv26_pkt
 """
 
 import argparse
@@ -17,6 +23,7 @@ import os
 import random
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Tuple
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
@@ -94,6 +101,78 @@ def collect_packets(
     return packets_t, presence_t, refs_t
 
 
+_PKT_VAE = None
+_PKT_OUT = ""
+
+
+def _pkt_init_worker(vae_ckpt: str, out_dir: str):
+    global _PKT_VAE, _PKT_OUT
+    _PKT_OUT = out_dir
+    _PKT_VAE = PhytomerVAE(latent_dim=64, hidden_dim=256)
+    _PKT_VAE.load_state_dict(torch.load(vae_ckpt, map_location="cpu", weights_only=True))
+    _PKT_VAE.eval()
+
+
+def _pkt_process_one(path: str) -> tuple:
+    global _PKT_VAE, _PKT_OUT
+    prefix = os.path.basename(path).replace(".pt", "")
+    out_path = os.path.join(_PKT_OUT, f"{prefix}.pt")
+    if os.path.exists(out_path):
+        return prefix, "skip"
+    try:
+        d = torch.load(path, map_location="cpu", weights_only=True)
+        packets, presence, centers, refs = build_phytomer_packets(
+            d["nodes"], d.get("existence_mask"), phytomer_ids=d.get("phytomer_ids"))
+        if packets.shape[0] == 0:
+            return prefix, "empty"
+        with torch.no_grad():
+            lat = _PKT_VAE.encode(_PKT_VAE.pack_input(packets, presence))[0]
+        torch.save({
+            "packets": packets.half(),
+            "presence": presence,
+            "centers": centers,
+            "refs": refs,
+            "latent": lat.half(),
+        }, out_path)
+        return prefix, "ok"
+    except Exception as e:
+        return prefix, f"err:{e}"
+
+
+def precompute_pkt_cache(
+    cache_dir: str,
+    out_dir: str,
+    vae_ckpt: str,
+    workers: int = 28,
+) -> None:
+    """Precomputes per-sample packet targets (packets/presence/centers/refs/
+    latent) with the frozen VAE into a SEPARATE cache dir. Deterministic —
+    replaces the training loop's per-step packet build + VAE encode."""
+    os.makedirs(out_dir, exist_ok=True)
+    files = sorted(glob.glob(os.path.join(cache_dir, "*.pt")))
+    print(f"Precomputing pkt cache: {len(files)} files -> {out_dir} (workers={workers})", flush=True)
+    t0 = time.time()
+    ok = skip = empty = err = 0
+    with ProcessPoolExecutor(max_workers=workers,
+                             initializer=_pkt_init_worker,
+                             initargs=(vae_ckpt, out_dir)) as ex:
+        futs = [ex.submit(_pkt_process_one, f) for f in files]
+        for i, fut in enumerate(as_completed(futs)):
+            prefix, status = fut.result()
+            if status == "ok":
+                ok += 1
+            elif status == "skip":
+                skip += 1
+            elif status == "empty":
+                empty += 1
+            else:
+                err += 1
+            if (i + 1) % 2000 == 0:
+                print(f"  [{i+1}/{len(files)}] ok={ok} skip={skip} empty={empty} err={err} "
+                      f"elapsed={time.time()-t0:.0f}s", flush=True)
+    print(f"Pkt cache done: ok={ok} skip={skip} empty={empty} err={err} in {time.time()-t0:.0f}s")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train PhytomerVAE on cache phytomer packets")
     parser.add_argument("--cache-dir", type=str, default="dataset/cache/cowpea_curv26")
@@ -125,6 +204,12 @@ def main():
                         default="/tmp/opencode/phytomer_packets_4k.pt")
     parser.add_argument("--checkpoint-dir", type=str,
                         default="diffusion_based/checkpoints/phytomer_vae")
+    parser.add_argument("--pkt-cache-dir", type=str, default="",
+                        help="After training, precompute per-sample packet targets "
+                             "(packets/presence/centers/refs/latent) with the best "
+                             "checkpoint into this SEPARATE cache dir "
+                             "(e.g. dataset/cache/cowpea_curv26_pkt). Empty = skip.")
+    parser.add_argument("--pkt-workers", type=int, default=28)
     parser.add_argument("--device", type=str, default="cuda:0")
     args = parser.parse_args()
 
@@ -218,6 +303,12 @@ def main():
     torch.save(model.state_dict(),
                os.path.join(args.checkpoint_dir, f"phytomer_vae_{args.latent_dim}d_last.pt"))
     print(f"Done. Best val recon: {best_val:.4f}. Checkpoints in {args.checkpoint_dir}")
+
+    # Optional: precompute the per-sample pkt cache with the best checkpoint.
+    if args.pkt_cache_dir:
+        best_ckpt = os.path.join(args.checkpoint_dir, f"phytomer_vae_{args.latent_dim}d_best.pt")
+        precompute_pkt_cache(args.cache_dir, args.pkt_cache_dir, best_ckpt,
+                             workers=args.pkt_workers)
 
 
 if __name__ == "__main__":

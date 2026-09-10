@@ -498,10 +498,11 @@ mean 3.9cm, p90 5.5cm). That is why the "0.8 × petiole" assembly rule failed on
 the full dataset (5.2cm mean error) — the GT itself was mis-assigned.
 
 **Fix (implemented)**:
-- `tools/add_phytomer_ids_to_cache.py`: re-reads each sample's XML, extracts
-  per-organ `(shoot_id, phytomer_idx)`, stores `phytomer_ids` (N, 2) in every
-  cache file (100k/100k done, 0 errors, ~20 min). Row order is preserved
-  (cache nodes[i] == 40D row i — verified).
+- `phytomer_ids` (N, 2) stored in every cache file: per-organ
+  `(shoot_id, phytomer_idx)` extracted from the XML 40D tensor; row order is
+  preserved (cache nodes[i] == 40D row i — verified). Originally a post-hoc
+  pass (`add_phytomer_ids_to_cache.py`), now produced inline by
+  `generate_cache.py` (§4.6). 100k/100k done.
 - `build_phytomer_packets(..., phytomer_ids=...)`: groups organs by EXACT XML
   membership instead of nearest-center. Cluster center = petiole base (or
   internode base, or member mean).
@@ -518,6 +519,46 @@ the full dataset (5.2cm mean error) — the GT itself was mis-assigned.
 **Result**: full-dataset training (Job 38183271) Epoch 1 ClsAcc **92.6%** (was
 0.0% — the metric was also broken, now computed via frozen VAE decode of the
 clean latent; fixed in the same pass).
+
+### 4.6 PIPELINE REFACTOR — unified cache/pkt generation (2026-09-09 late)
+
+**Question**: "XML -> 40D typed -> Phytomer VAE 가 XML 직접 파이프라인이야? 이 파이프라인
+이면 더이상 14D (one-hot 확장시 26D) 벡터가 필요 없어? 아니면 중간 표현으로 필요해?"
+
+**Answer**: the real pipeline is
+`XML -> 40D typed -> to_part_tensor() 14D -> encode_fm() 26D -> build_phytomer_packets
+(uses 40D topology) -> packets (P, 8, 26) -> pack_input 192D -> VAE -> 64D latent`.
+The 14D/26D is **not** dropped — it is the geometry content the VAE compresses and
+the FM regenerates (73D flow state = anchor_pos(3) + anchor_rot(6) + latent(64)).
+What the XML-direct path removes is the need to *store/re-read* the 63GB image
+cache to build packets: XML is ~250KB and reconstructs the 26D rows exactly.
+The 40D typed tensor is only needed at packet-build time (exact phytomer
+grouping); it is never stored. At training time only the image cache (model
+input) and pkt targets are needed — nodes are recreated by decoding latents.
+
+**Refactor (user-approved)**:
+- `generate_tensor_shards.py` → **`generate_cache.py`**; legacy `shard` mode and
+  `generate_shards_packed()` removed (only `cache` was in use).
+- Two modes:
+  - `--mode cache` (default): render pyramid image + 26D nodes + `phytomer_ids`
+    + `pkt {packets, presence, centers, refs, latent}` in ONE per-sample `.pt`.
+    Latent is computed with `--vae-checkpoint` at generation time.
+  - `--mode pkt`: XML-direct packet targets only (no rendering) — reads ~250KB
+    XML instead of ~630KB cache, for backfilling existing image caches.
+- Deleted post-hoc tools/launchers: `tools/add_phytomer_ids_to_cache.py`,
+  `tools/precompute_phytomer_packets.py`, `tools/precompute_phytomer_packets_xml.py`,
+  `slurm_scripts/precompute_phytomer_packets{,_jobs,_gpu}.sh`.
+- New backfill launcher: `slurm_scripts/generate_phytomer_packets_jobs.sh`
+  (multi-node, `--gres gpu:1` optional, timestamped batch dir).
+- `generate_helios_dataset_jobs.sh` passes `--vae-checkpoint`; the full pipeline
+  now emits packets+latent with the images in a single pass.
+- `PartArrayDataset` prefers `pkt` embedded in the main cache and falls back to
+  `--pkt_cache_dir` for legacy datasets.
+- Progress prints every 10 (cache) / 100 (pkt) samples.
+
+**Status**: 25/25 tests pass; cache-mode and pkt-mode smoke tests verified
+(16ch image, `phytomer_ids`, `(P,8,26)` packets, `(P,64)` latent).
+Packet cache 38,610/100,000 — resume with the backfill launcher.
 
 ### 4.5 STEP-TIME PROFILING (2026-09-09 evening)
 

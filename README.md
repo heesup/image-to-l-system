@@ -55,7 +55,7 @@ image-to-l-system/
 │   ├── dataset/
 │   │   ├── part_array_dataset.py         # 25D FM encode/decode (BASE_SCALE=20)
 │   │   ├── cowpea_shard_dataset.py       # Shard dataset loader
-│   │   └── generate_tensor_shards.py     # XML → GPU render → .pt shards
+│   │   └── generate_cache.py             # XML → GPU render → .pt cache + phytomer packets
 │   ├── eval/
 │   │   ├── eval_13d_xml_organ_masks.py   # Helios C++ raytrace benchmark (Figure 10)
 │   │   └── metrics.py                    # mSSIM, FG-IoU, Chamfer

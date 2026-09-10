@@ -15,7 +15,7 @@
 | **Core** | `models/plant_organ_array.py` | 26D organ array data structure, normalization, serialization |
 | **XML Export** | `models/part_assembly_to_xml.py` | `PlantOrganArray` → Helios XML reconstruction |
 | **Dataset** | `dataset/cowpea_shard_dataset.py` | Streaming `.pt` shard loader with dynamic collation |
-| **Sharding** | `dataset/generate_tensor_shards.py` | XML → GPU render → 26D `.pt` tensor shards |
+| **Cache** | `dataset/generate_cache.py` | XML → GPU render → per-sample `.pt` (26D nodes + image + phytomer packets) |
 | **Training** | `training/train_cowpea_dit_100k_ddp.py` | 2×H100 DDP training with W&B logging |
 | **Eval** | `eval/eval_cowpea_dit_100k.py` | Full lifespan 6-column benchmark |
 | **Metrics** | `eval/metrics.py` | Masked SSIM, FG-IoU, Chamfer Distance |

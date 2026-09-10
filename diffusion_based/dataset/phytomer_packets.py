@@ -352,7 +352,7 @@ def build_phytomer_packets(
         active = (ot != EMPTY_IDX) & (nodes_26d[:, EMPTY_IDX] < 0.5)
     elif existence_mask.shape[0] != nodes_26d.shape[0]:
         # Compact cache format: mask over the leading prefix (see
-        # generate_tensor_shards: existence_mask has length num_organs and aligns
+        # generate_cache: existence_mask has length num_organs and aligns
         # with nodes[:num_organs], which holds all actives first).
         active = torch.zeros(nodes_26d.shape[0], dtype=torch.bool, device=device)
         n = min(existence_mask.shape[0], nodes_26d.shape[0])

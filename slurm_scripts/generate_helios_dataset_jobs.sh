@@ -1,22 +1,23 @@
 #!/bin/bash
 # =============================================================================
-# Unified End-to-End SLURM Pipeline: Helios XML Synthesis + GPU 26D Sharding
+# Unified End-to-End SLURM Pipeline: Helios XML Synthesis + Dataset Cache
 # =============================================================================
 # Accelerates dataset generation across a fleet of SLURM 'low' partition GPU nodes.
 # Performs both:
 #   [Phase 1] Helios C++ Simulation & XML Synthesis (DAP 1~100 × 100 Seeds)
 #             -> dataset/helios_data/<species>/
-#   [Phase 2] GPU Multi-Arch Rendering & 26D Tensor Sharding (100K samples)
-#             -> dataset/helios_data/<species>_shard/
+#   [Phase 2] GPU Multi-Arch Rendering + per-sample cache with 26D nodes,
+#             XML phytomer_ids and phytomer packet targets (+ VAE latent)
+#             -> dataset/cache/<species>_curv26/
 #
 # Usage:
 #   ./slurm_scripts/generate_helios_dataset_jobs.sh --dry-run
 #   ./slurm_scripts/generate_helios_dataset_jobs.sh --submit
 #   ./slurm_scripts/generate_helios_dataset_jobs.sh --plant-types cowpea --seeds 100 --total-samples 100000 --submit
-#   ./slurm_scripts/generate_helios_dataset_jobs.sh --skip-xml --submit      # Run only GPU sharding
+#   ./slurm_scripts/generate_helios_dataset_jobs.sh --skip-xml --submit      # Run only cache generation
 #   ./slurm_scripts/generate_helios_dataset_jobs.sh --skip-shards --submit   # Run only C++ XML generation
-#   ./slurm_scripts/generate_helios_dataset_jobs.sh --mode cache --pyramid concat --skip-xml --submit
-#       # 26D cache mode (per-sample .pt with pyramid-concat 16-ch image), cowpea-only
+#   ./slurm_scripts/generate_helios_dataset_jobs.sh --pyramid concat --skip-xml --submit
+#       # per-sample cache with pyramid-concat 16-ch image, cowpea-only
 # =============================================================================
 
 set -e
@@ -34,7 +35,6 @@ DAP_MIN=1
 DAP_MAX=100
 SEEDS=100
 TOTAL_SAMPLES=10000
-SHARD_SIZE=100
 IMAGE_SIZE=256
 MAX_SLOTS=4096
 WORKERS_PER_NODE=4
@@ -44,6 +44,7 @@ TIME_LIMIT="24:00:00"
 CPUS_PER_JOB=8
 MEM_PER_JOB="32G"
 EXCLUDE_NODES=""
+VAE_CKPT="${REPO_ROOT}/diffusion_based/checkpoints/phytomer_vae_xml/phytomer_vae_64d_best.pt"
 
 RUN_XML=true
 RUN_SHARDS=true
@@ -98,8 +99,8 @@ while [[ $# -gt 0 ]]; do
             TOTAL_SAMPLES_SPECIFIED=true
             shift 2
             ;;
-        --shard-size)
-            SHARD_SIZE="$2"
+        --vae-checkpoint)
+            VAE_CKPT="$2"
             shift 2
             ;;
         --image-size)
@@ -165,12 +166,7 @@ GEN_MODE="${GEN_MODE:-cache}"
 PYRAMID="${PYRAMID:-concat}"
 # Crop-named outputs to keep species separate:
 #   cache mode -> dataset/cache/<crop>_curv26/   (PartArrayDataset fast path)
-#   shard mode -> dataset/helios_data/<crop>_shard_curv26/
-if [[ "${GEN_MODE}" == "cache" ]]; then
-    SHARDS_DIR="${REPO_ROOT}/dataset/cache/${PLANT_TYPES}_curv26"
-else
-    SHARDS_DIR="${DATASET_DIR}/${PLANT_TYPES}_shard_curv26"
-fi
+SHARDS_DIR="${REPO_ROOT}/dataset/cache/${PLANT_TYPES}_curv26"
 
 mkdir -p "${BATCH_LOG_DIR}"
 mkdir -p "${DATASET_DIR}/${PLANT_TYPES}"
@@ -180,21 +176,22 @@ DAPS_PER_JOB=$(( (TOTAL_DAPS + NUM_JOBS - 1) / NUM_JOBS ))
 SAMPLES_PER_WORKER=$(( TOTAL_SAMPLES / NUM_JOBS ))
 
 echo "============================================================"
-echo "Unified Helios Pipeline: XML Synthesis + GPU 26D Sharding"
+echo "Unified Helios Pipeline: XML Synthesis + Dataset Cache"
 echo "============================================================"
 echo "Plant Types:       ${PLANT_TYPES}"
 echo "Genotypes:         ${GENOTYPES}"
 echo "Total DAPs:        ${DAP_MIN} to ${DAP_MAX} (${TOTAL_DAPS} DAPs × ${SEEDS} seeds)"
 echo "Parallel Jobs:     ${NUM_JOBS}"
 echo "DAPs per Job:      ~${DAPS_PER_JOB}"
-echo "Total Shard Goal:  ${TOTAL_SAMPLES} samples (${SAMPLES_PER_WORKER} / worker)"
+echo "Total Cache Goal:  ${TOTAL_SAMPLES} samples (${SAMPLES_PER_WORKER} / worker)"
 echo "Max Organ Slots:   ${MAX_SLOTS}"
 echo "Raw XML Output:    ${DATASET_DIR}/${PLANT_TYPES}"
-echo "Shard Output:      ${SHARDS_DIR}"
+echo "Cache Output:      ${SHARDS_DIR}"
+echo "VAE Checkpoint:    ${VAE_CKPT}"
 echo "Partition:         ${PARTITION} (gres=gpu:1)"
 echo "Account:           ${ACCOUNT}"
 echo "Batch Log Dir:     ${BATCH_LOG_DIR}"
-echo "Run Phases:        XML=${RUN_XML}, Shards=${RUN_SHARDS}"
+echo "Run Phases:        XML=${RUN_XML}, Cache=${RUN_SHARDS}"
 echo "============================================================"
 echo ""
 
@@ -243,7 +240,7 @@ echo "Node:      \${SLURM_NODELIST}"
 echo "Partition: \${SLURM_JOB_PARTITION}"
 echo "Start:     \$(date)"
 echo "Plant:     ${PLANT_TYPES} | DAP Range: ${JOB_DAP_START}-${JOB_DAP_END} (${SEEDS} seeds)"
-echo "Target:    ${SAMPLES_PER_WORKER} shard samples (Slots: ${MAX_SLOTS})"
+echo "Target:    ${SAMPLES_PER_WORKER} cache samples (Slots: ${MAX_SLOTS})"
 echo "============================================================"
 
 if [ -f ~/.bashrc ]; then
@@ -270,7 +267,7 @@ GPU_HEALTH_OK=true
         SENTINEL_FILE="${BATCH_LOG_DIR}/.tarpit_${job_idx}"
         echo "\${SLURM_JOB_ID}" > "\${SENTINEL_FILE}"
 
-        # Loop: keep re-submitting until a replacement verifiably completes all shards
+        # Loop: keep re-submitting until a replacement verifiably completes all samples
         ATTEMPT=0
         while true; do
             ATTEMPT=\$((ATTEMPT + 1))
@@ -358,13 +355,13 @@ if [[ "${RUN_XML}" == true ]]; then
 fi
 
 # -----------------------------------------------------------------------------
-# Phase 2: Python GPU Differentiable 26D Tensor Sharding
+# Phase 2: GPU Rendering + per-sample cache (nodes + image + phytomer packets)
 # -----------------------------------------------------------------------------
 if [[ "${RUN_SHARDS}" == true ]]; then
     echo ""
-    echo ">>> [Phase 2/2] Generating tensors (mode=${GEN_MODE}, pyramid=${PYRAMID}, Worker ${job_idx}/${NUM_JOBS}, ${SAMPLES_PER_WORKER} samples)..."
-    ${PYTHON_BIN} diffusion_based/dataset/generate_tensor_shards.py \\
-        --mode "${GEN_MODE}" \\
+    echo ">>> [Phase 2/2] Generating cache (pyramid=${PYRAMID}, Worker ${job_idx}/${NUM_JOBS}, ${SAMPLES_PER_WORKER} samples)..."
+    ${PYTHON_BIN} diffusion_based/dataset/generate_cache.py \\
+        --mode cache \\
         --pyramid "${PYRAMID}" \\
         --species "${PLANT_TYPES}" \\
         --data-root "${DATASET_DIR}" \\
@@ -373,15 +370,14 @@ if [[ "${RUN_SHARDS}" == true ]]; then
         --dap-max ${JOB_DAP_END} \\
         --num-workers 1 \\
         --worker-id 0 \\
-        --shard-size ${SHARD_SIZE} \\
         --image-size ${IMAGE_SIZE} \\
         --max-slots ${MAX_SLOTS} \\
-        --max-templates 30 \\
+        --vae-checkpoint "${VAE_CKPT}" \\
         --device cuda
 
     SHARD_STATUS=\$?
     if [[ \$SHARD_STATUS -ne 0 ]]; then
-        echo "Error: Phase 2 Tensor Sharding exited with code \${SHARD_STATUS}"
+        echo "Error: Phase 2 cache generation exited with code \${SHARD_STATUS}"
         exit \$SHARD_STATUS
     fi
 fi
@@ -429,7 +425,7 @@ if [[ "$SUBMIT" == true ]]; then
     echo "Submission Summary: ${submitted_count} submitted, ${failed_count} failed"
     echo "Monitor:   squeue -u $USER"
     echo "Logs:      ${BATCH_LOG_DIR}"
-    echo "Shards:    ${SHARDS_DIR}"
+    echo "Cache:     ${SHARDS_DIR}"
     echo "============================================================"
 else
     echo "Run with --submit to submit all ${#JOB_FILES[@]} jobs to SLURM."

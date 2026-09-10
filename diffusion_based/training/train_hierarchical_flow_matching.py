@@ -14,7 +14,7 @@ import math
 import json
 import random
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 # Ensure repository root is on sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
@@ -206,12 +206,27 @@ def forward_backward_step(
     phyto_targets = None
     if flow_granularity == "phytomer":
         D = raw_model.phytomer_latent_dim
-        # Per-sample: build canonical packets from the GT nodes, then encode
-        # each packet's latent with the frozen PhytomerVAE. The matcher's
-        # anchor_tgt_pos gives the GT anchor base; the packet reference_rot
-        # gives the GT anchor rotation (the internode frame).
+        # FAST PATH: precomputed pkt cache (packets/presence/centers/refs/latent
+        # per sample, from generate_cache.py / train_phytomer_vae.py --pkt-cache-dir).
+        # The batch carries a 'pkt' list of per-sample dicts (or None where the
+        # pkt cache is missing — those samples fall back to the on-the-fly build).
+        pkt_batch = batch.get("pkt", None)
         phyto_targets = []
         for b in range(B):
+            pb = pkt_batch[b] if pkt_batch is not None else None
+            if pb is not None:
+                phyto_targets.append({
+                    "packets": pb["packets"].to(device),
+                    "presence": pb["presence"].to(device),
+                    "centers": pb["centers"].to(device),
+                    "refs": pb["refs"].to(device),
+                    "latent": pb["latent"].to(device),
+                })
+                continue
+            # Per-sample: build canonical packets from the GT nodes, then encode
+            # each packet's latent with the frozen PhytomerVAE. The matcher's
+            # anchor_tgt_pos gives the GT anchor base; the packet reference_rot
+            # gives the GT anchor rotation (the internode frame).
             act_b = act_mask_sub[b]
             if not act_b.any():
                 phyto_targets.append(None)
@@ -920,6 +935,14 @@ def collate_eval_set(dataset: PartArrayDataset, indices: List[int], device: torc
     return batch
 
 
+def collate_with_pkt(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """default_collate + per-sample 'pkt' dict passthrough (list of dicts)."""
+    pkt_list = [it.pop("pkt", None) for it in batch]
+    out = default_collate(batch)
+    out["pkt"] = pkt_list
+    return out
+
+
 def train_one_epoch(
     model: HierarchicalPartFlowMatchingModel,
     dataloader: DataLoader,
@@ -1059,6 +1082,10 @@ def main():
     parser = argparse.ArgumentParser(description="Train Hierarchical Matryoshka Botanical Flow Matching")
     parser.add_argument("--data_dir", type=str, default="dataset/helios_data/cowpea")
     parser.add_argument("--cache_dir", type=str, default="dataset/cache/cowpea_curv26")
+    parser.add_argument("--pkt_cache_dir", type=str, default="",
+                        help="Precomputed phytomer packet targets cache dir "
+                             "(from train_phytomer_vae.py --pkt-cache-dir). "
+                             "Replaces the per-step packet build + VAE encode.")
     parser.add_argument("--output_dir", type=str, default="diffusion_based/checkpoints/hierarchical_fm")
     parser.add_argument("--epochs", type=int, default=500)
     parser.add_argument("--batch_size", type=str, default="auto", help="Batch size per GPU ('auto' for dynamic probe or integer)")
@@ -1135,6 +1162,7 @@ def main():
         data_root=args.data_dir,
         max_nodes=args.max_anchors * args.slots_per_anchor,
         cache_dir=args.cache_dir,
+        pkt_cache_dir=args.pkt_cache_dir or None,
         species="cowpea",
         image_size=128,
     )
@@ -1338,6 +1366,7 @@ def main():
             batch_sampler=sampler,
             num_workers=4,
             pin_memory=True,
+            collate_fn=collate_with_pkt,
         )
     else:
         sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True) if is_ddp else None
@@ -1349,6 +1378,7 @@ def main():
             num_workers=4,
             pin_memory=True,
             drop_last=True,
+            collate_fn=collate_with_pkt,
         )
 
     if rank == 0:
