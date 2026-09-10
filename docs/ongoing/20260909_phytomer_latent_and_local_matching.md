@@ -605,7 +605,7 @@ Packet cache 38,610/100,000 — resume with the backfill launcher.
 - Tests updated to 10 slots; 25/25 pass.
 - Pipeline: train v2 VAE (`train_phytomer_vae.sh`, rot-branch, 60 epochs) ->
   `--pkt-cache-dir` auto-precomputes the 100k pkt cache in v2 format.
-- Old 8-slot pkt cache preserved at `dataset/cache/cowpea_curv26_pkt_v1_8slot/`.
+- Old 8-slot pkt cache deleted (2026-09-10, obsolete: v1 latent is 192D-incompatible with the v2 VAE).
 
 **Status**: v2 VAE training (Job 38202722) Epoch 41/60 val recon 0.0296,
 cls 100%; pkt cache regeneration follows automatically.
