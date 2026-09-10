@@ -12,7 +12,7 @@ extended with organ-combo coloring, leaf-quality toggle, and Web 3D view.
 | :--- | :--- |
 | **PCA latent cloud (2D)** | Clickable matplotlib scatter (250,000 packet latents, XML-phytomer) — click → nearest packet's z loads into sliders |
 | **PCA latent cloud (3D)** | Rotatable plotly Scatter3d, hover shows packet idx |
-| **Color by** | `slots` (presence count) / `dap` (1–100) / `combo` (organ-type combination, 24 unique) / `none` |
+| **Color by** | `combo` (default; 3 groups, 90% pure vegetative) / `slots` (presence count 0–10) / `dap` (1–100) / `none` |
 | **64D sliders** | Data-range bounds (min/max + 10% pad), Random z ~ N(0,I), Reset |
 | **Reference frame** | `identity` (true 6D identity `[1,0,0,0,1,0]`) or `real` (a packet's own ref + center) |
 | **Render** | `HeliosPyTorchRenderer` RGB + depth (bbox auto-focus, `zoom_factor=1.0`) |
@@ -25,7 +25,7 @@ extended with organ-combo coloring, leaf-quality toggle, and Web 3D view.
 | File | Purpose |
 | :--- | :--- |
 | `tools/precompute_phytomer_latent_pca.py` | Cache build: full rebuild (packets from cache + VAE encode) or `--from-pkt-cache` fast path (reuses stored pkt latents, no encode) → `dataset/cache/phytomer_gui_cache/` |
-| `tools/phytomer_vae_visualizer.py` | Gradio app (loads cache + frozen `phytomer_vae_xml` ckpt, `centers.pt` for exact re-anchor) |
+| `tools/phytomer_vae_visualizer.py` | Gradio app (loads cache + frozen `phytomer_vae_v2` ckpt, `centers.pt` for exact re-anchor; 10 slots: repro1–4) |
 | `diffusion_based/models/helios_pytorch_geometry.py` | + `"lowpoly"` leaf mode (~80-vert alpha-cutout leaf, `get_generic_leaf_mesh(Nx=8,Ny=8)`) |
 
 ## Run
@@ -80,6 +80,18 @@ Access: VNC browser `localhost:7860` or SSH tunnel `ssh -L 7860:localhost:7860`.
    **12.2/9.7/9.1%**. Combo coloring collapsed 24 → 3 groups (90% pure
    `{internode, petiole, leaf}`) — expected: exact XML clustering removed the
    nearest-center mixing that created the spurious combos.
+10. **v2 10-slot migration** (2026-09-10): visualizer + cache moved to
+    `phytomer_vae_v2` (NUM_SLOTS 10, repro x4, VAE in 240D, latent still 64D).
+    GUI cache rebuilt from regenerated pkt cache (250k, PCA evr
+    12.4/9.6/9.3%, PCA16 96.9%). Combos stay 3 groups; fruit packets now
+    carry up to 3 fruits. Acceptance verified: decoded fruit packet renders
+    visible pods (v1 buried them at center). `precompute_phytomer_latent_pca.py`
+    now saves `pca16.pt` alongside (coarse PC sliders).
+11. **32D ablation result** (v1 8-slot, for the record): same xml settings with
+    `--latent-dim 32` → val recon **0.0138** (vs 64D 0.0261), cls 100%,
+    rot 0.0029 (vs 0.0084). 64D was oversized (consistent with 16PC/98%).
+    Ckpts removed (log: `/tmp/opencode/vae_32d_train.log`); v2-32D is a cheap
+    future option if latent compactness ever matters.
 9. **GLB "not a glb" race fixed** (2026-09-10): concurrent slider events raced
    on a fixed per-tag export path (read half-written file → assert). Now each
    export writes a unique uuid path from in-memory `t.export(file_type="glb")`

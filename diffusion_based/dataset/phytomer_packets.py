@@ -113,7 +113,7 @@ def _petiole_curve_points(
         h = torch.linalg.cross(cur_axis, z_axis)
         hn = h.norm()
         h_u = h / (hn + 1e-8) if hn > 1e-4 else torch.tensor([1.0, 0.0, 0.0], device=R_pet_world.device)
-        theta = torch.deg2rad(pet_curv_deg_m) * dr
+        theta = torch.deg2rad(torch.as_tensor(pet_curv_deg_m)) * dr
         cos_t, sin_t = torch.cos(theta), torch.sin(theta)
         kcv = torch.linalg.cross(h_u, cur_axis)
         kdv = (h_u * cur_axis).sum()

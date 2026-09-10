@@ -10,7 +10,7 @@ centers, packets, dap, meta.json).
 Usage (workspace root):
     .../bin/python tools/phytomer_vae_visualizer.py \
         --cache dataset/cache/phytomer_gui_cache \
-        --ckpt diffusion_based/checkpoints/phytomer_vae_xml/phytomer_vae_64d_best.pt \
+        --ckpt diffusion_based/checkpoints/phytomer_vae_v2/phytomer_vae_64d_best.pt \
         --server-name 0.0.0.0 --server-port 7860
 """
 
@@ -59,7 +59,7 @@ ORGAN_NAMES = {
 }
 
 SLOT_ROLES = ["stem", "petiole", "leaflet1", "leaflet2", "leaflet3",
-              "peduncle", "repro1", "repro2"]
+              "peduncle", "repro1", "repro2", "repro3", "repro4"]
 
 PCA2D_SIZE = 700  # px, matplotlib image side
 
@@ -173,7 +173,7 @@ class PhytomerVisualizer:
             plt.setp(plt.getp(cb.ax.axes, "yticklabels"), color="#ced4da")
         elif color_by == "slots":
             sc = ax.scatter(proj[:, 0], proj[:, 1], c=cvals, s=3, cmap=cmap,
-                            vmin=0, vmax=8, alpha=0.7)
+                            vmin=0, vmax=10, alpha=0.7)
             cb = fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.02)
             cb.set_label("slots", color="#ced4da")
             cb.ax.yaxis.set_tick_params(color="#ced4da")
@@ -253,7 +253,7 @@ class PhytomerVisualizer:
             if color_by == "dap":
                 cmin, cmax, ctitle = 0.0, 100.0, "DAP"
             elif color_by == "slots":
-                cmin, cmax, ctitle = 0.0, 8.0, "slots"
+                cmin, cmax, ctitle = 0.0, 10.0, "slots"
             else:
                 cmin, cmax, ctitle = 0.0, 1.0, ""
             fig.add_trace(go.Scatter3d(
@@ -370,13 +370,10 @@ class PhytomerVisualizer:
         import uuid
         mesh = self._build_mesh(rel, presence, center, ref, leaf_quality)
         import trimesh
-        V = mesh["vertices"].cpu().numpy().astype(np.float64)
-        # Web viewers (three.js) are Y-up; Helios geometry is Z-up.
-        # Rotation (x,y,z)->(x,z,-y) (det=+1, no mirror) so the plant
-        # stands upright instead of lying tipped over in the 3D tab.
-        V = V[:, [0, 2, 1]] * np.array([1.0, 1.0, -1.0])
+        # NOTE: keep Helios Z-up as-is — RGB renderer and web GLB must show
+        # the IDENTICAL view (a Y-up bake here once made them disagree).
         t = trimesh.Trimesh(
-            vertices=V,
+            vertices=mesh["vertices"].cpu().numpy(),
             faces=mesh["faces"].cpu().numpy(),
             vertex_colors=(mesh["colors"].cpu().numpy() * 255).astype(np.uint8),
             process=False,
@@ -462,7 +459,8 @@ class PhytomerVisualizer:
 
     def _packet_info(self, rel: torch.Tensor, presence: torch.Tensor) -> str:
         lines = []
-        for s in range(8):
+        n_slots = presence.shape[0]
+        for s in range(n_slots):
             if not bool(presence[s]):
                 lines.append(f"slot {s} ({SLOT_ROLES[s]}): —")
                 continue
@@ -487,7 +485,9 @@ class PhytomerVisualizer:
         msg = f"Loaded packet {idx}"
         if self.dap is not None:
             msg += f" (DAP {self.dap[idx].item():.0f})"
-        return self._sliders_out(z) + [idx, msg]
+        # Also sets ref_idx=idx: its .change cascade renders with the new
+        # sliders (programmatic slider sets don't fire .release themselves).
+        return self._sliders_out(z) + [idx, idx, msg]
 
     def on_load_idx(self, idx: int):
         idx = int(idx) % self.n
@@ -496,7 +496,7 @@ class PhytomerVisualizer:
         if self.dap is not None:
             msg += f" (DAP {self.dap[idx].item():.0f})"
         msg += f" | combo: {'+'.join(self.combo_names[self.combo_ids[idx]])}"
-        return self._sliders_out(z) + [idx, msg]
+        return self._sliders_out(z) + [idx, idx, msg]
 
     def on_sliders(self, leaf_quality: str, *values):
         z = self._z_from_ordered(values)
@@ -606,12 +606,13 @@ def build_app(viz: PhytomerVisualizer):
                     with gr.Tab("3D (web)", id="web3d"):
                         model3d = gr.Model3D(label="3D mesh", height=420,
                                              clear_color=(0.06, 0.08, 0.1, 1.0))
-                info_out = gr.Textbox(label="Packet (relative frame)", lines=8, max_lines=12)
+                info_out = gr.Textbox(label="Packet (relative frame)", lines=10, max_lines=14)
 
         # ---- events ----
         slider_outs = sliders + pc_sliders
-        pca2d_img.select(viz.on_pca2d_click, None, slider_outs + [load_idx, status])
-        btn_load.click(viz.on_load_idx, load_idx, slider_outs + [load_idx, status])
+        click_outs = slider_outs + [load_idx, ref_idx, status]
+        pca2d_img.select(viz.on_pca2d_click, None, click_outs)
+        btn_load.click(viz.on_load_idx, load_idx, click_outs)
         color_by.change(
             lambda cb, cs: viz._render_pca2d(cb, cs.lower())[0], [color_by, colorscale], pca2d_img)
         colorscale.change(
@@ -652,7 +653,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cache", type=str, default="dataset/cache/phytomer_gui_cache")
     parser.add_argument("--ckpt", type=str,
-                        default="diffusion_based/checkpoints/phytomer_vae_xml/phytomer_vae_64d_best.pt")
+                        default="diffusion_based/checkpoints/phytomer_vae_v2/phytomer_vae_64d_best.pt")
     parser.add_argument("--server-name", type=str, default="0.0.0.0")
     parser.add_argument("--server-port", type=int, default=7860)
     parser.add_argument("--device", type=str, default="cuda:0")

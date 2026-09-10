@@ -661,7 +661,7 @@ class FineBotanicalFlowMatchingDecoder(nn.Module):
 class PhytomerFlowMatchingDecoder(nn.Module):
     """Stage 3 (phytomer mode): flow-matches base + rot + latent per anchor.
 
-    Unlike FineBotanicalFlowMatchingDecoder, which dispatches M=8 organ slots per
+    Unlike FineBotanicalFlowMatchingDecoder, which dispatches M organ slots per
     anchor (and uses pose only as conditioning), this decoder flow-matches ONE
     9+D vector per anchor:
         z_1 = [ node_base_xyz(3) | node_rot_6d(6) | phytomer_latent(D) ]
@@ -671,8 +671,8 @@ class PhytomerFlowMatchingDecoder(nn.Module):
     it is never flow-matched (a 0/1 gate regresses to its mean under velocity
     matching).
 
-    Tokens: K anchors (vs 8K slots) -> 8x fewer, O(K^2) self-attn -> 64x cheaper.
-    No intra-block (M=8) self-attention: the joint latent is per-phytomer.
+    Tokens: K anchors (vs M*K slots) -> Mx fewer, O(K^2) self-attn -> M^2x cheaper.
+    No intra-block (M) self-attention: the joint latent is per-phytomer.
     """
 
     def __init__(
@@ -684,11 +684,13 @@ class PhytomerFlowMatchingDecoder(nn.Module):
         embed_dim: int = 384,
         num_heads: int = 8,
         num_layers: int = 6,
+        slots_per_phytomer: int = 10,
     ):
         super().__init__()
         self.latent_dim = latent_dim
         self.base_dim = base_dim
         self.rot_dim = rot_dim
+        self.slots_per_phytomer = slots_per_phytomer
         self.node_flow_dim = base_dim + rot_dim + latent_dim  # 9 + D
         self.num_classes = num_classes
         self.embed_dim = embed_dim
@@ -735,8 +737,7 @@ class PhytomerFlowMatchingDecoder(nn.Module):
         )
 
         # Per-slot existence logits (B, K, M) — separate gating head, NOT flow-matched.
-        # Predicts which of the 8 canonical organs are present in this phytomer.
-        self.slots_per_phytomer = 8
+        # Predicts which of the M canonical organs are present in this phytomer.
         self.exist_head = nn.Sequential(
             nn.Linear(embed_dim, embed_dim // 2),
             nn.GELU(),
@@ -871,6 +872,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                 embed_dim=embed_dim,
                 num_heads=vit_heads,
                 num_layers=fine_layers,
+                slots_per_phytomer=slots_per_anchor,
             )
         else:
             self.fine_stage = FineBotanicalFlowMatchingDecoder(

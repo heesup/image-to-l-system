@@ -334,7 +334,7 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
             image_tokens=img_tokens, anchor_pos=anchor_pos, anchor_rot=anchor_rot,
         )
         self.assertEqual(out["pred_velocity"].shape, (B, K, D))
-        self.assertEqual(out["pred_slot_exist_logits"].shape, (B, K, 8))
+        self.assertEqual(out["pred_slot_exist_logits"].shape, (B, K, 10))
         loss = out["pred_velocity"].pow(2).mean() + out["pred_slot_exist_logits"].pow(2).mean()
         loss.backward()
         self.assertIsNotNone(noisy.grad)

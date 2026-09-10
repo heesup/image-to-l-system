@@ -206,13 +206,15 @@ def main():
     else:
         packets, presence, centers, refs, dap, z, source = _build_and_encode(args, device)
 
-    # PCA fit on the latent cloud.
+    # PCA fit on the latent cloud (3D for scatter + 16D for coarse sliders).
     zn = z.numpy()
     pca = PCA(n_components=3, whiten=False)
     proj3d = pca.fit_transform(zn)
     proj2d = proj3d[:, :2]
     evr = pca.explained_variance_ratio_
     print(f"PCA explained variance: PC1 {evr[0]*100:.1f}% PC2 {evr[1]*100:.1f}% PC3 {evr[2]*100:.1f}%")
+    pca16 = PCA(n_components=min(16, zn.shape[1]), whiten=False).fit(zn)
+    print(f"PCA16 explained variance: {pca16.explained_variance_ratio_.sum()*100:.1f}%")
 
     # Per-dim percentile ranges for slider bounds (0.5% .. 99.5%).
     lo = np.percentile(zn, 0.5, axis=0)
@@ -233,6 +235,9 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     torch.save(z, os.path.join(args.out, "z.pt"))
     torch.save(pca, os.path.join(args.out, "pca.pt"))
+    import pickle
+    with open(os.path.join(args.out, "pca16.pt"), "wb") as f:
+        pickle.dump(pca16, f)
     torch.save(torch.from_numpy(proj2d).float(), os.path.join(args.out, "proj2d.pt"))
     torch.save(torch.from_numpy(proj3d).float(), os.path.join(args.out, "proj3d.pt"))
     torch.save(presence, os.path.join(args.out, "presence.pt"))
