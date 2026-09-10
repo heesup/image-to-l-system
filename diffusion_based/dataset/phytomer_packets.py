@@ -168,27 +168,34 @@ def anchor_scale(packets: torch.Tensor) -> torch.Tensor:
 def normalize_packet_scales(packets: torch.Tensor, s_a: torch.Tensor) -> torch.Tensor:
     """Divides each slot's scale row by the packet's anchor scale s_a (component-wise,
     safe division). The result feeds the VAE (scale-invariant latent) — the 76D flow
-    state carries s_a explicitly and decode multiplies it back."""
+    state carries s_a explicitly and decode multiplies it back.
+
+    NOTE: builds a fresh tensor (no inplace writes into grad-captured slices —
+    avoids AsStridedBackward0 version conflicts in the differentiable render path).
+    """
     out = packets.clone()
     denom = torch.where(s_a.abs() > 1e-6, s_a, torch.ones_like(s_a))  # (P, 3)
-    out[:, :, FM_SCALE_START:FM_SCALE_END] = (
-        out[:, :, FM_SCALE_START:FM_SCALE_END] / denom.unsqueeze(1))
+    scaled = out[:, :, FM_SCALE_START:FM_SCALE_END] / denom.unsqueeze(1)
     # Belt-and-suspenders: clamp extreme ratios (e.g. a 1m main-stem internode
     # normalized by a 6cm petiole is legitimately ~16, but nothing physical
     # exceeds ~200x). Prevents inf/nan from ever reaching VAE training.
-    out[:, :, FM_SCALE_START:FM_SCALE_END] = (
-        out[:, :, FM_SCALE_START:FM_SCALE_END].clamp(-200.0, 200.0))
-    return out
+    scaled = scaled.clamp(-200.0, 200.0)
+    return torch.cat(
+        [out[..., :FM_SCALE_START], scaled, out[..., FM_SCALE_END:]], dim=-1)
 
 
 def denormalize_packet_scales(packets: torch.Tensor, s_a: torch.Tensor) -> torch.Tensor:
     """Inverse of normalize_packet_scales: scale_abs = scale_norm * s_a.
     MUST be applied BEFORE assemble_packets (the petiole-curve math uses the
-    ABSOLUTE petiole length to place leaflet/repro bases)."""
+    ABSOLUTE petiole length to place leaflet/repro bases).
+
+    NOTE: builds a fresh tensor (no inplace writes into grad-captured slices —
+    avoids AsStridedBackward0 version conflicts in the differentiable render path).
+    """
     out = packets.clone()
-    out[:, :, FM_SCALE_START:FM_SCALE_END] = (
-        out[:, :, FM_SCALE_START:FM_SCALE_END] * s_a.unsqueeze(1))
-    return out
+    scaled = out[:, :, FM_SCALE_START:FM_SCALE_END] * s_a.unsqueeze(1)
+    return torch.cat(
+        [out[..., :FM_SCALE_START], scaled, out[..., FM_SCALE_END:]], dim=-1)
 
 
 def strip_base(packets: torch.Tensor) -> torch.Tensor:
