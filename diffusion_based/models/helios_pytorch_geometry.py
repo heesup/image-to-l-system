@@ -1339,6 +1339,7 @@ class HeliosPlantGeometryBuilder:
         leaf_mode: Optional[str] = None,
         existence_threshold: float = 0.5,
         soft_existence: bool = False,
+        color_palette: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> Dict[str, torch.Tensor]:
         """
@@ -1891,14 +1892,24 @@ class HeliosPlantGeometryBuilder:
             empty_p = torch.zeros((0, num_classes), dtype=torch.float32, device=device)
             return {'vertices': empty3, 'faces': empty_f, 'normals': empty3, 'colors': empty3, 'opacities': empty_op, 'organ_types': empty_o, 'organ_probs': empty_p}
 
+        all_probs_cat = torch.cat(all_probs, dim=0) if all_probs else torch.zeros((0, num_classes), device=device)
+        if color_palette is not None and all_probs_cat.shape[0] > 0:
+            # Semantic color: per-vertex RGB = organ-prob distribution @ learnable
+            # palette (13, 3). Replaces the hardcoded per-type constants so the
+            # cos-color photometric loss carries gradient into the classifier.
+            # Init the palette from the constants table for identical behavior.
+            pal = color_palette.to(device=device, dtype=torch.float32)
+            colors_out = all_probs_cat @ pal
+        else:
+            colors_out = torch.cat(all_colors, dim=0)
         return {
             'vertices': torch.cat(all_verts, dim=0),
             'faces': torch.cat(all_faces, dim=0),
             'normals': torch.cat(all_normals, dim=0),
-            'colors': torch.cat(all_colors, dim=0),
+            'colors': colors_out,
             'opacities': torch.cat(all_opacities, dim=0),
             'organ_types': torch.cat(all_organs, dim=0),
-            'organ_probs': torch.cat(all_probs, dim=0) if all_probs else torch.zeros((0, num_classes), device=device)
+            'organ_probs': all_probs_cat,
         }
 
 

@@ -189,5 +189,36 @@ class TestPhytomerPackets(unittest.TestCase):
         self.assertTrue(torch.allclose(back[2, 16:22], org_rot, atol=1e-5))
 
 
+    def test_anchor_scale_and_normalize_roundtrip(self):
+        """s_a = petiole (slot 1) scale row; normalize/denormalize roundtrips."""
+        from diffusion_based.dataset.phytomer_packets import (
+            anchor_scale, normalize_packet_scales, denormalize_packet_scales)
+        P, S = 4, 10
+        packets = torch.zeros(P, S, 26)
+        packets[:, :, 4] = 1.0  # petiole one-hot at slot 1
+        packets[:, 1, 22] = 0.06 * 50.0   # petiole length 6cm
+        packets[:, 1, 23] = 0.002 * 50.0  # petiole radius 2mm
+        packets[:, 2, 22] = 0.03 * 50.0   # leaflet half as long
+        s_a = anchor_scale(packets)
+        self.assertEqual(s_a.shape, (P, 3))
+        self.assertTrue(torch.allclose(s_a[:, 0], torch.full((P,), 0.06 * 50.0)))
+        n = normalize_packet_scales(packets, s_a)
+        self.assertAlmostEqual(n[0, 1, 22].item(), 1.0, places=5)   # petiole -> 1
+        self.assertAlmostEqual(n[0, 2, 22].item(), 0.5, places=5)   # leaflet -> 0.5
+        d = denormalize_packet_scales(n, s_a)
+        self.assertTrue(torch.allclose(d, packets))
+
+    def test_anchor_scale_fallback(self):
+        """No petiole -> first present slot; all-absent -> ones."""
+        from diffusion_based.dataset.phytomer_packets import anchor_scale
+        pk = torch.zeros(2, 10, 26)
+        pk[0, 3, 5] = 1.0           # leaf at slot 3
+        pk[0, 3, 22] = 2.0
+        # pk[1] stays all-absent
+        s_a = anchor_scale(pk)
+        self.assertAlmostEqual(s_a[0, 0].item(), 2.0)
+        self.assertTrue(torch.allclose(s_a[1], torch.ones(3)))
+
+
 if __name__ == "__main__":
     unittest.main()

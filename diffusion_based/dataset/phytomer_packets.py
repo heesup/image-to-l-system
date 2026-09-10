@@ -124,6 +124,60 @@ def _petiole_curve_points(
     return torch.stack(pts)
 
 
+def anchor_scale(packets: torch.Tensor) -> torch.Tensor:
+    """Anchor-level scale s_a per packet: the PETIOLE (slot 1) scale row
+    [length, radius, unused] in raw FM units (x SCALE_SCALE).
+
+    Why petiole: it is the phytomer's structural backbone (cluster center =
+    its base; leaflets attach on its curve) and its length carries the real
+    size variation across DAP (measured: 6.0cm mean, p90 9.1cm — vs internode
+    2.5cm mean, nearly constant, a poor size proxy).
+
+    Returns (P, 3) float. Fallback: first present slot's scale row; all-absent
+    packets get ones (safe division downstream).
+
+    v3 (2026-09-10): packet scales are stored NORMALIZED by s_a in the VAE
+    input/targets; the 76D flow state carries s_a explicitly and decode
+    multiplies it back (see normalize_packet_scales / denormalize_packet_scales).
+    """
+    P, S, _ = packets.shape
+    ot = packets[:, :, :FM_OT_END].argmax(dim=-1)          # (P, S)
+    scale = packets[:, :, FM_SCALE_START:FM_SCALE_END]     # (P, S, 3)
+    # Vectorized (no per-packet python loop / GPU syncs): petiole at slot 1
+    # if canonical, else the first present slot with a nonzero scale row.
+    present = ot != 0                                      # (P, S)
+    has_pet = (ot[:, 1] == 4)                              # (P,)
+    first_idx = present.long().argmax(dim=-1)              # (P,) 0 if none
+    idx = torch.where(has_pet, torch.ones_like(first_idx), first_idx)
+    s_a = scale[torch.arange(P, device=packets.device), idx]  # (P, 3)
+    any_present = present.any(dim=-1, keepdim=True)        # (P, 1)
+    s_a = torch.where(any_present, s_a, torch.ones_like(s_a))
+    # guard degenerate components (e.g. the unused 3rd scale dim ~= 0)
+    s_a = torch.where(s_a.abs() > 1e-6, s_a, torch.ones_like(s_a))
+    return s_a
+
+
+def normalize_packet_scales(packets: torch.Tensor, s_a: torch.Tensor) -> torch.Tensor:
+    """Divides each slot's scale row by the packet's anchor scale s_a (component-wise,
+    safe division). The result feeds the VAE (scale-invariant latent) — the 76D flow
+    state carries s_a explicitly and decode multiplies it back."""
+    out = packets.clone()
+    denom = torch.where(s_a.abs() > 1e-6, s_a, torch.ones_like(s_a))  # (P, 3)
+    out[:, :, FM_SCALE_START:FM_SCALE_END] = (
+        out[:, :, FM_SCALE_START:FM_SCALE_END] / denom.unsqueeze(1))
+    return out
+
+
+def denormalize_packet_scales(packets: torch.Tensor, s_a: torch.Tensor) -> torch.Tensor:
+    """Inverse of normalize_packet_scales: scale_abs = scale_norm * s_a.
+    MUST be applied BEFORE assemble_packets (the petiole-curve math uses the
+    ABSOLUTE petiole length to place leaflet/repro bases)."""
+    out = packets.clone()
+    out[:, :, FM_SCALE_START:FM_SCALE_END] = (
+        out[:, :, FM_SCALE_START:FM_SCALE_END] * s_a.unsqueeze(1))
+    return out
+
+
 def strip_base(packets: torch.Tensor) -> torch.Tensor:
     """Zeroes the base columns of DETERMINISTIC slots (structural assembly).
 

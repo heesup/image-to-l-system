@@ -393,7 +393,12 @@ class PartArrayDataset(Dataset):
                         if "pkt" not in data and self.pkt_cache_dir:
                             pkt_path = os.path.join(self.pkt_cache_dir, f"{sample['prefix']}.pt")
                             if os.path.exists(pkt_path):
-                                data["pkt"] = torch.load(pkt_path, map_location="cpu", weights_only=True)
+                                _pkt = torch.load(pkt_path, map_location="cpu", weights_only=True)
+                                # v3 gate: 10 slots + normalized-space latent required.
+                                # Stale v1 (8-slot) / v2 (absolute latent) files fall
+                                # through to the on-the-fly fallback below.
+                                if isinstance(_pkt, dict) and _pkt.get("pkt_version", 0) >= 3:
+                                    data["pkt"] = _pkt
                         return data
                 except Exception:
                     pass

@@ -82,6 +82,13 @@ class PhytomerVisualizer:
         self.n = self.z.shape[0]
         self.latent_dim = self.meta["latent_dim"]
 
+        # v3: the VAE decodes NORMALIZED scales; s_a per cached packet restores
+        # absolute geometry for display (GT s_a for real packets, mean for sliders).
+        from diffusion_based.dataset.phytomer_packets import anchor_scale
+        with torch.no_grad():
+            self.s_a = anchor_scale(self.packets.float())
+            self.s_a_mean = self.s_a.mean(dim=0)
+
         self.model = PhytomerVAE(latent_dim=self.latent_dim, hidden_dim=256).to(device)
         self.model.load_state_dict(torch.load(ckpt, map_location=device, weights_only=True))
         self.model.eval()
@@ -329,6 +336,11 @@ class PhytomerVisualizer:
         with torch.no_grad():
             out = self.model.decode(zt, use_rot_branch=True)
         rel = out["recon_packets"][0].cpu()
+        # v3: decode output has NORMALIZED scales — restore absolute with the
+        # GT s_a (real packet) or the mean s_a (slider latents).
+        from diffusion_based.dataset.phytomer_packets import denormalize_packet_scales
+        _sa = self.s_a[ref_idx].unsqueeze(0) if (ref_mode == "real" and 0 <= ref_idx < self.n) else self.s_a_mean.unsqueeze(0)
+        rel = denormalize_packet_scales(rel.unsqueeze(0), _sa)[0]
         presence = out["cls_logits"][0].argmax(-1).cpu() > 0
         if ref_mode == "real" and 0 <= ref_idx < self.n:
             center, ref = self._anchor_for_packet(ref_idx)

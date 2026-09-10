@@ -189,10 +189,13 @@ def build_pkt_targets(
     if packets.shape[0] == 0:
         return None
     pkt = {
-        "packets": packets.half().cpu(),
+        "packets": packets.half().cpu(),  # ABSOLUTE (assembly + s_a need absolute)
         "presence": presence.cpu(),
         "centers": centers.cpu(),
         "refs": refs.cpu(),
+        # v3: 10 slots, latent from scale-NORMALIZED VAE input, s_a carried by
+        # the 76D flow state (petiole scale row, see anchor_scale).
+        "pkt_version": 3,
     }
     if vae is not None:
         dev = device if device is not None else next(vae.parameters()).device

@@ -27,6 +27,7 @@ from diffusion_based.dataset.part_array_dataset import (
 from diffusion_based.dataset.phytomer_packets import (
     apply_reference_rotation,
     assemble_packets,
+    denormalize_packet_scales,
 )
 
 
@@ -61,41 +62,50 @@ ANCHOR_MARGIN_MIN = 1.05
 # PHYTOMER-LEVEL FLOW TARGET LAYOUT (Stage 3 refinement of base + rot + latent)
 # =============================================================================
 # Per-anchor Stage-3 flow target. Stage 2 predicts a deterministic 3D node
-# scaffold; Stage 3 FLOW-REFINES the node pose (base + rot) jointly with the
-# per-phytomer latent, rather than treating the pose as fixed conditioning.
-#   z_1[anchor] = [ node_base_xyz(3) | node_rot_6d(6) | phytomer_latent(D) ]
+# scaffold (+ coarse scale); Stage 3 FLOW-REFINES the node pose (base + rot +
+# scale) jointly with the per-phytomer latent, rather than treating the pose
+# as fixed conditioning.
+#   z_1[anchor] = [ node_base_xyz(3) | node_rot_6d(6) | anchor_scale(3) | phytomer_latent(D) ]
+# The anchor scale s_a (petiole length row [len, radius, unused], v3 packet
+# format) is explicit so the flow refines phytomer size directly (GS-style
+# primitive scale); the latent carries only scale-NORMALIZED relative geometry.
 # Layout indices (relative to z_1's first dim):
 PHYTO_FLOW_BASE_START = 0          # xyz (3)  — refined anchor base position (metres)
 PHYTO_FLOW_BASE_END = 3
 PHYTO_FLOW_ROT_START = 3           # rot6d (6) — refined anchor rotation (also the
 PHYTO_FLOW_ROT_END = 9             #              reference frame for the packet)
-PHYTO_FLOW_LATENT_START = 9        # latent (D) — VAE latent of the relative packet
+PHYTO_FLOW_SCALE_START = 9         # scale (3) — refined anchor scale (petiole row)
+PHYTO_FLOW_SCALE_END = 12
+PHYTO_FLOW_LATENT_START = 12       # latent (D) — VAE latent of the relative packet
 
 
 def build_phytomer_flow_target(
     anchor_pos: torch.Tensor,
     anchor_rot: torch.Tensor,
+    anchor_scale: torch.Tensor,
     phytomer_latent: torch.Tensor,
 ) -> torch.Tensor:
-    """Concatenates per-anchor pose + latent into the Stage-3 flow target (B, K, 9+D).
+    """Concatenates per-anchor pose + scale + latent into the Stage-3 flow target (B, K, 12+D).
 
     Args:
         anchor_pos: (B, K, 3) refined anchor base positions (metres).
         anchor_rot: (B, K, 6) refined anchor 6D rotation (reference frame).
+        anchor_scale: (B, K, 3) GT anchor scale (petiole scale row, FM units).
         phytomer_latent: (B, K, D) VAE latent of the anchor-relative packets.
 
     Returns:
-        (B, K, 9 + D) flow target.
+        (B, K, 12 + D) flow target.
     """
-    return torch.cat([anchor_pos, anchor_rot, phytomer_latent], dim=-1)
+    return torch.cat([anchor_pos, anchor_rot, anchor_scale, phytomer_latent], dim=-1)
 
 
-def split_phytomer_flow_target(z: torch.Tensor, latent_dim: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Splits a Stage-3 flow vector back into (anchor_pos, anchor_rot, latent)."""
+def split_phytomer_flow_target(z: torch.Tensor, latent_dim: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Splits a Stage-3 flow vector back into (anchor_pos, anchor_rot, anchor_scale, latent)."""
     pos = z[..., PHYTO_FLOW_BASE_START:PHYTO_FLOW_BASE_END]
     rot = z[..., PHYTO_FLOW_ROT_START:PHYTO_FLOW_ROT_END]
+    scl = z[..., PHYTO_FLOW_SCALE_START:PHYTO_FLOW_SCALE_END]
     lat = z[..., PHYTO_FLOW_LATENT_START:PHYTO_FLOW_LATENT_START + latent_dim]
-    return pos, rot, lat
+    return pos, rot, scl, lat
 
 
 def apply_ref_for_flow(
@@ -361,6 +371,15 @@ class CoarseSkeletalTransformer(nn.Module):
             nn.Linear(embed_dim, 6),
         )
 
+        # 2b. Coarse anchor scale (petiole scale row [len, radius, unused], FM
+        # units): bridge-prior seed for the 76D flow's scale dims. Softplus keeps
+        # it positive; the flow refines it against the GT anchor scale.
+        self.scale_head = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim),
+            nn.GELU(),
+            nn.Linear(embed_dim, 3),
+        )
+
         # 3. Anchor existence probability logit (delta relative to soft margin prior)
         self.exist_head = nn.Sequential(
             nn.Linear(embed_dim, embed_dim // 2),
@@ -471,6 +490,7 @@ class CoarseSkeletalTransformer(nn.Module):
         delta_pos = self.pos_head(anchor_features)
         anchor_pos = self.ref_points[:K].unsqueeze(0) + delta_pos
         anchor_rot = self.rot_head(anchor_features)
+        anchor_scale = F.softplus(self.scale_head(anchor_features)) + 1e-4  # (B, K, 3)
 
         # Re-slice the soft margin prior to the active width (computed once, full width)
         macro_out = {
@@ -487,6 +507,7 @@ class CoarseSkeletalTransformer(nn.Module):
         return {
             "anchor_pos": anchor_pos,
             "anchor_rot": anchor_rot,
+            "anchor_scale": anchor_scale,
             "anchor_logits": anchor_logits,
             "anchor_features": anchor_features,
             "pred_dap": macro_out["pred_dap"],
@@ -694,7 +715,7 @@ class PhytomerFlowMatchingDecoder(nn.Module):
 
     Unlike FineBotanicalFlowMatchingDecoder, which dispatches M organ slots per
     anchor (and uses pose only as conditioning), this decoder flow-matches ONE
-    9+D vector per anchor:
+    12+D vector per anchor:
         z_1 = [ node_base_xyz(3) | node_rot_6d(6) | phytomer_latent(D) ]
     so Stage 2's 3D node scaffold (base + rot) is REFINED by flow, not fixed.
     The refined node_rot is also the reference frame for the anchor-relative
@@ -711,6 +732,7 @@ class PhytomerFlowMatchingDecoder(nn.Module):
         latent_dim: int = 16,
         base_dim: int = 3,
         rot_dim: int = 6,
+        scale_dim: int = 3,
         num_classes: int = NUM_ORGAN_TYPES,
         embed_dim: int = 384,
         num_heads: int = 8,
@@ -721,12 +743,13 @@ class PhytomerFlowMatchingDecoder(nn.Module):
         self.latent_dim = latent_dim
         self.base_dim = base_dim
         self.rot_dim = rot_dim
+        self.scale_dim = scale_dim
         self.slots_per_phytomer = slots_per_phytomer
-        self.node_flow_dim = base_dim + rot_dim + latent_dim  # 9 + D
+        self.node_flow_dim = base_dim + rot_dim + scale_dim + latent_dim  # 12 + D
         self.num_classes = num_classes
         self.embed_dim = embed_dim
 
-        # Continuous flow vector projection (9 + D -> embed)
+        # Continuous flow vector projection (12 + D -> embed)
         self.geom_proj = nn.Linear(self.node_flow_dim, embed_dim)
 
         # Sinusoidal timestep embedding for continuous flow time t in [0, 1]
@@ -760,7 +783,7 @@ class PhytomerFlowMatchingDecoder(nn.Module):
             nn.Linear(embed_dim, embed_dim),
         )
 
-        # Velocity head: predicts d/dt of the 9+D flow vector
+        # Velocity head: predicts d/dt of the 12+D flow vector
         self.velocity_head = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
             nn.GELU(),
@@ -793,17 +816,17 @@ class PhytomerFlowMatchingDecoder(nn.Module):
         anchor_pos: Optional[torch.Tensor] = None,
         anchor_rot: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Flow-matches a per-anchor (B, K, 9+D) vector.
+        """Flow-matches a per-anchor (B, K, 12+D) vector.
 
         Args:
-            noisy_flow: (B, K, 9 + D) interpolated x_t.
+            noisy_flow: (B, K, 12 + D) interpolated x_t.
             timesteps: (B,) flow time t in [0, 1].
             anchor_features: (B, K, embed) from Stage 2 CoarseSkeletalTransformer.
             image_tokens: (B, T, embed) from ViT.
             anchor_pos: Optional (B, K, 3) Stage-2 scaffold base positions.
             anchor_rot: Optional (B, K, 6) Stage-2 scaffold rotations.
         Returns:
-            'pred_velocity': (B, K, 9 + D) velocity field.
+            'pred_velocity': (B, K, 12 + D) velocity field.
             'pred_slot_exist_logits': (B, K, M) per-slot existence logits.
         """
         B, K, _ = noisy_flow.shape
@@ -882,6 +905,27 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             embed_dim=embed_dim,
         )
 
+        # Semantic color palette (13, 3): learnable per-organ-type RGB used by the
+        # differentiable render path (c_v = probs_v @ palette). Initialized from
+        # the geometry builder's hardcoded table so behavior starts identical;
+        # the cos-color loss then gives it gradient (previously the constant
+        # colors carried none). Lives on the model so the optimizer tracks it.
+        _pal = torch.zeros(13, 3)
+        _pal[0] = torch.tensor([0.0, 0.0, 0.0])      # NONE
+        _pal[1] = torch.tensor([0.20, 0.15, 0.10])   # ROOT_META
+        _pal[2] = torch.tensor([0.20, 0.15, 0.10])   # SHOOT_META
+        _pal[3] = torch.tensor([0.22, 0.45, 0.15])   # INTERNODE (COLOR_STEM)
+        _pal[4] = torch.tensor([0.25, 0.50, 0.18])   # PETIOLE
+        _pal[5] = torch.tensor([0.25, 0.62, 0.18])   # LEAF
+        _pal[6] = torch.tensor([0.55, 0.52, 0.25])   # PEDUNCLE
+        _pal[7] = torch.tensor([0.25, 0.45, 0.15])   # BUD_DORMANT
+        _pal[8] = torch.tensor([0.30, 0.50, 0.18])   # BUD_ACTIVE
+        _pal[9] = torch.tensor([0.98, 0.85, 0.15])   # FLOWER_CLOSED
+        _pal[10] = torch.tensor([0.98, 0.85, 0.15])  # FLOWER_OPEN
+        _pal[11] = torch.tensor([0.85, 0.65, 0.13])  # FRUIT (COLOR_POD)
+        _pal[12] = torch.tensor([0.40, 0.30, 0.15])  # BUD_ABORTED
+        self.color_palette = nn.Parameter(_pal)
+
         # 2. Stage 1 & 2: Coarse Skeletal Transformer with MacroBiologicalHead
         self.coarse_stage = CoarseSkeletalTransformer(
             max_anchors=max_anchors,
@@ -894,7 +938,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         # 3. Stage 3: Fine Botanical Flow Matching Decoder conditioned on 3D Scaffold.
         #    flow_granularity:
         #      'organ'   - per-organ slots (8K x node_dim), pose as conditioning.
-        #      'phytomer'- per-anchor 9+D flow vector [base(3) | rot(6) | latent(D)]
+        #      'phytomer'- per-anchor 12+D flow vector [base(3) | rot(6) | scale(3) | latent(D)]
         #                  (bridge flow: pose dims refine the Stage-2 scaffold).
         if flow_granularity == "phytomer":
             self.fine_stage = PhytomerFlowMatchingDecoder(
@@ -934,6 +978,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         teacher_anchor_pos: Optional[torch.Tensor] = None,
         num_phytomers: Optional[torch.Tensor] = None,
         capacity_mode: str = "given",
+        image_tokens: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """Unified joint forward pass across 3 cascaded stages.
 
@@ -950,8 +995,12 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                 'pred_phyto' - Stage 2 slices from the predicted phytomer count (two-pass).
                                Inference / self-conditioning path.
         """
-        # 1. Vision perception: 3D-aware multi-scale tokens
-        image_tokens = self.image_encoder(images)
+        # 1. Vision perception: 3D-aware multi-scale tokens.
+        # The caller may pass precomputed tokens (probe reuse: the training loop
+        # already ran the encoder once for capacity slicing — passing them in
+        # saves one full DINOv2 forward per step).
+        if image_tokens is None:
+            image_tokens = self.image_encoder(images)
 
         # 2. Anchor bank slicing. The predicted DAP is passed as a stage clue so
         #    Stage 2/3 condition on the developmental stage (dap_embed); in the
@@ -971,7 +1020,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
 
         # If noisy nodes exceed active fine slots, slice accordingly; if fewer, pad
         # (the anchor bank slice is authoritative — K_out drives Stage 3's width).
-        # In phytomer mode, noisy_fine_nodes is already (B, K, 9+D) — no 8K slicing.
+        # In phytomer mode, noisy_fine_nodes is already (B, K, 12+D) — no 8K slicing.
         if self.flow_granularity == "phytomer":
             if noisy_fine_nodes.shape[1] > active_k:
                 noisy_fine_nodes = noisy_fine_nodes[:, :active_k]
@@ -1044,7 +1093,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         Integrates velocity field in 16D regularized latent space.
         Takes <50ms end-to-end on GPU.
 
-        flow_granularity='phytomer': integrates the (B, K, 9+D) per-anchor vector
+        flow_granularity='phytomer': integrates the (B, K, 12+D) per-anchor vector
         [base | rot | latent]; the refined anchor rot is the reference frame for
         the relative packet (Option 1). `phytomer_vae` decodes the latent part.
         """
@@ -1082,7 +1131,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
 
         # 2. Construct Prior x_0.
         #    organ mode: standard Gaussian (B, K*8, 16) — exact legacy behavior.
-        #    phytomer mode: bridge prior (B, K, 9+D):
+        #    phytomer mode: bridge prior (B, K, 12+D):
         #        [scaffold_pos + eps(3) | scaffold_rot + eps(6) | N(0,I)(D)]
         #      so the flow REFINES the Stage-2 scaffold pose (small correction)
         #      and generates the phytomer latent normally.
@@ -1090,7 +1139,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         if self.flow_granularity == "phytomer":
             D = self.phytomer_latent_dim
             N_fine = active_k  # K anchors
-            x = torch.randn(B, active_k, 9 + D, device=device)
+            x = torch.randn(B, active_k, 12 + D, device=device)
             # bridge init for the pose part (scaled small noise around scaffold)
             x[:, :, PHYTO_FLOW_BASE_START:PHYTO_FLOW_BASE_END] = anchor_pos + 0.05 * x[:, :, PHYTO_FLOW_BASE_START:PHYTO_FLOW_BASE_END]
             x[:, :, PHYTO_FLOW_ROT_START:PHYTO_FLOW_ROT_END] = anchor_rot + 0.05 * x[:, :, PHYTO_FLOW_ROT_START:PHYTO_FLOW_ROT_END]
@@ -1143,7 +1192,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             pred_slot_exist = torch.sigmoid(pred_slot_exist_logits)             # (B, K, M)
             combined_prob = pred_slot_exist * anchor_existence.unsqueeze(-1)    # (B, K, M)
             slot_active = (combined_prob > 0.35).float().reshape(B, active_k * M)
-            pred_latent = x          # (B, K, 9+D) flow vector (caller reference)
+            pred_latent = x          # (B, K, 12+D) flow vector (caller reference)
             pred_fine_exist_logits = pred_slot_exist_logits
             N_fine = active_k * M    # flat slot surface for legacy callers
         else:
@@ -1190,10 +1239,11 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         }
 
         if self.flow_granularity == "phytomer":
-            # Split flow vector: refined pose + latent; decode latent via phytomer_vae.
-            refined_pos, refined_rot, latent = split_phytomer_flow_target(x, self.phytomer_latent_dim)
+            # Split flow vector: refined pose + scale + latent; decode latent via phytomer_vae.
+            refined_pos, refined_rot, refined_scl, latent = split_phytomer_flow_target(x, self.phytomer_latent_dim)
             res["refined_anchor_pos"] = refined_pos
             res["refined_anchor_rot"] = refined_rot
+            res["refined_anchor_scale"] = refined_scl
             res["phytomer_latent"] = latent
             res["pred_slot_exist_logits"] = final_out["pred_slot_exist_logits"]
             if phytomer_vae is not None:
@@ -1201,6 +1251,14 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                 probs = F.softmax(out["cls_logits"], dim=-1)  # (B*K, M, 13)
                 pred_cls = out["cls_logits"].argmax(-1)
                 packet_hat = out["recon_packets"].reshape(B, active_k, M, 26)
+                # v3: the decoded scales are NORMALIZED (VAE trained on normalized
+                # packets); restore absolute scale with the refined anchor scale
+                # BEFORE assembling bases (the petiole-curve math needs the absolute
+                # petiole length to place leaflet/repro bases).
+                packet_hat = denormalize_packet_scales(
+                    packet_hat.reshape(-1, M, 26),
+                    refined_scl.reshape(-1, 3),
+                ).reshape(B, active_k, M, 26)
                 # Structurally assemble slot bases from the petiole geometry
                 # (deterministic), then re-anchor with the refined anchor pose.
                 packet_hat = assemble_packets(

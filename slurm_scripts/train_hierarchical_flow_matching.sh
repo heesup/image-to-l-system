@@ -108,6 +108,8 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     --color_weight 0.2 \
     --silhouette_weight 2.0 \
     --render_fraction "${RENDER_FRACTION:-0.167}" \
+    --render_grad_start_epoch "${RENDER_GRAD_START_EPOCH:-5}" \
+    --scale_weight "${SCALE_WEIGHT:-2.0}" \
     --save_every "${SAVE_EVERY}" \
     --eval_every "${EVAL_EVERY:-25}" \
     --eval_min_interval_minutes "${EVAL_MIN_INTERVAL_MINUTES:-30}" \

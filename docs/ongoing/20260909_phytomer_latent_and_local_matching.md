@@ -686,6 +686,52 @@ Original handoff requirements (historical):
   decode returns ZEROED base — call `assemble_packets(recon_packets, refs)`
   before `decode_packets`/`apply_ref_for_flow` to reconstruct slot bases.
 
+### 4.9 v3 SCALE-NORMALIZED PACKETS + 76D FLOW (2026-09-10)
+
+**Anchor scale s_a**: per-packet (P, 3) = the PETIOLE (slot 1) scale row
+`[length, radius, unused]` in raw FM units. Why petiole: it is the phytomer's
+structural backbone (cluster center = its base; leaflets attach on its curve)
+and its length carries the real size variation across DAP (measured: 6.0cm
+mean, p90 9.1cm — vs internode 2.5cm mean, nearly constant, a poor size proxy).
+Fallback: first present slot's scale row; all-absent packets get ones.
+Guard: degenerate components (~0, e.g. the unused 3rd scale dim) map to 1.0.
+
+**Packet scale normalization**: `scale_norm = scale / s_a` (components 0, 1 only;
+component 2 left as-is). The VAE trains on NORMALIZED scales exclusively
+(`pack_input` + `compute_loss` normalize internally — single choke point, no
+caller can forget). The 76D flow state carries s_a explicitly. Decode:
+`scale_abs = scale_norm * s_a` via `denormalize_packet_scales`, applied BEFORE
+`assemble_packets` (the petiole-curve math needs the ABSOLUTE petiole length).
+
+**76D flow state**: `[pos(3) | rot(6) | s_a(3) | latent(64)]` (was 73D).
+Stage-2 gains a `scale_head` (coarse s_a for bridge init + smooth_l1 loss,
+weight 2.0). pkt cache stores ABSOLUTE packets + normalized-space latent;
+flow GT s_a comes from `anchor_scale` on the cache packets. `pkt_version: 3`
+(1 = 8-slot, 2 = 10-slot absolute latent).
+
+**Render pipeline (measured, CUDA-synced timers)**:
+- `fwd/bwd` = the whole `forward_backward_step`; sub-timers (pkt/fwd1/fwd2/
+  matcher/render) are CUDA-async launch times; `backward` (around
+  `loss.backward()` with syncs) is the truthful backward; `probe` = the
+  two-pass image_encoder forward; `other` = residual.
+- The 55-67s gap = `loss.backward()` through the python-loop-heavy mesh/raster
+  graph (tens of thousands of autograd nodes per rendered sample). NOT timer
+  overhead (~18 `time.time()` calls = microseconds).
+- Fixes: (1) probe token reuse — compute `image_tokens` once with grad, pass
+  to the model (saves one full DINOv2 forward/step); (2) epoch-gated render
+  grads (`--render_grad_start_epoch`, default 5) — before the gate the render
+  loop runs with detached inputs (metrics/panels only, no render backward);
+  (3) semantic color palette `(13,3)` nn.Parameter — cos-color loss becomes
+  alive (previously constant per-type colors carried no gradient).
+- NOTE (corrected 2026-09-10): the earlier "straight-through" idea was dropped —
+  it does NOT remove the dominant cost: the gradient must still traverse the
+  mesh/raster ops to reach the surrogate, so it saves nothing and adds a
+  double-backward + DDP risk.
+
+**Layout reminder**: 4096x26 = cache node tensor (max observed rows 2,625);
+5120 = max_fine_slots (512 anchors x 10 slots, flow/existence tensor width);
+6 = per-tube curve segments (n_seg_curv) in the geometry builder.
+
 ---
 
 ## 3. Answers to the two questions (one-paragraph versions)

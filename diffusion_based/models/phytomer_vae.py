@@ -121,15 +121,22 @@ class PhytomerVAE(nn.Module):
     def pack_input(self, packets: torch.Tensor, presence: torch.Tensor) -> torch.Tensor:
         """Flattens (P, 10, 26) + (P, 10) presence -> (P, 240) encoder input.
 
+        v3 scale normalization: slot scales are divided by the packet's anchor
+        scale s_a (petiole scale row) FIRST, so the encoder sees scale-INVARIANT
+        relative geometry. The 76D flow state carries s_a explicitly; decode
+        multiplies it back (denormalize_packet_scales) BEFORE assemble_packets.
+
         Base columns are REMOVED: with EXACT XML phytomer clustering every slot's
         base is deterministic (stem/petiole/peduncle/bud = center, leaflets =
-        0.8/1.0 x the petiole curve — verified 0.00cm). Only flower/fruit bases
-        (rare, per-plant offsets) are VAE-learned. 216D -> 192D.
+        0.8/1.0 x the petiole curve, flowers/fruit = curved peduncle tip).
         """
-        P = packets.shape[0]
-        keep = torch.ones(packets.shape[-1], dtype=torch.bool, device=packets.device)
+        from diffusion_based.dataset.phytomer_packets import (
+            anchor_scale, normalize_packet_scales)
+        pk = normalize_packet_scales(packets, anchor_scale(packets))
+        P = pk.shape[0]
+        keep = torch.ones(pk.shape[-1], dtype=torch.bool, device=pk.device)
         keep[FM_BASE_START:FM_BASE_END] = False
-        stripped = packets[..., keep]  # (P, 10, 23)
+        stripped = pk[..., keep]  # (P, 10, 23)
         return torch.cat([stripped.reshape(P, -1), presence.float().reshape(P, -1)], dim=-1)
 
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -323,7 +330,14 @@ class PhytomerVAE(nn.Module):
 
         tgt_base = torch.zeros_like(target_packets[:, :, FM_BASE_START:FM_BASE_END])
         tgt_rot = target_packets[:, :, FM_ROT_START:FM_ROT_END]
-        tgt_scale = target_packets[:, :, FM_SCALE_START:FM_SCALE_END]
+        # v3: scale targets are NORMALIZED by the packet anchor scale (matching
+        # pack_input, which normalizes the encoder input). Decode output scales
+        # are normalized; callers denormalize by s_a before assemble_packets.
+        from diffusion_based.dataset.phytomer_packets import (
+            anchor_scale as _anchor_scale, normalize_packet_scales as _norm_scales)
+        tgt_packets_norm = _norm_scales(
+            target_packets, _anchor_scale(target_packets))
+        tgt_scale = tgt_packets_norm[:, :, FM_SCALE_START:FM_SCALE_END]
         tgt_curv = target_packets[:, :, FM_CURV:FM_CURV + 1]
 
         # Base is structurally assembled (deterministic from XML phytomer
