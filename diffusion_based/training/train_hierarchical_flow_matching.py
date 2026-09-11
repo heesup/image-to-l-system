@@ -1240,6 +1240,8 @@ def main():
     parser.add_argument("--capacity_full_epochs", type=int, default=150, help="Epoch at which predicted-phytomer capacity path reaches p_pred=1.0 (0 = disable ramp entirely)")
     parser.add_argument("--detect_anomaly", action="store_true",
                         help="torch.autograd.set_detect_anomaly(True) — pinpoints inplace/NaN backward errors")
+    parser.add_argument("--matcher_type", type=str, default="greedy", choices=["greedy", "hungarian"],
+                        help="Anchor bipartite matching algorithm: 'greedy' (GPU batched, ~0.02s) or 'hungarian' (CPU Scipy, ~0.24s)")
     parser.add_argument("--wandb_project", type=str, default="part-flow-matching")
     parser.add_argument("--wandb_run_name", type=str, default="hierarchical-matryoshka-cowpea")
     args = parser.parse_args()
@@ -1452,6 +1454,7 @@ def main():
         slots_per_anchor=args.slots_per_anchor,
         anchor_locality_radius=args.anchor_locality_radius,
         anchor_locality_weight=args.anchor_locality_weight,
+        matcher_type=args.matcher_type,
     ).to(device)
 
     # Dynamic Batch Sizing (Python-side Profiling)

@@ -98,6 +98,7 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     --organ_vae_checkpoint diffusion_based/checkpoints/organ_vae/organ_latent_vae_best.pt \
     --flow_granularity "${FLOW_GRANULARITY:-phytomer}" \
     --backbone "${BACKBONE}" \
+    --matcher_type "${MATCHER_TYPE:-greedy}" \
     ${FREEZE_ARGS} \
     ${DETECT_ANOMALY_ARGS} \
     --phytomer_latent_dim "${PHYTOMER_LATENT_DIM:-64}" \
