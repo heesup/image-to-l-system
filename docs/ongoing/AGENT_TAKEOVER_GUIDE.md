@@ -1,6 +1,6 @@
 # Agent Takeover & Engineering Handover Guide
 **Project: Image-to-L-System / 3D Inverse Procedural Plant Reconstruction**  
-**Last Updated:** 2026-09-10 PDT (v2 10-slot migration + packet cache complete + GUI hardening + stem/leaflet base-rule fixes)  
+**Last Updated:** 2026-09-10 PDT evening (v3 scale-normalized packets + 76D flow + macro-head fixes + training-launch debugging — 4 cluster jobs failed, fixes committed, resubmission pending verification)  
 **Primary Author/Agent:** Antigravity Autonomous Agent (Pair programming with Heesup Yun)  
 **Environment:** Linux, Python 3.10+, Mamba (`mamba activate digital-crops`), CUDA, PyTorch, `nvdiffrast`, Helios C++ OptiX Raytracer.  
 
@@ -9,8 +9,9 @@
 ## 0. Quick State Check (Run This First)
 
 ```bash
-# Where is training right now?
-tail -n 10 slurm_scripts/logs/hierarchical_fm_38183271.log
+# Where is training right now? (latest job log)
+ls -t slurm_scripts/logs/hierarchical_fm_*.log | head -3
+tail -n 30 slurm_scripts/logs/hierarchical_fm_$(ls -t slurm_scripts/logs/ | grep ^hierarchical_fm | head -1 | sed 's/hierarchical_fm_//;s/.log//').log
 
 # All running/pending jobs
 squeue -u lion397
@@ -21,7 +22,7 @@ find dataset/cache/cowpea_curv26 -name "*.pt" | wc -l   # 100,000 (all have phyt
 
 # Available checkpoints
 ls -lh diffusion_based/checkpoints/hierarchical_latent_fm/*.pt
-ls -lh diffusion_based/checkpoints/phytomer_vae_v2/*.pt
+ls -lh diffusion_based/checkpoints/phytomer_vae_v3/*.pt   # v3 is the DEFAULT now
 ```
 
 ---
@@ -66,18 +67,29 @@ OrganLatentVAE (frozen) → 16D latent → 14D Part Tensor → Helios XML
 
 ---
 
-## 2. Active SLURM Jobs (as of 2026-09-08 ~18:45 PDT)
+## 2. Active SLURM Jobs (as of 2026-09-10 ~17:00 PDT)
 
 | Job ID | Name | Status | Node | Notes |
-| :--- | :--- | :---: | :--- | :--- |
-| **38146809** | `hierarchical_fm` | **RUNNING** | `gpu-10-54` | Main training job, **Epoch 54/500**, 4× RTX 6000 Ada, 37.2 GB VRAM (78.6%), TIME_LEFT ~20h |
-| **38147219** | `ondemand/sys/dashboa` | RUNNING | `gpu-5-58` | User's interactive OnDemand desktop — **DO NOT CANCEL** |
-| **38147132–38147171** | `helios_pipe_*` | R/PD | multiple | 40-shard Helios dataset synthesis, 24-hour time limit, ~25 running, ~5 pending |
+| :--- | :---: | :---: | :--- | :--- |
+| **38230613** | `ondemand/sys/dashboa` | RUNNING | `gpu-5-58` | User's interactive OnDemand desktop — **DO NOT CANCEL** |
+| 38224489 / 38225532 / 38225636 / 38226665 | `hierarchical_fm` | **FAILED** | — | 2026-09-10 training launch attempts (see §4.10); all root causes fixed in code, needs one verified resubmission |
 
-### Helios Dataset Generation Progress
-- **65,488 XMLs** generated so far out of target ~120,000 (54.6% complete)
-- **35,266 cache `.pt` tensors** in `dataset/cache/cowpea_curv26/`
-- All jobs running with `TIME_LIMIT=1-00:00:00` (24 hours); automatic resumption/skip on existing files.
+### Failed-launch forensics (2026-09-10 15:36 → 16:17)
+| Job | Failure | Fix commit |
+| :--- | :--- | :--- |
+| 38224489 | `UnboundLocalError: _sync` (probe path referenced helper before def) | `db4e493` |
+| 38225532 | `UnboundLocalError: prof` (same class, prof/_t_fbs) | `3bdae4a` |
+| 38225636 | DDP `Expected to mark a variable ready only once` | superseded diagnosis |
+| 38226665 | `AsStridedBackward0` inplace version conflict `[351,10,3]` (packet-scale as_strided view) | `69ce959` |
+
+The real blocker was the **last one**: a `[P,10,3]` packet-scale as_strided view was
+modified inplace between forward and backward. Fixed by rewriting
+`normalize_packet_scales`/`denormalize_packet_scales` to construct fresh tensors
+(no-inplace in `69ce959`).
+**Verified locally on GPU 0**: local smoke test ran `probe_optimal_batch_size` and all
+8 steps of Epoch 1 with 0 errors, self-consistency rendered, and 36/36 tests passed.
+`--detect_anomaly` flag and default phytomer flow wired and committed (`2d78d71`).
+Cluster resubmission ready.
 
 ---
 
@@ -133,40 +145,53 @@ Visual inspection of `docs/results/assets/hierarchical_self_consistency_epoch_05
 
 Checkpoints saved on disk:
 ```bash
-diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_025.pt  (1.4 GB)
-diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_050.pt  (1.4 GB)
-diffusion_based/checkpoints/phytomer_vae_v2/phytomer_vae_64d_best.pt  (ACCEPTED v2: 10-slot, VAE 240D in, val recon 0.0263, cls 100%)
+diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_025.pt  (1.4 GB, old organ-mode run)
+diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_050.pt  (1.4 GB, old organ-mode run)
+diffusion_based/checkpoints/phytomer_vae_v3/phytomer_vae_64d_best.pt  (ACCEPTED v3: 10-slot, 240D in, NORMALIZED scales, val recon 0.070, cls 100%)
 ```
 
-### Current state (2026-09-10) — v2 10-slot migration complete:
-- **Job `38183271`** (phytomer training) remains cancelled; resume per P2.
-- **Phytomer packet cache**: `dataset/cache/cowpea_curv26_pkt/` holds
-  **100,000 / 100,000** v2 10-slot samples (frozen-VAE latent included;
-  regenerated 2026-09-10, 0 errors). v1 8-slot backed up as
-  `cowpea_curv26_pkt_v1_8slot/`.
-- **VAE v2**: `phytomer_vae_v2/` (NUM_SLOTS 10 — repro x4 to stop the 3.29%
-  3-repro overflow loss, VAE input 240D, latent still 64D). val recon 0.0263,
-  cls 100%. Prior accepted `phytomer_vae_xml/` (8-slot) kept for lineage.
-- **Assembly rules verified** (2026-09-10): stem base = −fwd·L (internode tip
-  = node), leaflets 0.8/0.8/1.0 petiole curve, flowers/fruit @ peduncle tip.
-  `ORGAN_LEAF=5` restored to `DETERMINISTIC_ORGAN_TYPES` (leaflet-center bug).
-- **Pipeline refactored** (see §4.6 of the 2026-09-09 doc):
-  `generate_tensor_shards.py` → `generate_cache.py` with `cache`/`pkt` modes;
-  `phytomer_ids` + packet targets (+ VAE latent) are now produced **inside**
-  dataset generation. `add_phytomer_ids_to_cache.py` and the standalone
-  `precompute_phytomer_packets*.py` tools were deleted.
-- **tools/ cleaned** (2026-09-10): only active scripts remain —
-  `phytomer_vae_visualizer.py`, `precompute_phytomer_latent_pca.py`,
-  `calibrate_anchor_capacity.py`. One-off eval/diag/relabel tools deleted.
+### Current state (2026-09-10 evening) — v3 stack is the default:
+- **VAE v3** `phytomer_vae_v3/` is the launcher default
+  (`PHYTOMER_VAE_CHECKPOINT` in `train_hierarchical_flow_matching.sh`). Higher
+  recon (0.070 vs v2's 0.0263) is EXPECTED — normalized-scale targets have a
+  wider distribution; cls 100% retained. v2/v1 checkpoints kept for lineage only.
+- **pkt cache v3**: `dataset/cache/cowpea_curv26_pkt/` holds **100,000/100,000**
+  files stamped `pkt_version: 3` (10-slot, ABSOLUTE packets + normalized-space
+  latent). Spot-checked. v1/v2 files were auto-invalidated by the version gate
+  (stale files are skipped → on-the-fly fallback, never silently loaded).
+- **76D flow state**: `[pos(3) | rot(6) | s_a(3) | latent(64)]`.
+  `s_a` = petiole (slot-1) scale row `[len, radius, unused]`, normalized-space
+  packets, Stage-2 `scale_head` bridge (softplus, smooth_l1 weight 2.0).
+  Physical floors: petiole len ≥ 0.25 (5mm), radius ≥ 0.025 (0.5mm).
+- **Macro-head fixes** (commit `b3c9e30`): `phy_head` bias-init at dataset mean
+  (`log(50)`), `phy_count_weight` 2.0, `backbone_lr_ratio` 0.3, DAP clue
+  `dap_embed` (zero-init) into Stage-2/3 queries. Local test: pred count
+  1.6 → 13.5 in 5 epochs (was stuck at 1.7).
+- **Render pipeline**: epoch-gated render grads (`--render_grad_start_epoch 5`),
+  probe token reuse (`image_tokens` kwarg), semantic color palette `(13,3)`
+  nn.Parameter (cos-color loss alive), CUDA-synced timers (`backward/probe/other`).
+- **Assembly rules verified**: stem base T-joint (roundtrip median 0.02cm /
+  p99 0.14cm, was 2.7cm), curved-peduncle-tip fruit/flower assembly (100%),
+  leaflets 0.8/0.8/1.0 petiole curve, `ORGAN_LEAF=5` in `DETERMINISTIC_ORGAN_TYPES`.
+- **Pipeline**: `generate_cache.py` (`cache`/`pkt` modes, `PKT_VERSION=3` gate in
+  worker skip + save stamp); standalone pkt backfill tools deleted.
+- **Uncommitted**: `--detect_anomaly` flag in `train_hierarchical_flow_matching.py`
+  (parser arg + `set_detect_anomaly`). Commit together with the next fix.
 
 ### Resume (recommended order):
 ```bash
-# 1. (done) packet cache complete — skip backfill
+# 1. OPTIONAL: quick local smoke first (subset4k, catches inplace/DDP errors in ~min)
+#    env FLOW_GRANULARITY=phytomer CAPACITY_WARMUP=0 CAPACITY_FULL=1 \
+#      CACHE_DIR=dataset/cache/cowpea_curv26_subset4k \
+#      WANDB_RUN_NAME=smoke-4k-v3-76d bash slurm_scripts/train_hierarchical_flow_matching.sh
+#    (with --max_train_samples small + --detect_anomaly if debugging)
 
-# 2. Relaunch phytomer training with the pkt fast path
-PHYTOMER_VAE_CHECKPOINT=diffusion_based/checkpoints/phytomer_vae_v2/phytomer_vae_64d_best.pt \
-  PKT_CACHE_DIR=dataset/cache/cowpea_curv26_pkt \
-  sbatch slurm_scripts/train_hierarchical_flow_matching.sh
+# 2. Cluster submission (defaults now carry v3 VAE + pkt v3 cache)
+sbatch slurm_scripts/train_hierarchical_flow_matching.sh
+# env overrides if needed: FLOW_GRANULARITY=phytomer CAPACITY_WARMUP=0 CAPACITY_FULL=1
+
+# 3. WATCH THE FIRST 3 MINUTES: if it survives probe_optimal_batch_size +
+#    first train steps, the AsStrided fix holds. Epoch-1 loss should decrease.
 ```
 
 ---
@@ -175,15 +200,13 @@ PHYTOMER_VAE_CHECKPOINT=diffusion_based/checkpoints/phytomer_vae_v2/phytomer_vae
 
 | Priority | Task | Notes |
 | :--- | :--- | :--- |
-| **P1** | ~~Finish pkt backfill~~ | **DONE** — 100k/100k v2 10-slot (2026-09-10) |
-| **P2** | Relaunch phytomer training | `PHYTOMER_VAE_CHECKPOINT=.../phytomer_vae_v2/phytomer_vae_64d_best.pt PKT_CACHE_DIR=dataset/cache/cowpea_curv26_pkt sbatch slurm_scripts/train_hierarchical_flow_matching.sh` |
-| **P3** | Monitor 6D rotation convergence in Stage 3 | Check whether stem segments align upward/outward in Epoch 25/50 panels |
-| **P4** | Evaluate Bidirectional Chamfer Distance | Add max/mean distance from GT $\to$ Pred to avoid one-way clustering metric bias |
-| **P5** | Dataset scaling beyond 100k | 100k XML+cache complete; future crops/DAPs use the unified `generate_helios_dataset_jobs.sh` pipeline |
-| **P6** | PhytomerVAE-64 validation gate | **PASSED** — v2 10-slot val recon 0.0263, cls 100.0% |
-| **P7** | Stage-3 phytomer integration | **WIRED** — `flow_granularity=phytomer` (73D bridge targets); slots_per_anchor=10 |
-| **P8** | PhytomerVAE GUI app | **DONE + hardened** — `tools/phytomer_vae_visualizer.py` (see GUI doc notes 8–16) |
-| **P9** | Launch phytomer-mode training | **PENDING** — VAE retrain NOT needed (base rules are decode-side; see GUI doc note 15) |
+| **P1** | Verify AsStrided fix (`69ce959`) with a surviving training job | Submit per §4; watch first 3 min past `probe_optimal_batch_size`. If it re-fails, use `--detect_anomaly` (staged, uncommitted) to get the exact op |
+| **P2** | Commit `--detect_anomaly` flag + doc updates | `train_hierarchical_flow_matching.py` has 5 uncommitted lines |
+| **P3** | Epoch-1 sanity: loss ↓, Pred count ~50 (bias-init), ClsAcc rising | Check `hierarchical_self_consistency_epoch_001/002.png` panels; Reference column must no longer be N/A |
+| **P4** | Monitor 6D rotation + s_a convergence in Stage 3 | Panels epoch 25/50; s_a (petiole len) should track DAP growth |
+| **P5** | Evaluate Bidirectional Chamfer Distance | Add max/mean distance from GT→Pred to avoid one-way clustering metric bias |
+| **P6** | Backbone A/B (DINOv2-scale vs frozen arms) | `slurm_scripts/submit_backbone_ablation.sh` — only after single-arm training is stable |
+| **P7** | Dataset scaling beyond 100k | 100k XML+cache+pkt complete; future crops/DAPs use `generate_helios_dataset_jobs.sh` |
 
 ---
 
@@ -199,32 +222,40 @@ PHYTOMER_VAE_CHECKPOINT=diffusion_based/checkpoints/phytomer_vae_v2/phytomer_vae
 │   │   ├── helios_pytorch_renderer.py            ← nvdiffrast renderer + multi-scale pyramid
 │   │   └── part_tensor_to_40d.py                 ← closed-form IK + XML assembler
 │   ├── models/
+│   │   ├── hierarchical_part_flow_matching.py    ← [CRITICAL] 3-stage model, PhytomerFlowMatchingDecoder (76D flow: pos|rot|s_a|latent), scale_head, dap_embed, color_palette, image_tokens kwarg
+│   │   ├── dinov2_ray_encoder.py                 ← DINOv2 + PETR 3D ray PE; canonical_rays buffer @ line ~130/161 (see inplace gotcha §8.7)
+│   │   ├── plant_organ_array.py                  ← 14D constants, organ types, XML roundtrip
+│   │   ├── helios_pytorch_geometry.py            ← mesh builder + differentiable mapping (color_palette kwarg)
+│   │   ├── helios_pytorch_renderer.py            ← nvdiffrast renderer + multi-scale pyramid
+│   │   ├── part_tensor_to_40d.py                 ← closed-form IK + XML assembler
 │   │   ├── organ_latent_vae.py                   ← frozen OrganLatentVAE bridge (16D/organ)
-│   │   ├── phytomer_vae.py                       ← [NEW 2026-09-09] PhytomerVAE (whole-phytomer 64D latent)
+│   │   ├── phytomer_vae.py                       ← PhytomerVAE (240D in / 64D latent; normalizes scales in pack_input+compute_loss)
 │   │   └── hierarchical_part_flow_matching.py    ← [CRITICAL] 3-stage model + PhytomerFlowMatchingDecoder (flow_granularity)
 │   ├── training/
-│   │   ├── train_hierarchical_flow_matching.py   ← [CRITICAL] main training loop + --flow-granularity phytomer (73D bridge targets)
-│   │   ├── train_phytomer_vae.py                 ← [NEW 2026-09-09] PhytomerVAE trainer (canonical packets)
-│   │   ├── hierarchical_hungarian_matcher.py     ← [CRITICAL] coarse anchor + local fine bipartite matching (+soft locality radius opt-in, skip_fine)
+│   │   ├── train_hierarchical_flow_matching.py   ← [CRITICAL] main loop: --flow-granularity phytomer, 76D bridge, probe reuse, --render_grad_start_epoch, --scale_weight, --detect_anomaly (uncommitted), prof timers
+│   │   ├── train_phytomer_vae.py                 ← PhytomerVAE trainer (canonical packets)
+│   │   ├── hierarchical_hungarian_matcher.py     ← [CRITICAL] coarse anchor + local fine bipartite matching
 │   │   └── flow_matching.py                      ← Rectified Flow scheduler
 │   ├── dataset/
-│   │   ├── part_array_dataset.py                 ← [CRITICAL] cache-first filtering, 16-ch pyramid, pkt passthrough
-│   │   ├── generate_cache.py                     ← [NEW 2026-09-09] unified cache/pkt generator (phytomer_ids + packets + latent)
-│   │   └── phytomer_packets.py                   ← [NEW 2026-09-09] canonical 8-slot packet builder (relative rotations, Option-1 reference)
+│   │   ├── part_array_dataset.py                 ← [CRITICAL] cache-first filtering, 16-ch pyramid, pkt v3 gate
+│   │   ├── generate_cache.py                     ← unified cache/pkt generator (PKT_VERSION=3 stamp + skip gate)
+│   │   └── phytomer_packets.py                   ← 10-slot packet builder; anchor_scale, no-inplace normalize/denormalize (commit 69ce959)
 │   ├── eval/
-│   │   └── eval_hierarchical_self_consistency.py ← 7-column diagnostic panel generator
+│   │   └── eval_hierarchical_self_consistency.py ← 7-column diagnostic panel generator (DAP-spread samples, jpeg/prefix preserved)
 │   └── checkpoints/
-│       ├── hierarchical_latent_fm/               ← training checkpoints (epoch_025.pt, epoch_050.pt, ...)
+│       ├── hierarchical_latent_fm/               ← training checkpoints (old organ-mode epoch_025/050.pt)
 │       ├── organ_vae/organ_latent_vae_best.pt    ← frozen OrganLatentVAE bridge
-│       └── phytomer_vae_v2/                      ← [ACCEPTED] PhytomerVAE-64 v2, 10-slot (val recon 0.0263, cls 100%); lineage: phytomer_vae_xml/
+│       └── phytomer_vae_v3/                      ← [ACCEPTED DEFAULT] PhytomerVAE-64 v3, 10-slot normalized (val recon 0.070, cls 100%); lineage: phytomer_vae_v2/, phytomer_vae_xml/
 ├── slurm_scripts/
-│   ├── train_hierarchical_flow_matching.sh       ← launcher w/ INIT_CHECKPOINT / PKT_CACHE_DIR support
+│   ├── train_hierarchical_flow_matching.sh       ← launcher; defaults: VAE v3, SLOTS_PER_ANCHOR=10, BACKBONE_LR_RATIO=0.3, PHY_COUNT_WEIGHT=2.0, RENDER_GRAD_START_EPOCH=5, SCALE_WEIGHT=2.0
 │   ├── generate_helios_dataset_jobs.sh           ← full pipeline: XML synth + cache (+ pkt/latent) in one pass
-│   └── generate_phytomer_packets_jobs.sh         ← XML-direct pkt backfill for existing image caches
+│   ├── generate_phytomer_packets_jobs.sh         ← XML-direct pkt backfill (GPU default, --vae-checkpoint)
+│   └── submit_backbone_ablation.sh               ← A/B dispatcher (DAP-spread arms, sequential chain)
 ├── dataset/
 │   ├── helios_data/cowpea/                       ← 100,000 XML files (complete)
 │   ├── cache/cowpea_curv26/                      ← 100,000 cached .pt (image+nodes+phytomer_ids, complete)
-│   └── cache/cowpea_curv26_pkt/                  ← 100,000 v2 10-slot pkt targets (latent; v1 8-slot in cowpea_curv26_pkt_v1_8slot/)
+│   ├── cache/cowpea_curv26_pkt/                  ← 100,000 pkt v3 (10-slot, absolute packets + normalized latent, pkt_version: 3)
+│   └── cache/cowpea_curv26_subset4k/             ← 4,000 symlinks (40/DAP × 100 DAP) for fast smoke tests
 └── docs/
     ├── ongoing/
     │   ├── README.md                             ← ongoing status dashboard
@@ -236,7 +267,11 @@ PHYTOMER_VAE_CHECKPOINT=diffusion_based/checkpoints/phytomer_vae_v2/phytomer_vae
 
 ---
 
-## 7. Training Loss Progression (Job 38146809)
+## 7. Training Loss Progression (Job 38146809 — OLD organ-mode run, for reference)
+
+> **Note**: the table below is from the superseded organ-slot run (2026-09-08).
+> No phytomer-mode training run has survived past startup yet (see §2 forensics).
+> Populate a new table from the first successful phytomer run.
 
 | Epoch | Total Loss | VelLoss | AncPosLoss | PhyLoss | ExistLoss | DepthLoss | DiceLoss | ClsAcc |
 | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -256,7 +291,14 @@ PHYTOMER_VAE_CHECKPOINT=diffusion_based/checkpoints/phytomer_vae_v2/phytomer_vae
 3. **CHM Depth = Height Above Ground**: Inverted relative to standard LiDAR/camera distance. Ground is 0, plant canopy apex is maximum height.
 4. **Cache-First Filtering**: Only XMLs that have a corresponding `.pt` tensor in `dataset/cache/cowpea_curv26/` are loaded by the dataloader.
 5. **Node RMSE vs. Tree Topology**: Do not rely solely on `Node RMSE`. Check Column 5 (Oblique 3D Mesh Composite) and Column 6 (Botanical Skeleton) to verify 3D rotation and branch divergence.
-6. **OnDemand Desktop (Job 38147219)**: Running on `gpu-5-58` — do not touch or kill.
+6. **OnDemand Desktop (Job 38230613)**: Running on `gpu-5-58` — do not touch or kill. (Old ID 38147219 may appear in older logs.)
+7. **Inplace-autograd traps (TODAY'S PAIN)**: Three distinct failures came from autograd graph issues, not model logic:
+   - Packet-scale `as_strided` views (`[P,10,3]`) must not be modified inplace across fwd→bwd — fixed via no-inplace `normalize/denormalize_packet_scales` (`69ce959`).
+   - Probe-token reuse (`image_tokens` kwarg) can surface DDP "mark a variable ready only once" if any parameter is used outside a single forward — if it re-appears, check that the probe forward and the model forward don't both touch the same params in separate graphs on the same step.
+   - Encoder-alone repro (DINOv2RayEncoder fwd/bwd in isolation) is CLEAN — `canonical_rays` buffer version stays 0; do not chase that buffer without reproducing in the training loop first.
+   - Debug with `--detect_anomaly` (staged flag) on 1 GPU, small `--max_train_samples`.
+8. **pkt cache version gate**: `PartArrayDataset` and `generate_cache.py` skip pkt files whose `pkt_version != 3` (fall back to on-the-fly packet building — slow but correct). If you change packet format, bump `PKT_VERSION` and regenerate; never edit files in place.
+9. **VAE v3 recon 0.070 vs v2 0.0263 is NOT a regression**: v3 targets are scale-normalized (wider distribution). Do not "fix" by switching back to v2 — it is 8-slot-incompatible and unnormalized.
 
 ---
 
@@ -264,6 +306,7 @@ PHYTOMER_VAE_CHECKPOINT=diffusion_based/checkpoints/phytomer_vae_v2/phytomer_vae
 
 | File | Date | Summary |
 | :--- | :--- | :--- |
+| [`docs/ongoing/20260909_phytomer_latent_and_local_matching.md`](../ongoing/20260909_phytomer_latent_and_local_matching.md) | 2026-09-09/10 | **[MASTER ENGINEERING LOG]** §4.6–4.9: pipeline refactor, backbone A/B, fruit fix, v3 scale-normalized packets + 76D flow, render-pipeline timing |
 | [`docs/results/20260907_latent_hierarchical_flow_matching_500epoch_report.md`](../results/20260907_latent_hierarchical_flow_matching_500epoch_report.md) | 2026-09-07 | Option B 500-epoch report: 55.1% IoU, 2.49cm height error |
 | [`docs/results/20260908_3d_spatial_vision_and_hierarchical_reconstruction_milestone.md`](../results/20260908_3d_spatial_vision_and_hierarchical_reconstruction_milestone.md) | 2026-09-08 | Epoch 150 spatial vision breakthrough: 49.2% mean IoU, 2.6cm RMSE |
 | [`docs/results/20260908_3stage_cascaded_flow_matching_scaling_milestone.md`](../results/20260908_3stage_cascaded_flow_matching_scaling_milestone.md) | 2026-09-08 | 3-stage cascaded architecture scaling: batch 192, dormant slot damping |

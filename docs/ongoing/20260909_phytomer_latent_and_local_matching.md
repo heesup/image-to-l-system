@@ -734,6 +734,41 @@ flow GT s_a comes from `anchor_scale` on the cache packets. `pkt_version: 3`
 
 ---
 
+### 4.10 TRAINING-LAUNCH DEBUGGING MARATHON (2026-09-10 evening) — 4 failed jobs, 3 root causes
+
+Context: with the v3 stack complete (VAE v3 default, pkt v3 cache, 76D flow,
+macro-head fixes), four cluster submissions were made to finally start
+phytomer-mode training. All failed within minutes; each failure was a distinct,
+sequentially-revealed bug:
+
+| # | Job | Failure | Root cause | Fix |
+|---|---|---|---|---|
+| 1 | 38224489 | `UnboundLocalError: _sync` | probe path called `_sync()` before its local def | hoisted `_sync_cuda` to module level (`db4e493`) |
+| 2 | 38225532 | `UnboundLocalError: prof` | same class — `prof`/`_t_fbs` used before assignment in probe path | defined before probe (`3bdae4a`) |
+| 3 | 38225636 | DDP `Expected to mark a variable ready only once` | masked the real error (DDP aborts on rank desync) | superseded — see #4 |
+| 4 | 38226665 | inplace version conflict: `[351,10,3]` `AsStridedBackward0` at version 1, expected 0 | a packet-scale `as_strided` view was modified inplace between fwd and bwd during `probe_optimal_batch_size` | rewrote `normalize_packet_scales`/`denormalize_packet_scales` to build fresh tensors (no `mul_`/`add_` on views) (`69ce959`) |
+
+Key forensic findings:
+- Error #4's tensor `[P,10,3]` is the packet-scale row slice — the autograd
+  graph holds the as_strided VIEW from the encoder/model forward, and the
+  normalization pass mutated its storage. The no-inplace rewrite (fresh tensor
+  construction) removes the version bump entirely.
+- `--detect_anomaly` flag added to the trainer (staged, uncommitted) for any
+  future inplace/NaN forensics: `parser.add_argument("--detect_anomaly", ...)` +
+  `torch.autograd.set_detect_anomaly(True)`.
+- **Encoder exonerated**: a standalone repro (DINOv2RayEncoder forward ×2 +
+  backward in train mode) keeps `canonical_rays._version` at 0 throughout —
+  the ray buffer is NOT the inplace culprit; earlier suspicion (based on the
+  anomaly trace pointing at the ray_mlp Addmm) was a red herring from where
+  the graph happened to touch the reused buffer.
+- The failure happens inside `probe_optimal_batch_size` → `forward_backward_step`
+  → `loss.backward()`, i.e. BEFORE any real training step. Verification of the
+  fix only requires the job to survive startup + first steps.
+
+STATUS: fix `69ce959` verified locally on GPU 0 via smoke test (probe + 8 steps of Epoch 1 completed with zero errors, loss decreased, self-consistency rendered, 36/36 tests passed). `--detect_anomaly` flag committed (`2d78d71`). Ready for cluster resubmission via `sbatch slurm_scripts/train_hierarchical_flow_matching.sh`.
+
+---
+
 ## 3. Answers to the two questions (one-paragraph versions)
 
 **Q1 — local search around predicted nodes?** Yes for anchor assignment, as a soft
