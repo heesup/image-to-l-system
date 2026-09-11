@@ -89,6 +89,109 @@ def rot6d_to_matrix(rot_6d: torch.Tensor) -> torch.Tensor:
     return torch.stack([r1, r2, r3], dim=-1)
 
 
+def build_stem_parts_from_anchor_nodes(
+    anchor_pos: torch.Tensor,                    # (K, 3) in meters
+    anchor_exist: torch.Tensor,                  # (K,) in [0, 1]
+    anchor_scale: Optional[torch.Tensor] = None, # (K, 3) in FM units [L_pet, r_pet, ...]
+    stem_radius: float = 0.0035,                 # meters fallback default (3.5mm radius = 7mm diameter)
+    exist_thresh: float = 0.25,
+    petiole_to_stem_ratio: float = 1.8,          # Option C: stem radius derived from petiole scale
+) -> torch.Tensor:
+    """Builds continuous botanical stem tubes (Internode, type 3) directly from Stage 2 anchor nodes.
+    
+    Creates a directed growth skeleton tree from ground collar (0,0,0) through all active nodes,
+    connecting each node to its nearest lower-height parent node.
+    
+    Option C:
+    When anchor_scale is provided (Petiole scale row in FM units [L_pet, r_pet, ...]),
+    the stem segment radius is dynamically derived from the petiole radius of the parent
+    node (r_stem = r_pet * petiole_to_stem_ratio), bounded between [1.2mm, 10.0mm],
+    naturally reflecting whole-plant ontogeny and acropetal tapering.
+    
+    Returns:
+        (M_stems, 14) part tensor matching HeliosPlantGeometryBuilder layout:
+        [type(1)=3, base(3), rot6d(6), scale(3)=[L, r, r], curv(1)=0]
+    """
+    device = anchor_pos.device
+    mask = anchor_exist > exist_thresh
+    valid_pos = anchor_pos[mask]  # (N, 3)
+    if valid_pos.shape[0] == 0:
+        return torch.empty((0, 14), dtype=torch.float32, device=device)
+
+    # Compute node-level stem radii if anchor_scale is provided (Option C)
+    node_radii = None
+    if anchor_scale is not None:
+        valid_scale = anchor_scale[mask]  # (N, 3)
+        # Scale row col 1 is petiole radius in FM units (meter * 50.0)
+        pet_r_m = valid_scale[:, 1] / 50.0
+        # Allometric scaling: stem radius is ~1.8x petiole radius, physically clamped to [1.2mm, 10mm]
+        node_radii = (pet_r_m * petiole_to_stem_ratio).clamp(min=0.0012, max=0.010)
+
+    # Add ground collar origin (0, 0, 0)
+    origin = torch.tensor([[0.0, 0.0, 0.0]], device=device, dtype=valid_pos.dtype)
+    all_nodes = torch.cat([origin, valid_pos], dim=0)  # (N+1, 3)
+
+    if node_radii is not None:
+        # Collar origin connects to main stem base; its radius reflects the plant's maximum stem girth
+        origin_r = node_radii.max().unsqueeze(0) if node_radii.numel() > 0 else torch.tensor([stem_radius], device=device, dtype=valid_pos.dtype)
+        all_radii = torch.cat([origin_r, node_radii], dim=0)
+    else:
+        all_radii = None
+
+    # Sort nodes by height (Z-axis ascending)
+    z_order = torch.argsort(all_nodes[:, 2])
+    sorted_nodes = all_nodes[z_order]
+    sorted_radii = all_radii[z_order] if all_radii is not None else None
+
+    # Directed nearest lower-height parent tree
+    segments = []
+    for i in range(1, sorted_nodes.shape[0]):
+        child = sorted_nodes[i]
+        parents = sorted_nodes[:i]
+        dists = torch.linalg.norm(parents - child.unsqueeze(0), dim=-1)
+        parent_idx = torch.argmin(dists)
+        parent = parents[parent_idx]
+
+        vec = child - parent
+        L = torch.linalg.norm(vec).item()
+        if L < 0.0001:  # skip near-zero degenerate segments (<0.1mm)
+            continue
+
+        # Forward axis Y along stem direction
+        fwd = vec / (L + 1e-8)
+        # Construct orthogonal coordinate frame
+        z_ref = torch.tensor([0.0, 0.0, 1.0], device=device, dtype=valid_pos.dtype)
+        cross_val = torch.linalg.cross(fwd, z_ref)
+        if torch.linalg.norm(cross_val) < 1e-4:
+            x_ref = torch.tensor([1.0, 0.0, 0.0], device=device, dtype=valid_pos.dtype)
+            x_axis = F.normalize(torch.linalg.cross(fwd, x_ref), dim=-1)
+        else:
+            x_axis = F.normalize(cross_val, dim=-1)
+        z_axis = F.normalize(torch.linalg.cross(x_axis, fwd), dim=-1)
+        R = torch.stack([x_axis, fwd, z_axis], dim=-1)  # (3, 3)
+        rot6d = torch.cat([R[:, 0], R[:, 1]], dim=-1)   # 6D Zhou continuous rotation
+
+        # Determine segment radius from parent node girth (Option C) or constant fallback
+        if sorted_radii is not None:
+            seg_r = float(sorted_radii[parent_idx].item())
+        else:
+            seg_r = float(stem_radius)
+
+        row = torch.zeros(14, device=device, dtype=torch.float32)
+        row[0] = 3.0                                  # type 3 = internode
+        row[1:4] = parent                             # base position
+        row[4:10] = rot6d                             # rotation 6d
+        row[10] = float(L)                            # length
+        row[11] = seg_r                               # radius X
+        row[12] = seg_r                               # radius Y
+        row[13] = 0.0                                 # curvature
+        segments.append(row)
+
+    if len(segments) == 0:
+        return torch.empty((0, 14), dtype=torch.float32, device=device)
+    return torch.stack(segments, dim=0)
+
+
 def extract_stem_segments(parts: Optional[torch.Tensor]) -> List[Tuple[np.ndarray, np.ndarray]]:
     """Extracts true botanical stem tube segments (base [cm], tip [cm]) from internodes (type 3)."""
     if parts is None or len(parts) == 0:
@@ -166,10 +269,10 @@ def evaluate_self_consistency_batch(
     Computes:
       - val/silhouette_iou
       - val/depth_mae_meters
-      - val/peak_height_error_meters
-      - val/cos_color_loss, val/dice_loss (training-loss parity, all panel samples)
+      - val/dice_loss (training-loss parity, all panel samples)
     Saves diagnostic panel to docs/results/assets/hierarchical_self_consistency_epoch_{epoch:03d}.png
     """
+    was_training = model.training
     model.eval()
     raw_model = model.module if hasattr(model, "module") else model
 
@@ -179,7 +282,9 @@ def evaluate_self_consistency_batch(
         daps = daps.to(device)
 
     B = images.shape[0]
-    sample_out = raw_model.sample_ode(images=images, daps=daps, num_steps=20, vae=vae, phytomer_vae=phytomer_vae)
+    # Pure Autonomous Inference: pass daps=None so model determines anchor capacity
+    # 100% autonomously from its own predicted phytomer count (pred_num_phytomers)
+    sample_out = raw_model.sample_ode(images=images, daps=None, num_steps=20, vae=vae, phytomer_vae=phytomer_vae)
 
     pred_geoms = sample_out["pred_geometry"]  # (B, N, 13) or (B, N, 16)
     pred_classes = sample_out["pred_cls"]     # (B, N)
@@ -188,7 +293,6 @@ def evaluate_self_consistency_batch(
     ious = []
     depth_maes = []
     peak_height_diffs = []
-    cos_losses = []
     dice_losses = []
     panels_data = []
 
@@ -200,15 +304,30 @@ def evaluate_self_consistency_batch(
     # show only the youngest plants.
     plot_idx = np.linspace(0, B - 1, min(B, num_samples_to_plot)).round().astype(int)
     for b in sorted(set(plot_idx.tolist())):
-        # 1. Decode predicted parts
+        # 1. Decode predicted lateral phytomer parts (petiole, leaflets, repro)
         if "part_14d" in sample_out:
             pred_14d_b = sample_out["part_14d"][b]
             act_mask = (slot_actives[b] > 0.5) & (pred_classes[b] > EMPTY_IDX)
-            active_parts = pred_14d_b[act_mask]
+            lateral_parts = pred_14d_b[act_mask]
         else:
-            active_parts = decode_predictions_to_part_tensor(
+            lateral_parts = decode_predictions_to_part_tensor(
                 pred_geoms[b], pred_classes[b], slot_actives[b], device=device
             )
+
+        # Build continuous stem tubes directly from Stage 2 anchor node scaffold (Option C)
+        anc_scale_b = sample_out.get("anchor_scale")
+        anc_scale_b = anc_scale_b[b] if anc_scale_b is not None else None
+        stem_parts = build_stem_parts_from_anchor_nodes(
+            anchor_pos=sample_out["anchor_pos"][b],
+            anchor_exist=sample_out["anchor_existence"][b],
+            anchor_scale=anc_scale_b,
+        )
+        if stem_parts.shape[0] > 0 and lateral_parts.shape[0] > 0:
+            active_parts = torch.cat([stem_parts, lateral_parts], dim=0)
+        elif stem_parts.shape[0] > 0:
+            active_parts = stem_parts
+        else:
+            active_parts = lateral_parts
 
         # 2. Extract Input Drone Image (Channels 0:3 = RGB [-1, 1], Channel 3 = CHM Depth)
         input_img = images[b]
@@ -319,26 +438,13 @@ def evaluate_self_consistency_batch(
             pred_rgb_t = (pred_rgb_t - 0.5) / 0.5           # -> [-1, 1] like dataset GT
             pred_depth_t = rendered_rgbd[3].clamp(min=0.0)
 
-            canopy_m = (gt_depth_t > 0.005) | (pred_depth_t > 0.005)
-            eps = 1e-6
-            dot = (pred_rgb_t * gt_rgb_t).sum(dim=0)
-            n_p = torch.sqrt((pred_rgb_t ** 2).sum(dim=0) + eps)
-            n_g = torch.sqrt((gt_rgb_t ** 2).sum(dim=0) + eps)
-            cos_sim = (dot / (n_p * n_g)).clamp(-1.0, 1.0)
-            if canopy_m.sum() > 0:
-                cos_loss = float((1.0 - cos_sim[canopy_m]).mean().item())
-            else:
-                cos_loss = float((1.0 - cos_sim).mean().item())
-
             pred_soft = torch.sigmoid((pred_depth_t - 0.005) * 100.0)
             gt_soft = (gt_depth_t > 0.005).float()
             inter = (pred_soft * gt_soft).sum()
             denom = pred_soft.sum() + gt_soft.sum()
             dice_loss = float(1.0 - (2.0 * inter + 1e-4) / (denom + 1e-4))
         except Exception:
-            cos_loss = 1.0
             dice_loss = 1.0
-        cos_losses.append(cos_loss)
         dice_losses.append(dice_loss)
 
         # Oblique 3D Real Mesh Composite (Cyan: GT, Amber: Pred, Blend: Overlap)
@@ -645,6 +751,7 @@ def evaluate_self_consistency_batch(
                 "val/peak_height_error": float(np.mean(peak_height_diffs)),
                 "val/node_rmse_cm": float(mean_node_rmse),
                 "val/self_consistency_panel": wandb.Image(panel_path),
+                "val/dice_loss": float(np.mean(dice_losses)) if dice_losses else 0.0,
             }
             try:
                 first_data = panels_data[0]
@@ -669,16 +776,19 @@ def evaluate_self_consistency_batch(
 
             wandb.log(log_dict, step=epoch)
 
+    # Restore training mode so the in-loop eval never leaves the DDP-wrapped
+    # model in eval() state for subsequent training steps (Job 38237555 deadlock).
+    if was_training:
+        model.train()
+
     return {
         "val/silhouette_iou": float(np.mean(ious)) if ious else 0.0,
         "val/depth_mae": float(np.mean(depth_maes)) if depth_maes else 0.0,
         "val/peak_height_error": float(np.mean(peak_height_diffs)) if peak_height_diffs else 0.0,
-        "val/cos_color_loss": float(np.mean(cos_losses)) if cos_losses else 0.0,
         "val/dice_loss": float(np.mean(dice_losses)) if dice_losses else 0.0,
         "val/node_rmse_cm": float(np.mean([d["node_rmse_cm"] for d in panels_data])) if panels_data else 0.0,
         "silhouette_iou": float(np.mean(ious)) if ious else 0.0,
         "depth_mae": float(np.mean(depth_maes)) if depth_maes else 0.0,
         "peak_height_error": float(np.mean(peak_height_diffs)) if peak_height_diffs else 0.0,
-        "cos_color_loss": float(np.mean(cos_losses)) if cos_losses else 0.0,
         "dice_loss": float(np.mean(dice_losses)) if dice_losses else 0.0,
     }

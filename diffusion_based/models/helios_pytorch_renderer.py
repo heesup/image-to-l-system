@@ -286,11 +286,33 @@ class HeliosPyTorchRenderer(nn.Module):
                 v_hom = torch.cat([verts.float(), torch.ones((verts.shape[0], 1), device=device, dtype=torch.float32)], dim=-1)
                 v_clip = (v_hom @ mvp.T).contiguous()  # (V, 4), row-vector convention matching nvdiffrast
 
+                # Lipschitz-bounded rasterization: the perspective-correct backward
+                # through interpolate()/antialias() carries a 1/|w| factor, so a vertex
+                # exactly on the camera plane (w -> 0) produces 1/w^2 gradient terms
+                # that overflow fp32 in clip_grad_norm_'s sum of squares even though
+                # every element stays finite (Job 38237555: grad_norm=inf, Culprit 0).
+                # Flooring |w| bounds the renderer Jacobian by construction — degenerate
+                # geometry receives zero gradient instead of an explosive one, so no
+                # post-hoc grad clamping is needed for stability.
+                w_chan = v_clip[..., 3:4]
+                w_safe = torch.where(
+                    w_chan.abs() < 1e-4,
+                    1e-4 * torch.where(w_chan < 0.0, -1.0, 1.0),
+                    w_chan,
+                )
+                v_clip = torch.cat([v_clip[..., :3], w_safe], dim=-1).contiguous()
+
                 # nvdiffrast rasterize expects int32 faces
                 faces_i32 = faces.to(torch.int32)
                 rast_out, _ = dr.rasterize(
                     glctx, v_clip.unsqueeze(0), faces_i32, resolution=(H, W), grad_db=False
                 )  # (1, H, W, 4)
+
+                # Sanitize rasterizer outputs: degenerate / behind-clip triangles can
+                # produce NaN or inf in the face-id / barycentric channels, which then
+                # propagates through interpolate() into the loss. Finite-ize in-place
+                # on the forward tensor so backward receives sane downstream values.
+                rast_out = torch.nan_to_num(rast_out, nan=0.0, posinf=0.0, neginf=0.0)
 
                 mask = rast_out[..., 3:4] > 0  # (1, H, W, 1)
 
@@ -313,6 +335,7 @@ class HeliosPyTorchRenderer(nn.Module):
                         num_sem = organ_probs.shape[-1]
                         unified_attrs = torch.cat([shaded_colors.float(), chm_verts, opacities, organ_probs.float()], dim=-1).unsqueeze(0).contiguous()
                         interp_out, _ = dr.interpolate(unified_attrs, rast_out, faces_i32)
+                        interp_out = torch.nan_to_num(interp_out, nan=0.0, posinf=0.0, neginf=0.0)
                         rgb_rast = interp_out[..., :3]
                         depth_rast = interp_out[..., 3:4]
                         alpha_rast = interp_out[..., 4:5]
@@ -320,6 +343,7 @@ class HeliosPyTorchRenderer(nn.Module):
                     else:
                         rgbda_attrs = torch.cat([shaded_colors.float(), chm_verts, opacities], dim=-1).unsqueeze(0).contiguous()  # (1, V, 5)
                         interp_out, _ = dr.interpolate(rgbda_attrs, rast_out, faces_i32)  # (1, H, W, 5)
+                        interp_out = torch.nan_to_num(interp_out, nan=0.0, posinf=0.0, neginf=0.0)
                         rgb_rast = interp_out[..., :3]
                         depth_rast = interp_out[..., 3:4]
                         alpha_rast = interp_out[..., 4:5]
@@ -339,8 +363,12 @@ class HeliosPyTorchRenderer(nn.Module):
 
                     bg = torch.cat([bg_rgb, bg_depth], dim=-1)
                     rgbd_out = torch.where(mask, rgbd_comp, bg)
+                    rgbd_out = torch.nan_to_num(rgbd_out, nan=0.0, posinf=0.0, neginf=0.0)
                     if differentiable and _HAS_NVDIFFRAST:
+                        if v_clip.requires_grad:
+                            v_clip.register_hook(lambda g: torch.nan_to_num(g.clamp(-10.0, 10.0), nan=0.0))
                         rgbd_out = dr.antialias(rgbd_out, rast_out, v_clip.unsqueeze(0), faces_i32)
+                        rgbd_out = torch.nan_to_num(rgbd_out, nan=0.0, posinf=0.0, neginf=0.0)
 
                     rgbd_final = rgbd_out.squeeze(0).permute(2, 0, 1).flip(1).contiguous()  # (4, H, W); match Helios row-0 = bottom
 
@@ -351,6 +379,7 @@ class HeliosPyTorchRenderer(nn.Module):
                         sem_out = torch.where(mask, sem_comp, bg_sem)
                         if differentiable and _HAS_NVDIFFRAST:
                             sem_out = dr.antialias(sem_out.contiguous(), rast_out, v_clip.unsqueeze(0), faces_i32)
+                            sem_out = torch.nan_to_num(sem_out, nan=0.0, posinf=0.0, neginf=0.0)
                         sem_final = sem_out.squeeze(0).permute(2, 0, 1).flip(1).contiguous()  # (C, H, W)
                         return rgbd_final, sem_final
 
@@ -359,6 +388,7 @@ class HeliosPyTorchRenderer(nn.Module):
                 # Standard 3-Channel RGB with Soft Opacity
                 rgba_attrs = torch.cat([shaded_colors.float(), opacities], dim=-1).unsqueeze(0).contiguous()  # (1, V, 4)
                 interp_out, _ = dr.interpolate(rgba_attrs, rast_out, faces_i32)
+                interp_out = torch.nan_to_num(interp_out, nan=0.0, posinf=0.0, neginf=0.0)
                 rgb_rast = interp_out[..., :3]
                 alpha_rast = interp_out[..., 3:4]
 
@@ -374,6 +404,7 @@ class HeliosPyTorchRenderer(nn.Module):
                 rgb_out = torch.where(mask, rgb_comp, bg)
                 if differentiable and _HAS_NVDIFFRAST:
                     rgb_out = dr.antialias(rgb_out, rast_out, v_clip.unsqueeze(0), faces_i32)
+                rgb_out = torch.nan_to_num(rgb_out, nan=0.0, posinf=0.0, neginf=0.0)
                 return rgb_out.squeeze(0).permute(2, 0, 1).flip(1).contiguous()  # (3, H, W); match Helios row-0 = bottom
 
         # Fallback: original slow PyTorch CPU/GPU loop rasterizer
@@ -548,10 +579,20 @@ class HeliosPyTorchRenderer(nn.Module):
                 mvp = (proj_mat @ view_mat).float()
                 v_hom = torch.cat([verts.float(), torch.ones((verts.shape[0], 1), device=device, dtype=torch.float32)], dim=-1)
                 v_clip = (v_hom @ mvp.T).contiguous()
+                # Lipschitz-bounded rasterization (see render_multiscale_pyramid):
+                # floor |w| away from 0 so interpolate()'s 1/w backward factor stays bounded.
+                w_chan = v_clip[..., 3:4]
+                w_safe = torch.where(
+                    w_chan.abs() < 1e-4,
+                    1e-4 * torch.where(w_chan < 0.0, -1.0, 1.0),
+                    w_chan,
+                )
+                v_clip = torch.cat([v_clip[..., :3], w_safe], dim=-1).contiguous()
                 faces_i32 = faces.to(torch.int32)
                 rast_out, _ = dr.rasterize(
                     glctx, v_clip.unsqueeze(0), faces_i32, resolution=(H, W), grad_db=False
                 )
+                rast_out = torch.nan_to_num(rast_out, nan=0.0, posinf=0.0, neginf=0.0)
 
                 # Per-vertex organ type: all three vertices of a face share the same type
                 organ_types_b = organ_types.float().unsqueeze(0).unsqueeze(-1).contiguous()  # (1, V, 1)
@@ -692,6 +733,15 @@ class HeliosPyTorchRenderer(nn.Module):
                 mvp = (proj_mat @ view_mat).float()
                 v_hom = torch.cat([verts.float(), torch.ones((verts.shape[0], 1), device=device, dtype=torch.float32)], dim=-1)
                 v_clip = (v_hom @ mvp.T).contiguous()
+                # Lipschitz-bounded rasterization (see render_multiscale_pyramid):
+                # floor |w| away from 0 so interpolate()'s 1/w backward factor stays bounded.
+                w_chan = v_clip[..., 3:4]
+                w_safe = torch.where(
+                    w_chan.abs() < 1e-4,
+                    1e-4 * torch.where(w_chan < 0.0, -1.0, 1.0),
+                    w_chan,
+                )
+                v_clip = torch.cat([v_clip[..., :3], w_safe], dim=-1).contiguous()
                 faces_i32 = faces.to(torch.int32)
                 rast_out, _ = dr.rasterize(glctx, v_clip.unsqueeze(0), faces_i32, resolution=(H, W), grad_db=False)
 

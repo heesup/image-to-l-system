@@ -106,6 +106,7 @@ def forward_backward_step(
     flow_granularity: str = "organ",
     phytomer_vae: Optional[nn.Module] = None,
     phy_count_weight: float = 2.0,
+    dap_weight: float = 0.05,
     scale_weight: float = 2.0,
     render_grad: bool = True,
 ) -> Optional[Dict[str, float]]:
@@ -125,62 +126,29 @@ def forward_backward_step(
     type_labels = nodes[:, :, :FM_OT_END].argmax(dim=-1)  # (B, N_max)
     raw_model = model.module if hasattr(model, "module") else model
 
-    # Scheduled capacity teacher forcing:
-    #   'gt'   - K from GT DAP (noise-free teacher forcing)
-    #   'pred' - K from the model's own predicted phytomer count, with multiplicative
-    #            log-normal noise (~+30% sigma) so the capacity is >= the clean GT
-    #            slice with high probability (under-allocation guard while exposing
-    #            the model to inference-time capacity distribution).
-    # p_pred = fraction of batches using the predicted path, linearly ramped from 0
-    # at --capacity_warmup_epochs to 1.0 at --capacity_full_epochs.
-    use_pred_capacity = False
-    capacity_pred_prob = 0.0
-    if capacity_schedule is not None and capacity_schedule.get("p_pred", 0.0) > 0.0:
-        capacity_pred_prob = float(capacity_schedule["p_pred"])
-        use_pred_capacity = (torch.rand(1).item() < capacity_pred_prob)
-
     prof = {"packet_build": 0.0, "fwd1": 0.0, "fwd2": 0.0, "matcher": 0.0,
             "target_build": 0.0, "render": 0.0, "loss": 0.0,
             "backward": 0.0, "probe": 0.0, "other": 0.0}
     _sync_cuda()
     _t_fbs = time.time()
 
-    # Probe tokens WITH grad (reused by the model forward below — saves one full
-    # DINOv2 forward per step). Only the count scalar is detached for slicing.
-    _sync_cuda()
-    t_probe = time.time()
-    image_tokens = raw_model.image_encoder(images)
+    # Pre-extract visual image tokens once (reused across forwards).
+    # If image encoder has no trainable parameters (e.g. frozen backbone), run under no_grad and detach
+    # to guarantee zero autograd graph overhead and zero DDP reducer interference.
+    encoder_has_grad = any(p.requires_grad for p in raw_model.image_encoder.parameters())
+    if not encoder_has_grad:
+        with torch.no_grad():
+            image_tokens = raw_model.image_encoder(images).detach()
+    else:
+        image_tokens = raw_model.image_encoder(images)
+        if image_tokens.requires_grad:
+            # Defense Line: sanitize gradients flowing into DINOv2 backbone from downstream heads/rasterizer
+            image_tokens.register_hook(lambda g: torch.nan_to_num(g.clamp(-1.0, 1.0), nan=0.0, posinf=1.0, neginf=-1.0))
+
+    # Matryoshka anchor slicing directly from GT DAP (clean, deterministic, 100% stable)
     active_k = compute_matryoshka_slice(
         dap=daps, max_anchors=raw_model.max_anchors, margin=ANCHOR_MARGIN
     )
-    if use_pred_capacity:
-        # Two-pass: macro head first (gradient-safe, differentiable count), then
-        # slice by the noisy predicted count (max'ed with GT slice for safety).
-        with torch.no_grad():
-            macro_probe = raw_model.coarse_stage.macro_head(
-                image_tokens.detach()[:, 0], max_k=raw_model.max_anchors
-            )
-            pred_count = macro_probe["pred_num_phytomers"].detach().float().view(-1)
-            # Multiplicative noise: x1.0 median with +30% log-normal sigma, biased
-            # slightly upward (x1.10) so noisy capacity usually exceeds the clean
-            # prediction (under-allocation guard) while exposing the model to the
-            # inference-time capacity distribution.
-            noise = torch.exp(torch.randn_like(pred_count) * 0.30) * 1.10
-            noisy_count = pred_count * noise
-            k_pred = math.ceil(
-                float(noisy_count.max().item()) * ANCHOR_MARGIN + ANCHOR_MARGIN_FLAT
-            )
-            k_pred = int(min(max(k_pred, 8), raw_model.max_anchors))
-            k_gt = compute_matryoshka_slice(
-                dap=daps, max_anchors=raw_model.max_anchors, margin=ANCHOR_MARGIN
-            )
-            # Under-allocation guard: never slice below the GT-DAP curve, but
-            # cap the predicted path at 2x the GT slice so an early over-predicting
-            # macro head cannot explode the anchor bank (and step time) to
-            # max_anchors during the first epochs.
-            active_k = max(k_pred, int(k_gt))
-            active_k = min(active_k, max(int(k_gt) * 2, 8))
-    prof["probe"] = time.time() - t_probe
     active_fine = min(active_k * slots_per_anchor, nodes.shape[1])
 
     # Per-sample anchor capacity from the calibrated DAP curve. Slots beyond a
@@ -487,10 +455,26 @@ def forward_backward_step(
         pred_anchor_scale = outputs.get("pred_anchor_scale")
         if pred_anchor_scale is not None:
             pred_anchor_scale = pred_anchor_scale.float()
+
+        # Option B: Detached-feature render branch (shields Transformer & Backbone, trains only 3D heads)
+        pred_anchor_pos_render = outputs.get("pred_anchor_pos_render", pred_anchor_pos).float()
+        pred_anchor_rot_render = outputs.get("pred_anchor_rot_render", pred_anchor_rot).float()
+        pred_anchor_scale_render = outputs.get("pred_anchor_scale_render", pred_anchor_scale)
+        if pred_anchor_scale_render is not None:
+            pred_anchor_scale_render = pred_anchor_scale_render.float()
         pred_dap = outputs["pred_dap"].float()
         pred_num_phytomers = outputs.get("pred_num_phytomers")
         soft_margin_weights = outputs.get("soft_margin_weights")
         clean_z1 = z_t + (1.0 - t.view(B, 1, 1)) * pred_velocity  # (B, K, D) in VAE latent space
+        # Structural OOD guard: the 16D/64D latent is a standard Gaussian by
+        # contract (z ~ N(0, I)), and the frozen VAE decoder is only invertible
+        # on that manifold. An OOD latent decodes to degenerate organ geometry
+        # whose vertices cross the camera near-plane (w -> 0), where the
+        # rasterizer's 1/w^2 backward factor explodes fp32 even though every
+        # element stays finite (Job 38237555). Bounding z1 to the support of the
+        # prior makes explosive renderer Jacobians structurally impossible
+        # instead of relying on post-hoc grad clamping.
+        clean_z1 = clean_z1.clamp(-6.0, 6.0)
         # Velocity target: v = z_1 - z_0 in standard Gaussian space.
         tgt_velocity = tgt_z1_phyto - z_0
         total_matched_anc = matched_anchor_mask.sum().item()
@@ -663,26 +647,27 @@ def forward_backward_step(
         loss_anchor_rot = torch.tensor(0.0, device=device)
         loss_anchor_scale = torch.tensor(0.0, device=device)
 
-    # Stage 1: Macro Losses (Phytomer Count)
+    # Stage 1: Macro Losses (Phytomer Count & DAP)
     loss_phy_count = torch.tensor(0.0, device=device)
     if pred_num_phytomers is not None:
         loss_phy_count = F.smooth_l1_loss(pred_num_phytomers.float(), gt_phy_counts)
 
-    # loss_dap removed per architecture decision (redundant with phy_count)
+    # loss_dap restored per user request with dap_weight = 0.05
     loss_dap = torch.tensor(0.0, device=device)
+    if pred_dap is not None and daps is not None:
+        loss_dap = F.smooth_l1_loss(pred_dap.float(), daps.float().view(-1, 1))
 
     # In-Loop Differentiable Optical Grounding (1-Step Clean Prediction -> Multi-Scale Pyramid Depth + Silhouette Dice)
     loss_depth = torch.tensor(0.0, device=device)
-    loss_cos = torch.tensor(0.0, device=device)
     loss_dice = torch.tensor(0.0, device=device)
 
     if renderer is not None and (depth_loss_weight > 0.0 or silhouette_loss_weight > 0.0):
         f = max(0.0, min(1.0, float(render_fraction)))
         n_render = max(1, min(B, int(round(B * f)))) if f > 0.0 else 0
 
-        # Epoch gate for render GRADIENTS:
+        # Epoch gate for render: skip entirely when render gradients are off (saves ~0.7s per step during warmup)
         render_grad_on = bool(render_grad)
-        if n_render > 0:
+        if n_render > 0 and render_grad_on:
             _sync_cuda()
             t0 = time.time()
             if n_render < B:
@@ -698,14 +683,21 @@ def forward_backward_step(
 
             _rz = clean_z1 if render_grad_on else clean_z1.detach()
             _re = pred_fine_exist_logits if render_grad_on else pred_fine_exist_logits.detach()
+            if render_grad_on and _re.requires_grad:
+                _re.register_hook(lambda g: torch.nan_to_num(g.clamp(-5.0, 5.0), nan=0.0))
             if flow_granularity == "phytomer" and n_render > 0:
                 _rz_render = _rz[render_indices]  # (n_render, K, D)
-                lat_all = _rz_render
-                pos_all = pred_anchor_pos[render_indices] if render_grad_on else pred_anchor_pos[render_indices].detach()
-                rot_all = pred_anchor_rot[render_indices] if render_grad_on else pred_anchor_rot[render_indices].detach()
-                scl_all = pred_anchor_scale[render_indices] if pred_anchor_scale is not None else torch.ones_like(pos_all)
+                lat_all = _rz_render.detach()     # Render gradients should NOT backprop through VAE latent flow
+                pos_all = pred_anchor_pos_render[render_indices] if render_grad_on else pred_anchor_pos_render[render_indices].detach()
+                rot_all = pred_anchor_rot_render[render_indices].detach()  # Rot supervised purely by 3D GT loss
+                scl_all = pred_anchor_scale_render[render_indices] if pred_anchor_scale_render is not None else torch.ones_like(pos_all)
                 if not render_grad_on:
                     scl_all = scl_all.detach()
+                else:
+                    if pos_all.requires_grad:
+                        pos_all.register_hook(lambda g: torch.nan_to_num(g.clamp(-2.0, 2.0), nan=0.0))
+                    if scl_all.requires_grad:
+                        scl_all.register_hook(lambda g: torch.nan_to_num(g.clamp(-2.0, 2.0), nan=0.0))
 
                 out_vae_all = phytomer_vae.decode(lat_all.reshape(-1, D))
                 recon_abs_all = denormalize_packet_scales(
@@ -724,7 +716,7 @@ def forward_backward_step(
                     cls_logits_b = cls_logits_all[b_idx].reshape(-1, 13)
                     keep = cls_logits_b.argmax(-1) > 0
                     part_14d = decode_fm(flat_abs[keep])
-                    exist_b = torch.sigmoid(_re[real_b]).reshape(-1)[keep]
+                    exist_b = torch.sigmoid(_re[real_b]).reshape(-1)[keep].detach()
                     probs = F.softmax(cls_logits_b, dim=-1)[keep]
                 elif vae is not None:
                     part_14d, probs = vae.decode_to_part_tensor(_rz[real_b])
@@ -787,8 +779,8 @@ def forward_backward_step(
                 loss_depth_acc = loss_depth_acc + (sample_loss_depth / num_scales)
                 loss_dice_acc = loss_dice_acc + (sample_loss_dice / num_scales)
 
-            loss_depth = loss_depth_acc / max(n_render, 1)
-            loss_dice = loss_dice_acc / max(n_render, 1)
+            loss_depth = torch.clamp(loss_depth_acc / max(n_render, 1), max=10.0)
+            loss_dice = torch.clamp(loss_dice_acc / max(n_render, 1), max=5.0)
             prof["render"] = time.time() - t0
 
     # Composite Loss (8-Loss Ratified System: Macro + Scaffold + Micro Flow + Photometric)
@@ -801,6 +793,7 @@ def forward_backward_step(
         + 1.0 * loss_fine_vel
         + 1.0 * loss_fine_exist
         + phy_count_weight * loss_phy_count
+        + dap_weight * loss_dap
         + depth_loss_weight * loss_depth
         + silhouette_loss_weight * loss_dice
     )
@@ -827,12 +820,14 @@ def forward_backward_step(
         "anchor_exist_loss": loss_anchor_exist.item(),
         "anchor_scale_loss": loss_anchor_scale.item(),
         "phy_count_loss": loss_phy_count.item(),
+        "dap_loss": loss_dap.item(),
         "pred_phy_mean": pred_num_phytomers.mean().item() if pred_num_phytomers is not None else 0.0,
         "gt_phy_mean": gt_phy_counts.mean().item(),
+        "pred_dap_mean": pred_dap.mean().item() if pred_dap is not None else 0.0,
+        "gt_dap_mean": daps.mean().item() if daps is not None else 0.0,
         "fine_vel_loss": loss_fine_vel.item(),
         "fine_exist_loss": loss_fine_exist.item(),
         "dense_depth_loss": loss_depth.item(),
-        "cos_color_loss": loss_cos.item(),
         "silhouette_dice_loss": loss_dice.item(),
         "cls_acc": cls_accuracy,
         "prof": prof,
@@ -859,6 +854,7 @@ def probe_optimal_batch_size(
     flow_granularity: str = "organ",
     phytomer_vae: Optional[nn.Module] = None,
     phy_count_weight: float = 2.0,
+    dap_weight: float = 0.05,
     scale_weight: float = 2.0,
 ) -> int:
     """
@@ -915,6 +911,7 @@ def probe_optimal_batch_size(
         flow_granularity=flow_granularity,
         phytomer_vae=phytomer_vae,
         phy_count_weight=phy_count_weight,
+        dap_weight=dap_weight,
         scale_weight=scale_weight,
         render_grad=True,
     )
@@ -1032,21 +1029,14 @@ def train_one_epoch(
     flow_granularity: str = "organ",
     phytomer_vae: Optional[nn.Module] = None,
     phy_count_weight: float = 2.0,
+    dap_weight: float = 0.05,
     scale_weight: float = 2.0,
-    render_grad_start_epoch: int = 5,
+    render_grad_start_epoch: int = 4,
     **kwargs,
 ) -> Dict[str, float]:
     model.train()
-    # Scheduled capacity teacher-forcing decay: linear ramp of the predicted-
-    # phytomer capacity path probability p_pred from 0 at warmup to 1 at full.
-    p_pred = 0.0
-    if capacity_full_epochs > capacity_warmup_epochs:
-        frac = (epoch - capacity_warmup_epochs) / float(capacity_full_epochs - capacity_warmup_epochs)
-        p_pred = max(0.0, min(1.0, frac))
-    capacity_schedule = {"p_pred": p_pred}
-    # Render-gradient epoch gate: before render_grad_start_epoch the render loop
-    # runs graph-free (metrics/panels still produced); from the gate epoch the
-    # full differentiable graph is built so depth/dice shape pose/geometry.
+    # Render-gradient epoch gate: skip render pass during initial warmup (epochs < render_grad_start_epoch);
+    # from render_grad_start_epoch onwards, full differentiable optical grounding is engaged.
     render_grad = bool(epoch >= render_grad_start_epoch)
     # Optional per-step LR warmup callback (set by main(); scales optimizer lrs linearly)
     lr_warmup_cb = kwargs.pop("lr_warmup_cb", None)
@@ -1056,12 +1046,14 @@ def train_one_epoch(
     total_anchor_exist_loss = 0.0
     total_anchor_scale_loss = 0.0
     total_phy_count_loss = 0.0
+    total_dap_loss = 0.0
     total_pred_phy_mean = 0.0
     total_gt_phy_mean = 0.0
+    total_pred_dap_mean = 0.0
+    total_gt_dap_mean = 0.0
     total_fine_vel_loss = 0.0
     total_fine_exist_loss = 0.0
     total_dense_depth_loss = 0.0
-    total_cos_color_loss = 0.0
     total_dice_loss = 0.0
     total_cls_acc = 0.0
     count = 0
@@ -1087,10 +1079,10 @@ def train_one_epoch(
             color_loss_weight=color_loss_weight,
             silhouette_loss_weight=silhouette_loss_weight,
             render_fraction=render_fraction,
-            capacity_schedule=capacity_schedule,
             flow_granularity=flow_granularity,
             phytomer_vae=phytomer_vae,
             phy_count_weight=phy_count_weight,
+            dap_weight=dap_weight,
             scale_weight=scale_weight,
             render_grad=render_grad,
         )
@@ -1102,14 +1094,42 @@ def train_one_epoch(
                     warmup_n()
             continue
 
+        # Per-element grad clamp BEFORE clip_grad_norm_: total norm is computed as a
+        # sum of squares in Float32, so a single finite-but-huge grad (~1e19) makes
+        # sum(g^2) overflow to inf (max fp32 ~3.4e38) while every element stays
+        # finite — the exact signature of Job 38237555 (grad_norm=inf, Culprit 0).
+        # Bounding each element keeps the squared sum far below fp32 overflow so
+        # the global clip still sees a finite norm, and healthy steps are preserved.
+        GRAD_ELEM_CLAMP = 100.0
+        for p in model.parameters():
+            if p.grad is not None:
+                p.grad.clamp_(-GRAD_ELEM_CLAMP, GRAD_ELEM_CLAMP)
+
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         if torch.isnan(grad_norm) or torch.isinf(grad_norm):
             if rank == 0:
-                print(f"  [Recovery] Step {batch_idx+1}: grad_norm is NaN/Inf ({grad_norm}), sanitizing grads to recover")
-            for p in model.parameters():
-                if p.grad is not None:
-                    torch.nan_to_num(p.grad, nan=0.0, posinf=1.0, neginf=-1.0, out=p.grad)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                bad_params = []
+                for name, p in model.named_parameters():
+                    if p.grad is None:
+                        continue
+                    nan_cnt = int(torch.isnan(p.grad).sum().item())
+                    inf_cnt = int(torch.isinf(p.grad).sum().item())
+                    finite_abs = p.grad[torch.isfinite(p.grad)].abs()
+                    huge_cnt = int((finite_abs > 1e6).sum().item()) if finite_abs.numel() > 0 else 0
+                    max_g = float(finite_abs.max().item()) if finite_abs.numel() > 0 else 0.0
+                    if nan_cnt > 0 or inf_cnt > 0 or huge_cnt > 0:
+                        bad_params.append(
+                            f"{name} (NaN:{nan_cnt}, Inf:{inf_cnt}, Huge(>1e6):{huge_cnt}, shape:{list(p.shape)}, max:{max_g:.1e})"
+                        )
+                print(f"  [Recovery] Step {batch_idx+1}: grad_norm is NaN/Inf ({grad_norm}) | Culprit params ({len(bad_params)}): -> SKIPPING STEP")
+                for bp in bad_params[:10]:
+                    print(f"    -> {bp}")
+            optimizer.zero_grad(set_to_none=True)
+            if lr_warmup_cb is not None:
+                warmup_n = getattr(lr_warmup_cb, "advance", None)
+                if warmup_n is not None:
+                    warmup_n()
+            continue
         optimizer.step()
         t_step2 = time.time()
 
@@ -1124,12 +1144,14 @@ def train_one_epoch(
         total_anchor_exist_loss += step_metrics["anchor_exist_loss"]
         total_anchor_scale_loss += step_metrics.get("anchor_scale_loss", 0.0)
         total_phy_count_loss += step_metrics.get("phy_count_loss", 0.0)
+        total_dap_loss += step_metrics.get("dap_loss", 0.0)
         total_pred_phy_mean += step_metrics.get("pred_phy_mean", 0.0)
         total_gt_phy_mean += step_metrics.get("gt_phy_mean", 0.0)
+        total_pred_dap_mean += step_metrics.get("pred_dap_mean", 0.0)
+        total_gt_dap_mean += step_metrics.get("gt_dap_mean", 0.0)
         total_fine_vel_loss += step_metrics["fine_vel_loss"]
         total_fine_exist_loss += step_metrics["fine_exist_loss"]
         total_dense_depth_loss += step_metrics["dense_depth_loss"]
-        total_cos_color_loss += step_metrics["cos_color_loss"]
         total_dice_loss += step_metrics["silhouette_dice_loss"]
         total_cls_acc += step_metrics["cls_acc"]
         count += 1
@@ -1137,12 +1159,17 @@ def train_one_epoch(
         print_freq = max(1, len(dataloader) // 5)
         if rank == 0 and ((batch_idx + 1) % print_freq == 0 or (batch_idx + 1) == len(dataloader)):
             p = step_metrics.get("prof", {})
+            render_str = (
+                f"Depth: {step_metrics['dense_depth_loss']:.4f}, Dice: {step_metrics['silhouette_dice_loss']:.4f}"
+                if render_grad
+                else "Off (Warmup)"
+            )
             print(
                 f"  [Epoch {epoch:02d}] Step {batch_idx+1:03d}/{len(dataloader):03d} | Loss: {step_metrics['loss']:.4f} | "
-                f"[S1 Macro] Phy: {step_metrics.get('phy_count_loss', 0.0):.4f} [P:{step_metrics.get('pred_phy_mean', 0.0):.1f}/G:{step_metrics.get('gt_phy_mean', 0.0):.1f}] | "
+                f"[S1 Macro] Phy: {step_metrics.get('phy_count_loss', 0.0):.4f} [P:{step_metrics.get('pred_phy_mean', 0.0):.1f}/G:{step_metrics.get('gt_phy_mean', 0.0):.1f}], DAP: {step_metrics.get('dap_loss', 0.0):.4f} [P:{step_metrics.get('pred_dap_mean', 0.0):.1f}/G:{step_metrics.get('gt_dap_mean', 0.0):.1f}] | "
                 f"[S2 Scaffold] Pos: {step_metrics['anchor_pos_loss']:.4f}, Rot: {step_metrics.get('anchor_rot_loss', 0.0):.4f}, Scl: {step_metrics.get('anchor_scale_loss', 0.0):.4f}, Ext: {step_metrics.get('anchor_exist_loss', 0.0):.4f} | "
                 f"[S3 Micro] Vel: {step_metrics['fine_vel_loss']:.4f}, Ext: {step_metrics['fine_exist_loss']:.4f}, Acc: {step_metrics['cls_acc']*100:.1f}% | "
-                f"[S4 Render] Depth: {step_metrics['dense_depth_loss']:.4f}, Dice: {step_metrics['silhouette_dice_loss']:.4f} | "
+                f"[S4 Render] {render_str} | "
                 f"fwd/bwd {t_step1-t_step0:.2f}s opt {t_step2-t_step1:.2f}s | "
                 f"pkt {p.get('packet_build',0):.2f} fwd1 {p.get('fwd1',0):.2f} fwd2 {p.get('fwd2',0):.2f} "
                 f"match {p.get('matcher',0):.2f} render {p.get('render',0):.2f} "
@@ -1157,15 +1184,16 @@ def train_one_epoch(
         "anchor_exist_loss": total_anchor_exist_loss / max(count, 1),
         "anchor_scale_loss": total_anchor_scale_loss / max(count, 1),
         "phy_count_loss": total_phy_count_loss / max(count, 1),
+        "dap_loss": total_dap_loss / max(count, 1),
         "pred_phy_mean": total_pred_phy_mean / max(count, 1),
         "gt_phy_mean": total_gt_phy_mean / max(count, 1),
+        "pred_dap_mean": total_pred_dap_mean / max(count, 1),
+        "gt_dap_mean": total_gt_dap_mean / max(count, 1),
         "fine_vel_loss": total_fine_vel_loss / max(count, 1),
         "fine_exist_loss": total_fine_exist_loss / max(count, 1),
         "dense_depth_loss": total_dense_depth_loss / max(count, 1),
-        "cos_color_loss": total_cos_color_loss / max(count, 1),
         "silhouette_dice_loss": total_dice_loss / max(count, 1),
         "cls_acc": total_cls_acc / max(count, 1),
-        "capacity_p_pred": p_pred,
     }
 
 
@@ -1217,11 +1245,9 @@ def main():
     parser.add_argument("--render_fraction", type=float, default=1.0 / 6.0, help="Fraction of the batch rendered differentiably per step (batch-relative: n_render = round(B * fraction), clamped [1, B]). 1/6 restores the per-sample photometric visit rate of the 2026-09-07 runs; 1.0 renders the full batch (requires small batch — check VRAM).")
     parser.add_argument("--save_every", type=int, default=25)
     parser.add_argument("--eval_every", type=int, default=25, help="Validation image generation interval in epochs (default: 25)")
-    parser.add_argument("--render_grad_start_epoch", type=int, default=5,
-                        help="Render-loop gradients (depth/dice through the mesh/raster graph) "
-                             "activate at this epoch; before it the render loop runs under "
-                             "torch.no_grad() (metrics/panels still computed). Saves the "
-                             "55-65s render backward during warmup.")
+    parser.add_argument("--render_grad_start_epoch", type=int, default=4,
+                        help="Render-loop gradients activate at this epoch; before it the render "
+                             "loop is bypassed completely to speed up early LR warmup.")
     parser.add_argument("--scale_weight", type=float, default=2.0,
                         help="Loss weight for the Stage-2 anchor-scale head (76D flow s_a).")
     parser.add_argument("--eval_min_interval_minutes", type=int, default=30, help="Time-based eval fallback: force an eval panel if at least this many minutes elapsed since the last one (0 disables). Keeps diagnostic cadence roughly constant as dataset size grows per-epoch time.")
@@ -1229,6 +1255,7 @@ def main():
     parser.add_argument("--eval_seed", type=int, default=1234, help="Deterministic seed for the fixed stratified eval set.")
     parser.add_argument("--backbone_lr_ratio", type=float, default=0.3, help="Backbone lr = args.lr * ratio (0.3: restored 2026-09-08 value; 0.15 starved macro-head CLS features)")
     parser.add_argument("--phy_count_weight", type=float, default=2.0, help="Loss weight for phytomer-count (was 0.5 — macro head learned ~6x slower than the Sep-8 organ run)")
+    parser.add_argument("--dap_weight", type=float, default=0.05, help="Loss weight for DAP prediction (auxiliary regularizer)")
     parser.add_argument("--init_phytomer_count", type=float, default=50.0,
                         help="Bias-init phy_head so pred_num starts near the dataset mean; removes the dead-anchor existence gate at epoch 0")
     parser.add_argument("--warmup_epochs", type=int, default=3, help="Linear LR warmup epochs (0.1x -> 1.0x per step; 0 disables)")
@@ -1271,6 +1298,11 @@ def main():
             name=args.wandb_run_name,
             config=vars(args),
         )
+        wandb.define_metric("epoch")
+        wandb.define_metric("train/*", step_metric="epoch")
+        wandb.define_metric("val/*", step_metric="epoch")
+        wandb.define_metric("eval/*", step_metric="epoch")
+        wandb.define_metric("lr", step_metric="epoch")
 
     # Dataset
     dataset = PartArrayDataset(
@@ -1381,10 +1413,10 @@ def main():
         print(f"Optimizer setup: {len(backbone_params)} DINOv2 backbone tensors (lr={args.lr * args.backbone_lr_ratio:.1e}), "
               f"{len(other_params)} 3D/decoder tensors (lr={args.lr:.1e})")
 
-    param_groups = [
-        {"params": backbone_params, "lr": args.lr * args.backbone_lr_ratio},
-        {"params": other_params, "lr": args.lr},
-    ]
+    param_groups = []
+    if backbone_params:
+        param_groups.append({"params": backbone_params, "lr": args.lr * args.backbone_lr_ratio})
+    param_groups.append({"params": other_params, "lr": args.lr})
     optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)
 
     # Optional Warm-Start Initialization or Full State Resume
@@ -1477,6 +1509,7 @@ def main():
             flow_granularity=args.flow_granularity,
             phytomer_vae=phytomer_vae,
             phy_count_weight=args.phy_count_weight,
+            dap_weight=args.dap_weight,
             scale_weight=args.scale_weight,
         )
     else:
@@ -1556,18 +1589,13 @@ def main():
 
         total_warmup_steps = warmup_state.get("total_steps", 0)
         print("=" * 80)
-        print("Hierarchical Botanical Flow Matching — Training Curriculum Schedule")
+        print("Hierarchical Botanical Flow Matching — Training Configuration")
         print("=" * 80)
-        print(f"{'Phase / Component':<35} | {'Active Epochs':<18} | {'Mechanism & Target':<22}")
+        print(f"{'Component / Schedule':<26} | {'Active Epochs':<20} | {'Mechanism & Description':<28}")
         print("-" * 80)
-        print(f"{'1. Linear LR Warmup':<35} | {f'Epoch 1 ~ {warmup_epochs}':<18} | {f'0.1x -> 1.0x ({total_warmup_steps} steps)':<22}")
-        print(f"{'2. 3D Scaffold & Flow Supervision':<35} | {f'Epoch 1 ~ {args.epochs}':<18} | {'Direct L1 + Flow MSE':<22}")
-        print(f"{'3. Differentiable Render Loss':<35} | {f'Epoch {args.render_grad_start_epoch} ~ {args.epochs}':<18} | {'CHM Depth + Top-view Dice':<22}")
-        print(f"{'4. Anchor Slicing (Teacher Forcing)':<35} | {f'Epoch 1 ~ {args.capacity_warmup_epochs}':<18} | {'100% GT DAP (Organ coverage)':<22}")
-        print(f"{'5. Anchor Slicing (Scheduled Ramp)':<35} | {f'Epoch {args.capacity_warmup_epochs+1} ~ {args.capacity_full_epochs}':<18} | {'p_pred: 0.0 -> 1.0':<22}")
-        print(f"{'6. Anchor Slicing (Autonomous)':<35} | {f'Epoch {args.capacity_full_epochs} ~ {args.epochs}':<18} | {'100% Model Pred (Inference)':<22}")
-        print(f"{'7. Cosine LR Annealing':<35} | {f'Epoch {warmup_epochs+1} ~ {args.epochs}':<18} | {'3e-4 -> 1e-6 decay':<22}")
-        print(f"{'8. Stratified Eval & Checkpoints':<35} | {f'Every {args.eval_every} / {args.save_every} ep':<18} | {'Multi-DAP Metrics & Weights':<22}")
+        print(f"{'1. LR Scheduling':<26} | {f'Epoch 1 ~ {args.epochs}':<20} | {f'Linear Warmup (1~{warmup_epochs}) -> Cosine Decay':<28}")
+        print(f"{'2. Differentiable Render':<26} | {f'Epoch {args.render_grad_start_epoch} ~ {args.epochs}':<20} | {f'Active from Ep {args.render_grad_start_epoch} (Ep 1~{args.render_grad_start_epoch-1} bypassed)':<28}")
+        print(f"{'3. Self-Consistency Eval':<26} | {f'Milestones + {args.eval_every} ep':<20} | {f'Epochs {{1, 3, 4, 5}} + Every {args.eval_every} ep':<28}")
         print("=" * 80)
 
     last_eval_time = {"t": time.time()}
@@ -1595,6 +1623,7 @@ def main():
             flow_granularity=args.flow_granularity,
             phytomer_vae=phytomer_vae,
             phy_count_weight=args.phy_count_weight,
+            dap_weight=args.dap_weight,
             scale_weight=args.scale_weight,
             render_grad_start_epoch=args.render_grad_start_epoch,
             lr_warmup_cb=lr_warmup_cb,
@@ -1609,13 +1638,17 @@ def main():
             total_vram_gb = torch.cuda.get_device_properties(device).total_memory / (1024 ** 3)
             vram_pct = (max_vram_gb / total_vram_gb) * 100.0 if total_vram_gb > 0 else 0.0
 
+            render_epoch_str = (
+                f"Depth: {epoch_metrics['dense_depth_loss']:.4f}, Dice: {epoch_metrics['silhouette_dice_loss']:.4f}"
+                if epoch >= args.render_grad_start_epoch
+                else "Off (Warmup)"
+            )
             print(
                 f"Epoch {epoch:03d} | Loss: {epoch_metrics['loss']:.4f} | "
-                f"[S1 Macro] Phy: {epoch_metrics['phy_count_loss']:.4f} (P:{epoch_metrics['pred_phy_mean']:.1f}/G:{epoch_metrics['gt_phy_mean']:.1f}) | "
+                f"[S1 Macro] Phy: {epoch_metrics['phy_count_loss']:.4f} (P:{epoch_metrics['pred_phy_mean']:.1f}/G:{epoch_metrics['gt_phy_mean']:.1f}), DAP: {epoch_metrics.get('dap_loss', 0.0):.4f} (P:{epoch_metrics.get('pred_dap_mean', 0.0):.1f}/G:{epoch_metrics.get('gt_dap_mean', 0.0):.1f}) | "
                 f"[S2 Scaffold] Pos: {epoch_metrics['anchor_pos_loss']:.4f}, Rot: {epoch_metrics.get('anchor_rot_loss', 0.0):.4f}, Scl: {epoch_metrics.get('anchor_scale_loss', 0.0):.4f}, Ext: {epoch_metrics['anchor_exist_loss']:.4f} | "
                 f"[S3 Micro] Vel: {epoch_metrics['fine_vel_loss']:.4f}, Ext: {epoch_metrics['fine_exist_loss']:.4f}, Acc: {epoch_metrics['cls_acc']*100:.1f}% | "
-                f"[S4 Render] Depth: {epoch_metrics['dense_depth_loss']:.4f}, Dice: {epoch_metrics['silhouette_dice_loss']:.4f} | "
-                f"CapPredP: {epoch_metrics['capacity_p_pred']:.2f} | "
+                f"[S4 Render] {render_epoch_str} | "
                 f"VRAM: {max_vram_gb:.1f}/{total_vram_gb:.1f} GB ({vram_pct:.1f}%)"
             )
             wandb.log({
@@ -1623,8 +1656,11 @@ def main():
                 "train/loss": epoch_metrics["loss"],
                 # Stage 1: Macro Prior
                 "train/s1_phy_count_loss": epoch_metrics["phy_count_loss"],
+                "train/s1_dap_loss": epoch_metrics.get("dap_loss", 0.0),
                 "train/s1_pred_phy_mean": epoch_metrics["pred_phy_mean"],
                 "train/s1_gt_phy_mean": epoch_metrics["gt_phy_mean"],
+                "train/s1_pred_dap_mean": epoch_metrics.get("pred_dap_mean", 0.0),
+                "train/s1_gt_dap_mean": epoch_metrics.get("gt_dap_mean", 0.0),
                 # Stage 2: Coarse 3D Scaffold
                 "train/s2_anchor_pos_loss": epoch_metrics["anchor_pos_loss"],
                 "train/s2_anchor_rot_loss": epoch_metrics.get("anchor_rot_loss", 0.0),
@@ -1637,8 +1673,7 @@ def main():
                 # Stage 4: Differentiable Photometric
                 "train/s4_dense_depth_loss": epoch_metrics["dense_depth_loss"],
                 "train/s4_silhouette_dice_loss": epoch_metrics["silhouette_dice_loss"],
-                # System & Capacity
-                "train/capacity_p_pred": epoch_metrics["capacity_p_pred"],
+                # System & Metrics
                 "train/vram_allocated_gb": max_vram_gb,
                 "train/vram_utilization_pct": vram_pct,
                 "lr": optimizer.param_groups[0]["lr"],
@@ -1646,7 +1681,7 @@ def main():
                 "train/phy_count_loss": epoch_metrics["phy_count_loss"],
                 "train/anchor_pos_loss": epoch_metrics["anchor_pos_loss"],
                 "train/fine_vel_loss": epoch_metrics["fine_vel_loss"],
-            })
+            }, step=epoch)
 
             if epoch % args.save_every == 0 or epoch == args.epochs:
                 save_path = os.path.join(args.output_dir, f"hierarchical_fm_epoch_{epoch:03d}.pt")
@@ -1671,7 +1706,9 @@ def main():
                 and minutes_since_eval >= args.eval_min_interval_minutes
                 and epoch > start_epoch  # skip the resume-instant eval
             )
-            epoch_due = (epoch % args.eval_every == 0) or (epoch == args.epochs)
+            # Early milestone evals to rigorously benchmark rendering ablation (pre vs post render loss):
+            early_eval_epochs = {1, 3, 4, 5}
+            epoch_due = (epoch in early_eval_epochs) or (epoch % args.eval_every == 0) or (epoch == args.epochs)
             if epoch_due or time_due:
                 if time_due and not epoch_due and rank == 0:
                     print(f"  [Eval trigger] {minutes_since_eval:.0f} min since last panel (> {args.eval_min_interval_minutes})", flush=True)
@@ -1694,22 +1731,17 @@ def main():
                     print(
                         f"  [Self-Consistency Epoch {epoch:03d}] Silhouette IoU: {val_metrics['silhouette_iou']*100:.1f}% | "
                         f"Depth MAE: {val_metrics['depth_mae']*100:.2f} cm | "
-                        f"Cos: {val_metrics.get('cos_color_loss', 0.0):.3f} | "
                         f"Dice: {val_metrics.get('dice_loss', 0.0):.3f} | "
                         f"Node RMSE: {val_metrics.get('val/node_rmse_cm', val_metrics.get('node_rmse_cm', 0.0)):.1f} cm "
                         f"(n={len(eval_indices)} fixed-set)",
                         flush=True,
                     )
-                    wandb.log({
-                        "epoch": epoch,
-                        "val/silhouette_iou": val_metrics["silhouette_iou"],
-                        "val/depth_mae_m": val_metrics["depth_mae"],
-                        "val/cos_color_loss": val_metrics.get("cos_color_loss", 0.0),
-                        "val/dice_loss": val_metrics.get("dice_loss", 0.0),
-                        "val/node_rmse_cm": val_metrics.get("val/node_rmse_cm", 0.0),
-                    })
                 except Exception as e:
                     print(f"  [Self-Consistency Warning] Evaluation skipped: {e}", flush=True)
+                finally:
+                    # Hard guarantee: the in-loop eval must never leave the DDP-wrapped
+                    # model in eval() state for subsequent training steps.
+                    model.train()
 
     if is_ddp:
         dist.destroy_process_group()
