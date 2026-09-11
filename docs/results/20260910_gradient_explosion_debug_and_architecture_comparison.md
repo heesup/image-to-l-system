@@ -196,7 +196,7 @@ loss = (
                    │
     ┌──────────────┴────────────────────────────────────┐
     │  Conditioning: pos.detach(), rot.detach(),         │
-    │                scale.detach(), anchor_features    │
+    │                scale.detach(), anchor_features.detach()  │
     ▼                                                   │
 [Stage 3: PhytomerFlowMatchingDecoder]                  │
     │  Flow Vector: 64D VAE Latent ONLY                 │
@@ -224,7 +224,33 @@ loss = (
 
 ---
 
-## 7. 참고 이미지
+## 7. Job 38236714 재폭발 원인 분석 및 영구 방어선 (2026-09-10 밤)
+
+### 7.1 문제 현상 (Job 38236714)
+- Epoch 1, 2는 안정적이었으나, Linear LR Warmup(3 epochs, 348 steps)이 종료되는 **Epoch 3 Step 46~92**에서 갑작스러운 그래디언트 폭발 발생:
+  - `[Epoch 03] Step 092/116 | Loss: 773.3856 | Pos: 65.4449, Rot: 205.5988, Scl: 1.5440, Ext: 19.9443 | Vel: 348.8686`
+  - 이후 `grad_norm is NaN/Inf (inf)` 연속 발생.
+
+### 7.2 근본 원인: `anchor_features`를 통한 2,311.13 Norm의 역류 누수
+1. `anchor_pos`, `anchor_rot`, `anchor_scale`은 `.detach()` 처리되었으나, Stage 2의 Transformer 핵심 임베딩인 **`anchor_features`가 `.detach()` 없이 Stage 3 디코더로 그대로 주입**되었음.
+2. 단위 테스트 실측 결과: Stage 3의 `loss_fine_vel` 역전파만으로 Stage 2 `anchor_self_attn`에 **2,311.13의 거대한 비정상 그래디언트**가 쏟아져 들어감.
+3. 이로 인해 Stage 2 잠재 표현이 완전히 파괴되었고, 이 피처를 공유하는 `pos_head`, `rot_head`, `scale_head`가 Epoch 3 Warmup 직후 동반 폭주함.
+4. 추가로 `rot_head`의 6D 회전에 정규직교화가 없어 205까지 벡터 크기가 발산했고, `pos_head`에 바운딩이 없어 65m까지 튕겨 나감.
+
+### 7.3 적용된 3대 영구 방어선
+1. **완전한 계층 분리 (`anchor_features.detach()`)**:
+   - `fine_stage(anchor_features=anchor_features.detach(), ...)`
+   - 단위 테스트 검증: `loss_vel.backward()` 시 Stage 2 `anchor_self_attn`, `pos_head`, `rot_head`의 grad가 **정확히 `None` (0.00)**으로 100% 완전 격리 확인!
+2. **Gram-Schmidt 6D 회전 정규직교화 (Zhou et al., CVPR 2019)**:
+   - $e_1 = \text{normalize}(v_1)$, $u_2 = v_2 - (e_1 \cdot v_2)e_1$, $e_2 = \text{normalize}(u_2)$
+   - $e_1, e_2$의 크기가 항상 1.0으로 고정되므로, L1 회전 손실은 수학적으로 4.0을 절대 초과할 수 없음 (`Rot: 205` 원천 차단).
+3. **물리적 위치 $\pm 50\text{cm}$ 바운딩 & 스케일 클램핑**:
+   - `delta_pos = torch.tanh(self.pos_head(anchor_features)) * 0.5`로 식물 크기 범위($\pm 0.5\text{m}$) 내로 수학적 제한 (`Pos: 65m` 원천 차단).
+   - `anchor_scale = (softplus(...) + 1e-4).clamp(max=2.0)`.
+
+---
+
+## 8. 참고 이미지
 
 - [`assets/hierarchical_self_consistency_epoch_008.png`](assets/hierarchical_self_consistency_epoch_008.png) — Job 38235969, epoch 8 결과
 - [`assets/hierarchical_self_consistency_epoch_125_20260908.png`](assets/hierarchical_self_consistency_epoch_125_20260908.png) — Option B epoch 125 (9/8 아침 확인한 최고 결과)
