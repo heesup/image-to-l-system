@@ -29,8 +29,9 @@ BACKBONE=${BACKBONE:-dinov2_vits14}
 OUTPUT_DIR=${OUTPUT_DIR:-diffusion_based/checkpoints/hierarchical_latent_fm}
 EPOCHS=${EPOCHS:-500}
 SAVE_EVERY=${SAVE_EVERY:-25}
+FREEZE_BACKBONE=${FREEZE_BACKBONE:-1}
 FREEZE_ARGS=""
-if [ "${FREEZE_BACKBONE:-0}" = "1" ]; then
+if [ "${FREEZE_BACKBONE}" = "1" ]; then
     FREEZE_ARGS="--freeze_backbone"
 fi
 
@@ -56,12 +57,12 @@ echo "==========================================================================
 echo "Starting Hierarchical Matryoshka Botanical Flow Matching Training"
 echo "Job ID: $SLURM_JOB_ID | Host: $(hostname) | GPUs allocated: $NPROC"
 echo "Per-GPU VRAM: ${VRAM_MB} MiB | Batch Mode: ${BATCH_ARG} (Target VRAM: ${TARGET_RATIO})"
-echo "Anchor Capacity: calibrated logistic curve (p97.5+max coverage) | M=${SLOTS_PER_ANCHOR:-10} slots/anchor"
-echo "Capacity schedule: warmup ${CAPACITY_WARMUP:-50} -> full ${CAPACITY_FULL:-150} (pred-phytomer ramp)"
+echo "Anchor Capacity: 512 anchors x ${SLOTS_PER_ANCHOR:-10} slots/anchor"
+echo "Render gate: fast warmup bypass (epochs 1-3) -> active at epoch ${RENDER_GRAD_START_EPOCH:-4}"
 echo "Eval cadence: every ${EVAL_EVERY:-25} epochs OR every ${EVAL_MIN_INTERVAL_MINUTES:-30} min (time fallback)"
 echo "Render fraction: ${RENDER_FRACTION:-0.167} of batch per step (batch-relative; 2-scale pyramid 1x/2x — profiling 2026-09-09: render was 70% of step time)"
 echo "Flow granularity: ${FLOW_GRANULARITY:-phytomer} (hybrid decoupled: pure 64D VAE latent flow + Stage 2 3D scaffold)"
-echo "Phytomer VAE: ${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_v3/phytomer_vae_64d_best.pt}"
+echo "Phytomer VAE: ${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_v4/phytomer_vae_64d_best.pt}"
 echo "Pkt cache dir: ${PKT_CACHE_DIR:-dataset/cache/cowpea_curv26_pkt} (missing samples fall back to on-the-fly)"
 echo "Backbone: ${BACKBONE}${FREEZE_ARGS:+ (frozen)} | Output: ${OUTPUT_DIR} | Epochs: ${EPOCHS}"
 echo "Train subset: ${MAX_TRAIN_SAMPLES:-0} (0 = full dataset)"
@@ -93,6 +94,7 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     --lr "${LR:-3e-4}" \
     --backbone_lr_ratio "${BACKBONE_LR_RATIO:-0.3}" \
     --phy_count_weight "${PHY_COUNT_WEIGHT:-2.0}" \
+    --dap_weight "${DAP_WEIGHT:-0.05}" \
     --init_phytomer_count "${INIT_PHYTOMER_COUNT:-50.0}" \
     --node_dim 16 \
     --organ_vae_checkpoint diffusion_based/checkpoints/organ_vae/organ_latent_vae_best.pt \
@@ -102,7 +104,7 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     ${FREEZE_ARGS} \
     ${DETECT_ANOMALY_ARGS} \
     --phytomer_latent_dim "${PHYTOMER_LATENT_DIM:-64}" \
-    --phytomer_vae_checkpoint "${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_v3/phytomer_vae_64d_best.pt}" \
+    --phytomer_vae_checkpoint "${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_v4/phytomer_vae_64d_best.pt}" \
     --pkt_cache_dir "${PKT_CACHE_DIR:-dataset/cache/cowpea_curv26_pkt}" \
     --max_anchors 512 \
     --slots_per_anchor "${SLOTS_PER_ANCHOR:-10}" \
@@ -115,7 +117,7 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     --color_weight 0.0 \
     --silhouette_weight 1.0 \
     --render_fraction "${RENDER_FRACTION:-0.167}" \
-    --render_grad_start_epoch "${RENDER_GRAD_START_EPOCH:-5}" \
+    --render_grad_start_epoch "${RENDER_GRAD_START_EPOCH:-4}" \
     --scale_weight "${SCALE_WEIGHT:-1.0}" \
     --save_every "${SAVE_EVERY}" \
     --eval_every "${EVAL_EVERY:-25}" \
@@ -123,8 +125,6 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     --eval_samples_per_bucket "${EVAL_SAMPLES_PER_BUCKET:-2}" \
     --dap_buckets "${DAP_BUCKETS:-8}" \
     --max_train_samples "${MAX_TRAIN_SAMPLES:-0}" \
-    --capacity_warmup_epochs "${CAPACITY_WARMUP:-50}" \
-    --capacity_full_epochs "${CAPACITY_FULL:-150}" \
     --wandb_project part-flow-matching \
     --wandb_run_name "${WANDB_RUN_NAME:-hierarchical-3stage-cascaded-cowpea-100k}"
 

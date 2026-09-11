@@ -58,6 +58,15 @@ ANCHOR_MARGIN_FLAT = 6.0
 ANCHOR_MARGIN_MIN = 1.05
 
 
+def safe_normalize(v: torch.Tensor, eps: float = 1e-3) -> torch.Tensor:
+    """Safely normalizes vectors along the last dimension with bounded gradient.
+    Detaching the denominator norm prevents collinear/zero division where d/dv(v/||v||)
+    involves 1/||v||^3 terms that explode to 10^9+ in backward pass.
+    """
+    norm = torch.clamp(torch.norm(v, p=2, dim=-1, keepdim=True), min=eps)
+    return v / norm.detach()
+
+
 # =============================================================================
 # PHYTOMER-LEVEL FLOW TARGET LAYOUT (Stage 3 refinement of base + rot + latent)
 # =============================================================================
@@ -494,16 +503,34 @@ class CoarseSkeletalTransformer(nn.Module):
         anchor_pos = self.ref_points[:K].unsqueeze(0) + delta_pos
 
         # Continuous 6D rotation with Gram-Schmidt orthonormalization (Zhou et al., CVPR 2019)
-        # Prevents norm explosion (Rot: 205) and enforces valid SO(3) frame
         raw_rot = self.rot_head(anchor_features)
         v1 = raw_rot[..., :3]
         v2 = raw_rot[..., 3:]
-        e1 = F.normalize(v1, dim=-1, eps=1e-6)
+        e1 = safe_normalize(v1, eps=1e-3)
         u2 = v2 - (e1 * v2).sum(dim=-1, keepdim=True) * e1
-        e2 = F.normalize(u2, dim=-1, eps=1e-6)
+        e2 = safe_normalize(u2, eps=1e-3)
         anchor_rot = torch.cat([e1, e2], dim=-1)
 
         anchor_scale = (F.softplus(self.scale_head(anchor_features)) + 1e-4).clamp(max=2.0)  # (B, K, 3)
+
+        # Option B Gradient Isolation Barrier for Differentiable Rendering:
+        # Render loss (depth & dice) directly trains pos_head, rot_head, and scale_head weights
+        # to ground the 3D plant in drone camera space, but gradients STOP at feat_render (detached),
+        # completely shielding the 4-layer Transformer decoder, self-attention, and anchor queries
+        # from rasterizer boundary noise and gradient explosions.
+        feat_render = anchor_features.detach()
+        delta_pos_r = torch.tanh(self.pos_head(feat_render)) * 0.5
+        anchor_pos_render = self.ref_points[:K].detach().unsqueeze(0) + delta_pos_r
+
+        raw_rot_r = self.rot_head(feat_render)
+        v1_r = raw_rot_r[..., :3]
+        v2_r = raw_rot_r[..., 3:]
+        e1_r = safe_normalize(v1_r, eps=1e-3)
+        u2_r = v2_r - (e1_r * v2_r).sum(dim=-1, keepdim=True) * e1_r
+        e2_r = safe_normalize(u2_r, eps=1e-3)
+        anchor_rot_render = torch.cat([e1_r, e2_r], dim=-1)
+
+        anchor_scale_render = (F.softplus(self.scale_head(feat_render)) + 1e-4).clamp(max=2.0)
 
         # Re-slice the soft margin prior to the active width (computed once, full width)
         macro_out = {
@@ -520,6 +547,9 @@ class CoarseSkeletalTransformer(nn.Module):
             "anchor_pos": anchor_pos,
             "anchor_rot": anchor_rot,
             "anchor_scale": anchor_scale,
+            "anchor_pos_render": anchor_pos_render,
+            "anchor_rot_render": anchor_rot_render,
+            "anchor_scale_render": anchor_scale_render,
             "anchor_logits": anchor_logits,
             "anchor_features": anchor_features,
             "pred_dap": macro_out["pred_dap"],
@@ -530,17 +560,21 @@ class CoarseSkeletalTransformer(nn.Module):
 
 
 # =============================================================================
-# CANONICAL PHYTOMER ROLES FOR M=8 FINE SLOTS
+# CANONICAL PHYTOMER ROLES FOR M=10 FINE SLOTS (v2/v3 packet contract)
 # =============================================================================
 ROLE_INTERNODE = 0      # Slot 0: Main/lateral stem segment
 ROLE_PETIOLE = 1        # Slot 1: Leaf stalk (connects node to leaflets)
 ROLE_LEAF = 2           # Slots 2, 3, 4: Trifoliate leaflets (terminal, left, right)
 ROLE_PEDUNCLE = 3       # Slot 5: Inflorescence stem (flower stalk)
-ROLE_REPRODUCTIVE = 4   # Slots 6, 7: Flowers (closed/open), Pods, or Dormant Buds
+ROLE_REPRODUCTIVE = 4   # Slots 6..9: Flowers (closed/open), Pods, or Dormant Buds
 NUM_PHYTOMER_ROLES = 5
 
-SLOT_ROLE_MAPPING = [0, 1, 2, 2, 2, 3, 4, 4]
-SLOT_SUB_ROLE_MAPPING = [0, 0, 0, 1, 2, 0, 0, 1]  # Sub-index within role
+# v3 10-slot layout (matches ROLE_SLOT_RANGES in phytomer_packets.py exactly):
+# slot 0 = stem, slot 1 = petiole, slots 2..4 = 3 leaflets, slot 5 = peduncle,
+# slots 6..9 = 4 reproductive (flowers/pods/buds — the 3.29% of phytomers with
+# 3+ repro organs are no longer truncated).
+SLOT_ROLE_MAPPING = [0, 1, 2, 2, 2, 3, 4, 4, 4, 4]
+SLOT_SUB_ROLE_MAPPING = [0, 0, 0, 1, 2, 0, 0, 1, 2, 3]  # Sub-index within role
 
 
 class AnchorVisualProjector(nn.Module):
@@ -1172,6 +1206,9 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             "pred_anchor_pos": coarse_out["anchor_pos"],
             "pred_anchor_rot": coarse_out["anchor_rot"],
             "pred_anchor_scale": coarse_out["anchor_scale"],
+            "pred_anchor_pos_render": coarse_out.get("anchor_pos_render", coarse_out["anchor_pos"]),
+            "pred_anchor_rot_render": coarse_out.get("anchor_rot_render", coarse_out["anchor_rot"]),
+            "pred_anchor_scale_render": coarse_out.get("anchor_scale_render", coarse_out["anchor_scale"]),
             "pred_anchor_logits": coarse_out["anchor_logits"],
             "active_k": active_k,
             # Stage 3: Intra-Phytomer Canonical Flow Matching
@@ -1256,8 +1293,9 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             image_tokens=image_tokens,
             anchor_pos=anchor_pos,
             anchor_rot=anchor_rot,
-            anchor_scale=anchor_scale,
         )
+        if self.flow_granularity == "phytomer":
+            forward_kwargs["anchor_scale"] = anchor_scale
         for step in range(num_steps):
             t_curr = step * dt
             t_next = (step + 1) * dt

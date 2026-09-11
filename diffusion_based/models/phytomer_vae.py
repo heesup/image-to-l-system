@@ -233,7 +233,8 @@ class PhytomerVAE(nn.Module):
         aligned[:, :, 0] = 1.0  # NONE one-hot default
         aligned_pres = torch.zeros_like(target_presence, dtype=torch.bool)
 
-        role_ranges = [(0, 1), (1, 2), (2, 5), (5, 6), (6, 8)]
+        from diffusion_based.dataset.phytomer_packets import ROLE_SLOT_RANGES
+        role_ranges = list(ROLE_SLOT_RANGES.values())
         for i in range(P):
             for (lo, hi) in role_ranges:
                 slots = list(range(lo, hi))

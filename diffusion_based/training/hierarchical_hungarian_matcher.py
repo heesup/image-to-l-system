@@ -108,12 +108,14 @@ class HierarchicalBotanicalMatcher(nn.Module):
         # Canonical role -> slot ranges (constants; SLOT_ROLE_MAPPING layout).
         # Precomputed once so the fine-matching loop never rebuilds them.
         # Role keys: 0=Stem, 1=Petiole, 2=Leaflets, 3=Peduncle, 4=Reproductive
+        # v2/v3 10-slot contract (matches ROLE_SLOT_RANGES in phytomer_packets.py):
+        # repro capacity 4 slots (6..9) so 3+ flower/fruit phytomers are not truncated.
         self._role_slot_ranges = {
             0: (0, 1),      # slot 0
             1: (1, 2),      # slot 1
             2: (2, 5),      # slots 2-4
             3: (5, 6),      # slot 5
-            4: (6, 8),      # slots 6-7
+            4: (6, 10),     # slots 6-9
         }
         # GT organ-type (t_label) -> role key boundaries (HALF-OPEN: lo <= label < hi).
         # Matches the original semantics exactly: Stem 1..3, Petiole 4, Leaflets 5,
@@ -302,6 +304,9 @@ class HierarchicalBotanicalMatcher(nn.Module):
             # GT role membership as boolean columns (no per-organ python filtering).
             # Half-open ranges: role membership is lo <= label < hi (exact old semantics).
             label_is = {r: ((t_label >= lo) & (t_label < hi)) for r, (lo, hi) in self._label_to_role_ranges.items()}
+
+            all_fine_src = []
+            all_fine_tgt = []
 
             for pair_i in range(len(anc_src)):
                 c_idx = anc_tgt[pair_i]
