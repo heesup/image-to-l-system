@@ -1065,6 +1065,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             # Stage 2: 3D Node Point Cloud Scaffold
             "pred_anchor_pos": coarse_out["anchor_pos"],
             "pred_anchor_rot": coarse_out["anchor_rot"],
+            "pred_anchor_scale": coarse_out["anchor_scale"],
             "pred_anchor_logits": coarse_out["anchor_logits"],
             "active_k": active_k,
             # Stage 3: Intra-Phytomer Canonical Flow Matching
@@ -1143,6 +1144,10 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             # bridge init for the pose part (scaled small noise around scaffold)
             x[:, :, PHYTO_FLOW_BASE_START:PHYTO_FLOW_BASE_END] = anchor_pos + 0.05 * x[:, :, PHYTO_FLOW_BASE_START:PHYTO_FLOW_BASE_END]
             x[:, :, PHYTO_FLOW_ROT_START:PHYTO_FLOW_ROT_END] = anchor_rot + 0.05 * x[:, :, PHYTO_FLOW_ROT_START:PHYTO_FLOW_ROT_END]
+            if "anchor_scale" in coarse_out:
+                x[:, :, PHYTO_FLOW_SCALE_START:PHYTO_FLOW_SCALE_END] = (
+                    coarse_out["anchor_scale"] + 0.05 * x[:, :, PHYTO_FLOW_SCALE_START:PHYTO_FLOW_SCALE_END]
+                )
             # latent part stays standard Gaussian
         else:
             N_fine = active_k * M
@@ -1229,6 +1234,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             "slot_active": slot_active,
             "anchor_pos": anchor_pos,
             "anchor_rot": anchor_rot,
+            "anchor_scale": coarse_out.get("anchor_scale"),
             "anchor_existence": anchor_existence,
             "pred_num_phytomers": coarse_out["pred_num_phytomers"],
             "pred_dap": coarse_out["pred_dap"],

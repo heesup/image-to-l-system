@@ -483,6 +483,9 @@ def forward_backward_step(
         prof["fwd2"] = time.time() - t0
         pred_velocity = outputs["pred_velocity"].float()          # (B, K, 12+D)
         pred_fine_exist_logits = outputs["pred_fine_exist_logits"].float()  # (B, K, M)
+        pred_anchor_scale = outputs.get("pred_anchor_scale")
+        if pred_anchor_scale is not None:
+            pred_anchor_scale = pred_anchor_scale.float()
         clean_z1 = z_t + (1.0 - t.view(B, 1, 1)) * pred_velocity
         # Velocity target: v = z_1 - z_0 (bridge flow).
         tgt_velocity = tgt_z1_phyto - z_0

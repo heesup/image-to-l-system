@@ -1453,27 +1453,26 @@ class HeliosPlantGeometryBuilder:
                 return _leaf_cache[variant]
             obj_name, tex_name = _leaf_obj_map.get(variant, _leaf_obj_map[2])
             tex_name_use = tex_name
-            if eff_leaf_mode == "generic":
-                if variant == 0:
-                    tex_name_use = "CowpeaLeaf_unifoliate_centered.png"
-                else:
-                    tex_name_use = "CowpeaLeaf_generic_centered.png"
-                v_lf, f_lf = self.asset_mgr.get_mesh_device(obj_name, device)
+            if eff_leaf_mode in ("generic", "simple", "parametric"):
+                # Fast procedural parametric leaf (49 verts, 72 faces vs 1458 OBJ verts).
+                # Matches Helios C++ GenericLeafPrototype geometry (Assets.cpp:45-160).
+                v_lf, f_lf = generate_generic_leaf_mesh_torch(
+                    scale=1.0,
+                    aspect_ratio=0.7,
+                    midrib_fold_fraction=0.2,
+                    longitudinal_curvature=-0.2,
+                    lateral_curvature=-0.4,
+                    Nx=6,
+                    Ny=6,
+                    device=device,
+                )
             elif eff_leaf_mode == "lowpoly":
                 # Lightweight alpha-cutout leaf (~80 verts vs 1458 highres OBJ):
                 # for interactive visualization when polygon budget matters.
                 v_lf, f_lf = self.asset_mgr.get_generic_leaf_mesh(
                     tex_name_use, Nx=8, Ny=8, device=device)
-            elif eff_leaf_mode == "parametric":
-                from diffusion_based.models.parametric_cowpea_leaf import generate_parametric_cowpea_leaf_mesh
-                v_lf, f_lf = generate_parametric_cowpea_leaf_mesh(
-                    variant=variant,
-                    aspect_ratio=0.7,
-                    midrib_fold_fraction=0.2,
-                    longitudinal_curvature=-0.2,
-                    lateral_curvature=-0.4,
-                    device=device,
-                )
+            elif eff_leaf_mode == "obj":
+                v_lf, f_lf = self.asset_mgr.get_mesh_device(obj_name, device)
             else:
                 v_lf, f_lf = self.asset_mgr.get_mesh_device(obj_name, device)
             _leaf_cache[variant] = (v_lf, f_lf)
