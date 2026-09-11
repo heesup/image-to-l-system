@@ -279,7 +279,9 @@ class MacroBiologicalHead(nn.Module):
         # w_k = sigmoid((N_phy + margin - k) / tau)
         # Additive logit bias: init_logits = (N_phy + margin - k) / tau
         k_indices = torch.arange(max_k, device=cls_token.device, dtype=torch.float32).unsqueeze(0)  # (1, K)
-        init_logits = (pred_num_phytomers + m - k_indices) / t  # (B, K)
+        # Numerical safety clamp: limits logits to [-15.0, 15.0] to strictly prevent IEEE 754 Float32
+        # exp() overflow in binary_cross_entropy_with_logits backward pass.
+        init_logits = torch.clamp((pred_num_phytomers + m - k_indices) / t, min=-15.0, max=15.0)  # (B, K)
         soft_margin_weights = torch.sigmoid(init_logits)  # (B, K) in [0, 1]
 
         return {
@@ -531,6 +533,75 @@ SLOT_ROLE_MAPPING = [0, 1, 2, 2, 2, 3, 4, 4]
 SLOT_SUB_ROLE_MAPPING = [0, 0, 0, 1, 2, 0, 0, 1]  # Sub-index within role
 
 
+class AnchorVisualProjector(nn.Module):
+    """Hybrid 3D-to-2D Anchor Visual Projector (PETR / Point-Query style).
+
+    Projects 3D anchor scaffold coordinates (B, K, 3) onto the 2D DINOv2 patch
+    token grid (e.g. 16x16 = 256 patches), bilinearly samples local visual features,
+    and fuses them with 3D height/depth cues via a zero-initialized residual MLP.
+    """
+
+    def __init__(self, embed_dim: int = 384):
+        super().__init__()
+        self.embed_dim = embed_dim
+
+        # Project 3D position [x, y, z] to 2D normalized image grid [u, v] in [-1, 1]
+        # In drone top-down view: x in [-0.5, 0.5], y in [-0.5, 0.5] map across the image.
+        self.pos_to_uv = nn.Linear(3, 2)
+        with torch.no_grad():
+            self.pos_to_uv.weight.zero_()
+            self.pos_to_uv.weight[0, 0] = 2.0  # x -> u
+            self.pos_to_uv.weight[1, 1] = 2.0  # y -> v
+            self.pos_to_uv.bias.zero_()
+
+        # Fusion MLP: combines sampled 2D visual feature (C) with 3D coordinate (3)
+        self.fusion = nn.Sequential(
+            nn.Linear(embed_dim + 3, embed_dim),
+            nn.GELU(),
+            nn.Linear(embed_dim, embed_dim),
+        )
+        # Zero-initialize the final projection so initial output is 0 (residual identity)
+        nn.init.zeros_(self.fusion[-1].weight)
+        nn.init.zeros_(self.fusion[-1].bias)
+
+    def forward(self, image_tokens: torch.Tensor, anchor_pos: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            image_tokens: (B, 1 + N_patches, C) with N_patches = H * W (e.g. 256 for 16x16)
+            anchor_pos: (B, K, 3) 3D anchor scaffold coordinates
+        Returns:
+            (B, K, C) localized visual feature embedding for each anchor
+        """
+        B, K, _ = anchor_pos.shape
+        # Strip CLS token (token 0) to leave the 2D spatial patch tokens
+        patch_tokens = image_tokens[:, 1:]  # (B, N_patches, C)
+        N_patches = patch_tokens.shape[1]
+        grid_size = int(math.isqrt(N_patches))
+        if grid_size * grid_size != N_patches:
+            return torch.zeros(B, K, self.embed_dim, device=anchor_pos.device, dtype=anchor_pos.dtype)
+
+        # Reshape to 2D spatial feature map: (B, H, W, C) -> (B, C, H, W)
+        feat_map = patch_tokens.view(B, grid_size, grid_size, self.embed_dim).permute(0, 3, 1, 2)
+
+        # Compute 2D normalized grid coordinates (u, v) in [-1, 1]
+        uv = torch.tanh(self.pos_to_uv(anchor_pos.float()))  # (B, K, 2) in [-1, 1]
+        grid = uv.unsqueeze(1)  # (B, 1, K, 2)
+
+        # Bilinear sampling from patch feature map
+        sampled = F.grid_sample(
+            feat_map,
+            grid,
+            mode="bilinear",
+            padding_mode="border",
+            align_corners=True,
+        )
+        sampled = sampled.squeeze(2).transpose(1, 2)  # (B, K, C)
+
+        # Fuse sampled local visual features with 3D anchor coordinates
+        fused = self.fusion(torch.cat([sampled, anchor_pos], dim=-1))  # (B, K, C)
+        return fused
+
+
 class FineBotanicalFlowMatchingDecoder(nn.Module):
     """Stage 2: Flow Matching Decoder predicting microscopic organ velocity field.
 
@@ -557,6 +628,9 @@ class FineBotanicalFlowMatchingDecoder(nn.Module):
         self.functional_role_emb = nn.Embedding(NUM_PHYTOMER_ROLES, embed_dim)
         self.slot_pos_emb = nn.Embedding(slots_per_anchor, embed_dim)
         self.role_emb = self.slot_pos_emb  # Backward compatibility alias
+
+        # Hybrid 3D-to-2D Anchor Visual Projector (Point-Query sampling)
+        self.anchor_projector = AnchorVisualProjector(embed_dim=embed_dim)
 
         # Continuous geometry projection
         self.geom_proj = nn.Linear(node_dim, embed_dim)
@@ -660,11 +734,14 @@ class FineBotanicalFlowMatchingDecoder(nn.Module):
         # (B, K, D) -> (B, K, 1, D) -> (B, K, M, D) -> (B, N_fine, D)
         expanded_anchors = anchor_features.unsqueeze(2).expand(-1, -1, M, -1).reshape(B, N_fine, self.embed_dim)
 
-        # 2. Stage 2 -> 3: 3D Node Scaffold Positional & Rotational Condition Embeddings
+        # 2. Stage 2 -> 3: 3D Node Scaffold Positional, Visual Projector & Rotational Condition Embeddings
         if anchor_pos is not None:
             node_pos_emb = self.node_pos_mlp(anchor_pos).unsqueeze(2).expand(-1, -1, M, -1).reshape(B, N_fine, self.embed_dim)
+            proj_feat = self.anchor_projector(image_tokens, anchor_pos)  # (B, K, C)
+            proj_emb = proj_feat.unsqueeze(2).expand(-1, -1, M, -1).reshape(B, N_fine, self.embed_dim)
         else:
             node_pos_emb = 0.0
+            proj_emb = 0.0
 
         if anchor_rot is not None:
             node_rot_emb = self.node_rot_mlp(anchor_rot).unsqueeze(2).expand(-1, -1, M, -1).reshape(B, N_fine, self.embed_dim)
@@ -684,8 +761,8 @@ class FineBotanicalFlowMatchingDecoder(nn.Module):
         # 5. Time conditioning
         t_emb = self.time_embed(self._sinusoidal(timesteps)).unsqueeze(1)  # (B, 1, D)
 
-        # Composite query representation (Conditioned on 3D Scaffold + Anchor Latents + Roles + Time)
-        queries = geom_embs + expanded_anchors + node_pos_emb + node_rot_emb + role_embs + t_emb
+        # Composite query representation (Conditioned on 3D Scaffold + Anchor Latents + Roles + Time + Hybrid Projector)
+        queries = geom_embs + expanded_anchors + node_pos_emb + proj_emb + node_rot_emb + role_embs + t_emb
 
         # 6. Intra-Phytomer Block Multi-Head Self-Attention:
         # Reshape to (B * K, M, D) so local organs directly communicate joint kinematics
@@ -783,6 +860,9 @@ class PhytomerFlowMatchingDecoder(nn.Module):
             nn.Linear(embed_dim, embed_dim),
         )
 
+        # Hybrid 3D-to-2D Anchor Visual Projector (Point-Query sampling)
+        self.anchor_projector = AnchorVisualProjector(embed_dim=embed_dim)
+
         # Velocity head: predicts d/dt of the 12+D flow vector
         self.velocity_head = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
@@ -842,6 +922,8 @@ class PhytomerFlowMatchingDecoder(nn.Module):
 
         if anchor_pos is not None:
             queries = queries + self.node_pos_mlp(anchor_pos)
+            # Hybrid Projection: inject local 2D-projected visual token into query
+            queries = queries + self.anchor_projector(image_tokens, anchor_pos)
         if anchor_rot is not None:
             queries = queries + self.node_rot_mlp(anchor_rot)
 
@@ -1036,14 +1118,16 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                 noisy_fine_nodes = F.pad(noisy_fine_nodes, (0, 0, 0, pad_n))
 
         # 4. Stage 3: Fine Botanical Flow Matching conditioned on 3D Scaffold
+        # anchor_pos and anchor_rot are detached as conditioning inputs so the velocity
+        # loss refines pose on top of the scaffold without backpropagating into pos_head/rot_head.
         if self.flow_granularity == "phytomer":
             fine_out = self.fine_stage(
                 noisy_flow=noisy_fine_nodes,
                 timesteps=timesteps,
                 anchor_features=anchor_features,
                 image_tokens=image_tokens,
-                anchor_pos=anchor_pos,
-                anchor_rot=anchor_rot,
+                anchor_pos=anchor_pos.detach() if anchor_pos is not None else None,
+                anchor_rot=anchor_rot.detach() if anchor_rot is not None else None,
             )
             pred_velocity = fine_out["pred_velocity"]
         else:
@@ -1052,8 +1136,8 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                 timesteps=timesteps,
                 anchor_features=anchor_features,
                 image_tokens=image_tokens,
-                anchor_pos=anchor_pos,
-                anchor_rot=anchor_rot,
+                anchor_pos=anchor_pos.detach() if anchor_pos is not None else None,
+                anchor_rot=anchor_rot.detach() if anchor_rot is not None else None,
             )
             pred_velocity = fine_out["pred_velocity"]
 
@@ -1217,15 +1301,16 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             else:
                 budgets = torch.full((B,), min(400, N_fine), dtype=torch.long, device=device)
 
+            # Fully vectorized dynamic Top-K and threshold selection across batch B
+            k_max = min(int(budgets.max().item()), N_fine)
+            top_k_indices = torch.topk(combined_prob, k_max, dim=-1).indices  # (B, k_max)
+            col_idx = torch.arange(k_max, device=device).unsqueeze(0).expand(B, -1)
+            budget_mask = col_idx < budgets.clamp(max=N_fine).unsqueeze(1)
+            gathered_prob = torch.gather(combined_prob, 1, top_k_indices)
+            valid = budget_mask & (gathered_prob > 0.15)
             slot_active = torch.zeros((B, N_fine), dtype=torch.float32, device=device)
-            for b in range(B):
-                k_b = min(int(budgets[b].item()), N_fine)
-                top_k_indices = torch.topk(combined_prob[b], k_b).indices
-                # Only keep top-k slots that have meaningful probability (> 0.15) to prevent dormant ghost organs
-                valid_topk = top_k_indices[combined_prob[b, top_k_indices] > 0.15]
-                slot_active[b, valid_topk] = 1.0
-                # Also keep high-confidence slots (e.g. > 0.35)
-                slot_active[b, combined_prob[b] > 0.35] = 1.0
+            slot_active.scatter_(1, top_k_indices, valid.float())
+            slot_active = torch.clamp(slot_active + (combined_prob > 0.35).float(), 0.0, 1.0)
             pred_latent = x
 
         res = {
@@ -1274,9 +1359,8 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                 abs_packets = apply_ref_for_flow(packet_hat, refined_pos, refined_rot)
                 flat_abs = abs_packets.reshape(B, active_k * M, 26)
                 keep = pred_cls.reshape(B, active_k * M) > 0
-                # decode_fm is 2D-only: decode per sample and stack.
-                res["part_14d"] = torch.stack(
-                    [decode_fm(flat_abs[b]) for b in range(B)])
+                # Vectorized 1-shot decoding across all batch items (B, N, 26) -> (B, N, 14)
+                res["part_14d"] = decode_fm(flat_abs)
                 res["organ_probs"] = probs
                 res["pred_cls"] = pred_cls.reshape(B, active_k * M)
                 res["pred_cls_logits"] = out["cls_logits"].reshape(B, active_k * M, -1)

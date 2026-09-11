@@ -244,11 +244,11 @@ def forward_backward_step(
             pb = pkt_batch[b] if pkt_batch is not None else None
             if pb is not None:
                 phyto_targets.append({
-                    "packets": pb["packets"].to(device),
-                    "presence": pb["presence"].to(device),
-                    "centers": pb["centers"].to(device),
-                    "refs": pb["refs"].to(device),
-                    "latent": pb["latent"].to(device),
+                    "packets": pb["packets"].to(device, dtype=torch.float32),
+                    "presence": pb["presence"].to(device, dtype=torch.float32),
+                    "centers": pb["centers"].to(device, dtype=torch.float32),
+                    "refs": pb["refs"].to(device, dtype=torch.float32),
+                    "latent": pb["latent"].to(device, dtype=torch.float32),
                 })
                 continue
             # Per-sample: build canonical packets from the GT nodes, then encode
@@ -313,18 +313,19 @@ def forward_backward_step(
 
     if flow_granularity == "phytomer":
         t0 = time.time()
-        with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
-            outputs = model(
-                noisy_fine_nodes=z_t,
-                timesteps=t,
-                images=images,
-                daps=daps,
-                image_tokens=image_tokens,
-            )
+        with torch.no_grad():
+            with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+                outputs = model(
+                    noisy_fine_nodes=z_t,
+                    timesteps=t,
+                    images=images,
+                    daps=daps,
+                    image_tokens=image_tokens,
+                )
         prof["fwd1"] = time.time() - t0
-        # Rebuild the bridge prior with the predicted scaffold pose.
-        pred_anchor_pos = outputs["pred_anchor_pos"].float()   # (B, K, 3)
-        pred_anchor_rot = outputs["pred_anchor_rot"].float()   # (B, K, 6)
+        # Rebuild the bridge prior with the predicted scaffold pose (detached: fixed boundary condition).
+        pred_anchor_pos = outputs["pred_anchor_pos"].detach().float()   # (B, K, 3)
+        pred_anchor_rot = outputs["pred_anchor_rot"].detach().float()   # (B, K, 6)
         K_eff = pred_anchor_pos.shape[1]
         z_0 = torch.randn(B, K_eff, 12 + D, device=device)
         z_0[:, :, PHYTO_FLOW_BASE_START:PHYTO_FLOW_BASE_END] = (
@@ -333,7 +334,7 @@ def forward_backward_step(
             pred_anchor_rot + 0.05 * z_0[:, :, PHYTO_FLOW_ROT_START:PHYTO_FLOW_ROT_END])
         if "pred_anchor_scale" in outputs:
             z_0[:, :, PHYTO_FLOW_SCALE_START:PHYTO_FLOW_SCALE_END] = (
-                outputs["pred_anchor_scale"].float()
+                outputs["pred_anchor_scale"].detach().float()
                 + 0.05 * z_0[:, :, PHYTO_FLOW_SCALE_START:PHYTO_FLOW_SCALE_END])
         # t=0 bridge init; the true x_t is re-interpolated after matching
         # (z_1 = [GT_pos | GT_rot | GT_scale | latent] built below).
@@ -434,6 +435,11 @@ def forward_backward_step(
         M = raw_model.slots_per_anchor
         tgt_z1_phyto = torch.zeros(B, K_eff, 12 + D, device=device)
         slot_presence_target = torch.zeros(B, K_eff, M, device=device)
+        matched_anchor_mask = torch.zeros(B, K_eff, dtype=torch.bool, device=device)
+        anchor_exist_targets = torch.zeros(B, K_eff, 1, device=device)
+        gt_anchor_pos_target = torch.zeros(B, K_eff, 3, device=device)
+        gt_anchor_scl_target = torch.zeros(B, K_eff, 3, device=device)
+        cls_acc_data = []
         for b in range(B):
             m_b = matches[b]
             anc_src = m_b["anchor_src_idx"]
@@ -448,26 +454,35 @@ def forward_backward_step(
             # anchor pos corresponds to the packet whose center is nearest.
             if pt["centers"].shape[0] == 0:
                 continue
-            dist = torch.cdist(gt_pos, pt["centers"])  # (M_anc, P)
-            pkt_idx = dist.argmin(dim=1)               # (M_anc,)
+            dist = torch.cdist(gt_pos.float(), pt["centers"].float())  # (M_anc, P)
+            pkt_idx = dist.argmin(dim=1)                               # (M_anc,)
             # GT anchor rot = packet reference rotation (Option 1 frame)
-            gt_rot = pt["refs"][pkt_idx]    # (M_anc, 6)
-            gt_lat = pt["latent"][pkt_idx]  # (M_anc, D)
+            gt_rot = pt["refs"][pkt_idx].float()    # (M_anc, 6)
+            gt_lat = pt["latent"][pkt_idx].float()  # (M_anc, D)
             # GT anchor scale = petiole (slot 1) scale row of the matched packets
             # (absolute FM units; the latent carries only normalized scales).
-            gt_scl = anchor_scale(pt["packets"].to(device))[pkt_idx]  # (M_anc, 3)
-            tgt_z1_phyto[b, anc_src] = build_phytomer_flow_target(gt_pos, gt_rot, gt_scl, gt_lat)
+            gt_scl = anchor_scale(pt["packets"].to(device, dtype=torch.float32))[pkt_idx].float()  # (M_anc, 3)
+            tgt_z1_phyto[b, anc_src] = build_phytomer_flow_target(gt_pos.float(), gt_rot, gt_scl, gt_lat)
             slot_presence_target[b, anc_src] = pt["presence"][pkt_idx].float()
+
+            matched_anchor_mask[b, anc_src] = True
+            anchor_exist_targets[b, anc_src, 0] = 1.0
+            gt_anchor_pos_target[b, anc_src] = gt_pos.float()
+            gt_anchor_scl_target[b, anc_src] = gt_scl.float()
+
+            tgt_cls = pt["packets"][pkt_idx, :, :FM_OT_END].argmax(-1)
+            pres = pt["presence"][pkt_idx]
+            cls_acc_data.append((b, anc_src, tgt_cls, pres))
         z_0 = torch.randn(B, K_eff, 12 + D, device=device)
         z_0[:, :, PHYTO_FLOW_BASE_START:PHYTO_FLOW_BASE_END] = (
-            pred_anchor_pos + 0.05 * z_0[:, :, PHYTO_FLOW_BASE_START:PHYTO_FLOW_BASE_END])
+            pred_anchor_pos.detach() + 0.05 * z_0[:, :, PHYTO_FLOW_BASE_START:PHYTO_FLOW_BASE_END])
         z_0[:, :, PHYTO_FLOW_ROT_START:PHYTO_FLOW_ROT_END] = (
-            pred_anchor_rot + 0.05 * z_0[:, :, PHYTO_FLOW_ROT_START:PHYTO_FLOW_ROT_END])
+            pred_anchor_rot.detach() + 0.05 * z_0[:, :, PHYTO_FLOW_ROT_START:PHYTO_FLOW_ROT_END])
         # Bridge init for the scale dims from the Stage-2 coarse scale head
         # (mirrors the pose init; falls back to N(0,I) if unavailable).
         if "pred_anchor_scale" in outputs:
             z_0[:, :, PHYTO_FLOW_SCALE_START:PHYTO_FLOW_SCALE_END] = (
-                outputs["pred_anchor_scale"].float()
+                outputs["pred_anchor_scale"].detach().float()
                 + 0.05 * z_0[:, :, PHYTO_FLOW_SCALE_START:PHYTO_FLOW_SCALE_END])
         z_t = scheduler.sample_xt(z_0, tgt_z1_phyto, t)
         # Re-run the model forward with the true x_t (bridge init).
@@ -483,97 +498,84 @@ def forward_backward_step(
         prof["fwd2"] = time.time() - t0
         pred_velocity = outputs["pred_velocity"].float()          # (B, K, 12+D)
         pred_fine_exist_logits = outputs["pred_fine_exist_logits"].float()  # (B, K, M)
+        pred_anchor_pos = outputs["pred_anchor_pos"].float()      # (B, K, 3) - live gradient to pos_head
+        pred_anchor_rot = outputs["pred_anchor_rot"].float()      # (B, K, 6) - live gradient to rot_head
+        pred_anchor_logits = outputs["pred_anchor_logits"].float() # (B, K, 1) - live gradient to exist_head
         pred_anchor_scale = outputs.get("pred_anchor_scale")
         if pred_anchor_scale is not None:
             pred_anchor_scale = pred_anchor_scale.float()
+        pred_dap = outputs["pred_dap"].float()
+        pred_num_phytomers = outputs.get("pred_num_phytomers")
+        soft_margin_weights = outputs.get("soft_margin_weights")
         clean_z1 = z_t + (1.0 - t.view(B, 1, 1)) * pred_velocity
         # Velocity target: v = z_1 - z_0 (bridge flow).
         tgt_velocity = tgt_z1_phyto - z_0
-        # Loss: velocity MSE on matched anchors + slot existence BCE.
-        loss_fine_vel_acc = torch.tensor(0.0, device=device)
-        loss_fine_exist_acc = torch.tensor(0.0, device=device)
-        total_matched_fine = 0
+        total_matched_anc = matched_anchor_mask.sum().item()
+        norm_anc = max(total_matched_anc, 1)
+        norm_m = norm_anc
+
+        # Class accuracy on matched anchors' present slots (frozen VAE decode)
         correct_cls = 0
         total_cls_slots = 0
-        # Decode the clean latent once per batch for the class-accuracy metric
-        # (frozen VAE, no grad): (B*K, D) -> (B*K, M, 13) cls logits.
         with torch.no_grad():
             clean_lat = clean_z1[..., PHYTO_FLOW_LATENT_START:]
             vae_out = phytomer_vae.decode(clean_lat.reshape(-1, D), use_rot_branch=True)
             pred_cls_all = vae_out["cls_logits"].argmax(-1).reshape(B, K_eff, M)  # (B, K, M)
-        for b in range(B):
-            m_b = matches[b]
-            anc_src = m_b["anchor_src_idx"]
-            if len(anc_src) == 0:
-                continue
-            p_v = pred_velocity[b, anc_src]
-            t_v = tgt_velocity[b, anc_src]
-            loss_fine_vel_acc += F.mse_loss(p_v, t_v, reduction="sum") / float(12 + D)
-            total_matched_fine += len(anc_src)
-            # Slot existence BCE (K, M)
-            exist_t = slot_presence_target[b]
-            pos_w = torch.tensor([12.0], device=device)
-            loss_fine_exist_acc += F.binary_cross_entropy_with_logits(
-                pred_fine_exist_logits[b], exist_t, pos_weight=pos_w)
-            # Class accuracy on matched anchors' present slots (frozen VAE decode).
-            pt = phyto_targets[b]
-            if pt is not None and pt["packets"].shape[0] > 0:
-                dist = torch.cdist(m_b["anchor_tgt_pos"], pt["centers"])
-                pkt_idx = dist.argmin(dim=1)
-                tgt_cls = pt["packets"][pkt_idx, :, :FM_OT_END].argmax(-1)  # (M_anc, M)
-                pres = pt["presence"][pkt_idx]  # (M_anc, M)
+            for b, anc_src, tgt_cls_b, pres_b in cls_acc_data:
                 pred_cls_m = pred_cls_all[b, anc_src]
-                correct_cls += ((pred_cls_m == tgt_cls).float() * pres.float()).sum().item()
-                total_cls_slots += int(pres.sum().item())
-        # Idle anchor damping: unmatched anchors' velocity -> 0
-        all_anc = torch.arange(K_eff, device=device)
-        matched_set = torch.zeros(K_eff, dtype=torch.bool, device=device)
-        for b in range(B):
-            m_b = matches[b]
-            if len(m_b["anchor_src_idx"]) > 0:
-                matched_set[m_b["anchor_src_idx"]] = True
-        idle_anc = all_anc[~matched_set]
-        if len(idle_anc) > 0:
-            loss_fine_vel_acc += 0.02 * (pred_velocity[:, idle_anc] ** 2).sum() / float(12 + D)
-        norm_m = max(total_matched_fine, 1)
-        loss_fine_vel = loss_fine_vel_acc / norm_m
-        loss_fine_exist = loss_fine_exist_acc / max(B, 1)
-        # Anchor losses (same as organ mode)
-        loss_anchor_pos_acc = torch.tensor(0.0, device=device)
-        loss_anchor_exist_acc = torch.tensor(0.0, device=device)
-        loss_anchor_scale_acc = torch.tensor(0.0, device=device)
-        total_matched_anc = 0
-        for b in range(B):
-            m_b = matches[b]
-            anc_src = m_b["anchor_src_idx"]
-            if len(anc_src) == 0:
-                continue
-            total_matched_anc += len(anc_src)
-            exist_targets = torch.zeros(K_eff, 1, device=device)
-            exist_targets[anc_src] = 1.0
-            pos_weight_anc = torch.tensor([8.0], device=device)
-            loss_anchor_exist_acc += F.binary_cross_entropy_with_logits(
-                pred_anchor_logits[b], exist_targets, pos_weight=pos_weight_anc)
-            if "anchor_tgt_pos" in m_b and len(m_b["anchor_tgt_pos"]) > 0:
-                p_anc = pred_anchor_pos[b, anc_src]
-                t_anc = m_b["anchor_tgt_pos"]
-                loss_anchor_pos_acc += F.smooth_l1_loss(p_anc, t_anc, reduction="sum")
-            # Anchor scale loss (phytomer mode): Stage-2 coarse scale vs the GT
-            # anchor scale (petiole scale row of the matched packets). Only when
-            # the model predicts it and GT packets are available.
-            if (pred_anchor_scale is not None and phyto_targets[b] is not None
-                    and flow_granularity == "phytomer"):
-                pt = phyto_targets[b]
-                if pt["packets"].shape[0] > 0:
-                    dist = torch.cdist(m_b["anchor_tgt_pos"], pt["centers"])
-                    pkt_idx = dist.argmin(dim=1)
-                    gt_scl = anchor_scale(pt["packets"].to(device))[pkt_idx]
-                    p_scl = pred_anchor_scale[b, anc_src]
-                    loss_anchor_scale_acc += F.smooth_l1_loss(p_scl, gt_scl, reduction="sum")
-        norm_anc = max(total_matched_anc, 1)
-        loss_anchor_pos = loss_anchor_pos_acc / norm_anc
-        loss_anchor_exist = loss_anchor_exist_acc / max(B, 1)
-        loss_anchor_scale = loss_anchor_scale_acc / norm_anc
+                correct_cls += ((pred_cls_m == tgt_cls_b).float() * pres_b.float()).sum().item()
+                total_cls_slots += int(pres_b.sum().item())
+
+        # 1. Fine Velocity MSE on matched anchors (Vectorized 1-shot)
+        if total_matched_anc > 0:
+            loss_fine_vel = F.mse_loss(
+                pred_velocity[matched_anchor_mask],
+                tgt_velocity[matched_anchor_mask],
+                reduction="sum",
+            ) / (float(12 + D) * float(norm_m))
+        else:
+            loss_fine_vel = torch.tensor(0.0, device=device)
+
+        # 2. Idle Anchor Damping (Vectorized 1-shot per sample, properly normalized by num_idle)
+        idle_mask = ~matched_anchor_mask
+        num_idle = idle_mask.sum().item()
+        if num_idle > 0:
+            loss_fine_vel = loss_fine_vel + (
+                0.02 * (pred_velocity[idle_mask] ** 2).sum() / (float(12 + D) * float(num_idle))
+            )
+
+        # 3. Fine Slot Existence Loss (Vectorized 1-shot across B, K, M)
+        pos_w = torch.tensor([12.0], device=device)
+        loss_fine_exist = F.binary_cross_entropy_with_logits(
+            pred_fine_exist_logits, slot_presence_target, pos_weight=pos_w, reduction="mean"
+        )
+
+        # 4. Anchor Existence Loss (Vectorized 1-shot across B, K, 1)
+        pos_weight_anc = torch.tensor([8.0], device=device)
+        loss_anchor_exist = F.binary_cross_entropy_with_logits(
+            pred_anchor_logits, anchor_exist_targets, pos_weight=pos_weight_anc, reduction="mean"
+        )
+
+        # 5. Anchor Position Loss (Vectorized 1-shot)
+        if total_matched_anc > 0:
+            loss_anchor_pos = F.smooth_l1_loss(
+                pred_anchor_pos[matched_anchor_mask],
+                gt_anchor_pos_target[matched_anchor_mask],
+                reduction="sum",
+            ) / float(norm_anc)
+        else:
+            loss_anchor_pos = torch.tensor(0.0, device=device)
+
+        # 6. Anchor Scale Loss (Vectorized 1-shot)
+        if pred_anchor_scale is not None and total_matched_anc > 0:
+            loss_anchor_scale = F.smooth_l1_loss(
+                pred_anchor_scale[matched_anchor_mask],
+                gt_anchor_scl_target[matched_anchor_mask],
+                reduction="sum",
+            ) / float(norm_anc)
+        else:
+            loss_anchor_scale = torch.tensor(0.0, device=device)
+
         # Skip the organ-mode loss loop below.
         phyto_mode_done = True
     else:
@@ -721,26 +723,30 @@ def forward_backward_step(
             # full graph is built and depth/dice keep shaping pose/geometry.
             _rz = clean_z1 if render_grad_on else clean_z1.detach()
             _re = pred_fine_exist_logits if render_grad_on else pred_fine_exist_logits.detach()
+            if flow_granularity == "phytomer" and n_render > 0:
+                # Vectorized batch decoding across all n_render samples simultaneously:
+                # Eliminates per-sample Python decode overhead (3.87s -> 0.30s).
+                _rz_render = _rz[render_indices]  # (n_render, K, 12 + D)
+                pos_all, rot_all, scl_all, lat_all = split_phytomer_flow_target(_rz_render, D)
+                out_vae_all = phytomer_vae.decode(lat_all.reshape(-1, D))
+                recon_abs_all = denormalize_packet_scales(
+                    out_vae_all["recon_packets"], scl_all.reshape(-1, 3)
+                )
+                packet_hat_all = assemble_packets(recon_abs_all, rot_all.reshape(-1, 6))
+                abs_packets_all = apply_ref_for_flow(
+                    packet_hat_all.reshape(n_render, -1, M, 26), pos_all, rot_all
+                )
+                cls_logits_all = out_vae_all["cls_logits"].reshape(n_render, -1, M, 13)
+
             for b_idx in range(n_render):
                 real_b = render_indices[b_idx].item()
                 if flow_granularity == "phytomer":
-                    # Decode the 76D flow vector: split pose + scale + latent,
-                    # decode the latent to a scale-NORMALIZED relative packet,
-                    # restore absolute scale with the refined anchor scale BEFORE
-                    # assembling bases (the petiole-curve math needs the absolute
-                    # petiole length), then re-anchor with the refined pose.
-                    pos, rot, scl, lat = split_phytomer_flow_target(_rz[real_b], D)
-                    out_vae = phytomer_vae.decode(lat)  # (K, M, 26), zeroed base, norm scale
-                    recon_abs = denormalize_packet_scales(out_vae["recon_packets"], scl)
-                    packet_hat = assemble_packets(recon_abs, rot)
-                    abs_packets = apply_ref_for_flow(
-                        packet_hat.unsqueeze(0), pos.unsqueeze(0), rot.unsqueeze(0)
-                    )[0]
-                    flat_abs = abs_packets.reshape(-1, 26)
-                    keep = out_vae["cls_logits"].argmax(-1).reshape(-1) > 0
+                    flat_abs = abs_packets_all[b_idx].reshape(-1, 26)
+                    cls_logits_b = cls_logits_all[b_idx].reshape(-1, 13)
+                    keep = cls_logits_b.argmax(-1) > 0
                     part_14d = decode_fm(flat_abs[keep])
                     exist_b = torch.sigmoid(_re[real_b]).reshape(-1)[keep]
-                    probs = F.softmax(out_vae["cls_logits"], dim=-1).reshape(-1, 13)[keep]
+                    probs = F.softmax(cls_logits_b, dim=-1)[keep]
                 elif vae is not None:
                     # Differentiably decode 16D latents into 14D part tensor via frozen VAE!
                     part_14d, probs = vae.decode_to_part_tensor(_rz[real_b])
@@ -1145,7 +1151,14 @@ def train_one_epoch(
                     warmup_n()
             continue
 
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        if torch.isnan(grad_norm) or torch.isinf(grad_norm):
+            if rank == 0:
+                print(f"  [Recovery] Step {batch_idx+1}: grad_norm is NaN/Inf ({grad_norm}), sanitizing grads to recover")
+            for p in model.parameters():
+                if p.grad is not None:
+                    torch.nan_to_num(p.grad, nan=0.0, posinf=1.0, neginf=-1.0, out=p.grad)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         t_step2 = time.time()
 

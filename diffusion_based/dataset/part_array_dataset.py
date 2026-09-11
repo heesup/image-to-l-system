@@ -149,20 +149,20 @@ def encode_fm_geom(part: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
 
 
 def decode_fm(fm: torch.Tensor) -> torch.Tensor:
-    """Convert a 26D FM node tensor back to a canonical (N, 14) part tensor.
+    """Convert a 26D FM node tensor back to a canonical (*batch_shape, 14) part tensor.
 
     Organ type = argmax over the 13 categories (0 = NONE).
     Returns 14D: [organ_type, base(3), rot6d(6), scale(3), curvature(1)].
     """
-    N = fm.shape[0]
-    out = torch.zeros((N, 14), dtype=fm.dtype, device=fm.device)
-    ot_probs = fm[:, :NUM_ORGAN_CATEGORIES]
-    ot = ot_probs.argmax(dim=1)
-    out[:, P_COL_ORGAN_TYPE] = ot.float()
-    out[:, P_COL_BASE_X:P_COL_BASE_Z + 1] = fm[:, FM_BASE_START:FM_BASE_END] / BASE_SCALE
-    out[:, P_COL_ROT_0:P_COL_ROT_5 + 1] = fm[:, FM_ROT_START:FM_ROT_END]
-    out[:, P_COL_SCALE_X:P_COL_SCALE_Z + 1] = fm[:, FM_SCALE_START:FM_SCALE_END] / SCALE_SCALE
-    out[:, 13] = fm[:, FM_CURV] / CURV_SCALE
+    shape = fm.shape[:-1]
+    out = torch.zeros((*shape, 14), dtype=fm.dtype, device=fm.device)
+    ot_probs = fm[..., :NUM_ORGAN_CATEGORIES]
+    ot = ot_probs.argmax(dim=-1)
+    out[..., P_COL_ORGAN_TYPE] = ot.float()
+    out[..., P_COL_BASE_X:P_COL_BASE_Z + 1] = fm[..., FM_BASE_START:FM_BASE_END] / BASE_SCALE
+    out[..., P_COL_ROT_0:P_COL_ROT_5 + 1] = fm[..., FM_ROT_START:FM_ROT_END]
+    out[..., P_COL_SCALE_X:P_COL_SCALE_Z + 1] = fm[..., FM_SCALE_START:FM_SCALE_END] / SCALE_SCALE
+    out[..., 13] = fm[..., FM_CURV] / CURV_SCALE
     return out
 
 

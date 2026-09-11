@@ -45,76 +45,87 @@ def load_obj_file(filepath: str) -> Tuple[torch.Tensor, torch.Tensor]:
 
 def generate_generic_leaf_mesh_torch(
     scale: torch.Tensor,
-    aspect_ratio: float = 0.7,
-    midrib_fold_fraction: float = 0.2,
-    longitudinal_curvature: float = -0.2,
-    lateral_curvature: float = -0.4,
+    aspect_ratio: float = 0.65,
+    midrib_fold_fraction: float = 0.25,
+    longitudinal_curvature: float = -0.15,
+    lateral_curvature: float = -0.25,
     petiole_roll: float = 0.0,
     wave_period: float = 0.0,
     wave_amplitude: float = 0.0,
-    Nx: int = 6,
-    Ny: Optional[int] = None,
+    Nx: int = 8,
+    Ny: Optional[int] = 6,
     device=torch.device('cpu')
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Generates exact Helios C++ GenericLeafPrototype parametric curved leaf mesh (Assets.cpp:45-160)."""
+    """
+    Generates analytical parametric 3D mesh for cowpea leaflet.
+    Instead of a naive rectangular grid, this analytically models botanical ovate morphology:
+    tapered petiolule base, maximum width near basal third (u ~ 0.35), and an acuminate apex tip,
+    coupled with transverse midrib V-folding and longitudinal droop.
+    """
     if not isinstance(scale, torch.Tensor):
         scale = torch.tensor(scale, dtype=torch.float32, device=device)
 
     if Ny is None:
-        Ny = int(math.ceil(aspect_ratio * float(Nx)))
+        Ny = max(4, int(math.ceil(aspect_ratio * float(Nx))))
         if Ny % 2 != 0:
             Ny += 1
 
     dx = 1.0 / float(Nx)
-    dy = aspect_ratio / float(Ny)
+
+    # Beta-distribution-based ovate leaflet envelope
+    # Peak half-width occurs at u* = p / (p + q) ~ 0.346
+    p, q = 0.45, 0.85
+    u_star = p / (p + q)
+    f_max = (u_star ** p) * ((1.0 - u_star) ** q)
 
     verts_grid = []
     for j in range(Ny + 1):
+        # Normalized lateral coordinate v in [-1, +1]
+        v = (float(j) / float(Ny)) * 2.0 - 1.0
+        eta = abs(v)  # 0 at midrib, 1 at margin
         row_verts = []
-        dtheta = 0.0
+
         for i in range(Nx + 1):
-            x = float(i) * dx
-            y = float(j) * dy - 0.5 * aspect_ratio
+            u = float(i) * dx  # [0, 1] normalized midrib distance
+            u_clamped = max(min(u, 0.999), 0.001)
+            f_u = (u_clamped ** p) * ((1.0 - u_clamped) ** q) / f_max
 
-            # midrib leaf folding (Assets.cpp:69-70)
-            y_fold = math.cos(0.5 * midrib_fold_fraction * math.pi) * y
-            z_fold = math.sin(0.5 * midrib_fold_fraction * math.pi) * abs(y)
+            # Analytical half-width envelope:
+            # - Narrow petiolule insertion neck at base (u=0)
+            # - Basal expansion swelling to max width at u~0.35
+            # - Graceful tapering into sharp acuminate apex at u=1
+            half_w = (aspect_ratio / 2.0) * (0.05 * (1.0 - u) + 0.90 * f_u + 0.05 * math.sin(math.pi * u))
+            half_w = max(half_w, 0.004)
 
-            # x-curvature & y-curvature (Assets.cpp:72-76)
-            z_xcurve = longitudinal_curvature * (x ** 4)
-            z_ycurve = lateral_curvature * ((y / aspect_ratio) ** 4)
+            x = u
+            y = v * half_w
 
-            # petiole roll (Assets.cpp:78-83)
+            # Transverse V-fold across midrib (groove along y=0)
+            fold_mag = 0.25 * math.sin(0.5 * midrib_fold_fraction * math.pi)
+            z_fold = fold_mag * (eta ** 1.3) * (1.0 - 0.35 * u)
+
+            # Longitudinal droop / curvature along midrib
+            z_long = longitudinal_curvature * 0.35 * (u ** 1.8)
+
+            # Lateral camber / arching across blade
+            z_arch = lateral_curvature * 0.10 * (eta ** 2)
+
+            # Petiole roll displacement near base (optional)
             z_petiole = 0.0
             if petiole_roll != 0.0:
                 sign_pr = petiole_roll / abs(petiole_roll)
-                z_petiole = min(0.1, petiole_roll * ((7.0 * y / aspect_ratio) ** 4) * math.exp(-70.0 * x)) - 0.01 * sign_pr
+                z_petiole = min(0.08, petiole_roll * (eta ** 4) * math.exp(-30.0 * u)) - 0.01 * sign_pr
 
-            # wave displacement (Assets.cpp:89-93)
+            # Wave margin displacement (optional)
             z_wave = 0.0
             if wave_period > 0.0 and wave_amplitude > 0.0:
-                wave_phase = (x + wave_period * float(j >= 0.5 * Ny)) * math.pi / wave_period
-                z_wave = 2.0 * abs(y) * wave_amplitude * math.sin(wave_phase)
+                wave_phase = (u + wave_period * float(j >= 0.5 * Ny)) * math.pi / wave_period
+                z_wave = eta * wave_amplitude * math.sin(wave_phase)
 
-            pt = torch.tensor([x, y_fold, z_fold + z_ycurve + z_petiole], dtype=torch.float32, device=device)
-            rot_angle = 0.0
-
-            # longitudinal curvature rotation about (0, 1, 0) (Assets.cpp:99-103)
-            if longitudinal_curvature != 0.0 and i > 0:
-                dtheta -= math.atan(4.0 * longitudinal_curvature * (x ** 3) * dx)
-                c, s = math.cos(dtheta), math.sin(dtheta)
-                pt_x = pt[0] * c + pt[2] * s
-                pt_z = -pt[0] * s + pt[2] * c
-                pt = torch.tensor([pt_x, pt[1], pt_z], dtype=torch.float32, device=device)
-                rot_angle += dtheta
-
-            # apply wave along rotated leaf-surface normal (Assets.cpp:118-122)
-            if z_wave != 0.0:
-                pt_x = pt[0] + z_wave * math.sin(rot_angle)
-                pt_z = pt[2] + z_wave * math.cos(rot_angle)
-                pt = torch.tensor([pt_x, pt[1], pt_z], dtype=torch.float32, device=device)
-
+            z = z_fold + z_long + z_arch + z_petiole + z_wave
+            pt = torch.tensor([x, y, z], dtype=torch.float32, device=device)
             row_verts.append(pt * scale)
+
         verts_grid.append(row_verts)
 
     verts_list = []
@@ -130,7 +141,7 @@ def generate_generic_leaf_mesh_torch(
             idx1 = j * (Nx + 1) + (i + 1)
             idx2 = (j + 1) * (Nx + 1) + (i + 1)
             idx3 = (j + 1) * (Nx + 1) + i
-            # Match Helios triangle winding (Assets.cpp:142-150)
+            # Face normals point upward (+z)
             faces_list.append([idx0, idx1, idx2])
             faces_list.append([idx0, idx2, idx3])
 
@@ -638,15 +649,20 @@ class HeliosPlantGeometryBuilder:
     def __init__(
         self,
         asset_manager: Optional[HeliosAssetManager] = None,
-        use_generic_leaves: bool = True,
-        leaf_mode: str = "generic",
+        use_generic_leaves: bool = False,
+        leaf_mode: str = "lowpoly",
         leaf_scale_factor: float = 1.0,
         tube_radial_subdivisions: int = 4
     ):
         if asset_manager is None:
             asset_manager = HeliosAssetManager()
         self.asset_mgr = asset_manager
-        self.leaf_mode = leaf_mode.lower() if leaf_mode is not None else ("generic" if use_generic_leaves else "obj")
+        if leaf_mode is not None:
+            self.leaf_mode = leaf_mode.lower()
+        elif use_generic_leaves:
+            self.leaf_mode = "generic"
+        else:
+            self.leaf_mode = "lowpoly"
         self.use_generic_leaves = (self.leaf_mode == "generic")
         self.leaf_scale_factor = leaf_scale_factor
         self.tube_radial_subdivisions = tube_radial_subdivisions
@@ -1454,15 +1470,15 @@ class HeliosPlantGeometryBuilder:
             obj_name, tex_name = _leaf_obj_map.get(variant, _leaf_obj_map[2])
             tex_name_use = tex_name
             if eff_leaf_mode in ("generic", "simple", "parametric"):
-                # Fast procedural parametric leaf (49 verts, 72 faces vs 1458 OBJ verts).
-                # Matches Helios C++ GenericLeafPrototype geometry (Assets.cpp:45-160).
+                # Fast analytical parametric leaf (63 verts, 96 faces vs 1458 OBJ verts).
+                # Morphologically models authentic cowpea ovate leaflet with acuminate apex.
                 v_lf, f_lf = generate_generic_leaf_mesh_torch(
                     scale=1.0,
-                    aspect_ratio=0.7,
-                    midrib_fold_fraction=0.2,
-                    longitudinal_curvature=-0.2,
-                    lateral_curvature=-0.4,
-                    Nx=6,
+                    aspect_ratio=0.65,
+                    midrib_fold_fraction=0.25,
+                    longitudinal_curvature=-0.15,
+                    lateral_curvature=-0.25,
+                    Nx=8,
                     Ny=6,
                     device=device,
                 )

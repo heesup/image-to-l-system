@@ -12,6 +12,7 @@ from typing import List, Tuple, Dict, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 
@@ -186,7 +187,10 @@ class HierarchicalBotanicalMatcher(nn.Module):
                 # still matches (no supervision starvation), but far swaps pay steeply.
                 over = F.relu(cost_pos - float(self.anchor_locality_radius))
                 total_anchor_cost = total_anchor_cost + float(self.anchor_locality_weight) * over * over
-            total_anchor_cost_cpu = total_anchor_cost.cpu().numpy()
+            total_anchor_cost = torch.nan_to_num(total_anchor_cost, nan=1e5, posinf=1e5, neginf=-1e5)
+            total_anchor_cost_cpu = total_anchor_cost.detach().cpu().numpy()
+            if not np.isfinite(total_anchor_cost_cpu).all():
+                total_anchor_cost_cpu = np.nan_to_num(total_anchor_cost_cpu, nan=1e5, posinf=1e5, neginf=-1e5)
 
             anc_src_np, anc_tgt_np = linear_sum_assignment(total_anchor_cost_cpu)
             anc_src = torch.as_tensor(anc_src_np, dtype=torch.int64, device=device)
@@ -298,7 +302,11 @@ class HierarchicalBotanicalMatcher(nn.Module):
                             cost_cls = -sub_exist.expand(-1, len(sub_gt))
 
                         local_cost = self.cost_cls * cost_cls + self.cost_geom * cost_geom
-                        r_src_np, r_tgt_np = linear_sum_assignment(local_cost.cpu().numpy())
+                        local_cost = torch.nan_to_num(local_cost, nan=1e5, posinf=1e5, neginf=-1e5)
+                        local_cost_cpu = local_cost.detach().cpu().numpy()
+                        if not np.isfinite(local_cost_cpu).all():
+                            local_cost_cpu = np.nan_to_num(local_cost_cpu, nan=1e5, posinf=1e5, neginf=-1e5)
+                        r_src_np, r_tgt_np = linear_sum_assignment(local_cost_cpu)
 
                         matched_slots_list.append(sub_slots[r_src_np])
                         matched_gt_list.append(sub_gt[r_tgt_np])

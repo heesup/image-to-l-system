@@ -40,7 +40,7 @@ roundtrip (numerically verified), but it dramatically reduces the per-packet
 rotation variance, freeing 64D latent capacity for the affine morphology.
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
@@ -218,12 +218,66 @@ def strip_base(packets: torch.Tensor) -> torch.Tensor:
     return out
 
 
+def _petiole_curve_points(
+    R_pet_world: torch.Tensor,
+    pet_len: Union[float, torch.Tensor],
+    pet_curv_deg_m: Union[float, torch.Tensor],
+    n_seg: int = 6,
+) -> torch.Tensor:
+    """Curved petiole centerline (renderer convention: gravitropic bend about
+    the horizontal axis perpendicular to the petiole's vertical plane).
+
+    Supports both single (3, 3) and batched (P, 3, 3) tensor inputs.
+    Matches the geometry builder's tube path (n_seg_curv=6, Rodrigues rotation
+    about cross(cur_axis, z_world)). Returns (n_seg+1, 3) or (P, n_seg+1, 3)
+    points starting at the petiole base (origin, relative to the cluster center).
+    """
+    is_batched = (R_pet_world.dim() == 3)
+    if not is_batched:
+        R_pet_world = R_pet_world.unsqueeze(0)
+    P = R_pet_world.shape[0]
+    device = R_pet_world.device
+
+    if not isinstance(pet_len, torch.Tensor):
+        pet_len = torch.full((P, 1), float(pet_len), device=device)
+    elif pet_len.dim() == 1:
+        pet_len = pet_len.unsqueeze(-1)
+
+    if not isinstance(pet_curv_deg_m, torch.Tensor):
+        pet_curv_deg_m = torch.full((P, 1), float(pet_curv_deg_m), device=device)
+    elif pet_curv_deg_m.dim() == 1:
+        pet_curv_deg_m = pet_curv_deg_m.unsqueeze(-1)
+
+    z_axis = torch.tensor([0.0, 0.0, 1.0], device=device).unsqueeze(0).expand(P, 3)
+    dr = pet_len / n_seg  # (P, 1)
+    cur_axis = R_pet_world[:, :, 1].clone()  # (P, 3)
+
+    pts = [torch.zeros(P, 3, device=device)]
+    for _ in range(n_seg):
+        h = torch.linalg.cross(cur_axis, z_axis, dim=-1)  # (P, 3)
+        hn = h.norm(dim=-1, keepdim=True)
+        h_u = torch.where(hn > 1e-4, h / (hn + 1e-8), torch.tensor([1.0, 0.0, 0.0], device=device).unsqueeze(0).expand(P, 3))
+        theta = torch.deg2rad(pet_curv_deg_m) * dr  # (P, 1)
+        cos_t = torch.cos(theta)
+        sin_t = torch.sin(theta)
+        kcv = torch.linalg.cross(h_u, cur_axis, dim=-1)
+        kdv = (h_u * cur_axis).sum(dim=-1, keepdim=True)
+        rot_v = cur_axis * cos_t + kcv * sin_t + h_u * kdv * (1.0 - cos_t)
+        rot_v = rot_v / (rot_v.norm(dim=-1, keepdim=True) + 1e-8)
+        pts.append(pts[-1] + rot_v * dr)
+        cur_axis = rot_v
+
+    stacked = torch.stack(pts, dim=1)  # (P, n_seg+1, 3)
+    return stacked.squeeze(0) if not is_batched else stacked
+
+
 def assemble_packets(
     packets: torch.Tensor,
     reference_rots: torch.Tensor,
     base_scale: float = 20.0,
 ) -> torch.Tensor:
     """Reconstructs DETERMINISTIC slot bases from assembly rules.
+    Fully vectorized across all phytomers and batch dimensions.
 
     GT-verified deterministic rules (XML-phytomer clustering, full cowpea_curv26):
       stem (slot 0) base = -fwd x internode_length (the internode TIP = the
@@ -246,62 +300,76 @@ def assemble_packets(
     writes into the grad-captured packet tensor — avoids autograd version
     conflicts in the differentiable render path).
     """
-    out = packets.clone()
-    P = out.shape[0]
-    ot = out[:, :, :FM_OT_END].argmax(dim=-1)  # (P, 10)
+    orig_shape = packets.shape
+    if packets.dim() == 4:
+        B, K, S, D = orig_shape
+        P = B * K
+        packets_flat = packets.reshape(P, S, D)
+        ref_rots_flat = reference_rots.reshape(P, 6)
+    else:
+        P, S, D = orig_shape
+        B = None
+        packets_flat = packets
+        ref_rots_flat = reference_rots
+
+    ot = packets_flat[:, :, :FM_OT_END].argmax(dim=-1)  # (P, 10)
     det = torch.zeros_like(ot, dtype=torch.bool)
     for t in DETERMINISTIC_ORGAN_TYPES:
         det |= ot == t
-    # Fresh tensor (NOT a view of out): inplace writes below must not bump the
-    # autograd version of out's slices (AsStridedBackward0 conflict).
-    base = out[:, :, FM_BASE_START:FM_BASE_END].clone()
+
+    base = packets_flat[:, :, FM_BASE_START:FM_BASE_END].clone()
     base = torch.where(det.unsqueeze(-1), torch.zeros_like(base), base)
-    # Leaflet bases: arc-fraction point on the CURVED petiole centerline.
-    R_ref = rot6d_to_matrix(reference_rots)  # (P, 3, 3)
-    for p in range(P):
-        # Stem (slot 0): the internode connects the PREVIOUS node to THIS node,
-        # so its base is one internode back along its own axis from the center:
-        # base = -fwd * length (fwd = local Y column, matching the renderer).
-        # GT-verified (median residual 0.02cm over 8k+ clusters).
-        if bool(det[p, 0]) and ot[p, 0] == 3:
-            R_ino = R_ref[p] @ rot6d_to_matrix(out[p, 0, FM_ROT_START:FM_ROT_END])
-            ino_len = out[p, 0, FM_SCALE_START] / SCALE_SCALE  # metres
-            base[p, 0] = -(R_ino[:, 1] * ino_len) * base_scale
-        if not bool(det[p, 1]):
-            continue
-        R_pet = R_ref[p] @ rot6d_to_matrix(out[p, 1, FM_ROT_START:FM_ROT_END])
-        pet_len = out[p, 1, FM_SCALE_START] / SCALE_SCALE  # metres
-        pet_curv = out[p, 1, FM_CURV] / CURV_SCALE  # deg/m
-        if pet_len < 1e-4:
-            continue
-        curve = _petiole_curve_points(R_pet, pet_len, pet_curv)
+
+    R_ref = rot6d_to_matrix(ref_rots_flat)  # (P, 3, 3)
+
+    # Slot 0: Stem
+    mask_stem = det[:, 0] & (ot[:, 0] == 3)
+    if mask_stem.any():
+        R_ino = torch.bmm(R_ref, rot6d_to_matrix(packets_flat[:, 0, FM_ROT_START:FM_ROT_END]))
+        ino_len = packets_flat[:, 0, FM_SCALE_START:FM_SCALE_START + 1] / SCALE_SCALE
+        cpt_stem = -(R_ino[:, :, 1] * ino_len) * base_scale
+        base[:, 0] = torch.where(mask_stem.unsqueeze(-1), cpt_stem, base[:, 0])
+
+    # Slot 1: Petiole & Leaflets
+    mask_pet = det[:, 1]
+    if mask_pet.any():
+        R_pet = torch.bmm(R_ref, rot6d_to_matrix(packets_flat[:, 1, FM_ROT_START:FM_ROT_END]))
+        pet_len = (packets_flat[:, 1, FM_SCALE_START:FM_SCALE_START + 1] / SCALE_SCALE).clamp(min=0.0)
+        pet_curv = packets_flat[:, 1, FM_CURV:FM_CURV + 1] / CURV_SCALE
+        curves = _petiole_curve_points(R_pet, pet_len, pet_curv)  # (P, n_seg+1, 3)
+        n_pts = curves.shape[1]
         for s, frac in LEAFLET_ATTACH_FRAC.items():
-            if bool(det[p, s]):
-                idx_f = frac * (len(curve) - 1)
-                i0 = int(idx_f)
-                t = idx_f - i0
-                i1 = min(i0 + 1, len(curve) - 1)
-                cpt = curve[i0] * (1 - t) + curve[i1] * t
-                base[p, s] = cpt * base_scale
-        # Flower/fruit bases: arc-fraction point on the CURVED PEDUNCLE
-        # centerline (same gravitropic bend convention as the petiole).
-        if bool(det[p, 5]):
-            R_ped = R_ref[p] @ rot6d_to_matrix(out[p, 5, FM_ROT_START:FM_ROT_END])
-            ped_len = out[p, 5, FM_SCALE_START] / SCALE_SCALE  # metres
-            ped_curv = out[p, 5, FM_CURV] / CURV_SCALE  # deg/m
-            if ped_len >= 1e-4:
-                pcurve = _petiole_curve_points(R_ped, ped_len, ped_curv)
-                idx_f = REPRO_ATTACH_FRAC * (len(pcurve) - 1)
-                i0 = int(idx_f)
-                t = idx_f - i0
-                i1 = min(i0 + 1, len(pcurve) - 1)
-                cpt = pcurve[i0] * (1 - t) + pcurve[i1] * t
-                for s in range(6, NUM_SLOTS):
-                    if bool(det[p, s]):
-                        base[p, s] = cpt * base_scale
-    return torch.cat(
-        [out[..., :FM_BASE_START], base, out[..., FM_BASE_END:]], dim=-1
+            idx_f = frac * (n_pts - 1)
+            i0 = int(idx_f)
+            t_frac = idx_f - i0
+            i1 = min(i0 + 1, n_pts - 1)
+            cpt = (curves[:, i0] * (1.0 - t_frac) + curves[:, i1] * t_frac) * base_scale
+            mask_s = det[:, 1] & det[:, s] & (pet_len.squeeze(-1) >= 1e-4)
+            base[:, s] = torch.where(mask_s.unsqueeze(-1), cpt, base[:, s])
+
+    # Slot 5: Peduncle & Repro
+    mask_ped = det[:, 5]
+    if mask_ped.any():
+        R_ped = torch.bmm(R_ref, rot6d_to_matrix(packets_flat[:, 5, FM_ROT_START:FM_ROT_END]))
+        ped_len = (packets_flat[:, 5, FM_SCALE_START:FM_SCALE_START + 1] / SCALE_SCALE).clamp(min=0.0)
+        ped_curv = packets_flat[:, 5, FM_CURV:FM_CURV + 1] / CURV_SCALE
+        pcurves = _petiole_curve_points(R_ped, ped_len, ped_curv)  # (P, n_seg+1, 3)
+        n_pts = pcurves.shape[1]
+        idx_f = REPRO_ATTACH_FRAC * (n_pts - 1)
+        i0 = int(idx_f)
+        t_frac = idx_f - i0
+        i1 = min(i0 + 1, n_pts - 1)
+        cpt_repro = (pcurves[:, i0] * (1.0 - t_frac) + pcurves[:, i1] * t_frac) * base_scale
+        for s in range(6, NUM_SLOTS):
+            mask_s = det[:, 1] & det[:, 5] & det[:, s] & (ped_len.squeeze(-1) >= 1e-4)
+            base[:, s] = torch.where(mask_s.unsqueeze(-1), cpt_repro, base[:, s])
+
+    res = torch.cat(
+        [packets_flat[..., :FM_BASE_START], base, packets_flat[..., FM_BASE_END:]], dim=-1
     )
+    if B is not None:
+        res = res.reshape(orig_shape)
+    return res
 
 
 def rot6d_to_matrix(d6: torch.Tensor) -> torch.Tensor:

@@ -1,6 +1,6 @@
 # Agent Takeover & Engineering Handover Guide
 **Project: Image-to-L-System / 3D Inverse Procedural Plant Reconstruction**  
-**Last Updated:** 2026-09-10 PDT evening (v3 scale-normalized packets + 76D flow + macro-head fixes + training-launch debugging — 4 cluster jobs failed, fixes committed, resubmission pending verification)  
+**Last Updated:** 2026-09-10 PDT night (gradient explosion .detach() bug fixed, architecture comparison documented, Job 38235969 running with recovery mode — epoch 3 re-explosion under investigation)  
 **Primary Author/Agent:** Antigravity Autonomous Agent (Pair programming with Heesup Yun)  
 **Environment:** Linux, Python 3.10+, Mamba (`mamba activate digital-crops`), CUDA, PyTorch, `nvdiffrast`, Helios C++ OptiX Raytracer.  
 
@@ -67,15 +67,17 @@ OrganLatentVAE (frozen) → 16D latent → 14D Part Tensor → Helios XML
 
 ---
 
-## 2. Active SLURM Jobs (as of 2026-09-10 ~17:40 PDT)
+## 2. Active SLURM Jobs (as of 2026-09-10 ~21:15 PDT)
 
 | Job ID | Name | Status | Node | Notes |
 | :--- | :---: | :---: | :--- | :--- |
 | **38230613** | `ondemand/sys/dashboa` | RUNNING | `gpu-5-58` | User's interactive OnDemand desktop — **DO NOT CANCEL** |
-| **38234682** | `hierarchical_fm` | **RUNNING** | `gpu-10-50` | Full 100k cluster training: 4x RTX 6000 Ada, batch 152/GPU (global 608), 85.3% VRAM (42GB/49GB), v3 76D flow |
-| 38224489..38233914 | `hierarchical_fm` | FAILED | — | Previous launch attempts; all root causes identified and fixed (see forensics below) |
+| **38235969** | `hierarchical_fm` | **RUNNING** | `gpu-10-50` | 4x RTX 6000 Ada, batch 152/GPU (global 608), 82.2% VRAM; detach bug fixed — epoch 3 에서 재폭발 중 (VelLoss: 1050) |
+| 38234682 | `hierarchical_fm` | CANCELLED | `gpu-10-50` | 이전 시도; 38235936에서 그라디언트 폭발 확인 후 취소 |
+| 38235936 | `hierarchical_fm` | CANCELLED | — | `.detach()` 버그 확인용 실행; 폭발 패턴 검증 후 취소 |
+| 38224489..38233914 | `hierarchical_fm` | FAILED | — | 이전 launch 실패들 (아래 표 참조) |
 
-### Failed-launch forensics (2026-09-10)
+### Failed-launch forensics (2026-09-10 오전)
 | Job | Failure | Root cause | Fix commit |
 | :--- | :--- | :--- | :--- |
 | 38224489 | `UnboundLocalError: _sync` | Probe path referenced helper before def | `db4e493` |
@@ -84,7 +86,13 @@ OrganLatentVAE (frozen) → 16D latent → 14D Part Tensor → Helios XML
 | 38233491 | DDP `.color_palette` marked ready twice | `color_palette` was `nn.Parameter` outside `forward()` | `9dd45be` (`register_buffer` + `.detach()`) |
 | 38233914 | `[256, 3]` version conflict in `canonical_rays` | DDP `broadcast_buffers=True` modified ray buffer inplace | `5255efa` (`clone()` + `broadcast_buffers=False`) |
 
-All root causes resolved and verified: Job **38234682** is actively running past probe on all 4 GPUs on `gpu-10-50`.
+### 그라디언트 폭발 forensics (2026-09-10 저녁, Job 38235936→38235969)
+| 버그 | 증상 | 원인 | 수정 |
+| :--- | :--- | :--- | :--- |
+| `pred_anchor_pos` no `.detach()` in z_0 | AncPos 300m+, 에폭 3 폭발 | vel loss가 pos_head로 역류 → 양성 피드백 | `fwd1` `no_grad()` + `fwd2` `pred_anchor_pos.detach()` in z_0 |
+| fine_stage `anchor_pos` 미분리 | vel loss → pos_head 2차 역전파 | conditioning에 .detach() 없음 | `hierarchical_part_flow_matching.py` L1129 `.detach()` 추가 |
+
+**⚠️ 현재 잔류 문제**: Job `38235969`에서 에폭 3 재폭발 (`VelLoss: 1050`, `AncPos: 292m`). VelLoss 스케일 과대(가중치 2.0 × 1050 = 2100)가 원인으로 추정. 추가 조사 필요.
 
 ---
 
