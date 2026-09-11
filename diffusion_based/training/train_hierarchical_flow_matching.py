@@ -1554,6 +1554,22 @@ def main():
                        "indices": eval_indices, "samples": eval_meta}, f, indent=2)
         print(f"Fixed eval set: {len(eval_indices)} samples -> {eval_set_path}")
 
+        total_warmup_steps = warmup_state.get("total_steps", 0)
+        print("=" * 80)
+        print("Hierarchical Botanical Flow Matching — Training Curriculum Schedule")
+        print("=" * 80)
+        print(f"{'Phase / Component':<35} | {'Active Epochs':<18} | {'Mechanism & Target':<22}")
+        print("-" * 80)
+        print(f"{'1. Linear LR Warmup':<35} | {f'Epoch 1 ~ {warmup_epochs}':<18} | {f'0.1x -> 1.0x ({total_warmup_steps} steps)':<22}")
+        print(f"{'2. 3D Scaffold & Flow Supervision':<35} | {f'Epoch 1 ~ {args.epochs}':<18} | {'Direct L1 + Flow MSE':<22}")
+        print(f"{'3. Differentiable Render Loss':<35} | {f'Epoch {args.render_grad_start_epoch} ~ {args.epochs}':<18} | {'CHM Depth + Top-view Dice':<22}")
+        print(f"{'4. Anchor Slicing (Teacher Forcing)':<35} | {f'Epoch 1 ~ {args.capacity_warmup_epochs}':<18} | {'100% GT DAP (Organ coverage)':<22}")
+        print(f"{'5. Anchor Slicing (Scheduled Ramp)':<35} | {f'Epoch {args.capacity_warmup_epochs+1} ~ {args.capacity_full_epochs}':<18} | {'p_pred: 0.0 -> 1.0':<22}")
+        print(f"{'6. Anchor Slicing (Autonomous)':<35} | {f'Epoch {args.capacity_full_epochs} ~ {args.epochs}':<18} | {'100% Model Pred (Inference)':<22}")
+        print(f"{'7. Cosine LR Annealing':<35} | {f'Epoch {warmup_epochs+1} ~ {args.epochs}':<18} | {'3e-4 -> 1e-6 decay':<22}")
+        print(f"{'8. Stratified Eval & Checkpoints':<35} | {f'Every {args.eval_every} / {args.save_every} ep':<18} | {'Multi-DAP Metrics & Weights':<22}")
+        print("=" * 80)
+
     last_eval_time = {"t": time.time()}
     for epoch in range(start_epoch, args.epochs + 1):
         if sampler is not None and hasattr(sampler, "set_epoch"):
