@@ -530,13 +530,13 @@ def forward_backward_step(
         # 3. Fine Slot Existence Loss (Vectorized 1-shot across B, K, M)
         pos_w = torch.tensor([12.0], device=device)
         loss_fine_exist = F.binary_cross_entropy_with_logits(
-            pred_fine_exist_logits, slot_presence_target, pos_weight=pos_w, reduction="mean"
+            pred_fine_exist_logits.clamp(min=-10.0, max=10.0), slot_presence_target, pos_weight=pos_w, reduction="mean"
         )
 
         # 4. Anchor Existence Loss (Vectorized 1-shot across B, K, 1)
         pos_weight_anc = torch.tensor([8.0], device=device)
         loss_anchor_exist = F.binary_cross_entropy_with_logits(
-            pred_anchor_logits, anchor_exist_targets, pos_weight=pos_weight_anc, reduction="mean"
+            pred_anchor_logits.clamp(min=-10.0, max=10.0), anchor_exist_targets, pos_weight=pos_weight_anc, reduction="mean"
         )
 
         # 5. Anchor Position Loss (Vectorized 1-shot)

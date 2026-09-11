@@ -396,6 +396,7 @@ class CoarseSkeletalTransformer(nn.Module):
         self.anchor_self_attn = nn.MultiheadAttention(
             embed_dim, num_heads, dropout=0.05, batch_first=True,
         )
+        self.anchor_norm = nn.LayerNorm(embed_dim)
         self.edge_bias_temp = 0.15
 
     def forward(
@@ -486,7 +487,7 @@ class CoarseSkeletalTransformer(nn.Module):
             attn_mask=edge_bias,
             need_weights=False,
         )
-        anchor_features = anchor_features + attn_out
+        anchor_features = self.anchor_norm(anchor_features + attn_out)
 
         # Stage 2 Heads: predict coordinate offset from 3D reference points (physically bounded to +/- 0.5m)
         delta_pos = torch.tanh(self.pos_head(anchor_features)) * 0.5
@@ -509,12 +510,11 @@ class CoarseSkeletalTransformer(nn.Module):
             "pred_dap": macro_out_full["pred_dap"],
             "pred_num_phytomers": macro_out_full["pred_num_phytomers"],
             "soft_margin_weights": macro_out_full["soft_margin_weights"][:, :K],
-            "init_logits": macro_out_full["init_logits"][:, :K],
         }
 
-        # Combine learned delta logits with differentiable soft margin logit prior
-        delta_logits = self.exist_head(anchor_features)
-        anchor_logits = delta_logits + macro_out["init_logits"]
+        # Predict anchor existence logits, strictly bounded to [-8.0, 8.0]
+        # (Numerical guarantee: BCE loss can never exceed 8.0, preventing Ext loss explosion)
+        anchor_logits = torch.tanh(self.exist_head(anchor_features)) * 8.0
 
         return {
             "anchor_pos": anchor_pos,
@@ -789,7 +789,7 @@ class FineBotanicalFlowMatchingDecoder(nn.Module):
 
         # 8. Heads
         pred_velocity = self.velocity_head(x)
-        pred_exist_logits = self.exist_head(x)
+        pred_exist_logits = torch.tanh(self.exist_head(x)) * 8.0
 
         return {
             "pred_velocity": pred_velocity,
@@ -949,7 +949,7 @@ class PhytomerFlowMatchingDecoder(nn.Module):
         x = self.decoder(queries, memory)
 
         pred_velocity = self.velocity_head(x)
-        pred_slot_exist_logits = self.exist_head(x)
+        pred_slot_exist_logits = torch.tanh(self.exist_head(x)) * 8.0
 
         return {
             "pred_velocity": pred_velocity,
