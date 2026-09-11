@@ -34,6 +34,11 @@ if [ "${FREEZE_BACKBONE:-0}" = "1" ]; then
     FREEZE_ARGS="--freeze_backbone"
 fi
 
+DETECT_ANOMALY_ARGS=""
+if [ "${DETECT_ANOMALY:-0}" = "1" ]; then
+    DETECT_ANOMALY_ARGS="--detect_anomaly"
+fi
+
 mkdir -p "${REPO_ROOT}/slurm_scripts/logs"
 cd ${REPO_ROOT}
 mkdir -p "${OUTPUT_DIR}"
@@ -51,11 +56,11 @@ echo "==========================================================================
 echo "Starting Hierarchical Matryoshka Botanical Flow Matching Training"
 echo "Job ID: $SLURM_JOB_ID | Host: $(hostname) | GPUs allocated: $NPROC"
 echo "Per-GPU VRAM: ${VRAM_MB} MiB | Batch Mode: ${BATCH_ARG} (Target VRAM: ${TARGET_RATIO})"
-echo "Anchor Capacity: calibrated logistic curve (p97.5+max coverage) | M=8 slots/anchor"
+echo "Anchor Capacity: calibrated logistic curve (p97.5+max coverage) | M=${SLOTS_PER_ANCHOR:-10} slots/anchor"
 echo "Capacity schedule: warmup ${CAPACITY_WARMUP:-50} -> full ${CAPACITY_FULL:-150} (pred-phytomer ramp)"
 echo "Eval cadence: every ${EVAL_EVERY:-25} epochs OR every ${EVAL_MIN_INTERVAL_MINUTES:-30} min (time fallback)"
 echo "Render fraction: ${RENDER_FRACTION:-0.167} of batch per step (batch-relative; 2-scale pyramid 1x/2x — profiling 2026-09-09: render was 70% of step time)"
-echo "Flow granularity: ${FLOW_GRANULARITY:-organ} (phytomer = 73D bridge flow [base|rot|latent])"
+echo "Flow granularity: ${FLOW_GRANULARITY:-phytomer} (phytomer = 76D bridge flow [pos|rot|s_a|latent])"
 echo "Phytomer VAE: ${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_v3/phytomer_vae_64d_best.pt}"
 echo "Pkt cache dir: ${PKT_CACHE_DIR:-dataset/cache/cowpea_curv26_pkt} (missing samples fall back to on-the-fly)"
 echo "Backbone: ${BACKBONE}${FREEZE_ARGS:+ (frozen)} | Output: ${OUTPUT_DIR} | Epochs: ${EPOCHS}"
@@ -91,9 +96,10 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     --init_phytomer_count "${INIT_PHYTOMER_COUNT:-50.0}" \
     --node_dim 16 \
     --organ_vae_checkpoint diffusion_based/checkpoints/organ_vae/organ_latent_vae_best.pt \
-    --flow_granularity "${FLOW_GRANULARITY:-organ}" \
+    --flow_granularity "${FLOW_GRANULARITY:-phytomer}" \
     --backbone "${BACKBONE}" \
     ${FREEZE_ARGS} \
+    ${DETECT_ANOMALY_ARGS} \
     --phytomer_latent_dim "${PHYTOMER_LATENT_DIM:-64}" \
     --phytomer_vae_checkpoint "${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_v3/phytomer_vae_64d_best.pt}" \
     --pkt_cache_dir "${PKT_CACHE_DIR:-dataset/cache/cowpea_curv26_pkt}" \

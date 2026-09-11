@@ -39,7 +39,7 @@ class TestHierarchicalFlowMatching(unittest.TestCase):
         ).to(self.device)
 
     def test_matryoshka_slicing(self):
-        # Test exponential doubling schedule
+        # Test continuous capacity monotonic growth
         dap_young = torch.tensor([3.0])
         dap_mid = torch.tensor([25.0])
         dap_old = torch.tensor([85.0])
@@ -48,9 +48,10 @@ class TestHierarchicalFlowMatching(unittest.TestCase):
         k_mid = compute_matryoshka_slice(dap_mid, max_anchors=512)
         k_old = compute_matryoshka_slice(dap_old, max_anchors=512)
 
-        self.assertEqual(k_young, 16)
-        self.assertGreaterEqual(k_mid, 64)
-        self.assertEqual(k_old, 512)
+        self.assertGreaterEqual(k_young, 8)
+        self.assertLess(k_young, k_mid)
+        self.assertLess(k_mid, k_old)
+        self.assertLessEqual(k_old, 512)
 
     def test_forward_pass(self):
         images = torch.randn(self.B, 4, self.image_size, self.image_size, device=self.device)

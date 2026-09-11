@@ -1270,9 +1270,14 @@ def main():
                         help="DAP-stratified subset of the dataset for fast convergence smoke tests (0 = full dataset)")
     parser.add_argument("--capacity_warmup_epochs", type=int, default=50, help="Epochs of pure GT-DAP capacity teacher forcing before predicted-phytomer capacity ramps in")
     parser.add_argument("--capacity_full_epochs", type=int, default=150, help="Epoch at which predicted-phytomer capacity path reaches p_pred=1.0 (0 = disable ramp entirely)")
+    parser.add_argument("--detect_anomaly", action="store_true",
+                        help="torch.autograd.set_detect_anomaly(True) — pinpoints inplace/NaN backward errors")
     parser.add_argument("--wandb_project", type=str, default="part-flow-matching")
     parser.add_argument("--wandb_run_name", type=str, default="hierarchical-matryoshka-cowpea")
     args = parser.parse_args()
+
+    if args.detect_anomaly:
+        torch.autograd.set_detect_anomaly(True)
 
     # DDP Initialization
     is_ddp = "RANK" in os.environ and "WORLD_SIZE" in os.environ
