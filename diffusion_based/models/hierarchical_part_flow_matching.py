@@ -488,11 +488,21 @@ class CoarseSkeletalTransformer(nn.Module):
         )
         anchor_features = anchor_features + attn_out
 
-        # Stage 2 Heads: predict coordinate offset from 3D reference points
-        delta_pos = self.pos_head(anchor_features)
+        # Stage 2 Heads: predict coordinate offset from 3D reference points (physically bounded to +/- 0.5m)
+        delta_pos = torch.tanh(self.pos_head(anchor_features)) * 0.5
         anchor_pos = self.ref_points[:K].unsqueeze(0) + delta_pos
-        anchor_rot = self.rot_head(anchor_features)
-        anchor_scale = F.softplus(self.scale_head(anchor_features)) + 1e-4  # (B, K, 3)
+
+        # Continuous 6D rotation with Gram-Schmidt orthonormalization (Zhou et al., CVPR 2019)
+        # Prevents norm explosion (Rot: 205) and enforces valid SO(3) frame
+        raw_rot = self.rot_head(anchor_features)
+        v1 = raw_rot[..., :3]
+        v2 = raw_rot[..., 3:]
+        e1 = F.normalize(v1, dim=-1, eps=1e-6)
+        u2 = v2 - (e1 * v2).sum(dim=-1, keepdim=True) * e1
+        e2 = F.normalize(u2, dim=-1, eps=1e-6)
+        anchor_rot = torch.cat([e1, e2], dim=-1)
+
+        anchor_scale = (F.softplus(self.scale_head(anchor_features)) + 1e-4).clamp(max=2.0)  # (B, K, 3)
 
         # Re-slice the soft margin prior to the active width (computed once, full width)
         macro_out = {
@@ -1126,8 +1136,8 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                 noisy_fine_nodes = F.pad(noisy_fine_nodes, (0, 0, 0, pad_n))
 
         # 4. Stage 3: Fine Botanical Flow Matching conditioned on 3D Scaffold
-        # anchor_pos, anchor_rot, and anchor_scale are detached as conditioning inputs so the velocity
-        # loss refines latent geometry without backpropagating into Stage-2 scaffold heads.
+        # anchor_features, anchor_pos, anchor_rot, and anchor_scale are detached as conditioning inputs so the velocity
+        # loss refines latent geometry without backpropagating into Stage-2 scaffold heads or features.
         anchor_pos = coarse_out["anchor_pos"]
         anchor_rot = coarse_out["anchor_rot"]
         anchor_scale = coarse_out.get("anchor_scale")
@@ -1135,7 +1145,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             fine_out = self.fine_stage(
                 noisy_flow=noisy_fine_nodes,
                 timesteps=timesteps,
-                anchor_features=anchor_features,
+                anchor_features=anchor_features.detach(),
                 image_tokens=image_tokens,
                 anchor_pos=anchor_pos.detach() if anchor_pos is not None else None,
                 anchor_rot=anchor_rot.detach() if anchor_rot is not None else None,
@@ -1146,7 +1156,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             fine_out = self.fine_stage(
                 noisy_fine_nodes=noisy_fine_nodes,
                 timesteps=timesteps,
-                anchor_features=anchor_features,
+                anchor_features=anchor_features.detach(),
                 image_tokens=image_tokens,
                 anchor_pos=anchor_pos.detach() if anchor_pos is not None else None,
                 anchor_rot=anchor_rot.detach() if anchor_rot is not None else None,
