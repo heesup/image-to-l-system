@@ -14,7 +14,7 @@ This directory tracks **only actively running work** for the **Image-to-L-System
 
 | Component | Status | Details |
 | :--- | :---: | :--- |
-| **Main Training Job** | 🟢 RUNNING | Job `38236714` (4x RTX 6000 Ada, `gpu-10-54`) — **하이브리드 디커플링 + Stage별 순차 로깅 가동 중** |
+| **Main Training Job** | 🟢 RUNNING | Job `38236720` (4x RTX 6000 Ada, `gpu-10-50`) — **하이브리드 디커플링 + GPU Batch Greedy Matcher 가동 중** |
 | **Architecture Decision**| 🟢 RATIFIED | **하이브리드 디커플링 (Hybrid Decoupled Architecture)** 확정: Stage 2 3D 뼈대 전담 + Stage 3 64D VAE Latent Flow Matching ($z_0 \sim \mathcal{N}(0, I_{64})$) |
 | **Loss Function Diet** | 🟢 RATIFIED | 10개 $\to$ 8개 정예 손실 체계 (`loss_cos`, `loss_dap` 제거, `loss_anchor_rot` 정규 지도 추가) |
 | **PhytomerVAE v3 (normalized)** | 🟢 DEFAULT | `phytomer_vae_v3` — val recon **0.070**, cls **100%** (10-slot, 240D in, scale-normalized targets) |
