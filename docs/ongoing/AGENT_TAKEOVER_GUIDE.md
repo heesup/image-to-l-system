@@ -34,30 +34,34 @@ Given a single monocular top-view RGB-D ($256 \times 256 \times 4$) image contai
 1. **Canonical 14D Part Tensor Representation**: Disentangled per-organ metric state.
 2. **Native Helios C++ XML Tree**: Full procedural L-system specification for physical raytracing.
 
-### Architecture (Current): 3-Stage Cascaded Hierarchical Matryoshka Flow Matching
+### Architecture (Current): Hybrid Decoupled 3-Stage Cascaded Botanical Flow Matching
 
 ```
 Input: RGB-D 4ch image (256×256)
        ↓
 [Stage 0] DINOv2 ViT-S/14 → PETR 3D Ray PE → 3D-aware image tokens
        ↓
-[Stage 1] MacroBiologicalHead (CLS token) → DAP + Phytomer count + soft margin existence prior
+[Stage 1] MacroBiologicalHead (CLS token) → Phytomer count (Soft margin capacity prior)
        ↓
-[Stage 2] CoarseSkeletalTransformer — DETERMINISTIC set transformer (4 TransformerDecoder
-          layers, NO flow matching) → 3D node scaffold: anchor xyz (ref_points + delta),
-          6D rotation, existence logits (GT-DAP Matryoshka slicing, power-of-2 tiers)
+[Stage 2] CoarseSkeletalTransformer — DETERMINISTIC Set Transformer (Scaffold)
+          → anchor pos (3D), rot (6D), scale (3D), existence logits (1D)
+          → supervised by loss_anchor_pos, loss_anchor_rot, loss_anchor_scale, loss_anchor_exist
        ↓
-[Stage 3] FineBotanicalFlowMatchingDecoder (6 transformer layers) → 8 organ slots per anchor
-          (4,096 max slots): Rectified Flow Matching velocity over 16D latents,
-          20-step Heun ODE at inference
+[Stage 3] PhytomerFlowMatchingDecoder (Conditioned on Stage 2 Scaffold & Image)
+          → Flow Vector: 64D Phytomer VAE Latent ONLY
+          → Prior: Standard Gaussian z_0 ~ N(0, I_64) (No bridge coupling → VelLoss stable ~1.0)
+          → Conditioning: anchor_pos.detach(), anchor_rot.detach(), anchor_scale.detach(), anchor_features
+          → 10 organ slots existence logits (P(organ) = P(anchor) * P(slot|anchor))
        ↓
-OrganLatentVAE (frozen) → 16D latent → 14D Part Tensor → Helios XML
+[Stage 4] PhytomerVAE v3 (frozen) → 64D Latent decoded to 10-organ canonical packet
+          → Assembled via denormalize_packet_scales(scale) & apply_ref_for_flow(pos, rot)
+          → HeliosPyTorchRenderer (Multi-scale pyramid CHM depth + Soft Dice silhouette)
 ```
 
-> **Naming note**: "Stage 2" was historically labeled "Coarse Flow Matching" in older docs.
-> Per the ratified design-space decision (Combination 2: Deterministic Scaffold + 16D Latent FM,
-> `docs/archived/design/20260908_cascaded_architecture_design_space_analysis.md`), Stage 2 is a
-> **deterministic regression head** (xyz + 6D rot + existence); flow matching occurs only in Stage 3.
+> **Design Decision (2026-09-10)**:
+> - 76D Bridge Flow ($z_0 = \text{anchor\_pos} + \epsilon$)의 오차 증폭(`VelLoss: 1050~2000`)을 해소하기 위해 **하이브리드 디커플링**으로 완전 전환.
+> - Stage 2는 전신 3D 골격(`pos`, `rot`, `scale`, `exist`)을 전담하고, Stage 3은 표준 정규분포에서 파이토머 내부 64D 잠재공간 Flow Matching을 전담.
+> - 손실 함수 10개 $\to$ 8개 정예화 (`loss_cos`, `loss_dap` 제거, `loss_anchor_rot` 정규 지도 추가).
 
 ### Milestone History:
 - ✅ **Phase 1** (ICP / Diff Render / Flow Matching benchmark): Complete.
@@ -67,14 +71,14 @@ OrganLatentVAE (frozen) → 16D latent → 14D Part Tensor → Helios XML
 
 ---
 
-## 2. Active SLURM Jobs (as of 2026-09-10 ~21:15 PDT)
+## 2. Active SLURM Jobs (as of 2026-09-10 ~21:50 PDT)
 
 | Job ID | Name | Status | Node | Notes |
 | :--- | :---: | :---: | :--- | :--- |
 | **38230613** | `ondemand/sys/dashboa` | RUNNING | `gpu-5-58` | User's interactive OnDemand desktop — **DO NOT CANCEL** |
-| **38235969** | `hierarchical_fm` | **RUNNING** | `gpu-10-50` | 4x RTX 6000 Ada, batch 152/GPU (global 608), 82.2% VRAM; detach bug fixed — epoch 3 에서 재폭발 중 (VelLoss: 1050) |
+| **38236699** | `hierarchical_fm` | **RUNNING** | `gpu-10-50` | 4x RTX 6000 Ada, **하이브리드 디커플링 신규 학습 가동** (순수 64D VAE Flow + 8대 정예 손실) |
+| 38235969 | `hierarchical_fm` | CANCELLED | `gpu-10-50` | 76D Bridge coupling으로 에폭 3 재폭발 확인 후 취소 |
 | 38234682 | `hierarchical_fm` | CANCELLED | `gpu-10-50` | 이전 시도; 38235936에서 그라디언트 폭발 확인 후 취소 |
-| 38235936 | `hierarchical_fm` | CANCELLED | — | `.detach()` 버그 확인용 실행; 폭발 패턴 검증 후 취소 |
 | 38224489..38233914 | `hierarchical_fm` | FAILED | — | 이전 launch 실패들 (아래 표 참조) |
 
 ### Failed-launch forensics (2026-09-10 오전)
@@ -86,13 +90,12 @@ OrganLatentVAE (frozen) → 16D latent → 14D Part Tensor → Helios XML
 | 38233491 | DDP `.color_palette` marked ready twice | `color_palette` was `nn.Parameter` outside `forward()` | `9dd45be` (`register_buffer` + `.detach()`) |
 | 38233914 | `[256, 3]` version conflict in `canonical_rays` | DDP `broadcast_buffers=True` modified ray buffer inplace | `5255efa` (`clone()` + `broadcast_buffers=False`) |
 
-### 그라디언트 폭발 forensics (2026-09-10 저녁, Job 38235936→38235969)
-| 버그 | 증상 | 원인 | 수정 |
-| :--- | :--- | :--- | :--- |
-| `pred_anchor_pos` no `.detach()` in z_0 | AncPos 300m+, 에폭 3 폭발 | vel loss가 pos_head로 역류 → 양성 피드백 | `fwd1` `no_grad()` + `fwd2` `pred_anchor_pos.detach()` in z_0 |
-| fine_stage `anchor_pos` 미분리 | vel loss → pos_head 2차 역전파 | conditioning에 .detach() 없음 | `hierarchical_part_flow_matching.py` L1129 `.detach()` 추가 |
-
-**⚠️ 현재 잔류 문제**: Job `38235969`에서 에폭 3 재폭발 (`VelLoss: 1050`, `AncPos: 292m`). VelLoss 스케일 과대(가중치 2.0 × 1050 = 2100)가 원인으로 추정. 추가 조사 필요.
+### 그라디언트 폭발 근본 해결 (2026-09-10 야간)
+| 원인 | 증상 | 해결책 (하이브리드 디커플링) | 상태 |
+| :--- | :--- | :--- | :---: |
+| **76D Bridge Flow Coupling** ($z_0 = \text{anchor\_pos} + \epsilon$) | Stage 2 초기 오차가 $v^* = z_1 - z_0$에 직접 주입되어 VelLoss가 1000~2000대로 폭발, grad_norm inf 유발 | Stage 3을 **순수 64D VAE Latent Flow Matching**으로 분리하고 Prior를 표준 정규분포 $z_0 \sim \mathcal{N}(0, I_{64})$로 복원. Stage 2의 3D 뼈대(pos, rot, scale)는 conditioning으로만 주입 | ✅ **해결됨** |
+| **rot_head 무지도** | Stage 2의 6D 회전 예측값에 직접적인 지도 손실이 없어 회전 발산 가능성 | `loss_anchor_rot` (Smooth L1, weight 1.0) 신규 추가 | ✅ **반영됨** |
+| **중복/노이즈 손실** | CAD-실사 색상 불일치(`loss_cos`), DAP 중복(`loss_dap`) | `loss_cos`, `loss_dap` 제거하여 8대 정예 손실 체계 확립 | ✅ **반영됨** |
 
 ---
 

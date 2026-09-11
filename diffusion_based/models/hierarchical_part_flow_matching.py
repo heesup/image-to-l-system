@@ -848,7 +848,7 @@ class PhytomerFlowMatchingDecoder(nn.Module):
         )
         self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
 
-        # 3D Node Scaffold Positional & Rotational Encoders (Stage 2 -> Stage 3 conditioning)
+        # 3D Node Scaffold Positional, Rotational & Scale Encoders (Stage 2 -> Stage 3 conditioning)
         self.node_pos_mlp = nn.Sequential(
             nn.Linear(3, embed_dim),
             nn.GELU(),
@@ -859,11 +859,16 @@ class PhytomerFlowMatchingDecoder(nn.Module):
             nn.GELU(),
             nn.Linear(embed_dim, embed_dim),
         )
+        self.node_scale_mlp = nn.Sequential(
+            nn.Linear(3, embed_dim),
+            nn.GELU(),
+            nn.Linear(embed_dim, embed_dim),
+        )
 
         # Hybrid 3D-to-2D Anchor Visual Projector (Point-Query sampling)
         self.anchor_projector = AnchorVisualProjector(embed_dim=embed_dim)
 
-        # Velocity head: predicts d/dt of the 12+D flow vector
+        # Velocity head: predicts d/dt of the flow vector (64D in decoupled mode)
         self.velocity_head = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
             nn.GELU(),
@@ -895,37 +900,39 @@ class PhytomerFlowMatchingDecoder(nn.Module):
         image_tokens: torch.Tensor,
         anchor_pos: Optional[torch.Tensor] = None,
         anchor_rot: Optional[torch.Tensor] = None,
+        anchor_scale: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Flow-matches a per-anchor (B, K, 12+D) vector.
+        """Flow-matches a per-anchor latent vector (64D in decoupled mode).
 
         Args:
-            noisy_flow: (B, K, 12 + D) interpolated x_t.
+            noisy_flow: (B, K, node_flow_dim) interpolated x_t.
             timesteps: (B,) flow time t in [0, 1].
             anchor_features: (B, K, embed) from Stage 2 CoarseSkeletalTransformer.
             image_tokens: (B, T, embed) from ViT.
             anchor_pos: Optional (B, K, 3) Stage-2 scaffold base positions.
             anchor_rot: Optional (B, K, 6) Stage-2 scaffold rotations.
+            anchor_scale: Optional (B, K, 3) Stage-2 scaffold scales.
         Returns:
-            'pred_velocity': (B, K, 12 + D) velocity field.
+            'pred_velocity': (B, K, node_flow_dim) velocity field.
             'pred_slot_exist_logits': (B, K, M) per-slot existence logits.
         """
         B, K, _ = noisy_flow.shape
         device = noisy_flow.device
 
-        # Query = flow vector projection, but the pose part is expressed as a
-        # delta-residual on top of the Stage-2 scaffold: the flow "refines" the
-        # scaffold pose rather than predicting it from scratch. We encode the
-        # scaffold pose as conditioning embeddings (added to the query).
+        # Continuous flow vector projection + sinusoidal timestep embedding
         geom_embs = self.geom_proj(noisy_flow)  # (B, K, embed)
         t_emb = self.time_embed(self._sinusoidal(timesteps)).unsqueeze(1)  # (B, 1, embed)
         queries = geom_embs + t_emb
 
+        # Stage 2 3D Scaffold Conditioning
         if anchor_pos is not None:
             queries = queries + self.node_pos_mlp(anchor_pos)
             # Hybrid Projection: inject local 2D-projected visual token into query
             queries = queries + self.anchor_projector(image_tokens, anchor_pos)
         if anchor_rot is not None:
             queries = queries + self.node_rot_mlp(anchor_rot)
+        if anchor_scale is not None:
+            queries = queries + self.node_scale_mlp(anchor_scale)
 
         # Global decoder cross-attention to image tokens + anchor memory
         memory = torch.cat([image_tokens, anchor_features], dim=1)
@@ -1020,13 +1027,14 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         # 3. Stage 3: Fine Botanical Flow Matching Decoder conditioned on 3D Scaffold.
         #    flow_granularity:
         #      'organ'   - per-organ slots (8K x node_dim), pose as conditioning.
-        #      'phytomer'- per-anchor 12+D flow vector [base(3) | rot(6) | scale(3) | latent(D)]
-        #                  (bridge flow: pose dims refine the Stage-2 scaffold).
+        #      'phytomer'- per-anchor 64D VAE latent flow vector (Hybrid Decoupled Architecture:
+        #                  pure standard Gaussian prior z_0 ~ N(0, I_64), pose/scale as conditioning).
         if flow_granularity == "phytomer":
             self.fine_stage = PhytomerFlowMatchingDecoder(
                 latent_dim=phytomer_latent_dim,
-                base_dim=3,
-                rot_dim=6,
+                base_dim=0,
+                rot_dim=0,
+                scale_dim=0,
                 num_classes=num_classes,
                 embed_dim=embed_dim,
                 num_heads=vit_heads,
@@ -1118,8 +1126,11 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                 noisy_fine_nodes = F.pad(noisy_fine_nodes, (0, 0, 0, pad_n))
 
         # 4. Stage 3: Fine Botanical Flow Matching conditioned on 3D Scaffold
-        # anchor_pos and anchor_rot are detached as conditioning inputs so the velocity
-        # loss refines pose on top of the scaffold without backpropagating into pos_head/rot_head.
+        # anchor_pos, anchor_rot, and anchor_scale are detached as conditioning inputs so the velocity
+        # loss refines latent geometry without backpropagating into Stage-2 scaffold heads.
+        anchor_pos = coarse_out["anchor_pos"]
+        anchor_rot = coarse_out["anchor_rot"]
+        anchor_scale = coarse_out.get("anchor_scale")
         if self.flow_granularity == "phytomer":
             fine_out = self.fine_stage(
                 noisy_flow=noisy_fine_nodes,
@@ -1128,6 +1139,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                 image_tokens=image_tokens,
                 anchor_pos=anchor_pos.detach() if anchor_pos is not None else None,
                 anchor_rot=anchor_rot.detach() if anchor_rot is not None else None,
+                anchor_scale=anchor_scale.detach() if anchor_scale is not None else None,
             )
             pred_velocity = fine_out["pred_velocity"]
         else:
@@ -1216,34 +1228,25 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
 
         # 2. Construct Prior x_0.
         #    organ mode: standard Gaussian (B, K*8, 16) — exact legacy behavior.
-        #    phytomer mode: bridge prior (B, K, 12+D):
-        #        [scaffold_pos + eps(3) | scaffold_rot + eps(6) | N(0,I)(D)]
-        #      so the flow REFINES the Stage-2 scaffold pose (small correction)
-        #      and generates the phytomer latent normally.
+        #    phytomer mode: standard Gaussian (B, K, D) — pure 64D VAE latent flow (Hybrid Decoupled).
         M = self.slots_per_anchor
         if self.flow_granularity == "phytomer":
             D = self.phytomer_latent_dim
             N_fine = active_k  # K anchors
-            x = torch.randn(B, active_k, 12 + D, device=device)
-            # bridge init for the pose part (scaled small noise around scaffold)
-            x[:, :, PHYTO_FLOW_BASE_START:PHYTO_FLOW_BASE_END] = anchor_pos + 0.05 * x[:, :, PHYTO_FLOW_BASE_START:PHYTO_FLOW_BASE_END]
-            x[:, :, PHYTO_FLOW_ROT_START:PHYTO_FLOW_ROT_END] = anchor_rot + 0.05 * x[:, :, PHYTO_FLOW_ROT_START:PHYTO_FLOW_ROT_END]
-            if "anchor_scale" in coarse_out:
-                x[:, :, PHYTO_FLOW_SCALE_START:PHYTO_FLOW_SCALE_END] = (
-                    coarse_out["anchor_scale"] + 0.05 * x[:, :, PHYTO_FLOW_SCALE_START:PHYTO_FLOW_SCALE_END]
-                )
-            # latent part stays standard Gaussian
+            x = torch.randn(B, active_k, D, device=device)
         else:
             N_fine = active_k * M
             x = torch.randn(B, N_fine, self.node_dim, device=device)
 
         # 3. 2nd-Order Heun ODE Integration from t=0 to t=1 (Stage 3 Flow Matching)
         dt = 1.0 / num_steps
+        anchor_scale = coarse_out.get("anchor_scale")
         forward_kwargs = dict(
             anchor_features=anchor_features,
             image_tokens=image_tokens,
             anchor_pos=anchor_pos,
             anchor_rot=anchor_rot,
+            anchor_scale=anchor_scale,
         )
         for step in range(num_steps):
             t_curr = step * dt
@@ -1281,7 +1284,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             pred_slot_exist = torch.sigmoid(pred_slot_exist_logits)             # (B, K, M)
             combined_prob = pred_slot_exist * anchor_existence.unsqueeze(-1)    # (B, K, M)
             slot_active = (combined_prob > 0.35).float().reshape(B, active_k * M)
-            pred_latent = x          # (B, K, 12+D) flow vector (caller reference)
+            pred_latent = x          # (B, K, D) latent flow vector (caller reference)
             pred_fine_exist_logits = pred_slot_exist_logits
             N_fine = active_k * M    # flat slot surface for legacy callers
         else:
@@ -1330,11 +1333,11 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         }
 
         if self.flow_granularity == "phytomer":
-            # Split flow vector: refined pose + scale + latent; decode latent via phytomer_vae.
-            refined_pos, refined_rot, refined_scl, latent = split_phytomer_flow_target(x, self.phytomer_latent_dim)
-            res["refined_anchor_pos"] = refined_pos
-            res["refined_anchor_rot"] = refined_rot
-            res["refined_anchor_scale"] = refined_scl
+            # Decoupled flow vector is pure 64D phytomer VAE latent
+            latent = x
+            res["refined_anchor_pos"] = anchor_pos
+            res["refined_anchor_rot"] = anchor_rot
+            res["refined_anchor_scale"] = anchor_scale
             res["phytomer_latent"] = latent
             res["pred_slot_exist_logits"] = final_out["pred_slot_exist_logits"]
             if phytomer_vae is not None:
@@ -1343,20 +1346,18 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                 pred_cls = out["cls_logits"].argmax(-1)
                 packet_hat = out["recon_packets"].reshape(B, active_k, M, 26)
                 # v3: the decoded scales are NORMALIZED (VAE trained on normalized
-                # packets); restore absolute scale with the refined anchor scale
-                # BEFORE assembling bases (the petiole-curve math needs the absolute
-                # petiole length to place leaflet/repro bases).
+                # packets); restore absolute scale with anchor scale
                 packet_hat = denormalize_packet_scales(
                     packet_hat.reshape(-1, M, 26),
-                    refined_scl.reshape(-1, 3),
+                    anchor_scale.reshape(-1, 3) if anchor_scale is not None else torch.ones((B*active_k, 3), device=device),
                 ).reshape(B, active_k, M, 26)
                 # Structurally assemble slot bases from the petiole geometry
-                # (deterministic), then re-anchor with the refined anchor pose.
+                # (deterministic), then re-anchor with the anchor pose.
                 packet_hat = assemble_packets(
                     packet_hat.reshape(-1, M, 26),
-                    refined_rot.reshape(-1, 6),
+                    anchor_rot.reshape(-1, 6),
                 ).reshape(B, active_k, M, 26)
-                abs_packets = apply_ref_for_flow(packet_hat, refined_pos, refined_rot)
+                abs_packets = apply_ref_for_flow(packet_hat, anchor_pos, anchor_rot)
                 flat_abs = abs_packets.reshape(B, active_k * M, 26)
                 keep = pred_cls.reshape(B, active_k * M) > 0
                 # Vectorized 1-shot decoding across all batch items (B, N, 26) -> (B, N, 14)

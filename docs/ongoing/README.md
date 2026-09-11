@@ -14,13 +14,12 @@ This directory tracks **only actively running work** for the **Image-to-L-System
 
 | Component | Status | Details |
 | :--- | :---: | :--- |
-| **Main Training Job** | 🟡 UNSTABLE | Job `38235969` on `gpu-10-50` (4x RTX 6000 Ada, epoch 3에서 VelLoss 1050으로 재폭발 중, Recovery 모드 동작 중) |
-| **Gradient Bug** | 🟢 FIXED | `.detach()` 누락 → fwd1 `no_grad()`, z_0 detach, fine_stage conditioning detach 모두 적용 |
-| **Residual Issue** | 🔴 INVESTIGATING | `loss_fine_vel` 스케일(1050)이 `loss_anchor_pos`(292)를 3.6배 압도 → 에폭 3 양성 피드백 |
+| **Main Training Job** | 🟢 RUNNING | Job `38236699` (4x RTX 6000 Ada) — **하이브리드 디커플링 정식 가동 중** |
+| **Architecture Decision**| 🟢 RATIFIED | **하이브리드 디커플링 (Hybrid Decoupled Architecture)** 확정: Stage 2 3D 뼈대 전담 + Stage 3 64D VAE Latent Flow Matching ($z_0 \sim \mathcal{N}(0, I_{64})$) |
+| **Loss Function Diet** | 🟢 RATIFIED | 10개 $\to$ 8개 정예 손실 체계 (`loss_cos`, `loss_dap` 제거, `loss_anchor_rot` 정규 지도 추가) |
 | **PhytomerVAE v3 (normalized)** | 🟢 DEFAULT | `phytomer_vae_v3` — val recon **0.070**, cls **100%** (10-slot, 240D in, scale-normalized targets) |
 | **Dataset (images+nodes)** | 🟢 COMPLETE | **100,000 / 100,000** XMLs + cache `.pt` (all with `phytomer_ids`) |
 | **Phytomer packet cache** | 🟢 COMPLETE | **100,000 / 100,000** v3 (10-slot, absolute packets + normalized latent, `pkt_version: 3`) |
-| **76D flow + macro heads** | 🟢 WIRED | `[pos\|rot\|s_a\|latent]`, Stage-2 `scale_head`, `phy_head` bias-init @ log(50) |
 | **OnDemand Desktop** | 🟢 RUNNING | Job `38230613`, gpu-5-58 — **DO NOT CANCEL** |
 
 ---
@@ -30,10 +29,10 @@ This directory tracks **only actively running work** for the **Image-to-L-System
 | Document | Purpose |
 | :--- | :--- |
 | **[AGENT_TAKEOVER_GUIDE.md](AGENT_TAKEOVER_GUIDE.md)** | Master handover: full system state, 2026-09-08→10 changes, failed-launch forensics, next steps, gotchas |
+| **[`docs/results/20260910_gradient_explosion_debug_and_architecture_comparison.md`](../results/20260910_gradient_explosion_debug_and_architecture_comparison.md)** | 오늘 세션: .detach() 버그 해부, 하이브리드 디커플링 아키텍처 확정 및 Loss 정예화 분석 |
 | **[20260909_phytomer_latent_and_local_matching.md](20260909_phytomer_latent_and_local_matching.md)** | Master engineering log: phytomer latent, Stage-3 decoder, pipeline refactor |
 | **[20260909_phytomer_latent_visualizer_gui.md](20260909_phytomer_latent_visualizer_gui.md)** | Completed PhytomerVAE latent visualizer GUI |
 | **[20260908_anchor_capacity_recalibration_and_pred_phytomer_slicing.md](20260908_anchor_capacity_recalibration_and_pred_phytomer_slicing.md)** | Anchor capacity logistic recalibration, gradient-safety audit |
-| **[`docs/results/20260910_gradient_explosion_debug_and_architecture_comparison.md`](../results/20260910_gradient_explosion_debug_and_architecture_comparison.md)** | 오늘 세션: .detach() 버그 해부, 9/8 vs. 현재 아키텍처 비교, 잔류 VelLoss 폭발 문제 |
 
 ---
 
@@ -41,8 +40,7 @@ This directory tracks **only actively running work** for the **Image-to-L-System
 
 | Priority | Task | Notes |
 | :--- | :--- | :--- |
-| **P0** | **VelLoss 폭발 원인 조사** | `tgt_z1_phyto` 스케일 및 VAE 잠재벡터 정규화 확인; `loss_fine_vel` 가중치 2.0 → 0.1~0.5 감소 검토 |
-| **P1** | **에폭 3번 이후 안정화 확인** | Job `38235969` Recovery가 끝나고 VelLoss가 낮아지는지 모니터 |
-| **P2** | PhyLoss 수렴 모니터 | Epoch 50까지 Pred/GT 간격이 10% 이내로 좁혀지는지 확인 |
-| **P3** | AncPos 모니터 | Epoch 30까지 0.01~0.03m 안착 모니터 |
-| **P4** | Backbone A/B ablation | 단일-팜 안정 후 실행 |
+| **P0** | **하이브리드 디커플링 코드 구현** | ✅ Stage 3 64D VAE Flow Matching, Stage 2 rot_head 지도, 8대 손실 정리 완료 |
+| **P1** | **단일 배치/유닛 테스트 검증** | `loss_fine_vel` $\sim 1.0$ 및 그래디언트 안전성 확인 |
+| **P2** | **Slurm 신규 잡 제출** | Job `38235969` 취소 후 신규 학습 잡 제출 및 초기 에폭 안정성 모니터 |
+| **P3** | **AncPos / PhyLoss 모니터** | Epoch 30까지 0.01~0.03m 안착 모니터 |

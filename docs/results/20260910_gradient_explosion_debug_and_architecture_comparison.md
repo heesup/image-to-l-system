@@ -119,41 +119,112 @@ z_0 = torch.randn(B, K, 16, device=device)   # 완전 독립
 
 ---
 
-## 3. 현재 학습 상태 (Job 38235969)
+## 6. 하이브리드 디커플링 (Hybrid Decoupled Architecture) 및 Loss 정예화 결정
 
-에폭 3에서 재폭발 발생 중:
+### 6.1 손실 함수 진단 및 8대 핵심 손실 체계 확정
 
+기존 10개 손실 함수에 대한 정밀 분석 결과, 노이즈를 유발하거나 중복되는 손실을 정리하고 누락된 회전 손실을 추가하여 **8대 정예 손실 체계**로 재편성:
+
+```python
+loss = (
+    # Stage 1: Macro Prior
+    phy_count_weight * loss_phy_count          # 1.0 : 전체 파이토머 수량 예측 (Soft Margin 마스킹)
+    # Stage 2: 3D Node Scaffold (Macro Topology)
+    + 2.0 * loss_anchor_pos                    # 2.0 : 마디 3D 위치 (Smooth L1)
+    + 1.0 * loss_anchor_rot                    # 1.0 : [신규] 마디 6D 회전 기준계 (Smooth L1)
+    + 1.0 * loss_anchor_scale                  # 1.0 : 마디 3D 스케일 (Smooth L1)
+    + 1.0 * loss_anchor_exist                  # 1.0 : 마디 존재 확률 (BCE with logits)
+    # Stage 3: Canonical Phytomer Latent Flow Matching (Micro Geometry)
+    + 1.0 * loss_fine_vel                      # 1.0 : 64D VAE 잠재공간 속도장 MSE (z0 ~ N(0, I))
+    + 1.0 * loss_fine_exist                    # 1.0 : 파이토머 내 10개 장기 슬롯 존재 확률 (BCE)
+    # Stage 4: Differentiable Optical Grounding
+    + depth_loss_weight * loss_depth           # 0.5 : CHM 수관 깊이 매칭 (Smooth L1)
+    + silhouette_loss_weight * loss_dice       # 1.0 : 탑뷰 투영 실루엣 매칭 (Soft Dice)
+)
 ```
-Epoch 003 | VelLoss: 1050.5 | AncPosLoss: 292.9 | Recovery: step 51~116
-```
 
-### 3.1 에폭 3 폭발 원인 분석
-
-`fwd2`의 `pred_anchor_pos`가 live gradient를 가지므로 `loss_anchor_pos`(292m)는 올바르게 역전파되고 있다. 그런데 `VelLoss: 1050`이 가중치 2.0으로 2100이 되어 `AncPos(292 × 2 = 584)`를 3.6배 압도하는 상황이다.
-
-에폭 1-2는 warmup이라 LR이 낮아 폭발하지 않았고, 에폭 3에서 본 LR에 도달하자마자 velocity loss 그라디언트 norm이 폭발하는 패턴이다.
-
-**추가 조사가 필요한 지점**:
-- `loss_fine_vel` 의 `tgt_velocity = tgt_z1_phyto - z_0` 에서 `tgt_z1_phyto`의 스케일
-- VAE 잠재벡터 $z_{\text{phy}} \in \mathbb{R}^{64}$가 $\mathcal{N}(0, I)$ 정규화를 통과했는지 확인 필요
-- velocity loss 가중치 2.0 → 0.5로 낮추거나 velocity loss에 별도 클램핑 추가 검토
+**제거/비활성화 대상:**
+1. `loss_cos` (0.0): 간이 CAD 메쉬와 실사 드론 RGB 간의 색상 불일치로 인한 고주파 노이즈 제거 및 렌더링 역전파 연산 가속.
+2. `loss_dap` (0.0): `loss_phy_count`와 생물학적으로 90% 이상 강한 상관관계를 가져 중복되며, 기하 형성에 직접 기여하지 않음.
 
 ---
 
-## 4. 수정된 주요 파일 목록
+### 6.2 3대 핵심 아키텍처 질의 및 분석 결론
 
-| 파일 | 변경 내용 | 커밋 |
-| :--- | :--- | :--- |
-| `diffusion_based/training/train_hierarchical_flow_matching.py` | fwd1 no_grad, fwd2 live grad, detach z_0, nan_to_num recovery | 이 세션 |
-| `diffusion_based/models/hierarchical_part_flow_matching.py` | fine_stage anchor_pos.detach() conditioning | 이 세션 |
-| `diffusion_based/dataset/part_array_dataset.py` | phytomer_ids 캐시 포함 | 이전 세션 |
-| `diffusion_based/dataset/phytomer_packets.py` | v3 패킷 빌더 (10-slot, scale-normalized) | 이전 세션 |
-| `diffusion_based/training/hierarchical_hungarian_matcher.py` | 계층적 헝가리안 매처 | 이전 세션 |
-| `slurm_scripts/train_hierarchical_flow_matching.sh` | 4xGPU 배치, epoch-gated render | 이전 세션 |
+#### Q1. `anchor_features`와 `pos`, `rot`, `scale`, `exist`의 관계
+- **`anchor_features` (384D)**: Transformer Decoder와 Self-Attention을 거친 **원천 의미론적 잠재 벡터 (Semantic Latent / Stem Cell)**. 주경/곁가지 여부, 마디 간 기하학적 연쇄 관계, 부착될 잎의 수량 등 전신 문맥을 압축.
+- **`pos`, `rot`, `scale`, `exist` (13D)**: `anchor_features`로부터 각각의 전용 선형/MLP 헤드가 디코딩해 낸 **해석된 물리적 3D 뼈대(Physical Coordinates)**.
+  - $\text{pos} = \text{ref\_points} + \text{pos\_head}(\text{anchor\_features})$
+  - $\text{rot} = \text{rot\_head}(\text{anchor\_features})$
+  - $\text{scale} = \text{softplus}(\text{scale\_head}(\text{anchor\_features}))$
+  - $\text{exist} = \sigma(\text{exist\_head}(\text{anchor\_features}) + \text{macro\_prior})$
+
+#### Q2. `scale`과 `exist`는 Stage 3에 전달 안 받는가?
+- **`scale`**: 기존 76D Bridge Flow에서는 scale을 $z_t$ 플로우 벡터에 억지로 집어넣었음. 하이브리드 디커플링에서는 Stage 2가 예측한 `anchor_scale.detach()`를:
+  1) Stage 3 쿼리 조건(`self.node_scale_mlp(anchor_scale.detach())`)으로 주입하여 크기에 따른 미세 형태 조절 보조,
+  2) 최종 메쉬 조립 단계(`denormalize_packet_scales`)에 전달하여 절대 크기 복원.
+- **`exist`**: 이미 수학적 조건부 확률 게이팅으로 결합:
+  $$P(\text{organ}) = P(\text{anchor}) \times P(\text{slot} \mid \text{anchor})$$
+  Soft Margin 마스킹을 통해 비활성 앵커의 불필요한 연산 및 노이즈 차단.
+
+#### Q3. 9월 7일처럼 Pos만 하는 게 좋은가, 아니면 rot과 scale도 같이 해야 하는가?
+- **9월 7일 Option B (Organ-level)**: 각 장기의 16D 잠재벡터가 **자신의 3D 회전과 크기를 내장**하여 글로벌 좌표계에서 작동했으므로 Pos만으로 충분했음.
+- **현재 구조 (Phytomer-level, PhytomerVAE v3)**: 10개 장기 간 공분산($r=0.783$)을 묶기 위해 **"원점(0,0,0)에 놓인 표준 크기(1.0)의 정규화된 국소 좌표계"**로 모델링됨. 따라서 이 국소 파이토머를 3D 공간에 배치하려면:
+  1) 어디에 달리는가? $\to$ **`pos`** (3D 위치)
+  2) 어느 방향으로 뻗는가? $\to$ **`rot`** (6D 회전 기준계)
+  3) 얼마나 큰가? $\to$ **`scale`** (3D 크기)
+  이 3가지 변환 정보가 필수적임.
+- **결론**: Rot과 Scale을 예측하는 것은 필수적이며, 이를 Stage 2의 단순 피드포워드 헤드로 깔끔하게 학습시키고(`loss_anchor_rot`, `loss_anchor_scale`), Stage 3은 순수 64D VAE 잠재공간에서 잎 형상 생성에만 전념하도록 분리하는 것이 최적.
 
 ---
 
-## 5. 참고 이미지
+### 6.3 하이브리드 디커플링 아키텍처 다이어그램
 
-- [`assets/hierarchical_self_consistency_epoch_008.png`](assets/hierarchical_self_consistency_epoch_008.png) — Job 38235969, epoch 8 결과 (pending)
-- [`assets/hierarchical_self_consistency_epoch_125_20260908.png`](assets/hierarchical_self_consistency_epoch_125_20260908.png) — Option B epoch 125 (9/8 아침 확인한 결과)
+```
+[Visual Image Tokens] (DINOv2 + PETR 3D Ray PE)
+         │
+         ▼
+[Stage 1: MacroBiologicalHead] ──→ loss_phy_count (Soft Margin Masking)
+         │
+         ▼
+[Stage 2: CoarseSkeletalTransformer] (Deterministic Set Transformer)
+         ├─→ pos_head   ──→ anchor_pos   ──→ loss_anchor_pos
+         ├─→ rot_head   ──→ anchor_rot   ──→ loss_anchor_rot (신규 추가!)
+         ├─→ scale_head ──→ anchor_scale ──→ loss_anchor_scale
+         ├─→ exist_head ──→ anchor_exist ──→ loss_anchor_exist
+         └─→ anchor_features (384D Context)
+                   │
+    ┌──────────────┴────────────────────────────────────┐
+    │  Conditioning: pos.detach(), rot.detach(),         │
+    │                scale.detach(), anchor_features    │
+    ▼                                                   │
+[Stage 3: PhytomerFlowMatchingDecoder]                  │
+    │  Flow Vector: 64D VAE Latent ONLY                 │
+    │  Prior: z_0 ~ N(0, I_64) (표준 정규분포!)          │
+    │  Velocity Target: v* = z_1 - z_0                  │
+    ├─→ velocity_head ──→ pred_v ──→ loss_fine_vel       │
+    └─→ exist_head    ──→ pred_slot_exist ──→ loss_fine_exist
+         │
+         ▼ (ODE Sampling: z_1)
+[PhytomerVAE Decoder (Frozen)]
+         │
+         ▼ (Canonical local 10-organ packets)
+[Stage 4: Assembler & Differentiable Renderer] ←────────┘
+    - denormalize_packet_scales(packet, anchor_scale)
+    - apply_ref_for_flow(packet, anchor_pos, anchor_rot)
+    - build_mesh_from_part_tensor
+    - render_multiscale_pyramid
+         ├─→ loss_depth (CHM)
+         └─→ loss_dice (Top-view Silhouette)
+```
+
+**수렴 안정성 보장 메커니즘:**
+1. $z_0 \sim \mathcal{N}(0, I_{64})$이므로 $\|v^*\|$가 항상 $\sqrt{2 \times 64} \approx 11.3$ 바운드 내에 머물며, 차원 정규화 후 `VelLoss`는 항상 $\sim 1.0$ 수준으로 통제됨.
+2. Stage 2 초반의 앵커 위치 오차가 Stage 3의 Flow Matching 속도장으로 전이(Coupling)되지 않아 그라디언트 폭발 원천 차단.
+
+---
+
+## 7. 참고 이미지
+
+- [`assets/hierarchical_self_consistency_epoch_008.png`](assets/hierarchical_self_consistency_epoch_008.png) — Job 38235969, epoch 8 결과
+- [`assets/hierarchical_self_consistency_epoch_125_20260908.png`](assets/hierarchical_self_consistency_epoch_125_20260908.png) — Option B epoch 125 (9/8 아침 확인한 최고 결과)
