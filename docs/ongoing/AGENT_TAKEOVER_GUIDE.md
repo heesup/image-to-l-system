@@ -76,7 +76,8 @@ Input: RGB-D 4ch image (256×256)
 | Job ID | Name | Status | Node | Notes |
 | :--- | :---: | :---: | :--- | :--- |
 | **38230613** | `ondemand/sys/dashboa` | RUNNING | `gpu-5-58` | User's interactive OnDemand desktop — **DO NOT CANCEL** |
-| **38236699** | `hierarchical_fm` | **RUNNING** | `gpu-10-50` | 4x RTX 6000 Ada, **하이브리드 디커플링 신규 학습 가동** (순수 64D VAE Flow + 8대 정예 손실) |
+| **38236714** | `hierarchical_fm` | **RUNNING** | `gpu-10-54` | 4x RTX 6000 Ada, **하이브리드 디커플링 + Stage별 순차 로깅 반영** |
+| 38236699 | `hierarchical_fm` | CANCELLED | `gpu-10-50` | 하이브리드 디커플링 정상 가동 검증 후, Stage별 로그 포맷 정렬 반영을 위해 38236714로 재시작 |
 | 38235969 | `hierarchical_fm` | CANCELLED | `gpu-10-50` | 76D Bridge coupling으로 에폭 3 재폭발 확인 후 취소 |
 | 38234682 | `hierarchical_fm` | CANCELLED | `gpu-10-50` | 이전 시도; 38235936에서 그라디언트 폭발 확인 후 취소 |
 | 38224489..38233914 | `hierarchical_fm` | FAILED | — | 이전 launch 실패들 (아래 표 참조) |
