@@ -246,7 +246,18 @@ loss = (
    - $e_1, e_2$의 크기가 항상 1.0으로 고정되므로, L1 회전 손실은 수학적으로 4.0을 절대 초과할 수 없음 (`Rot: 205` 원천 차단).
 3. **물리적 위치 $\pm 50\text{cm}$ 바운딩 & 스케일 클램핑**:
    - `delta_pos = torch.tanh(self.pos_head(anchor_features)) * 0.5`로 식물 크기 범위($\pm 0.5\text{m}$) 내로 수학적 제한 (`Pos: 65m` 원천 차단).
-   - `anchor_scale = (softplus(...) + 1e-4).clamp(max=2.0)`.
+### 7.4 Job 38236722에서 포착된 존재 손실(`Ext`) 폭발 및 최종 해결
+1. **문제 현상**:
+   - 3D 골격(`Pos: 0.23m`, `Rot: 1.31`)은 완벽히 안정화되었으나, Epoch 3 Step 96~120에서 `Ext`(`loss_anchor_exist`)가 **229 $\to$ 1699**로 폭발.
+2. **근본 원인**:
+   - `anchor_logits = delta_logits + macro_out["init_logits"]`
+   - $k > \text{active}$ 슬롯들에 대해 `init_logits`가 $+15.0$의 강한 양수로 고정되어 있어, 타겟이 0(미존재)임에도 불구하고 모델이 이를 끄기 위해 `delta_logits`를 극단적으로 음수화하려다 `exist_head` 가중치 폭발 발생.
+   - 또한 `exist_head`에 바운딩이 없어 `delta_logits` 출력이 unconstrained linear로 발산.
+3. **최종 패치**:
+   - **충돌하는 `init_logits` 덧셈 제거**: `anchor_logits = torch.tanh(self.exist_head(anchor_features)) * 8.0`으로 순수 존재 분류기를 $[-8.0, 8.0]$로 바운딩 (`Ext` 손실이 8.0을 절대 초과할 수 없음).
+   - **Stage 3 `pred_slot_exist_logits` 바운딩**: `torch.tanh(self.exist_head(x)) * 8.0`.
+   - **`anchor_norm` (LayerNorm) 추가**: `anchor_self_attn`의 잔차 연결 후 피처 노름 표류 방지.
+   - **훈련 루프 안전 클램프**: `pred_anchor_logits.clamp(min=-10.0, max=10.0)` 적용.
 
 ---
 
