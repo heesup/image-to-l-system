@@ -757,6 +757,8 @@ def forward_backward_step(
                 # hardcoded per-type constants so the cos-color loss carries gradient
                 # into the classifier (previously color was constant -> dead channel).
                 _palette = getattr(raw_model, "color_palette", None)
+                if _palette is not None:
+                    _palette = _palette.detach()
                 mesh_dict = renderer.geo_builder.build_mesh_from_part_tensor(
                     part_14d, existence=exist_b, organ_probs=probs, device=device,
                     color_palette=_palette,

@@ -924,7 +924,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         _pal[10] = torch.tensor([0.98, 0.85, 0.15])  # FLOWER_OPEN
         _pal[11] = torch.tensor([0.85, 0.65, 0.13])  # FRUIT (COLOR_POD)
         _pal[12] = torch.tensor([0.40, 0.30, 0.15])  # BUD_ABORTED
-        self.color_palette = nn.Parameter(_pal)
+        self.register_buffer("color_palette", _pal)
 
         # 2. Stage 1 & 2: Coarse Skeletal Transformer with MacroBiologicalHead
         self.coarse_stage = CoarseSkeletalTransformer(

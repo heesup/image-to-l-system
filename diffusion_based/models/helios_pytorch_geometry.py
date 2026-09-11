@@ -1898,7 +1898,7 @@ class HeliosPlantGeometryBuilder:
             # palette (13, 3). Replaces the hardcoded per-type constants so the
             # cos-color photometric loss carries gradient into the classifier.
             # Init the palette from the constants table for identical behavior.
-            pal = color_palette.to(device=device, dtype=torch.float32)
+            pal = color_palette.to(device=device, dtype=torch.float32).detach()
             colors_out = all_probs_cat @ pal
         else:
             colors_out = torch.cat(all_colors, dim=0)
