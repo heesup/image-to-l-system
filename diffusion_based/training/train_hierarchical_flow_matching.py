@@ -1569,6 +1569,7 @@ def main():
             device_ids=[local_rank],
             output_device=local_rank,
             find_unused_parameters=True,
+            broadcast_buffers=False,
         )
 
     # Training Loop

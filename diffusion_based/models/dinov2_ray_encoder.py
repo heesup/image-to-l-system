@@ -158,7 +158,7 @@ class DINORayEncoder(nn.Module):
                 f"Backbone '{self.backbone_name}' produced {patch_tokens.shape[1]} patch tokens "
                 f"at input {self.input_size}, expected {self.num_patches}.")
 
-        patch_tokens = patch_tokens + self.ray_mlp(self.canonical_rays.to(patch_tokens.dtype))
+        patch_tokens = patch_tokens + self.ray_mlp(self.canonical_rays.clone().to(patch_tokens.dtype))
         return torch.cat([cls_token, patch_tokens], dim=1)
 
 
