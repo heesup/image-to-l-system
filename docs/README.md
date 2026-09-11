@@ -37,6 +37,10 @@
 
 ## 🌟 Key Active & Authoritative Documents
 
+### → [`ongoing/20260911_takeover_grad_norm_fix_roundtrip_diagnosis_10slot_restore.md`](ongoing/20260911_takeover_grad_norm_fix_roundtrip_diagnosis_10slot_restore.md)
+**Session Takeover: Grad-Norm Inf Deadlock Fix, Helios Roundtrip Diagnosis & 10-Slot Contract Restore (2026-09-11) — READ THIS FIRST**  
+Root-cause analysis and fixes for Job `38237555` grad_norm=inf deadlock (eval-mode leak + renderer 1/w² Jacobian overflow → w-floor Lipschitz bound, latent OOD clamp, atomic grad clamp, eval model.train() restore). Per-organ Helios roundtrip IoU diagnosis (COCO category mapping bug fixed; FK pitch accumulation identified as follow-up). **Restored the canonical v2/v3 10-slot phytomer contract** (internode slot 0 + repro ×4, matches 240D `phytomer_vae_v3` checkpoint). Lists exact SLURM resubmission sequence for the next agent.
+
 ### → [`ongoing/20260908_cascaded_architecture_design_space_analysis.md`](ongoing/20260908_cascaded_architecture_design_space_analysis.md)
 **Cascaded Architecture Design Space: Deterministic vs. Diffusion Analysis (2026-09-08) — READ THIS FIRST**  
 Exhaustive evaluation of the $2 \times 2 = 4$ design space (Stage 2 3D node scaffold vs Stage 3 intra-phytomer organs across Deterministic ViT vs Diffusion/Flow Matching). Mathematical and botanical rationale proving why **Combination 2 ([Deterministic Scaffold] + [16D Latent Flow Matching])** achieves the optimal trade-off between metric accuracy, organic leaf curvature, fast inference (30 ms), and DepthAnything v2 compatibility.
