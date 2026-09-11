@@ -14,7 +14,7 @@ This directory tracks **only actively running work** for the **Image-to-L-System
 
 | Component | Status | Details |
 | :--- | :---: | :--- |
-| **Main Training Job** | 🟡 SMOKE-VERIFIED | Local smoke test passed on GPU 0 (probe + 8 steps + eval cleanly executed, no AsStrided error); cluster resubmission ready |
+| **Main Training Job** | 🟢 RUNNING | Job `38234682` on `gpu-10-50` (4x RTX 6000 Ada, batch 152/GPU, global 608, 85.3% VRAM, 76D flow v3 stack) |
 | **PhytomerVAE v3 (normalized)** | 🟢 DEFAULT | `phytomer_vae_v3` — val recon **0.070**, cls **100%** (10-slot, 240D in, scale-normalized targets; higher recon is expected, NOT a regression) |
 | **Dataset (images+nodes)** | 🟢 COMPLETE | **100,000 / 100,000** XMLs + cache `.pt` (all with `phytomer_ids`) |
 | **Phytomer packet cache** | 🟢 COMPLETE | **100,000 / 100,000** v3 (10-slot, absolute packets + normalized latent, `pkt_version: 3`; version gate auto-skips stale files) |
@@ -43,7 +43,7 @@ This directory tracks **only actively running work** for the **Image-to-L-System
 
 | Priority | Task | Notes |
 | :--- | :--- | :--- |
-| **P1** | **Resubmit cluster training job** | `sbatch slurm_scripts/train_hierarchical_flow_matching.sh` — verified locally via smoke test, monitor first 3 min past `probe_optimal_batch_size` |
+| **P1** | **Monitor Job 38234682** | Running on `gpu-10-50` (batch 152/GPU, global 608); check first epoch metrics & WandB |
 | **P2** | Epoch-1 sanity on cluster | Loss ↓, Pred count ~50 (bias-init), Reference column not N/A, DAP-spread panels |
 | **P3** | Monitor s_a / 6D rotation convergence to epoch 25/50 | s_a (petiole length) should track DAP growth |
 | **P4** | Evaluate Bidirectional Chamfer Distance | Add max/mean distance from GT→Pred to avoid one-way clustering metric bias |

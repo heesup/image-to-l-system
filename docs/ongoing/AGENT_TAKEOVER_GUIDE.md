@@ -67,29 +67,24 @@ OrganLatentVAE (frozen) → 16D latent → 14D Part Tensor → Helios XML
 
 ---
 
-## 2. Active SLURM Jobs (as of 2026-09-10 ~17:00 PDT)
+## 2. Active SLURM Jobs (as of 2026-09-10 ~17:40 PDT)
 
 | Job ID | Name | Status | Node | Notes |
 | :--- | :---: | :---: | :--- | :--- |
 | **38230613** | `ondemand/sys/dashboa` | RUNNING | `gpu-5-58` | User's interactive OnDemand desktop — **DO NOT CANCEL** |
-| 38224489 / 38225532 / 38225636 / 38226665 | `hierarchical_fm` | **FAILED** | — | 2026-09-10 training launch attempts (see §4.10); all root causes fixed in code, needs one verified resubmission |
+| **38234682** | `hierarchical_fm` | **RUNNING** | `gpu-10-50` | Full 100k cluster training: 4x RTX 6000 Ada, batch 152/GPU (global 608), 85.3% VRAM (42GB/49GB), v3 76D flow |
+| 38224489..38233914 | `hierarchical_fm` | FAILED | — | Previous launch attempts; all root causes identified and fixed (see forensics below) |
 
-### Failed-launch forensics (2026-09-10 15:36 → 16:17)
-| Job | Failure | Fix commit |
-| :--- | :--- | :--- |
-| 38224489 | `UnboundLocalError: _sync` (probe path referenced helper before def) | `db4e493` |
-| 38225532 | `UnboundLocalError: prof` (same class, prof/_t_fbs) | `3bdae4a` |
-| 38225636 | DDP `Expected to mark a variable ready only once` | superseded diagnosis |
-| 38226665 | `AsStridedBackward0` inplace version conflict `[351,10,3]` (packet-scale as_strided view) | `69ce959` |
+### Failed-launch forensics (2026-09-10)
+| Job | Failure | Root cause | Fix commit |
+| :--- | :--- | :--- | :--- |
+| 38224489 | `UnboundLocalError: _sync` | Probe path referenced helper before def | `db4e493` |
+| 38225532 | `UnboundLocalError: prof` | Same class, `prof`/`_t_fbs` before def | `3bdae4a` |
+| 38226665 | `AsStridedBackward0` version conflict `[351,10,3]` | Packet-scale view modified inplace across fwd/bwd | `69ce959` |
+| 38233491 | DDP `.color_palette` marked ready twice | `color_palette` was `nn.Parameter` outside `forward()` | `9dd45be` (`register_buffer` + `.detach()`) |
+| 38233914 | `[256, 3]` version conflict in `canonical_rays` | DDP `broadcast_buffers=True` modified ray buffer inplace | `5255efa` (`clone()` + `broadcast_buffers=False`) |
 
-The real blocker was the **last one**: a `[P,10,3]` packet-scale as_strided view was
-modified inplace between forward and backward. Fixed by rewriting
-`normalize_packet_scales`/`denormalize_packet_scales` to construct fresh tensors
-(no-inplace in `69ce959`).
-**Verified locally on GPU 0**: local smoke test ran `probe_optimal_batch_size` and all
-8 steps of Epoch 1 with 0 errors, self-consistency rendered, and 36/36 tests passed.
-`--detect_anomaly` flag and default phytomer flow wired and committed (`2d78d71`).
-Cluster resubmission ready.
+All root causes resolved and verified: Job **38234682** is actively running past probe on all 4 GPUs on `gpu-10-50`.
 
 ---
 
