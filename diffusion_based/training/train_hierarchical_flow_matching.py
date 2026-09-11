@@ -1138,15 +1138,11 @@ def train_one_epoch(
         if rank == 0 and ((batch_idx + 1) % print_freq == 0 or (batch_idx + 1) == len(dataloader)):
             p = step_metrics.get("prof", {})
             print(
-                f"  [Epoch {epoch:02d}] Step {batch_idx+1:03d}/{len(dataloader):03d} | "
-                f"Loss: {step_metrics['loss']:.4f} (Vel: {step_metrics['fine_vel_loss']:.4f}, "
-                f"AncPos: {step_metrics['anchor_pos_loss']:.4f}, "
-                f"Rot: {step_metrics.get('anchor_rot_loss', 0.0):.4f}, "
-                f"Scl: {step_metrics.get('anchor_scale_loss', 0.0):.4f}, "
-                f"PhyLoss: {step_metrics.get('phy_count_loss', 0.0):.4f} [Pred:{step_metrics.get('pred_phy_mean', 0.0):.1f}/GT:{step_metrics.get('gt_phy_mean', 0.0):.1f}], "
-                f"Exist: {step_metrics['fine_exist_loss']:.4f}, Depth: {step_metrics['dense_depth_loss']:.4f}, "
-                f"Dice: {step_metrics['silhouette_dice_loss']:.4f}, "
-                f"Acc: {step_metrics['cls_acc']*100:.1f}%) | "
+                f"  [Epoch {epoch:02d}] Step {batch_idx+1:03d}/{len(dataloader):03d} | Loss: {step_metrics['loss']:.4f} | "
+                f"[S1 Macro] Phy: {step_metrics.get('phy_count_loss', 0.0):.4f} [P:{step_metrics.get('pred_phy_mean', 0.0):.1f}/G:{step_metrics.get('gt_phy_mean', 0.0):.1f}] | "
+                f"[S2 Scaffold] Pos: {step_metrics['anchor_pos_loss']:.4f}, Rot: {step_metrics.get('anchor_rot_loss', 0.0):.4f}, Scl: {step_metrics.get('anchor_scale_loss', 0.0):.4f}, Ext: {step_metrics.get('anchor_exist_loss', 0.0):.4f} | "
+                f"[S3 Micro] Vel: {step_metrics['fine_vel_loss']:.4f}, Ext: {step_metrics['fine_exist_loss']:.4f}, Acc: {step_metrics['cls_acc']*100:.1f}% | "
+                f"[S4 Render] Depth: {step_metrics['dense_depth_loss']:.4f}, Dice: {step_metrics['silhouette_dice_loss']:.4f} | "
                 f"fwd/bwd {t_step1-t_step0:.2f}s opt {t_step2-t_step1:.2f}s | "
                 f"pkt {p.get('packet_build',0):.2f} fwd1 {p.get('fwd1',0):.2f} fwd2 {p.get('fwd2',0):.2f} "
                 f"match {p.get('matcher',0):.2f} render {p.get('render',0):.2f} "
@@ -1596,37 +1592,41 @@ def main():
 
             print(
                 f"Epoch {epoch:03d} | Loss: {epoch_metrics['loss']:.4f} | "
-                f"VelLoss: {epoch_metrics['fine_vel_loss']:.4f} | "
-                f"AncPosLoss: {epoch_metrics['anchor_pos_loss']:.4f} | "
-                f"RotLoss: {epoch_metrics.get('anchor_rot_loss', 0.0):.4f} | "
-                f"SclLoss: {epoch_metrics.get('anchor_scale_loss', 0.0):.4f} | "
-                f"PhyLoss: {epoch_metrics['phy_count_loss']:.4f} (Pred:{epoch_metrics['pred_phy_mean']:.1f}/GT:{epoch_metrics['gt_phy_mean']:.1f}) | "
-                f"ExistLoss: {epoch_metrics['fine_exist_loss']:.4f} | "
-                f"DepthLoss: {epoch_metrics['dense_depth_loss']:.4f} | "
-                f"DiceLoss: {epoch_metrics['silhouette_dice_loss']:.4f} | "
-                f"ClsAcc: {epoch_metrics['cls_acc']*100:.1f}% | "
+                f"[S1 Macro] Phy: {epoch_metrics['phy_count_loss']:.4f} (P:{epoch_metrics['pred_phy_mean']:.1f}/G:{epoch_metrics['gt_phy_mean']:.1f}) | "
+                f"[S2 Scaffold] Pos: {epoch_metrics['anchor_pos_loss']:.4f}, Rot: {epoch_metrics.get('anchor_rot_loss', 0.0):.4f}, Scl: {epoch_metrics.get('anchor_scale_loss', 0.0):.4f}, Ext: {epoch_metrics['anchor_exist_loss']:.4f} | "
+                f"[S3 Micro] Vel: {epoch_metrics['fine_vel_loss']:.4f}, Ext: {epoch_metrics['fine_exist_loss']:.4f}, Acc: {epoch_metrics['cls_acc']*100:.1f}% | "
+                f"[S4 Render] Depth: {epoch_metrics['dense_depth_loss']:.4f}, Dice: {epoch_metrics['silhouette_dice_loss']:.4f} | "
                 f"CapPredP: {epoch_metrics['capacity_p_pred']:.2f} | "
                 f"VRAM: {max_vram_gb:.1f}/{total_vram_gb:.1f} GB ({vram_pct:.1f}%)"
             )
             wandb.log({
                 "epoch": epoch,
                 "train/loss": epoch_metrics["loss"],
-                "train/fine_vel_loss": epoch_metrics["fine_vel_loss"],
-                "train/anchor_pos_loss": epoch_metrics["anchor_pos_loss"],
-                "train/anchor_rot_loss": epoch_metrics.get("anchor_rot_loss", 0.0),
-                "train/anchor_scale_loss": epoch_metrics.get("anchor_scale_loss", 0.0),
-                "train/anchor_exist_loss": epoch_metrics["anchor_exist_loss"],
-                "train/phy_count_loss": epoch_metrics["phy_count_loss"],
-                "train/pred_phy_mean": epoch_metrics["pred_phy_mean"],
-                "train/gt_phy_mean": epoch_metrics["gt_phy_mean"],
-                "train/fine_exist_loss": epoch_metrics["fine_exist_loss"],
-                "train/dense_depth_loss": epoch_metrics["dense_depth_loss"],
-                "train/silhouette_dice_loss": epoch_metrics["silhouette_dice_loss"],
-                "train/cls_acc": epoch_metrics["cls_acc"],
+                # Stage 1: Macro Prior
+                "train/s1_phy_count_loss": epoch_metrics["phy_count_loss"],
+                "train/s1_pred_phy_mean": epoch_metrics["pred_phy_mean"],
+                "train/s1_gt_phy_mean": epoch_metrics["gt_phy_mean"],
+                # Stage 2: Coarse 3D Scaffold
+                "train/s2_anchor_pos_loss": epoch_metrics["anchor_pos_loss"],
+                "train/s2_anchor_rot_loss": epoch_metrics.get("anchor_rot_loss", 0.0),
+                "train/s2_anchor_scale_loss": epoch_metrics.get("anchor_scale_loss", 0.0),
+                "train/s2_anchor_exist_loss": epoch_metrics["anchor_exist_loss"],
+                # Stage 3: Fine Flow Matching
+                "train/s3_fine_vel_loss": epoch_metrics["fine_vel_loss"],
+                "train/s3_fine_exist_loss": epoch_metrics["fine_exist_loss"],
+                "train/s3_cls_acc": epoch_metrics["cls_acc"],
+                # Stage 4: Differentiable Photometric
+                "train/s4_dense_depth_loss": epoch_metrics["dense_depth_loss"],
+                "train/s4_silhouette_dice_loss": epoch_metrics["silhouette_dice_loss"],
+                # System & Capacity
                 "train/capacity_p_pred": epoch_metrics["capacity_p_pred"],
                 "train/vram_allocated_gb": max_vram_gb,
                 "train/vram_utilization_pct": vram_pct,
                 "lr": optimizer.param_groups[0]["lr"],
+                # Legacy keys kept for dashboard continuity
+                "train/phy_count_loss": epoch_metrics["phy_count_loss"],
+                "train/anchor_pos_loss": epoch_metrics["anchor_pos_loss"],
+                "train/fine_vel_loss": epoch_metrics["fine_vel_loss"],
             })
 
             if epoch % args.save_every == 0 or epoch == args.epochs:
