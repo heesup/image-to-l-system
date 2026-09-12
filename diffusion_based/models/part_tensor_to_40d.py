@@ -696,11 +696,26 @@ def assemble_part_tensor_to_xml(
     part_tensor: torch.Tensor,
     plant_id: int = 0,
     xml_filepath: Optional[str] = None,
+    stem_ik: Optional[bool] = None,
+    stem_ik_stats: Optional[dict] = None,
     **kwargs,
 ) -> str:
-    """Direct functional helper to serialize a 14D part tensor into Helios XML via analytical IK."""
+    """Direct functional helper to serialize a 14D part tensor into Helios XML via analytical IK.
+
+    stem_ik: after the analytical conversion, run `part_tensor_stem_ik` so that
+        Helios's forward kinematics lands every internode tip on the 14D tip
+        and every petiole on its 14D direction (see that module for why the
+        analytical pass alone is not enough). None reads PART_TENSOR_STEM_IK
+        from the environment (default off until validated: "0"); pass True or set it to "1" to get the solved
+        analytical export.
+    """
     conv = PartTensorTo40DConverter()
     arr_40d = conv.convert(part_tensor, plant_id=plant_id)
+    if stem_ik is None:
+        stem_ik = os.environ.get("PART_TENSOR_STEM_IK", "0") == "1"
+    if stem_ik:
+        from diffusion_based.models.part_tensor_stem_ik import refine_stem_to_part_tensor
+        arr_40d = refine_stem_to_part_tensor(arr_40d, part_tensor, stats=stem_ik_stats)
     xml_str = PlantOrganArray(arr_40d).to_xml_string()
     if xml_filepath is not None:
         os.makedirs(os.path.dirname(os.path.abspath(xml_filepath)), exist_ok=True)

@@ -709,9 +709,16 @@ class HeliosPlantGeometryBuilder:
         device: torch.device = torch.device('cpu'),
         existence_threshold: float = 0.5,
         gravitropic_curvature: Optional[float] = None,
-    ) -> torch.Tensor:
+        return_node_poses: bool = False,
+    ):
         """
         Runs forward kinematics directly on the typed (N, 40) per-organ layout.
+
+        return_node_poses: also return a dict of per-40D-row FK results --
+            "base"/"tip"/"axis" (N, 3) for internode rows, "petiole_axes"
+            (N, 2, 3) and "has_petiole" (N, 2) keyed by the internode row --
+            which the stem inverse kinematics (part_tensor_stem_ik) iterates
+            against.
         Collects the world-space pose of every organ:
             [organ_type(1), base_xyz(3), rot6d(6), scale_xyz(3), curvature(1)]
         = 14 columns (Canonical 14D Part Tensor).
@@ -831,6 +838,7 @@ class HeliosPlantGeometryBuilder:
 
         node_output_info: Dict = {}
         node_tip_positions = torch.zeros((N, 3), dtype=torch.float32, device=device)
+        node_base_positions = torch.zeros((N, 3), dtype=torch.float32, device=device)
         node_internode_axes = torch.zeros((N, 3), dtype=torch.float32, device=device)
         node_petiole_axes = torch.zeros((N, 2, 3), dtype=torch.float32, device=device)
         node_has_petiole = torch.zeros((N, 2), dtype=torch.float32, device=device)
@@ -985,6 +993,8 @@ class HeliosPlantGeometryBuilder:
                     yaw_p0, yaw_p1 = t[inode_i, T_COL_YAW_PERT_0], t[inode_i, T_COL_YAW_PERT_1]
 
                 inode_base = curr_pos.clone()
+                if inode_i is not None:
+                    node_base_positions[inode_i] = inode_base
                 step_p = curr_pos.clone()
                 step_dir = i_axis.clone()
                 for s in range(seg_cnt):
@@ -1343,8 +1353,15 @@ class HeliosPlantGeometryBuilder:
                     prev_petiole_axis = rotate_vector_about_axis(ghost, inode_tip_axis, cum_rot)
 
         if not rows:
-            return torch.zeros((0, NUM_FEATURES_PART), dtype=torch.float32, device=device)
-        return torch.stack(rows, dim=0)
+            out = torch.zeros((0, NUM_FEATURES_PART), dtype=torch.float32, device=device)
+        else:
+            out = torch.stack(rows, dim=0)
+        if return_node_poses:
+            return out, {
+                "base": node_base_positions, "tip": node_tip_positions, "axis": node_internode_axes,
+                "petiole_axes": node_petiole_axes, "has_petiole": node_has_petiole,
+            }
+        return out
 
     def build_mesh_from_part_tensor(
         self,
