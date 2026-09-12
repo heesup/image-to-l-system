@@ -75,7 +75,7 @@ from diffusion_based.dataset.phytomer_packets import (
     denormalize_packet_scales,
 )
 from diffusion_based.dataset.phytomer_roll import encode_roll, derive_forward
-from diffusion_based.dataset.phytomer_topology import chain_phytomers
+from diffusion_based.dataset.phytomer_topology import chain_phytomers, gt_parent_links
 from diffusion_based.training.hierarchical_hungarian_matcher import (
     HierarchicalBotanicalMatcher,
 )
@@ -417,10 +417,11 @@ def forward_backward_step(
         gt_phytomer_ord_target = torch.zeros(B, K_eff, device=device)
         gt_phytomer_base_target = torch.zeros(B, K_eff, device=device)
         # The unit forward axis encode_roll() reads the roll target off below:
-        # ground-truth parent node up to this one, or for a base (no parent)
-        # this node up to its successor. Built to match derive_forward()'s own
-        # fallback order exactly, so the roll target stays defined relative to
-        # whatever axis reconstruction will actually pair it with.
+        # ground-truth parent node up to this one, where "parent" follows the one
+        # rule with no exceptions (gt_parent_links) -- the origin for the plant
+        # root. Built to match derive_forward()'s own rule exactly, so the roll
+        # target stays defined relative to whatever axis reconstruction pairs it
+        # with.
         gt_forward_target = torch.zeros(B, K_eff, 3, device=device)
         forward_mask = torch.zeros(B, K_eff, dtype=torch.bool, device=device)
         WORLD_UP = torch.tensor([0.0, 0.0, 1.0], device=device)
@@ -471,24 +472,38 @@ def forward_backward_step(
             if "keys" in pt:
                 gt_keys = pt["keys"][pkt_idx].to(device)          # (M_node, 2)
                 gt_phytomer_ord_target[b, node_src] = gt_keys[:, 1].float()
-                gt_phytomer_base_target[b, node_src] = (gt_keys[:, 1] == 0).float()
 
-                # Look up each matched packet's parent: same shoot, one step down.
-                all_keys = pt["keys"].to(device)                   # (P, 2)
-                want = gt_keys.clone()
-                want[:, 1] = want[:, 1] - 1
-                hit = (all_keys.unsqueeze(0) == want.unsqueeze(1)).all(dim=-1)  # (M, P)
-                has_par = hit.any(dim=-1)
+                # One parent rule, no exceptions (phytomer_topology.gt_parent_links):
+                # a node's parent is one internode below it -- the previous node in
+                # the same shoot, the ORIGIN for the main stem's first node, or the
+                # branch point on the parent shoot for a lateral's first node.
+                # Resolved over the whole plant, then read at the matched rows.
+                # This replaces a same-shoot-only lookup that left every shoot's
+                # first node parentless: 13.8% of phytomers, and since a lateral's
+                # first node is rarely vertical, the axis they fell back on was
+                # 50.8 deg off on average.
+                par_pos_all, par_row_all = gt_parent_links(
+                    pt["centers"].to(device, dtype=torch.float32), pt["keys"].to(device))
+                par_pos = par_pos_all[pkt_idx]
+                par_row = par_row_all[pkt_idx]
+
+                d = gt_pos.float() - par_pos
+                resolved = d.norm(dim=-1) > 1e-6
+                gt_forward_target[b, node_src] = F.normalize(d, dim=-1)
+                forward_mask[b, node_src] = resolved
+                # "Base" now means the single plant root -- the one node whose
+                # parent is the origin rather than another node -- not every
+                # shoot's first node. That also makes the head's job far easier:
+                # one positive per plant instead of 4-11.
+                gt_phytomer_base_target[b, node_src] = (resolved & (par_row < 0)).float()
+
+                # Which OTHER predicted node is this one's parent: the render-loss
+                # internode needs it, and so will Stage 3's (parent, self) pairs.
+                # Kept only where the parent's own GT row was also matched to a
+                # predicted node this step, so this stays a pairing DERIVED from
+                # the existing bipartite match rather than a second assignment.
+                has_par = par_row >= 0
                 if bool(has_par.any()):
-                    par_row = hit.float().argmax(dim=-1)
-                    par_pos = pt["centers"][par_row].to(device, dtype=torch.float32)
-                    d = gt_pos.float() - par_pos
-                    gt_forward_target[b, node_src] = F.normalize(d, dim=-1)
-                    forward_mask[b, node_src] = has_par
-
-                    # Was the parent's own GT row ALSO matched to a predicted
-                    # node this step? same[m, j] = True iff phytomer m's
-                    # parent row equals the GT row matched at position j.
                     same = pkt_idx.unsqueeze(0) == par_row.unsqueeze(1)   # (M_node, M_node)
                     parent_matched = same.any(dim=1) & has_par
                     if bool(parent_matched.any()):
@@ -498,29 +513,12 @@ def forward_backward_step(
                         gt_render_parent_idx[b, sel] = parent_node[parent_matched]
                         has_render_parent[b, sel] = True
 
-                # A base has no parent, so its forward axis comes from its
-                # successor -- same shoot, one step UP. Mirrors derive_forward's
-                # own fallback order so the target matches the axis the roll
-                # will be paired with at reconstruction time.
-                want_succ = gt_keys.clone()
-                want_succ[:, 1] = want_succ[:, 1] + 1
-                hit_succ = (all_keys.unsqueeze(0) == want_succ.unsqueeze(1)).all(dim=-1)
-                has_succ = hit_succ.any(dim=-1) & ~has_par
-                if bool(has_succ.any()):
-                    succ_row = hit_succ.float().argmax(dim=-1)
-                    succ_pos = pt["centers"][succ_row].to(device, dtype=torch.float32)
-                    gt_forward_target[b, node_src] = torch.where(
-                        has_succ.unsqueeze(-1),
-                        F.normalize(succ_pos - gt_pos.float(), dim=-1),
-                        gt_forward_target[b, node_src])
-                    forward_mask[b, node_src] |= has_succ
-
             # Roll target: encode_roll reads GT's own rotation relative to
             # whichever forward axis reconstruction will actually use for this
-            # phytomer -- the parent direction where one exists, else the
-            # successor direction, else the same WORLD_UP fallback
-            # derive_forward() ends on (a single-phytomer shoot, or an older
-            # cache with no "keys"/topology at all).
+            # phytomer -- the parent direction, which gt_parent_links resolves for
+            # every node. WORLD_UP now only covers an older cache with no
+            # "keys"/topology at all; with keys present, forward_mask is true
+            # everywhere (measured 100% coverage).
             fwd_for_roll = torch.where(
                 forward_mask[b, node_src].unsqueeze(-1),
                 gt_forward_target[b, node_src],

@@ -165,9 +165,10 @@ def reconstruct_phytomer_rot(
     B, K, _ = pos.shape
     out = torch.zeros(B, K, 6, device=pos.device, dtype=pos.dtype)
     for b in range(B):
-        parent_idx, shoot_id, phytomer_idx = chain_phytomers(
+        parent_idx, _, _ = chain_phytomers(
             pos[b], ordinal=ordinal[b], is_base=(is_base_logits[b] > 0).float())
-        fwd = derive_forward(pos[b], parent_idx, shoot_id, phytomer_idx)
+        # A parentless row is the plant root, whose parent is the origin.
+        fwd = derive_forward(pos[b], parent_idx)
         R = roll_to_matrix(fwd, roll[b])
         out[b] = matrix_to_rot6d(R)
     return out
