@@ -70,7 +70,7 @@ def gt_parent_links(
     centers: torch.Tensor,
     keys: torch.Tensor,
     max_internode_factor: float = MAX_INTERNODE_FACTOR,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Ground-truth parent of every phytomer, under one rule with no exceptions.
 
     **A node's parent is one internode below it.** A node is the TOP of its
@@ -108,13 +108,23 @@ def gt_parent_links(
         parent_idx: (P,) int64 index of the parent row; **-1 where the parent is
             the origin or could not be resolved** -- use `parent_pos` for
             geometry and this only when the parent must be another predicted row.
+        depth: (P,) int64 number of internodes from the plant root along the
+            parent chain (root = 0). **This, not the per-shoot ordinal in
+            `keys`, is what the ordinal head should predict.** chain_phytomers
+            scores a candidate parent by |(o_child - o_parent) - 1|; with
+            per-shoot ordinals a lateral's first node (ordinal 0) has a true
+            parent at, say, ordinal 5 on the main stem, and that term charges
+            it 6 x ORD_WEIGHT = 0.12 m -- more than any internode -- so the
+            true branch parent is actively rejected. With depth every parent
+            is exactly depth - 1, laterals included, and the same rule serves
+            the chain cost, the step loss and is_base (depth == 0).
     """
     device = centers.device
     P = centers.shape[0]
     parent_idx = torch.full((P,), -1, dtype=torch.long, device=device)
     parent_pos = centers.clone()
     if P == 0:
-        return parent_pos, parent_idx
+        return parent_pos, parent_idx, torch.zeros(0, dtype=torch.long, device=device)
 
     shoot, ordi = keys[:, 0], keys[:, 1]
 
@@ -135,7 +145,7 @@ def gt_parent_links(
     is_first = ordi == 0
     first_rows = torch.nonzero(is_first, as_tuple=True)[0]
     if first_rows.numel() == 0:
-        return parent_pos, parent_idx
+        return parent_pos, parent_idx, _depth_from_root(parent_idx)
 
     # The main stem is the shoot whose first node sits lowest. Derived from
     # geometry rather than assuming shoot_id 0, so a relabelled cache still works.
@@ -163,7 +173,22 @@ def gt_parent_links(
                              torch.zeros_like(parent_pos), parent_pos)
     parent_idx = torch.where(is_root, torch.full_like(parent_idx, -1), parent_idx)
 
-    return parent_pos, parent_idx
+    return parent_pos, parent_idx, _depth_from_root(parent_idx)
+
+
+def _depth_from_root(parent_idx: torch.Tensor) -> torch.Tensor:
+    """Edges from each node up to its root, by pointer jumping: O(log P)
+    rounds of pure gathers, no host syncs (a per-level loop would cost one
+    sync per level, ~50-100 on a mature plant, x48 samples per step)."""
+    P = parent_idx.shape[0]
+    ar = torch.arange(P, device=parent_idx.device)
+    has_par = parent_idx >= 0
+    jump = torch.where(has_par, parent_idx, ar)
+    depth = has_par.long()
+    for _ in range(max(1, P.bit_length())):
+        depth = depth + depth[jump]
+        jump = jump[jump]
+    return depth
 
 
 def chain_phytomers(

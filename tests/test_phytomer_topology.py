@@ -27,7 +27,7 @@ class TestGtParentLinks(unittest.TestCase):
 
     def test_same_shoot_parent_is_the_previous_node(self):
         centers, keys = self._straight_stem()
-        pos, idx = gt_parent_links(centers, keys)
+        pos, idx, _ = gt_parent_links(centers, keys)
         self.assertEqual(idx[1].item(), 0)
         self.assertEqual(idx[2].item(), 1)
         self.assertTrue(torch.allclose(pos[1], centers[0]))
@@ -37,7 +37,7 @@ class TestGtParentLinks(unittest.TestCase):
         """Not a fallback guess: the first node really is one internode above
         the origin, so the origin is its true geometric parent."""
         centers, keys = self._straight_stem()
-        pos, idx = gt_parent_links(centers, keys)
+        pos, idx, _ = gt_parent_links(centers, keys)
         self.assertTrue(torch.allclose(pos[0], torch.zeros(3), atol=1e-9))
         # -1 because the origin is not one of the rows.
         self.assertEqual(idx[0].item(), -1)
@@ -53,7 +53,7 @@ class TestGtParentLinks(unittest.TestCase):
                                 [0.0, 0.0, 0.09],
                                 [0.03, 0.0, 0.07]])   # lateral off node 1
         keys = torch.tensor([[0, 0], [0, 1], [0, 2], [1, 0]])
-        pos, idx = gt_parent_links(centers, keys)
+        pos, idx, _ = gt_parent_links(centers, keys)
         self.assertEqual(idx[3].item(), 1)
         self.assertTrue(torch.allclose(pos[3], centers[1]))
 
@@ -63,7 +63,7 @@ class TestGtParentLinks(unittest.TestCase):
                                 [0.03, 0.0, 0.07],
                                 [0.05, 0.0, 0.10]])
         keys = torch.tensor([[0, 0], [0, 1], [1, 0], [1, 1]])
-        pos, idx = gt_parent_links(centers, keys)
+        pos, idx, _ = gt_parent_links(centers, keys)
         # Row 0 parents to the origin (idx -1 but a real position); the rest to rows.
         self.assertTrue(torch.allclose(pos[0], torch.zeros(3), atol=1e-9))
         self.assertTrue((idx[1:] >= 0).all())
@@ -79,7 +79,7 @@ class TestGtParentLinks(unittest.TestCase):
                                 [0.0, 0.0, 0.09],
                                 [9.0, 0.0, 0.07]])    # absurdly far lateral
         keys = torch.tensor([[0, 0], [0, 1], [0, 2], [1, 0]])
-        pos, idx = gt_parent_links(centers, keys)
+        pos, idx, _ = gt_parent_links(centers, keys)
         self.assertEqual(idx[3].item(), -1)
         # Unresolved rows return their own position, so child - parent is zero
         # rather than a garbage direction.
@@ -92,12 +92,39 @@ class TestGtParentLinks(unittest.TestCase):
                                 [0.0, 0.0, 0.03],     # shoot 1, lowest: the main stem
                                 [0.0, 0.0, 0.06]])
         keys = torch.tensor([[0, 0], [1, 0], [1, 1]])
-        pos, idx = gt_parent_links(centers, keys)
+        pos, idx, _ = gt_parent_links(centers, keys)
         self.assertTrue(torch.allclose(pos[1], torch.zeros(3), atol=1e-9))
         self.assertFalse(torch.allclose(pos[0], torch.zeros(3), atol=1e-9))
 
+    def test_depth_from_root_makes_every_parent_exactly_one_step_below(self):
+        """Depth is the ordinal the head learns: with it a lateral's first node
+        is depth(branch node) + 1, so chain_phytomers' |(o_child - o_parent) - 1|
+        cost is zero for the TRUE branch parent. With per-shoot ordinals that
+        cost was 6 x ORD_WEIGHT = 0.12 m and rejected it."""
+        centers = torch.tensor([[0.0, 0.0, 0.03],     # main 0  depth 0 (root)
+                                [0.0, 0.0, 0.06],     # main 1  depth 1
+                                [0.0, 0.0, 0.09],     # main 2  depth 2
+                                [0.03, 0.0, 0.07],    # lateral off main 1 -> depth 2
+                                [0.06, 0.0, 0.08]])   # lateral's second node -> depth 3
+        keys = torch.tensor([[0, 0], [0, 1], [0, 2], [1, 0], [1, 1]])
+        pos, idx, depth = gt_parent_links(centers, keys)
+        self.assertEqual(depth.tolist(), [0, 1, 2, 2, 3])
+        # Every node with a parent row sits exactly one step above it.
+        has = idx >= 0
+        self.assertTrue((depth[has] - depth[idx[has]] == 1).all())
+        # The root is the only depth-0 node, and its parent is the origin.
+        self.assertEqual(int((depth == 0).sum()), 1)
+        self.assertTrue(torch.allclose(pos[0], torch.zeros(3), atol=1e-9))
+
+    def test_depth_handles_a_long_chain_without_a_per_level_loop(self):
+        n = 200
+        centers = torch.stack([torch.zeros(n), torch.zeros(n), 0.03 * torch.arange(1, n + 1)], -1)
+        keys = torch.stack([torch.zeros(n, dtype=torch.long), torch.arange(n)], -1)
+        _, _, depth = gt_parent_links(centers, keys)
+        self.assertEqual(depth.tolist(), list(range(n)))
+
     def test_empty_input(self):
-        pos, idx = gt_parent_links(torch.zeros(0, 3), torch.zeros(0, 2, dtype=torch.long))
+        pos, idx, _ = gt_parent_links(torch.zeros(0, 3), torch.zeros(0, 2, dtype=torch.long))
         self.assertEqual(pos.shape, (0, 3))
         self.assertEqual(idx.shape, (0,))
 

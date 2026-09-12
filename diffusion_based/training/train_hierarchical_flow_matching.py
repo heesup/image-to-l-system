@@ -471,8 +471,6 @@ def forward_backward_step(
             # generate_cache.build_pkt_targets; skipped for older caches.
             if "keys" in pt:
                 gt_keys = pt["keys"][pkt_idx].to(device)          # (M_node, 2)
-                gt_phytomer_ord_target[b, node_src] = gt_keys[:, 1].float()
-
                 # One parent rule, no exceptions (phytomer_topology.gt_parent_links):
                 # a node's parent is one internode below it -- the previous node in
                 # the same shoot, the ORIGIN for the main stem's first node, or the
@@ -482,10 +480,17 @@ def forward_backward_step(
                 # first node parentless: 13.8% of phytomers, and since a lateral's
                 # first node is rarely vertical, the axis they fell back on was
                 # 50.8 deg off on average.
-                par_pos_all, par_row_all = gt_parent_links(
+                par_pos_all, par_row_all, depth_all = gt_parent_links(
                     pt["centers"].to(device, dtype=torch.float32), pt["keys"].to(device))
                 par_pos = par_pos_all[pkt_idx]
                 par_row = par_row_all[pkt_idx]
+                # The ordinal the head learns is DEPTH FROM THE ROOT, not the
+                # per-shoot index in `keys`: every parent is then depth - 1,
+                # laterals included, which is the relation chain_phytomers
+                # scores and the step loss below supervises. (Per-shoot
+                # ordinals made a lateral's true branch parent cost 0.12 m in
+                # the chain -- see gt_parent_links' docstring.)
+                gt_phytomer_ord_target[b, node_src] = depth_all[pkt_idx].float()
 
                 d = gt_pos.float() - par_pos
                 resolved = d.norm(dim=-1) > 1e-6
@@ -690,8 +695,16 @@ def forward_backward_step(
             # first sign the head carries any ordering at all.
             if bool(has_render_parent.any()):
                 par_ord = torch.gather(pred_ord, 1, gt_render_parent_idx.clamp(min=0))
-                ord_step_mae = ((pred_ord - par_ord - 1.0).abs()
-                                )[has_render_parent].mean().detach()
+                step_err = (pred_ord - par_ord - 1.0)[has_render_parent]
+                # Supervise the DIFFERENCE to the parent directly. The absolute
+                # regression above learned the marginal but no ordering for 13
+                # epochs (ord_mae fell 2.2 -> 1.8 while ord_step_mae sat at the
+                # no-information value ~1.0-1.1), and chain_phytomers consumes
+                # only this difference. Target is exactly 1 for every parent
+                # because the ordinal is depth from the root.
+                loss_phytomer_order = loss_phytomer_order + F.smooth_l1_loss(
+                    step_err, torch.zeros_like(step_err), reduction="sum") / float(norm_nodes)
+                ord_step_mae = step_err.abs().mean().detach()
             else:
                 ord_step_mae = torch.tensor(0.0, device=device)
         else:
