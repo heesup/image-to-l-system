@@ -109,6 +109,7 @@ def forward_backward_step(
     dap_weight: float = 0.05,
     scale_weight: float = 2.0,
     order_weight: float = 0.5,
+    stem_dir_weight: float = 0.5,
     render_grad: bool = True,
 ) -> Optional[Dict[str, float]]:
     images = batch["image"].to(device)
@@ -405,6 +406,12 @@ def forward_backward_step(
         # Position along the shoot, and whether this phytomer starts one.
         gt_phytomer_ord_target = torch.zeros(B, K_eff, device=device)
         gt_phytomer_base_target = torch.zeros(B, K_eff, device=device)
+        # Unit direction from the ground-truth parent node up to this one. The
+        # internode's own forward axis should equal it — measured on ground
+        # truth, the two agree to 0.66-1.54 deg — so this supervises directly
+        # the cue the chain recovery depends on.
+        gt_stem_dir_target = torch.zeros(B, K_eff, 3, device=device)
+        stem_dir_mask = torch.zeros(B, K_eff, dtype=torch.bool, device=device)
         cls_acc_data = []
         for b in range(B):
             m_b = matches[b]
@@ -443,6 +450,19 @@ def forward_backward_step(
                 gt_keys = pt["keys"][pkt_idx].to(device)          # (M_anc, 2)
                 gt_phytomer_ord_target[b, anc_src] = gt_keys[:, 1].float()
                 gt_phytomer_base_target[b, anc_src] = (gt_keys[:, 1] == 0).float()
+
+                # Look up each matched packet's parent: same shoot, one step down.
+                all_keys = pt["keys"].to(device)                   # (P, 2)
+                want = gt_keys.clone()
+                want[:, 1] = want[:, 1] - 1
+                hit = (all_keys.unsqueeze(0) == want.unsqueeze(1)).all(dim=-1)  # (M, P)
+                has_par = hit.any(dim=-1)
+                if bool(has_par.any()):
+                    par_row = hit.float().argmax(dim=-1)
+                    par_pos = pt["centers"][par_row].to(device, dtype=torch.float32)
+                    d = gt_pos.float() - par_pos
+                    gt_stem_dir_target[b, anc_src] = F.normalize(d, dim=-1)
+                    stem_dir_mask[b, anc_src] = has_par
 
             tgt_cls = pt["packets"][pkt_idx, :, :FM_OT_END].argmax(-1)
             pres = pt["presence"][pkt_idx]
@@ -589,6 +609,18 @@ def forward_backward_step(
         else:
             loss_phytomer_order = torch.tensor(0.0, device=device)
 
+        # 7c. The internode's forward axis should point from its parent node to
+        # its own. Without this nothing ties the predicted rotation to the node
+        # cloud, so the two are free to disagree about the same direction —
+        # assembly then has to overwrite one of them.
+        if pred_phytomer_rot is not None and bool(stem_dir_mask.any()):
+            fwd_pred = rot6d_to_matrix(pred_phytomer_rot)[..., 1]   # (B, K, 3)
+            cos_dir = (F.normalize(fwd_pred, dim=-1)
+                       * gt_stem_dir_target).sum(dim=-1)
+            loss_stem_dir = (1.0 - cos_dir)[stem_dir_mask].sum() / float(norm_anc)
+        else:
+            loss_stem_dir = torch.tensor(0.0, device=device)
+
         # Skip the organ-mode loss loop below.
         phyto_mode_done = True
     else:
@@ -684,6 +716,7 @@ def forward_backward_step(
         loss_phytomer_rot = torch.tensor(0.0, device=device)
         loss_phytomer_scale = torch.tensor(0.0, device=device)
         loss_phytomer_order = torch.tensor(0.0, device=device)
+        loss_stem_dir = torch.tensor(0.0, device=device)
 
     # Stage 1: Macro Losses (Phytomer Count & DAP)
     loss_phy_count = torch.tensor(0.0, device=device)
@@ -828,6 +861,7 @@ def forward_backward_step(
         + rot_weight * loss_phytomer_rot
         + scale_weight * loss_phytomer_scale
         + order_weight * loss_phytomer_order
+        + stem_dir_weight * loss_stem_dir
         + 1.0 * loss_phytomer_exist
         + 1.0 * loss_fine_vel
         + 1.0 * loss_fine_exist
@@ -859,6 +893,7 @@ def forward_backward_step(
         "phytomer_exist_loss": loss_phytomer_exist.item(),
         "phytomer_scale_loss": loss_phytomer_scale.item(),
         "phytomer_order_loss": loss_phytomer_order.item(),
+        "stem_dir_loss": loss_stem_dir.item(),
         "phy_count_loss": loss_phy_count.item(),
         "dap_loss": loss_dap.item(),
         "pred_phy_mean": pred_num_phytomers.mean().item() if pred_num_phytomers is not None else 0.0,
@@ -897,6 +932,7 @@ def probe_optimal_batch_size(
     dap_weight: float = 0.05,
     scale_weight: float = 2.0,
     order_weight: float = 0.5,
+    stem_dir_weight: float = 0.5,
 ) -> int:
     """
     Directly measures base model/optimizer memory and per-sample activation memory on this GPU
@@ -955,6 +991,7 @@ def probe_optimal_batch_size(
         dap_weight=dap_weight,
         scale_weight=scale_weight,
         order_weight=order_weight,
+        stem_dir_weight=stem_dir_weight,
         render_grad=True,
     )
 
@@ -1074,6 +1111,7 @@ def train_one_epoch(
     dap_weight: float = 0.05,
     scale_weight: float = 2.0,
     order_weight: float = 0.5,
+    stem_dir_weight: float = 0.5,
     render_grad_start_epoch: int = 4,
     **kwargs,
 ) -> Dict[str, float]:
@@ -1089,6 +1127,7 @@ def train_one_epoch(
     total_phytomer_exist_loss = 0.0
     total_phytomer_scale_loss = 0.0
     total_phytomer_order_loss = 0.0
+    total_stem_dir_loss = 0.0
     total_phy_count_loss = 0.0
     total_dap_loss = 0.0
     total_pred_phy_mean = 0.0
@@ -1129,6 +1168,7 @@ def train_one_epoch(
             dap_weight=dap_weight,
             scale_weight=scale_weight,
             order_weight=order_weight,
+            stem_dir_weight=stem_dir_weight,
             render_grad=render_grad,
         )
         t_step1 = time.time()
@@ -1189,6 +1229,7 @@ def train_one_epoch(
         total_phytomer_exist_loss += step_metrics["phytomer_exist_loss"]
         total_phytomer_scale_loss += step_metrics.get("phytomer_scale_loss", 0.0)
         total_phytomer_order_loss += step_metrics.get("phytomer_order_loss", 0.0)
+        total_stem_dir_loss += step_metrics.get("stem_dir_loss", 0.0)
         total_phy_count_loss += step_metrics.get("phy_count_loss", 0.0)
         total_dap_loss += step_metrics.get("dap_loss", 0.0)
         total_pred_phy_mean += step_metrics.get("pred_phy_mean", 0.0)
@@ -1213,7 +1254,7 @@ def train_one_epoch(
             print(
                 f"  [Epoch {epoch:02d}] Step {batch_idx+1:03d}/{len(dataloader):03d} | Loss: {step_metrics['loss']:.4f} | "
                 f"[S1 Macro] Phy: {step_metrics.get('phy_count_loss', 0.0):.4f} [P:{step_metrics.get('pred_phy_mean', 0.0):.1f}/G:{step_metrics.get('gt_phy_mean', 0.0):.1f}], DAP: {step_metrics.get('dap_loss', 0.0):.4f} [P:{step_metrics.get('pred_dap_mean', 0.0):.1f}/G:{step_metrics.get('gt_dap_mean', 0.0):.1f}] | "
-                f"[S2 Scaffold] Pos: {step_metrics['phytomer_pos_loss']:.4f}, Rot: {step_metrics.get('phytomer_rot_loss', 0.0):.4f}, Scl: {step_metrics.get('phytomer_scale_loss', 0.0):.4f}, Ord: {step_metrics.get('phytomer_order_loss', 0.0):.4f}, Ext: {step_metrics.get('phytomer_exist_loss', 0.0):.4f} | "
+                f"[S2 Scaffold] Pos: {step_metrics['phytomer_pos_loss']:.4f}, Rot: {step_metrics.get('phytomer_rot_loss', 0.0):.4f}, Scl: {step_metrics.get('phytomer_scale_loss', 0.0):.4f}, Ord: {step_metrics.get('phytomer_order_loss', 0.0):.4f}, Dir: {step_metrics.get('stem_dir_loss', 0.0):.4f}, Ext: {step_metrics.get('phytomer_exist_loss', 0.0):.4f} | "
                 f"[S3 Micro] Vel: {step_metrics['fine_vel_loss']:.4f}, Ext: {step_metrics['fine_exist_loss']:.4f}, Acc: {step_metrics['cls_acc']*100:.1f}% | "
                 f"[S4 Render] {render_str} | "
                 f"fwd/bwd {t_step1-t_step0:.2f}s opt {t_step2-t_step1:.2f}s | "
@@ -1230,6 +1271,7 @@ def train_one_epoch(
         "phytomer_exist_loss": total_phytomer_exist_loss / max(count, 1),
         "phytomer_scale_loss": total_phytomer_scale_loss / max(count, 1),
         "phytomer_order_loss": total_phytomer_order_loss / max(count, 1),
+        "stem_dir_loss": total_stem_dir_loss / max(count, 1),
         "phy_count_loss": total_phy_count_loss / max(count, 1),
         "dap_loss": total_dap_loss / max(count, 1),
         "pred_phy_mean": total_pred_phy_mean / max(count, 1),
@@ -1295,6 +1337,9 @@ def main():
     parser.add_argument("--render_grad_start_epoch", type=int, default=4,
                         help="Render-loop gradients activate at this epoch; before it the render "
                              "loop is bypassed completely to speed up early LR warmup.")
+    parser.add_argument("--stem_dir_weight", type=float, default=0.5,
+                        help="Weight on aligning the internode forward axis with the "
+                             "direction from the parent node.")
     parser.add_argument("--order_weight", type=float, default=0.5,
                         help="Weight on the position-along-shoot loss (ordinal + "
                              "shoot-base flag). Supervises the cue the geometric "
@@ -1563,6 +1608,7 @@ def main():
             dap_weight=args.dap_weight,
             scale_weight=args.scale_weight,
             order_weight=args.order_weight,
+            stem_dir_weight=args.stem_dir_weight,
         )
     else:
         resolved_batch_size = int(args.batch_size)
@@ -1678,6 +1724,7 @@ def main():
             dap_weight=args.dap_weight,
             scale_weight=args.scale_weight,
             order_weight=args.order_weight,
+            stem_dir_weight=args.stem_dir_weight,
             render_grad_start_epoch=args.render_grad_start_epoch,
             lr_warmup_cb=lr_warmup_cb,
         )
@@ -1699,7 +1746,7 @@ def main():
             print(
                 f"Epoch {epoch:03d} | Loss: {epoch_metrics['loss']:.4f} | "
                 f"[S1 Macro] Phy: {epoch_metrics['phy_count_loss']:.4f} (P:{epoch_metrics['pred_phy_mean']:.1f}/G:{epoch_metrics['gt_phy_mean']:.1f}), DAP: {epoch_metrics.get('dap_loss', 0.0):.4f} (P:{epoch_metrics.get('pred_dap_mean', 0.0):.1f}/G:{epoch_metrics.get('gt_dap_mean', 0.0):.1f}) | "
-                f"[S2 Scaffold] Pos: {epoch_metrics['phytomer_pos_loss']:.4f}, Rot: {epoch_metrics.get('phytomer_rot_loss', 0.0):.4f}, Scl: {epoch_metrics.get('phytomer_scale_loss', 0.0):.4f}, Ord: {epoch_metrics.get('phytomer_order_loss', 0.0):.4f}, Ext: {epoch_metrics['phytomer_exist_loss']:.4f} | "
+                f"[S2 Scaffold] Pos: {epoch_metrics['phytomer_pos_loss']:.4f}, Rot: {epoch_metrics.get('phytomer_rot_loss', 0.0):.4f}, Scl: {epoch_metrics.get('phytomer_scale_loss', 0.0):.4f}, Ord: {epoch_metrics.get('phytomer_order_loss', 0.0):.4f}, Dir: {epoch_metrics.get('stem_dir_loss', 0.0):.4f}, Ext: {epoch_metrics['phytomer_exist_loss']:.4f} | "
                 f"[S3 Micro] Vel: {epoch_metrics['fine_vel_loss']:.4f}, Ext: {epoch_metrics['fine_exist_loss']:.4f}, Acc: {epoch_metrics['cls_acc']*100:.1f}% | "
                 f"[S4 Render] {render_epoch_str} | "
                 f"VRAM: {max_vram_gb:.1f}/{total_vram_gb:.1f} GB ({vram_pct:.1f}%)"
