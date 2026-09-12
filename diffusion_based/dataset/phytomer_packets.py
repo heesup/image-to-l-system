@@ -800,8 +800,26 @@ _BUD_TYPES = {7, 8, 12}
 _PEDUNCLE_TYPE = 6
 
 
+# The XML converter (`PartTensorTo40DConverter`) gives a trifoliate leaf its
+# yaw from the order in which its leaflet rows are encountered -- child index
+# 0 -> +10 deg (one lateral), 1 -> 0 deg (terminal), 2 -> -10 deg (the other
+# lateral) -- and reads only the SCALE from the row itself; the leaflet's own
+# rotation is ignored. The packet keeps the terminal leaflet in slot 4
+# (LEAFLET_ATTACH_FRAC: slots 2-3 attach at 0.8 of the petiole, slot 4 at the
+# tip), so emitting slots in numeric order (2, 3, 4) handed the terminal
+# leaflet's scale to a lateral and vice versa: an ~11% size swap on two of the
+# three leaflets of every trifoliate phytomer. Measured on DAP 50 (2026-09-12):
+# it was the whole packet-path loss, 92.0% -> 94.1% FG IoU once emitted as
+# lateral, terminal, lateral.
+_LEAFLET_EMIT_RANK = {2: 2, 4: 3, 3: 4}
+
+
 def emit_slot_order(packet_14d: torch.Tensor, keep: torch.Tensor) -> torch.Tensor:
-    """Order one packet's present slots the way the XML converter expects."""
+    """Order one packet's present slots the way the XML converter expects.
+
+    Leaflets go out as (lateral, terminal, lateral) = slots (2, 4, 3); see
+    `_LEAFLET_EMIT_RANK` for why.
+    """
     types = packet_14d[:, P_COL_ORGAN_TYPE].long()
     present = torch.nonzero(keep, as_tuple=True)[0]
 
@@ -814,8 +832,8 @@ def emit_slot_order(packet_14d: torch.Tensor, keep: torch.Tensor) -> torch.Tenso
         elif slot >= 6:
             group = 3          # flowers, pods, fruit follow the peduncle
         else:
-            group = 0          # internode, petiole, leaflets keep slot order
-        return (group, slot)
+            group = 0          # internode, petiole, then leaflets as L, T, R
+        return (group, _LEAFLET_EMIT_RANK.get(slot, slot))
 
     order = sorted(range(present.numel()), key=lambda i: rank(int(present[i])))
     return torch.tensor(order, dtype=torch.long)

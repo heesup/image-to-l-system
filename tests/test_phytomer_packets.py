@@ -11,7 +11,9 @@ from diffusion_based.dataset.phytomer_packets import (
     build_phytomer_packets,
     cluster_organs,
     decode_packet,
+    emit_slot_order,
 )
+from diffusion_based.models.plant_organ_array import P_COL_ORGAN_TYPE
 from diffusion_based.dataset.part_array_dataset import (
     FM_OT_END,
     FM_BASE_START,
@@ -187,6 +189,39 @@ class TestPhytomerPackets(unittest.TestCase):
         back = decode_packet(packets[0], centers[0], presence[0], refs[0])
         self.assertTrue(torch.allclose(back[0, 16:22], phytomer_rot, atol=1e-5))
         self.assertTrue(torch.allclose(back[2, 16:22], org_rot, atol=1e-5))
+
+
+class TestEmitSlotOrder(unittest.TestCase):
+    """The XML converter assigns leaf yaw by encounter order (lateral, terminal,
+    lateral) and reads only the scale from the row, so the terminal leaflet the
+    packet keeps in slot 4 must be emitted between the two laterals."""
+
+    @staticmethod
+    def _packet(types):
+        pkt = torch.zeros(10, 14)
+        keep = torch.zeros(10, dtype=torch.bool)
+        for slot, t in types.items():
+            pkt[slot, P_COL_ORGAN_TYPE] = float(t)
+            keep[slot] = True
+        return pkt, keep
+
+    def test_trifoliate_leaflets_emit_lateral_terminal_lateral(self):
+        pkt, keep = self._packet({0: 3, 1: 4, 2: 5, 3: 5, 4: 5})
+        order = emit_slot_order(pkt, keep)
+        present = torch.nonzero(keep, as_tuple=True)[0]
+        self.assertEqual(present[order].tolist(), [0, 1, 2, 4, 3])
+
+    def test_bud_peduncle_and_repro_follow_the_leaflets(self):
+        pkt, keep = self._packet({0: 3, 1: 4, 2: 5, 3: 5, 4: 5, 5: 6, 6: 8, 7: 11, 8: 9})
+        order = emit_slot_order(pkt, keep)
+        present = torch.nonzero(keep, as_tuple=True)[0]
+        self.assertEqual(present[order].tolist(), [0, 1, 2, 4, 3, 6, 5, 7, 8])
+
+    def test_missing_terminal_keeps_laterals_in_order(self):
+        pkt, keep = self._packet({0: 3, 1: 4, 2: 5, 3: 5})
+        order = emit_slot_order(pkt, keep)
+        present = torch.nonzero(keep, as_tuple=True)[0]
+        self.assertEqual(present[order].tolist(), [0, 1, 2, 3])
 
 
 if __name__ == "__main__":
