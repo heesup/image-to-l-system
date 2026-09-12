@@ -63,6 +63,8 @@ import torch
 from diffusion_based.models.plant_organ_array import (
     ORGAN_INTERNODE,
     ORGAN_PETIOLE,
+    ORGAN_SHOOT_META,
+    T_COL_YAW,
     P_COL_ORGAN_TYPE,
     T_COL_CURV_PERT_0,
     T_COL_EXISTENCE,
@@ -114,6 +116,7 @@ def refine_stem_to_part_tensor(
     max_step_deg: float = 30.0,
     parallel_guard_deg: float = 10.0,
     damping: float = 0.9,
+    base_correction: bool = True,
     verbose: bool = False,
     stats: Optional[Dict[str, float]] = None,
 ) -> torch.Tensor:
@@ -203,6 +206,47 @@ def refine_stem_to_part_tensor(
     for j in pet_ok.tolist():
         pet_of_node.setdefault(int(pet_node[j]), []).append(j)
 
+    # A shoot's first internode gets no perturbation in Helios: its direction
+    # comes from the shoot's base pitch/yaw (SHOOT_META row). Those two angles
+    # are solved from a finite-difference Jacobian of the FK chord, which is
+    # cheaper to get right than the closed form (yaw is about the PARENT
+    # internode axis, pitch about an axis built from the parent petiole).
+    meta_of_shoot: Dict[int, int] = {}
+    for r_ in torch.nonzero(ot40 == ORGAN_SHOOT_META).flatten().tolist():
+        meta_of_shoot.setdefault(int(sid[r_]), r_)
+
+    def base_step(i: int, poses) -> None:
+        m = meta_of_shoot.get(int(sid[i]))
+        if m is None:
+            return
+        chord = poses["tip"][i] - poses["base"][i]
+        n = float(chord.norm())
+        if n < 1e-6:
+            return
+        c = chord / n
+        t = fwd[i]
+        resid = t - c                                            # small-angle direction error
+        cols = []
+        for col in (T_COL_PITCH, T_COL_YAW):
+            trial = arr.clone(); trial[m, col] += 1.0
+            pz = run_fk(trial)
+            ch = pz["tip"][i] - pz["base"][i]
+            cols.append((ch / ch.norm().clamp(min=1e-9) - c))    # d(dir)/d(deg)
+        J = torch.stack(cols, dim=1)                             # (3, 2)
+        sol = torch.linalg.lstsq(J, resid.unsqueeze(1)).solution.flatten()
+        sol = sol.clamp(-max_step_deg, max_step_deg)
+        if torch.isfinite(sol).all():
+            arr[m, T_COL_PITCH] += float(sol[0])
+            arr[m, T_COL_YAW] += float(sol[1])
+        # The base internode's length is the one length the chain does not
+        # fix (assemble_packets overrides chained lengths with the parent ->
+        # node chord but a shoot base keeps its decoded length), so take it
+        # from where the shoot actually starts to where its first node is.
+        L = float((tip_target[i] - poses["base"][i]).norm())
+        if L > 1e-4:
+            arr[i, T_COL_LENGTH] = L
+            arr[i, T_COL_LENGTH_MAX] = L
+
     def node_step(i: int, poses) -> None:
         # internode direction (nodes beyond the shoot base only)
         if rank[i] > 0:
@@ -233,6 +277,7 @@ def refine_stem_to_part_tensor(
                 arr[i, T_COL_PHYLLOTACTIC_ANGLE] = (float(arr[i, T_COL_PHYLLOTACTIC_ANGLE]) + d_az) % 360.0
 
     err_before = None
+    prev_max = None
     used = 0
     for it in range(n_iter):
         poses = run_fk(arr)
@@ -242,9 +287,17 @@ def refine_stem_to_part_tensor(
         if verbose:
             print(f"  [StemIK] sweep {it}: tip error mean {err.mean()*100:.3f} cm max {err.max()*100:.3f} cm")
         used = it
-        if float(err.max()) < tol_m:
+        cur_max = float(err.max())
+        # One sweep reaches the fixed point on every plant measured so far; a
+        # further sweep only pays for itself while it still moves the residual
+        # (the shoot-base internodes, which Helios never perturbs, set a floor).
+        if cur_max < tol_m or (prev_max is not None and cur_max > 0.9 * prev_max):
             break
+        prev_max = cur_max
         for i in order:
+            if base_correction and rank[i] == 0:
+                base_step(i, poses)
+                poses = run_fk(arr)
             node_step(i, poses)
             poses = run_fk(arr)
 
