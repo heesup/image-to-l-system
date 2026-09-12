@@ -412,6 +412,17 @@ def forward_backward_step(
         # the cue the chain recovery depends on.
         gt_stem_dir_target = torch.zeros(B, K_eff, 3, device=device)
         stem_dir_mask = torch.zeros(B, K_eff, dtype=torch.bool, device=device)
+        # Which OTHER predicted anchor (if any) is this one's parent, so the
+        # render-loss internode can be assembled from two PREDICTED positions
+        # instead of an independently-regressed length (see phytomer_topology
+        # module docstring on the redundancy). Built from the same GT-key
+        # parent lookup as gt_stem_dir_target, but only kept where the parent's
+        # OWN GT packet was also matched to some predicted anchor this step --
+        # using the model's own (possibly-wrong) predicted topology here would
+        # bootstrap off unreliable early predictions; anchoring to the existing,
+        # already-computed GT match keeps this stable at every epoch.
+        gt_render_parent_idx = torch.full((B, K_eff), -1, dtype=torch.long, device=device)
+        has_render_parent = torch.zeros(B, K_eff, dtype=torch.bool, device=device)
         cls_acc_data = []
         for b in range(B):
             m_b = matches[b]
@@ -463,6 +474,18 @@ def forward_backward_step(
                     d = gt_pos.float() - par_pos
                     gt_stem_dir_target[b, anc_src] = F.normalize(d, dim=-1)
                     stem_dir_mask[b, anc_src] = has_par
+
+                    # Was the parent's own GT row ALSO matched to a predicted
+                    # anchor this step? same[m, j] = True iff phytomer m's
+                    # parent row equals the GT row matched at position j.
+                    same = pkt_idx.unsqueeze(0) == par_row.unsqueeze(1)   # (M_anc, M_anc)
+                    parent_matched = same.any(dim=1) & has_par
+                    if bool(parent_matched.any()):
+                        j_idx = same.float().argmax(dim=1)
+                        parent_anchor = anc_src[j_idx]
+                        sel = anc_src[parent_matched]
+                        gt_render_parent_idx[b, sel] = parent_anchor[parent_matched]
+                        has_render_parent[b, sel] = True
 
             tgt_cls = pt["packets"][pkt_idx, :, :FM_OT_END].argmax(-1)
             pres = pt["presence"][pkt_idx]
@@ -774,7 +797,29 @@ def forward_backward_step(
                 recon_abs_all = denormalize_packet_scales(
                     out_vae_all["recon_packets"], scl_all.reshape(-1, 3)
                 )
-                packet_hat_all = assemble_packets(recon_abs_all, rot_all.reshape(-1, 6))
+                # Internode base/length/direction from two PREDICTED node
+                # positions (this phytomer's and its GT-matched parent's) where
+                # available, instead of an independently-regressed length that
+                # can disagree with the scaffold and draw a disconnected stem
+                # (see phytomer_packets.assemble_packets docstring). Falls back
+                # to the decoded length for anchors with no matched parent this
+                # step (shoot bases, or the parent's row wasn't matched) via
+                # assemble_packets' own NaN-gated fallback.
+                par_idx_r = gt_render_parent_idx[render_indices]            # (n_render, K)
+                has_par_r = has_render_parent[render_indices]               # (n_render, K)
+                parent_pos_r = torch.gather(
+                    pos_all, dim=1,
+                    index=par_idx_r.clamp(min=0).unsqueeze(-1).expand(-1, -1, 3),
+                )
+                parent_pos_r = torch.where(
+                    has_par_r.unsqueeze(-1), parent_pos_r,
+                    torch.full_like(parent_pos_r, float("nan")),
+                )
+                packet_hat_all = assemble_packets(
+                    recon_abs_all, rot_all.reshape(-1, 6),
+                    parent_pos=parent_pos_r.reshape(-1, 3),
+                    centers=pos_all.reshape(-1, 3),
+                )
                 abs_packets_all = apply_ref_for_flow(
                     packet_hat_all.reshape(n_render, -1, M, 26), pos_all, rot_all
                 )
