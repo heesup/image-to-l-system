@@ -1185,6 +1185,8 @@ def train_one_epoch(
     total_dice_loss = 0.0
     total_cls_acc = 0.0
     count = 0
+    recovery_skips = 0
+    canary_elem_hits = 0
 
     slots_per_phytomer = model.slots_per_phytomer if not hasattr(model, "module") else model.module.slots_per_phytomer
 
@@ -1224,19 +1226,37 @@ def train_one_epoch(
                     warmup_n()
             continue
 
-        # Per-element grad clamp BEFORE clip_grad_norm_: total norm is computed as a
-        # sum of squares in Float32, so a single finite-but-huge grad (~1e19) makes
-        # sum(g^2) overflow to inf (max fp32 ~3.4e38) while every element stays
-        # finite — the exact signature of Job 38237555 (grad_norm=inf, Culprit 0).
-        # Bounding each element keeps the squared sum far below fp32 overflow so
-        # the global clip still sees a finite norm, and healthy steps are preserved.
-        GRAD_ELEM_CLAMP = 100.0
+        # Canary, not a soft clipper: clip_grad_norm_'s total norm is a sum of
+        # squares in Float32, so a single finite-but-huge grad element makes
+        # sum(g^2) overflow to inf on its own (fp32 max ~3.4e38, so any element
+        # past ~1.8e19 does this alone) even though nothing is actually NaN/Inf
+        # yet — the exact signature of Job 38237555 (grad_norm=inf, Culprit 0).
+        # The earlier version of this guard clamped every element to +-100 on
+        # EVERY step regardless of need, which quietly reshapes any merely-large
+        # (but harmless) gradient — exactly the kind of blanket mangling that
+        # hides whether a real leak still exists. This threshold is instead set
+        # far above anything a healthy step ever produces and only there to
+        # keep the norm computation itself well-defined; if canary_elem_hits
+        # is ever nonzero, that is the real signal something is still leaking
+        # upstream, not a normal event to silently absorb.
+        GRAD_ELEM_CANARY = 1e15
+        step_canary_hits = 0
         for p in model.parameters():
             if p.grad is not None:
-                p.grad.clamp_(-GRAD_ELEM_CLAMP, GRAD_ELEM_CLAMP)
+                over = p.grad.abs() > GRAD_ELEM_CANARY
+                if bool(over.any()):
+                    step_canary_hits += int(over.sum().item())
+                    p.grad.clamp_(-GRAD_ELEM_CANARY, GRAD_ELEM_CANARY)
+        if step_canary_hits > 0:
+            canary_elem_hits += step_canary_hits
+            if rank == 0:
+                print(f"  [Canary] Step {batch_idx+1}: {step_canary_hits} grad elements exceeded "
+                      f"{GRAD_ELEM_CANARY:.0e} before clip_grad_norm_ -- should not happen if the "
+                      f"known Stage2/Stage3 leaks stay fixed; investigate rather than trust the clamp.")
 
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         if torch.isnan(grad_norm) or torch.isinf(grad_norm):
+            recovery_skips += 1
             if rank == 0:
                 bad_params = []
                 for name, p in model.named_parameters():
@@ -1251,9 +1271,12 @@ def train_one_epoch(
                         bad_params.append(
                             f"{name} (NaN:{nan_cnt}, Inf:{inf_cnt}, Huge(>1e6):{huge_cnt}, shape:{list(p.shape)}, max:{max_g:.1e})"
                         )
-                print(f"  [Recovery] Step {batch_idx+1}: grad_norm is NaN/Inf ({grad_norm}) | Culprit params ({len(bad_params)}): -> SKIPPING STEP")
+                print(f"  [Recovery] Step {batch_idx+1}: grad_norm is NaN/Inf ({grad_norm}) | Culprit params ({len(bad_params)}): -> SKIPPING STEP (weights untouched, no sanitize-and-apply)")
                 for bp in bad_params[:10]:
                     print(f"    -> {bp}")
+            # Skip only -- deliberately NOT sanitizing (nan_to_num) and applying
+            # this step anyway. That would train on a corrupted gradient; simply
+            # not stepping loses one batch's update, which is the smaller cost.
             optimizer.zero_grad(set_to_none=True)
             if lr_warmup_cb is not None:
                 warmup_n = getattr(lr_warmup_cb, "advance", None)
@@ -1328,6 +1351,9 @@ def train_one_epoch(
         "dense_depth_loss": total_dense_depth_loss / max(count, 1),
         "silhouette_dice_loss": total_dice_loss / max(count, 1),
         "cls_acc": total_cls_acc / max(count, 1),
+        "recovery_skips": recovery_skips,
+        "canary_elem_hits": canary_elem_hits,
+        "steps_seen": count + recovery_skips,
     }
 
 
@@ -1800,6 +1826,10 @@ def main():
                 f"[S3 Micro] Vel: {epoch_metrics['fine_vel_loss']:.4f}, Ext: {epoch_metrics['fine_exist_loss']:.4f}, Acc: {epoch_metrics['cls_acc']*100:.1f}% | "
                 f"[S4 Render] {render_epoch_str} | "
                 f"VRAM: {max_vram_gb:.1f}/{total_vram_gb:.1f} GB ({vram_pct:.1f}%)"
+                + (f" | Recovery: {int(epoch_metrics.get('recovery_skips', 0))}/{int(epoch_metrics.get('steps_seen', 0))}"
+                   if epoch_metrics.get('recovery_skips', 0) > 0 else "")
+                + (f" | Canary: {int(epoch_metrics.get('canary_elem_hits', 0))} elems"
+                   if epoch_metrics.get('canary_elem_hits', 0) > 0 else "")
             )
             wandb.log({
                 "epoch": epoch,
