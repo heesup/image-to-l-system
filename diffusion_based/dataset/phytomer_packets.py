@@ -97,6 +97,9 @@ DETERMINISTIC_ORGAN_TYPES = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
 LEAFLET_ATTACH_FRAC = {2: 0.8, 3: 0.8, 4: 1.0}
 # Repro (flower/fruit) attach at the CURVED PEDUNCLE TIP (arc-fraction 1.0).
 REPRO_ATTACH_FRAC = 1.0
+# Only these ride the peduncle out to its tip. Buds (7, 8, 12) stay at the
+# phytomer centre, per the assembly rules documented above.
+REPRO_TIP_ORGAN_TYPES = {9, 10, 11}
 
 
 def _petiole_curve_points(
@@ -347,8 +350,14 @@ def assemble_packets(
                 t = idx_f - i0
                 i1 = min(i0 + 1, len(pcurve) - 1)
                 cpt = pcurve[i0] * (1 - t) + pcurve[i1] * t
+                # Only flowers and fruit ride the peduncle out to its tip. Buds
+                # sit at the centre (see the assembly rules above), and moving
+                # them with everything else in slots 6-9 put every active bud
+                # that shares a phytomer with a peduncle a whole peduncle away —
+                # measured 11.5 cm mean, 32.9 cm max at DAP 90, while every
+                # other organ type was inside 2 cm.
                 for s in range(6, NUM_SLOTS):
-                    if bool(det[p, s]):
+                    if bool(det[p, s]) and int(ot[p, s]) in REPRO_TIP_ORGAN_TYPES:
                         base[p, s] = cpt * base_scale
     return torch.cat(
         [out[..., :FM_BASE_START], base, out[..., FM_BASE_END:]], dim=-1

@@ -163,9 +163,40 @@ def emit_part_tensor_with_shoot_meta(
         for m in members.tolist():
             keep = presence[m]
             if bool(keep.any()):
-                rows.append(part_all[m][keep].cpu())
+                rows.append(part_all[m][keep][emit_slot_order(part_all[m], keep)].cpu())
 
     return torch.cat(rows, dim=0)
+
+
+# Ground-truth organ order inside a phytomer, read off the XML at DAP 90:
+#   internode -> petiole -> leaflets -> bud -> peduncle -> flowers/pods/fruit
+# Slot order alone puts the peduncle (slot 5) ahead of the buds (slots 6-9),
+# which the converter does not accept: re-sorting ground-truth rows into slot
+# order made Helios abort outright, and emitting in slot order cost ~35 points
+# of foreground IoU against otherwise identical organ values.
+_BUD_TYPES = {7, 8, 12}
+_PEDUNCLE_TYPE = 6
+
+
+def emit_slot_order(packet_14d: torch.Tensor, keep: torch.Tensor) -> torch.Tensor:
+    """Order one packet's present slots the way the XML converter expects."""
+    types = packet_14d[:, P_COL_ORGAN_TYPE].long()
+    present = torch.nonzero(keep, as_tuple=True)[0]
+
+    def rank(slot: int) -> tuple:
+        t = int(types[slot])
+        if t in _BUD_TYPES:
+            group = 1          # buds sit between the leaflets and the peduncle
+        elif t == _PEDUNCLE_TYPE:
+            group = 2
+        elif slot >= 6:
+            group = 3          # flowers, pods, fruit follow the peduncle
+        else:
+            group = 0          # internode, petiole, leaflets keep slot order
+        return (group, slot)
+
+    order = sorted(range(present.numel()), key=lambda i: rank(int(present[i])))
+    return torch.tensor(order, dtype=torch.long)
 
 
 def main():
