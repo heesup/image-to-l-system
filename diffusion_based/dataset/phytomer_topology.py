@@ -18,16 +18,26 @@ above which, or which branch a node belongs to. Two things need that structure:
 Both are served by the same chain.
 
 The parent of node i is the node the internode of i points back to, so the cost
-combines distance with agreement against that internode's own direction
-(column 1 of its rotation, the tube forward axis used by the mesh builder).
-Measured parent recovery on ground truth: 100% at DAP 10/50/90 with the
-directional term, 40-52% on distance alone. Do not symmetrise the cost into an
-MST — that measured worse (88-90%) even at zero noise.
+can combine distance with agreement against that internode's own direction
+(column 1 of its rotation, the tube forward axis used by the mesh builder) when
+a rotation is available. Measured parent recovery on ground truth: 100% at DAP
+10/50/90 with the directional term, 40-52% on distance alone (no rotation, no
+ordinal). Do not symmetrise the cost into an MST — that measured worse (88-90%)
+even at zero noise.
 
 The chain degrades with node position error (5-seed sweep, parent recovery):
 0.5 cm -> 31/86/97%, 1.0 cm -> 13/58/70% for DAP 10/50/90. DAP 10 is the
-fragile case because its nodes sit 0.47 cm apart. Predicted nodes will need a
-learned ordinal to be reliable at that spacing.
+fragile case because its nodes sit 0.47 cm apart.
+
+2026-09-11: rotation is now OPTIONAL here (`rot6d=None` drops the directional
+term entirely). Measured on ground truth (8 plants/DAP, GT is_base gate on all
+legs, see diffusion_based/eval/measure_topology_recovery_ablation.py):
+distance+ordinal alone reaches 97.5/94.5/97.7% at DAP 10/50/90, within 2.5
+points of the full distance+direction+ordinal combination (100.0/95.4/98.9%).
+This is what makes it possible for a node's rotation to be DERIVED from the
+resolved chain (this node's position minus its parent's) instead of predicted
+independently -- chaining no longer needs rotation as an input to produce it
+as an output. See phytomer_roll.py for that derivation.
 """
 
 from typing import Optional, Tuple
@@ -51,7 +61,7 @@ ORD_WEIGHT = 0.02
 
 def chain_phytomers(
     pos: torch.Tensor,
-    rot6d: torch.Tensor,
+    rot6d: Optional[torch.Tensor] = None,
     exist: Optional[torch.Tensor] = None,
     dir_weight: float = DIR_WEIGHT,
     max_edge_factor: float = MAX_EDGE_FACTOR,
@@ -63,13 +73,21 @@ def chain_phytomers(
 
     Args:
         pos: (P, 3) node positions in metres.
-        rot6d: (P, 6) node rotations; column 1 of the matrix is the internode
-            forward axis, pointing from the parent up to this node.
+        rot6d: optional (P, 6) node rotations; column 1 of the matrix is the
+            internode forward axis, pointing from the parent up to this node.
+            None drops the directional cost term entirely (see module
+            docstring for the measured cost of doing so: <=2.5 points of
+            parent-recovery accuracy once `ordinal` is supplied) -- this is
+            the normal calling convention once rotation is itself DERIVED
+            from this function's own output rather than predicted
+            independently (phytomer_roll.py), since deriving it requires
+            knowing the chain first.
         exist: optional (P,) bool/float mask of which nodes are real.
         ordinal: optional (P,) predicted position along the shoot (Stage 2's
             order head). A parent should be one step below its child, so this
             adds |(o_child - o_parent) - 1| to the cost. Geometry alone is not
-            enough where nodes are densely spaced.
+            enough where nodes are densely spaced, and substitutes for the
+            directional term almost as well as rotation did (measured).
         is_base: optional (P,) bool/float, predicted shoot bases. Nodes flagged
             here are allowed to have no parent regardless of the edge gate.
 
@@ -94,7 +112,8 @@ def chain_phytomers(
         return parent_idx, shoot_id, phytomer_idx
 
     p = pos[idx]                                    # (N, 3)
-    fwd = rot6d_to_matrix(rot6d[idx])[:, :, 1]      # (N, 3) internode forward
+    use_dir = rot6d is not None and dir_weight != 0.0
+    fwd = rot6d_to_matrix(rot6d[idx])[:, :, 1] if rot6d is not None else None
     N = p.shape[0]
 
     delta = p.unsqueeze(1) - p.unsqueeze(0)         # (N, N, 3) child - candidate
@@ -106,9 +125,11 @@ def chain_phytomers(
     rank[order] = torch.arange(N, device=device)
     higher = rank.unsqueeze(1) <= rank.unsqueeze(0)  # candidate not below child
 
-    cos = torch.nn.functional.cosine_similarity(
-        delta, fwd.unsqueeze(1).expand_as(delta), dim=-1)
-    cost = dist + dir_weight * (1.0 - cos)
+    cost = dist
+    if use_dir:
+        cos = torch.nn.functional.cosine_similarity(
+            delta, fwd.unsqueeze(1).expand_as(delta), dim=-1)
+        cost = cost + dir_weight * (1.0 - cos)
     if ordinal is not None:
         o = ordinal.reshape(-1)[idx]
         step = o.unsqueeze(1) - o.unsqueeze(0)          # child - candidate
@@ -155,13 +176,20 @@ def chain_phytomers(
                 o = ordinal.reshape(-1)[idx]
                 want = o[node] + 1.0
                 cont = kids[int(torch.stack([(o[k] - want).abs() for k in kids]).argmin())]
-            else:
+            elif fwd is not None:
                 ax = fwd[node]
                 cos_k = torch.stack([
                     torch.nn.functional.cosine_similarity(
                         (p[k] - p[node]).unsqueeze(0), ax.unsqueeze(0), dim=-1)[0]
                     for k in kids])
                 cont = kids[int(cos_k.argmax())]
+            else:
+                # Neither cue available: continue with the nearest child.
+                # Only reachable with rot6d=None AND ordinal=None -- an
+                # unusual call; distance alone (§ module docstring) still
+                # recovers most parents, just not which child extends the
+                # shoot at a branch point as reliably.
+                cont = kids[int(dist[node][torch.tensor(kids)].argmin())]
             for k in kids:
                 if k == cont:
                     stack.append((k, sid, depth + 1))
