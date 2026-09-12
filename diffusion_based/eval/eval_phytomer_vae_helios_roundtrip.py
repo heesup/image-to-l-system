@@ -33,7 +33,8 @@ from typing import Tuple
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.insert(0, REPO_ROOT)
 
-from diffusion_based.models.plant_organ_array import PlantOrganArray, ORGAN_NONE, P_COL_ORGAN_TYPE
+from diffusion_based.models.plant_organ_array import (
+    PlantOrganArray, ORGAN_NONE, P_COL_ORGAN_TYPE, ORGAN_ROOT_META, ORGAN_SHOOT_META)
 from diffusion_based.models.part_tensor_to_40d import assemble_part_tensor_to_xml
 from diffusion_based.models.phytomer_vae import PhytomerVAE
 from diffusion_based.dataset.part_array_dataset import encode_fm, decode_fm, FM_NODE_DIM
@@ -41,6 +42,7 @@ from diffusion_based.dataset.phytomer_packets import (
     build_phytomer_packets, decode_packets, assemble_packets,
     phytomer_scale, denormalize_packet_scales,
 )
+from diffusion_based.dataset.phytomer_topology import chain_phytomers
 from diffusion_based.dataset.generate_cache import extract_phytomer_ids
 
 from diffusion_based.eval.eval_13d_xml_organ_masks import (
@@ -93,19 +95,77 @@ def build_vae_roundtrip_xml(arr: PlantOrganArray, vae: PhytomerVAE) -> Tuple[str
     recon_norm = out["recon_packets"]                   # (P, 10, 26), normalized scale, zero base
     recon_presence = out["cls_logits"].argmax(dim=-1) > 0  # (P, 10) predicted existence
 
+    # Recover the stem chain from the node cloud: it supplies the internode
+    # (parent -> node span) and the shoot partition the XML export needs.
+    parent_idx, shoot_id, phytomer_idx = chain_phytomers(centers, refs)
+    parent_pos = torch.where(
+        (parent_idx >= 0).unsqueeze(-1),
+        centers[parent_idx.clamp(min=0)],
+        torch.full_like(centers, float("nan")))
+
     recon_denorm = denormalize_packet_scales(recon_norm, s_a)
-    recon_assembled = assemble_packets(recon_denorm, refs)
+    recon_assembled = assemble_packets(recon_denorm, refs,
+                                       parent_pos=parent_pos, centers=centers)
     recon_abs = decode_packets(recon_assembled, centers, recon_presence, refs)
 
-    flat_fm = recon_abs.reshape(-1, FM_NODE_DIM)
-    flat_presence = recon_presence.reshape(-1)
-    active_fm = flat_fm[flat_presence]
-    if active_fm.shape[0] == 0:
+    part14_recon = emit_part_tensor_with_shoot_meta(
+        recon_abs, recon_presence, centers, refs, shoot_id, phytomer_idx)
+    n_organs = int(recon_presence.sum().item())
+    if n_organs == 0:
         raise RuntimeError("VAE roundtrip predicted zero organs")
 
-    part14_recon = decode_fm(active_fm).cpu()
     xml_str = assemble_part_tensor_to_xml(part14_recon)
-    return xml_str, int(existence.sum().item()), int(active_fm.shape[0])
+    return xml_str, int(existence.sum().item()), n_organs
+
+
+def emit_part_tensor_with_shoot_meta(
+    recon_abs: torch.Tensor,
+    presence: torch.Tensor,
+    centers: torch.Tensor,
+    refs: torch.Tensor,
+    shoot_id: torch.Tensor,
+    phytomer_idx: torch.Tensor,
+) -> torch.Tensor:
+    """Flattens packets into a 14D part tensor that carries shoot structure.
+
+    `PartTensorTo40DConverter` rebuilds shoots by scanning rows in order and
+    splitting on ORGAN_SHOOT_META. Packets exclude meta rows by construction, so
+    flattening them naively exports every branch chained into one shoot —
+    measured at 94.1% -> 16.5% foreground IoU on DAP 50 when those rows are the
+    only thing missing. Emitting one ROOT_META row, then per shoot a SHOOT_META
+    row followed by that shoot's phytomers in order, restores what the scanner
+    expects.
+    """
+    part_all = decode_fm(recon_abs)          # (P, 10, 14)
+    rows = []
+
+    root = torch.zeros(14, dtype=part_all.dtype)
+    root[P_COL_ORGAN_TYPE] = float(ORGAN_ROOT_META)
+    rows.append(root.unsqueeze(0))
+
+    for sid in sorted(set(shoot_id[shoot_id >= 0].tolist())):
+        members = torch.nonzero(shoot_id == sid, as_tuple=True)[0]
+        members = members[torch.argsort(phytomer_idx[members])]
+
+        meta = torch.zeros(14, dtype=part_all.dtype)
+        meta[P_COL_ORGAN_TYPE] = float(ORGAN_SHOOT_META)
+        base_node = members[0]
+        # The shoot starts where its first internode starts, not at that
+        # internode's node, since the node is the segment's TOP. Measured to
+        # make no difference to the rendered result — the converter treats
+        # SHOOT_META as a delimiter and re-derives attachment geometrically from
+        # the internode tips — but it is the position the row is supposed to
+        # carry.
+        meta[1:4] = part_all[base_node, 0, 1:4].cpu()
+        meta[4:10] = refs[base_node].cpu()
+        rows.append(meta.unsqueeze(0))
+
+        for m in members.tolist():
+            keep = presence[m]
+            if bool(keep.any()):
+                rows.append(part_all[m][keep].cpu())
+
+    return torch.cat(rows, dim=0)
 
 
 def main():

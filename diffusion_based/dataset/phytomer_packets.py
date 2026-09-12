@@ -229,6 +229,8 @@ def assemble_packets(
     packets: torch.Tensor,
     reference_rots: torch.Tensor,
     base_scale: float = 20.0,
+    parent_pos: Optional[torch.Tensor] = None,
+    centers: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Reconstructs DETERMINISTIC slot bases from assembly rules.
 
@@ -265,11 +267,51 @@ def assemble_packets(
     # own length (measured 2026-09-11: offset-vs-length correlation exactly
     # 1.0000, mean 2.1 cm at DAP 50). Tube forward axis is column 1, matching
     # the mesh builder; verified to 0.007 cm mean against ground truth.
+    #
+    # When the stem chain is known (parent_pos + centers, from
+    # phytomer_topology.chain_phytomers), the internode is the segment from the
+    # parent node to this one, so its base, length AND direction all follow from
+    # the two endpoints — the decoded length is redundant and is overwritten.
+    # On ground truth the parent gap reproduces the decoded length to 0.03 cm
+    # mean, so nothing is lost. Nodes without a parent (shoot bases) keep the
+    # decoded-length fallback below.
     stem = det[:, 0]
     if bool(stem.any()):
         R_stem = R_ref @ rot6d_to_matrix(out[:, 0, FM_ROT_START:FM_ROT_END])
         stem_len = out[:, 0, FM_SCALE_START] / SCALE_SCALE  # metres
         stem_base = -stem_len.unsqueeze(-1) * R_stem[:, :, 1] * base_scale
+
+        if parent_pos is not None and centers is not None:
+            chained = torch.isfinite(parent_pos).all(dim=-1) & stem
+            if bool(chained.any()):
+                to_parent = parent_pos - centers                  # metres
+                gap = to_parent.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+                stem_base = torch.where(chained.unsqueeze(-1),
+                                        to_parent * base_scale, stem_base)
+                # Point the tube along parent -> node and give it that length,
+                # so base and tip land on the two nodes instead of only the tip.
+                fwd = -to_parent / gap                            # parent -> node
+                x0 = R_stem[:, :, 0]
+                x = x0 - (x0 * fwd).sum(-1, keepdim=True) * fwd
+                x = x / x.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+                # rot6d is (x, second); rot6d_to_matrix puts x in column 0 and
+                # cross(cross(x, second), x) in column 1, so passing fwd as the
+                # second vector with x already orthogonal to it makes column 1
+                # exactly fwd.
+                rel = rotation_relative_to_reference(
+                    torch.cat([x, fwd], dim=-1), reference_rots)
+                new_rot = torch.where(chained.unsqueeze(-1), rel,
+                                      out[:, 0, FM_ROT_START:FM_ROT_END])
+                new_len = torch.where(chained, gap.squeeze(-1) * SCALE_SCALE,
+                                      out[:, 0, FM_SCALE_START])
+                slot0 = torch.cat([
+                    out[:, 0, :FM_ROT_START],
+                    new_rot,
+                    new_len.unsqueeze(-1),
+                    out[:, 0, FM_SCALE_START + 1:],
+                ], dim=-1)
+                out = torch.cat([slot0.unsqueeze(1), out[:, 1:]], dim=1)
+
         base = torch.cat([
             torch.where(stem.unsqueeze(-1), stem_base, base[:, 0]).unsqueeze(1),
             base[:, 1:],
