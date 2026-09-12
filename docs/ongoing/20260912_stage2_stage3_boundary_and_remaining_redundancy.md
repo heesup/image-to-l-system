@@ -251,6 +251,33 @@ cause, and it is measurable before the NaN), and the untested query barrier
 (`684a9f1`). Bisecting with `FM_GRAD_PROBE=1` from the epoch-25 checkpoint at
 1e-4 with seed 1234 should reproduce it in about two epochs.
 
+**What has been tried since (same afternoon).** `38242849` (resumed from epoch 25,
+`LR=5e-5`, `SEED=1235`) reproduced the precursor at the *same steps* of epoch 27
+(step 208: Ord MAE 3.84 vs 3.63; step 416: Scl 1.20 vs 2.94) and burst at step
+445 with huge-but-finite gradients on every `coarse_stage` parameter, first in
+the decoder's `norm3` weights/biases and cross-attention projections; cancelled.
+Two hypotheses were then tested and refuted: (a) weight decay driving LayerNorm
+weights or query embeddings to zero -- the checkpoints show LN weights at 1.00
+and query norms growing (0.44 -> 0.52 median) from epoch 15 to 25; (b) a
+collapsed decoder token (a pre-LN block amplifies gradients by 1/std of the
+token) -- `FM_ACT_PROBE=1` (new, forward probe on every decoder LayerNorm input)
+shows the smallest per-token std at 0.11 and growing through the layers. A
+15-epoch replay from the epoch-25 checkpoint on a 512-sample subset (`FM_ACT_PROBE`
++ `FM_GRAD_PROBE`, batch 8, 1 GPU) never fired the canary; the layer probe
+reported at most 108x amplification in `decoder.layer0`.
+
+**The lead that remains is the data.** `DistributedSampler` is constructed with
+its default seed, so the shuffle is keyed by the epoch only: two runs with
+different `--seed` see the *same batch at the same step*, which is exactly what
+the two runs did at epoch 27. The trainer now names the batch's samples on the
+first canary and, with `FM_SPIKE_DUMP=1`, on any step whose Stage 2 scale /
+ordinal / existence loss spikes (`dc3846e`). A full-dataset replay of epochs
+26-28 from the epoch-25 checkpoint is running locally under torchrun (1 GPU,
+batch 48; the sampler reproduces the cluster's permutation, so the cluster's
+global step k is local steps 4k..4k+3). If the spikes land on the same samples,
+the fix is a per-sample guard (or excluding the samples); if not, the
+state-drift reading stands and the query barrier is next.
+
 ---
 
 ## 2. Proposed next step A: move roll + scale prediction from Stage 2 to Stage 3
