@@ -156,7 +156,26 @@ Also note that *down-weighting* is not the fix even if the hypothesis holds, bec
 - The two unexplained numbers, both worth attacking directly: the gradient *arriving at* `edge_bias` reached **2.1e20**, an order of magnitude above anything else in the system (hypothesis 7 refuted only that the bias's *value* drives amplification, not the size of the gradient flowing into it), and decoder layer 0 amplifies **~107x at healthy magnitudes**, which is large enough to be worth understanding on its own terms.
 - One structural oddity found but not implicated: `nn.TransformerDecoder` is built with `norm_first=True` layers and **no final `norm=`**, so the residual stream is never normalised at the output. Hypothesis 6 showed this does not amplify the mask gradient, but a pre-norm stack without a final norm is still non-standard and cheap to fix.
 
-**A recommendation on framing, for whoever picks this up.** Eight architecture-level guesses failed, which is itself evidence: this is more likely an optimisation-dynamics problem than a broken op. The untried approaches are therefore the boring ones -- warmup on the Stage 2 trunk, a lower `lr`, or `AdamW` epsilon/beta adjustments -- plus the one structural fix above. Do not spend another session enumerating ops.
+**A recommendation on framing.** Eight architecture-level guesses failed, which is itself evidence: this is more likely an optimisation-dynamics problem than a broken op. Do not spend another session enumerating ops.
+
+### 1.9.1 The learning rate tracks the failure, and it explains the control run too
+
+Acting on that framing immediately produced the strongest correlation in the whole investigation. Warmup is linear from **0.1x to 1.0x over `--warmup_epochs 3`** (default), so the peak `lr` of 3e-4 is only reached at the end of epoch 3. Computing the multiplier at each observed onset:
+
+| run | onset | lr multiplier | effective lr |
+|---|---|---|---|
+| `38240070` | epoch 3, step 358 | 0.90x | 2.71e-4 |
+| `38240120` | epoch 2, step ~262 | 0.55x | 1.65e-4 |
+| `38240147` | epoch 3, step ~262 | 0.85x | 2.55e-4 |
+| `38240158` | epoch 3, step ~262 | 0.85x | 2.55e-4 |
+
+**Every explosion happened above ~1.6e-4**, clustered in the last third of the warmup ramp.
+
+**And this retracts an earlier conclusion in this doc.** The single-process control run was clean for 2,083 steps and that was read as implicating 4-rank DDP or per-rank data sharding. It does not: with global batch 48 instead of 192 it runs 2,083 steps per epoch rather than 524, so its 3-epoch warmup spans 6,250 steps, and at the end of epoch 1 -- where it was stopped -- it had only reached **0.40x of peak, 1.20e-4**. It never entered the regime where anything ever failed. There is no DDP-specific effect in evidence.
+
+This also fits the one run that survived longest at batch 256 (global 1024, job `38239988`, four epochs clean): the same `lr` over a 5.3x larger batch is a much smaller effective step.
+
+**Prediction, and the test now running**: capping `lr` below ~1.5e-4 should remove the explosion. Job `38240281` is `LR=1e-4` with everything else unchanged from `38240158` (`SEED=1234`, batch 48, render deferred to epoch 40, `SAVE_EVERY=10`). If it clears epochs 3-6, the mechanism is optimisation dynamics and the fix is a schedule, not an architecture change -- and the query barrier from `684a9f1` should then be re-examined and probably removed, since it would no longer be load-bearing.
 2. If it survives, reproduce deterministically with `--seed`, then bisect inside the decoder by extending `_probe_grad` to each layer's input and output -- the amplification is somewhere in those four layers.
 3. Only then consider re-introducing bounded per-element clipping. Note that the previous session *removed* a blanket +-100 per-element pre-clamp specifically to stop it masking leaks, and this is plausibly the leak it was masking -- so re-adding it would hide a real defect and should be a deliberate, documented choice, not a reflex.
 
