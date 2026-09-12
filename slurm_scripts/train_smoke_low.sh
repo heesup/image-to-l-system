@@ -24,7 +24,7 @@ $TORCHRUN_BIN --standalone --nproc_per_node=2 \
     --save_every 5 \
     --max_train_samples 600 \
     --batch_size 8 \
-    --slots_per_anchor 10 \
+    --slots_per_phytomer 10 \
     --flow_granularity phytomer \
     --output_dir diffusion_based/checkpoints/fm_smoke_low \
     --freeze_backbone \

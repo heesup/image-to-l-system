@@ -5,7 +5,7 @@ dir (dataset/cache/<name>_pkt/) using the best checkpoint.
 
 Packet extraction uses EXACT XML phytomer membership (cache field
 `phytomer_ids`), so training targets are exactly the supervision units the
-anchor-level flow matcher will consume.
+phytomer-level flow matcher will consume.
 
 The pkt cache replaces the training loop's per-step packet build + VAE encode
 (0.2-4.2s/step — the #2 bottleneck after render) with a cache lookup.

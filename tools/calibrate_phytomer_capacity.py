@@ -1,12 +1,12 @@
-"""Calibrates the DAP -> anchor capacity logistic curve from the cache dataset.
+"""Calibrates the DAP -> phytomer capacity logistic curve from the cache dataset.
 
 Samples GT phytomer cluster counts per DAP bucket (matcher-consistent: petiole
 bases + standalone internodes, mirroring HierarchicalBotanicalMatcher), fits a
 logistic curve to the rolling-max-smoothed p97.5 envelope, and prints constants
-for ANCHOR_CURVE_{L,K,X0,N0} in diffusion_based/models/hierarchical_part_flow_matching.py.
+for PHYTOMER_CURVE_{L,K,X0,N0} in diffusion_based/models/hierarchical_part_flow_matching.py.
 
 Usage (from workspace root):
-    /home/lion397/.conda/envs/digital-crops/bin/python tools/calibrate_anchor_capacity.py \
+    /home/lion397/.conda/envs/digital-crops/bin/python tools/calibrate_phytomer_capacity.py \
         --cache_dir dataset/cache/cowpea_curv26 --samples_per_dap 25
 """
 
@@ -52,7 +52,7 @@ def main():
                         help="Fit envelope: 'max' = rolling-max of observed sample maxima (100%% max coverage), 'p975' = rolling-max of p97.5")
     parser.add_argument("--margin", type=float, default=1.10)
     parser.add_argument("--flat", type=float, default=6.0)
-    parser.add_argument("--max_anchors", type=int, default=512)
+    parser.add_argument("--max_phytomers", type=int, default=512)
     args = parser.parse_args()
 
     files = sorted(glob.glob(f"{args.cache_dir}/*.pt"))
@@ -111,28 +111,28 @@ def main():
     )
     L, k, x0, n0 = popt
     pred = logistic(daps_a, L, k, x0, n0)
-    cap = np.minimum(np.ceil(np.maximum(pred, 0) * args.margin + args.flat), args.max_anchors)
+    cap = np.minimum(np.ceil(np.maximum(pred, 0) * args.margin + args.flat), args.max_phytomers)
 
     print(f"\n=== FITTED CONSTANTS (fit target: {fit_label}) ===")
-    print(f"ANCHOR_CURVE_L   = {L:.1f}")
-    print(f"ANCHOR_CURVE_K   = {k:.4f}")
-    print(f"ANCHOR_CURVE_X0  = {x0:.1f}")
-    print(f"ANCHOR_CURVE_N0  = {n0:.2f}")
-    print(f"ANCHOR_MARGIN    = {args.margin}")
-    print(f"ANCHOR_MARGIN_FLAT = {args.flat}")
+    print(f"PHYTOMER_CURVE_L   = {L:.1f}")
+    print(f"PHYTOMER_CURVE_K   = {k:.4f}")
+    print(f"PHYTOMER_CURVE_X0  = {x0:.1f}")
+    print(f"PHYTOMER_CURVE_N0  = {n0:.2f}")
+    print(f"PHYTOMER_MARGIN    = {args.margin}")
+    print(f"PHYTOMER_MARGIN_FLAT = {args.flat}")
     cov_p975 = float(np.mean(cap >= p975_a))
     cov_max = float(np.mean(cap >= max_a))
     print(f"coverage: p97.5 {cov_p975*100:.0f}% | sample-max {cov_max*100:.0f}%")
-    print(f"avg capacity anchors: {cap.mean():.0f} (fine {cap.mean()*8:.0f} slots)")
+    print(f"avg capacity phytomers: {cap.mean():.0f} (fine {cap.mean()*8:.0f} slots)")
 
-    tiers = [8, 16, 32, 64, 128, 256, args.max_anchors]
+    tiers = [8, 16, 32, 64, 128, 256, args.max_phytomers]
     old_caps = []
     for d in daps_a:
         old = 8.0 * 2.0 ** (d / 8.5)
-        tier = next((t for t in tiers if math.ceil(old) <= t), args.max_anchors)
+        tier = next((t for t in tiers if math.ceil(old) <= t), args.max_phytomers)
         old_caps.append(tier)
     old_caps = np.array(old_caps)
-    print(f"avg old-tier anchors: {old_caps.mean():.0f} (fine {old_caps.mean()*8:.0f} slots)")
+    print(f"avg old-tier phytomers: {old_caps.mean():.0f} (fine {old_caps.mean()*8:.0f} slots)")
     print(f"avg fine-slot saving vs old: {(1 - cap.mean() / old_caps.mean())*100:.0f}%")
 
 

@@ -197,7 +197,7 @@ def canonical_sort_nodes(
     Order:
       1. Active vs Empty (Active nodes first, Empty padding slots last)
       2. Organ Type Botanical Hierarchy:
-         - Root Meta / Shoot Meta (anchors)
+         - Root Meta / Shoot Meta (phytomers)
          - Internodes (Stem skeleton, sorted bottom -> top along base_z)
          - Petioles (Branch / leaf stalks, sorted bottom -> top along base_z)
          - Leaves (Photosynthetic blades, sorted bottom -> top, then azimuth angle)

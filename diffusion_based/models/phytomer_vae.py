@@ -10,8 +10,8 @@ Rationale (validated 2026-09-09 on cowpea_curv26):
   stem-vs-leaflet r=0.52), so the effective DOF is far below 8x16=128.
 - One latent per phytomer turns Stage 3 flow matching from 8K tokens into K
   tokens (64x cheaper self-attention, 8x cheaper ODE) and collapses the
-  matcher to a single anchor-level Hungarian (no slot-level assignment).
-- Geometry is ANCHOR-RELATIVE (organ base - cluster center): the anchor/node
+  matcher to a single phytomer-level Hungarian (no slot-level assignment).
+- Geometry is PHYTOMER-RELATIVE (organ base - cluster center): the phytomer/node
   position carries global placement, the latent models translation-invariant
   local morphology. decode_packet() re-anchors with the node position.
 
@@ -126,7 +126,7 @@ class PhytomerVAE(nn.Module):
     def pack_input(self, packets: torch.Tensor, presence: torch.Tensor) -> torch.Tensor:
         """Flattens (P, 10, 26) + (P, 10) presence -> (P, 240) encoder input.
 
-        v3 scale normalization: slot scales are divided by the packet's anchor
+        v3 scale normalization: slot scales are divided by the packet's phytomer
         scale s_a (petiole scale row) FIRST, so the encoder sees scale-INVARIANT
         relative geometry. The 76D flow state carries s_a explicitly; decode
         multiplies it back (denormalize_packet_scales) BEFORE assemble_packets.
@@ -136,8 +136,8 @@ class PhytomerVAE(nn.Module):
         0.8/1.0 x the petiole curve, flowers/fruit = curved peduncle tip).
         """
         from diffusion_based.dataset.phytomer_packets import (
-            anchor_scale, normalize_packet_scales)
-        pk = normalize_packet_scales(packets, anchor_scale(packets))
+            phytomer_scale, normalize_packet_scales)
+        pk = normalize_packet_scales(packets, phytomer_scale(packets))
         P = pk.shape[0]
         keep = torch.ones(pk.shape[-1], dtype=torch.bool, device=pk.device)
         keep[FM_BASE_START:FM_BASE_END] = False
@@ -329,13 +329,13 @@ class PhytomerVAE(nn.Module):
 
         tgt_base = torch.zeros_like(target_packets[:, :, FM_BASE_START:FM_BASE_END])
         tgt_rot = target_packets[:, :, FM_ROT_START:FM_ROT_END]
-        # v3: scale targets are NORMALIZED by the packet anchor scale (matching
+        # v3: scale targets are NORMALIZED by the packet phytomer scale (matching
         # pack_input, which normalizes the encoder input). Decode output scales
         # are normalized; callers denormalize by s_a before assemble_packets.
         from diffusion_based.dataset.phytomer_packets import (
-            anchor_scale as _anchor_scale, normalize_packet_scales as _norm_scales)
+            phytomer_scale as _phytomer_scale, normalize_packet_scales as _norm_scales)
         tgt_packets_norm = _norm_scales(
-            target_packets, _anchor_scale(target_packets))
+            target_packets, _phytomer_scale(target_packets))
         tgt_scale = tgt_packets_norm[:, :, FM_SCALE_START:FM_SCALE_END]
         tgt_curv = target_packets[:, :, FM_CURV:FM_CURV + 1]
 

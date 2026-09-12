@@ -31,23 +31,23 @@ class TestDINOv23DSpatial(unittest.TestCase):
 
     def test_coarse_skeletal_3d_reference_points(self):
         """Verify DETR3D-style 3D reference points and delta pos head."""
-        coarse = CoarseSkeletalTransformer(max_anchors=32, embed_dim=384, num_heads=4, num_layers=2).to(self.device)
+        coarse = CoarseSkeletalTransformer(max_phytomers=32, embed_dim=384, num_heads=4, num_layers=2).to(self.device)
         self.assertTrue(hasattr(coarse, "ref_points"))
         self.assertEqual(coarse.ref_points.shape, (32, 3))
 
         dummy_tokens = torch.randn(2, 257, 384, device=self.device)
         out = coarse(dummy_tokens, active_k=16)
 
-        self.assertEqual(out["anchor_pos"].shape, (2, 16, 3))
-        self.assertEqual(out["anchor_rot"].shape, (2, 16, 6))
-        self.assertEqual(out["anchor_logits"].shape, (2, 16, 1))
-        self.assertEqual(out["anchor_features"].shape, (2, 16, 384))
+        self.assertEqual(out["phytomer_pos"].shape, (2, 16, 3))
+        self.assertEqual(out["phytomer_rot"].shape, (2, 16, 6))
+        self.assertEqual(out["phytomer_logits"].shape, (2, 16, 1))
+        self.assertEqual(out["phytomer_features"].shape, (2, 16, 384))
 
     def test_end_to_end_model_forward_backward(self):
         """Verify full 4-in-1 model forward and backward pass."""
         model = HierarchicalPartFlowMatchingModel(
-            max_anchors=16,
-            slots_per_anchor=8,
+            max_phytomers=16,
+            slots_per_phytomer=8,
             node_dim=16,
             embed_dim=384,
             coarse_layers=2,
@@ -65,13 +65,13 @@ class TestDINOv23DSpatial(unittest.TestCase):
 
         out = model(noisy_fine_nodes=noisy_nodes, timesteps=timesteps, images=images, daps=daps)
 
-        self.assertIn("pred_anchor_pos", out)
-        self.assertIn("pred_anchor_logits", out)
+        self.assertIn("pred_phytomer_pos", out)
+        self.assertIn("pred_phytomer_logits", out)
         self.assertIn("pred_velocity", out)
         self.assertIn("pred_fine_exist_logits", out)
 
         # Check gradient backprop through the entire pipeline
-        loss = out["pred_anchor_pos"].sum() + out["pred_velocity"].sum()
+        loss = out["pred_phytomer_pos"].sum() + out["pred_velocity"].sum()
         loss.backward()
 
         # Check that ray_mlp and decoder received gradients

@@ -33,7 +33,7 @@ def _check_grad(name: str, param: torch.Tensor) -> bool:
 def audit(capacity_mode: str, dap: float) -> bool:
     print(f"\n=== capacity_mode={capacity_mode} (DAP={dap}) ===")
     torch.manual_seed(0)
-    layer = CoarseSkeletalTransformer(max_anchors=64, embed_dim=128, num_heads=4, num_layers=2)
+    layer = CoarseSkeletalTransformer(max_phytomers=64, embed_dim=128, num_heads=4, num_layers=2)
     # Ensure the DAP head's ReLU is active at init (random init can land in the dead
     # zone; with trained real-data weights DAP predictions are positive anyway).
     with torch.no_grad():
@@ -42,7 +42,7 @@ def audit(capacity_mode: str, dap: float) -> bool:
     tokens = torch.randn(B, T, 128, requires_grad=True)
 
     dap_tensor = torch.tensor([dap, dap])
-    active_k = compute_matryoshka_slice(dap=dap_tensor, max_anchors=64)
+    active_k = compute_matryoshka_slice(dap=dap_tensor, max_phytomers=64)
 
     if capacity_mode == "given":
         out = layer(tokens, active_k=active_k)
@@ -50,9 +50,9 @@ def audit(capacity_mode: str, dap: float) -> bool:
         out = layer(tokens, capacity_mode="pred_phyto")
 
     loss = (
-        out["anchor_pos"].pow(2).mean()
-        + out["anchor_rot"].pow(2).mean()
-        + torch.sigmoid(out["anchor_logits"]).mean()
+        out["phytomer_pos"].pow(2).mean()
+        + out["phytomer_rot"].pow(2).mean()
+        + torch.sigmoid(out["phytomer_logits"]).mean()
         + out["pred_dap"].pow(2).mean()
         + out["pred_num_phytomers"].pow(2).mean()
     )
@@ -62,7 +62,7 @@ def audit(capacity_mode: str, dap: float) -> bool:
     ok &= _check_grad("pos_head (Stage 2 xyz)", layer.pos_head[0].weight)
     ok &= _check_grad("rot_head (Stage 2 6D)", layer.rot_head[0].weight)
     ok &= _check_grad("exist_head (Stage 2 exist)", layer.exist_head[0].weight)
-    ok &= _check_grad("anchor_queries[:K]", layer.anchor_queries)
+    ok &= _check_grad("phytomer_queries[:K]", layer.phytomer_queries)
     ok &= _check_grad("ref_points[:K]", layer.ref_points)
     ok &= _check_grad("decoder layer0 self-attn", layer.decoder.layers[0].self_attn.in_proj_weight)
     ok &= _check_grad("macro_head dap (Stage 1)", layer.macro_head.dap_head.weight)
@@ -73,8 +73,8 @@ def audit(capacity_mode: str, dap: float) -> bool:
         layer.zero_grad()
         out2 = layer(tokens, capacity_mode="pred_phyto")
         # The phytomer count gradient must flow through the soft margin prior into
-        # anchor_logits -> existence loss even though the slice index is discrete.
-        loss2 = out2["pred_num_phytomers"].pow(2).mean() + out2["anchor_logits"].pow(2).mean()
+        # phytomer_logits -> existence loss even though the slice index is discrete.
+        loss2 = out2["pred_num_phytomers"].pow(2).mean() + out2["phytomer_logits"].pow(2).mean()
         loss2.backward()
         g_phy = layer.macro_head.phy_head.weight.grad
         g_phy_direct = g_phy is not None and g_phy.norm().item() > 0.0

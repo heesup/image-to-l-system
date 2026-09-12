@@ -2,7 +2,7 @@
 Distributed Training Script for Hierarchical Matryoshka Botanical Flow Matching.
 
 Jointly trains:
-  Stage 1: Coarse Skeletal Transformer (3D anchors, existence logits, aux DAP)
+  Stage 1: Coarse Skeletal Transformer (3D phytomers, existence logits, aux DAP)
   Stage 2: Fine Botanical Flow Matching Decoder (local organ vector field, discrete classes)
 """
 
@@ -49,9 +49,9 @@ from diffusion_based.training.flow_matching import FlowMatchingScheduler
 from diffusion_based.models.hierarchical_part_flow_matching import (
     HierarchicalPartFlowMatchingModel,
     compute_matryoshka_slice,
-    estimate_anchor_capacity,
-    ANCHOR_MARGIN,
-    ANCHOR_MARGIN_FLAT,
+    estimate_phytomer_capacity,
+    PHYTOMER_MARGIN,
+    PHYTOMER_MARGIN_FLAT,
     build_phytomer_flow_target,
     split_phytomer_flow_target,
     apply_ref_for_flow,
@@ -69,7 +69,7 @@ from diffusion_based.dataset.phytomer_packets import (
     decode_packets,
     rot6d_to_matrix,
     assemble_packets,
-    anchor_scale,
+    phytomer_scale,
     denormalize_packet_scales,
 )
 from diffusion_based.training.hierarchical_hungarian_matcher import (
@@ -95,7 +95,7 @@ def forward_backward_step(
     scheduler: FlowMatchingScheduler,
     matcher: HierarchicalBotanicalMatcher,
     device: torch.device,
-    slots_per_anchor: int,
+    slots_per_phytomer: int,
     renderer: Optional[HeliosPyTorchRenderer] = None,
     vae: Optional[nn.Module] = None,
     depth_loss_weight: float = 0.5,
@@ -145,18 +145,18 @@ def forward_backward_step(
             # Defense Line: sanitize gradients flowing into DINOv2 backbone from downstream heads/rasterizer
             image_tokens.register_hook(lambda g: torch.nan_to_num(g.clamp(-1.0, 1.0), nan=0.0, posinf=1.0, neginf=-1.0))
 
-    # Matryoshka anchor slicing directly from GT DAP (clean, deterministic, 100% stable)
+    # Matryoshka phytomer slicing directly from GT DAP (clean, deterministic, 100% stable)
     active_k = compute_matryoshka_slice(
-        dap=daps, max_anchors=raw_model.max_anchors, margin=ANCHOR_MARGIN
+        dap=daps, max_phytomers=raw_model.max_phytomers, margin=PHYTOMER_MARGIN
     )
-    active_fine = min(active_k * slots_per_anchor, nodes.shape[1])
+    active_fine = min(active_k * slots_per_phytomer, nodes.shape[1])
 
-    # Per-sample anchor capacity from the calibrated DAP curve. Slots beyond a
+    # Per-sample phytomer capacity from the calibrated DAP curve. Slots beyond a
     # sample's own capacity are excluded from GT existence targets so the
     # existence head is never penalized for not predicting organs that the
-    # sliced anchor bank cannot reach (under-allocation safety valve).
-    per_sample_cap = estimate_anchor_capacity(
-        daps, margin=ANCHOR_MARGIN, flat=ANCHOR_MARGIN_FLAT, max_anchors=active_k
+    # sliced phytomer bank cannot reach (under-allocation safety valve).
+    per_sample_cap = estimate_phytomer_capacity(
+        daps, margin=PHYTOMER_MARGIN, flat=PHYTOMER_MARGIN_FLAT, max_phytomers=active_k
     )  # (B,) in [8, active_k]
 
     nodes_sub = nodes[:, :active_fine]
@@ -168,8 +168,8 @@ def forward_backward_step(
     act_mask_sub = (type_labels_sub > ORGAN_SHOOT_META) & (existence_mask_sub > 0.5)
 
     # Existence-aware per-sample mask: cap each sample's actives to its capacity slice
-    slot_anchor_idx = torch.arange(active_fine, device=device) // slots_per_anchor  # (active_fine,)
-    cap_mask_sub = slot_anchor_idx.unsqueeze(0) < per_sample_cap.to(device).unsqueeze(1)  # (B, active_fine)
+    slot_phytomer_idx = torch.arange(active_fine, device=device) // slots_per_phytomer  # (active_fine,)
+    cap_mask_sub = slot_phytomer_idx.unsqueeze(0) < per_sample_cap.to(device).unsqueeze(1)  # (B, active_fine)
     act_mask_sub = act_mask_sub & cap_mask_sub
 
     node_dim = raw_model.node_dim if hasattr(raw_model, "node_dim") else 16
@@ -192,11 +192,11 @@ def forward_backward_step(
         z_t = scheduler.sample_xt(z_0, tgt_z1, t)
 
     # ------------------------------------------------------------------
-    # PHYTOMER MODE: build the 76D bridge flow target per anchor
-    #   z_1 = [ GT_anchor_pos(3) | GT_anchor_rot(6) | GT_anchor_scale(3) | VAE_latent(64) ]
+    # PHYTOMER MODE: build the 76D bridge flow target per phytomer
+    #   z_1 = [ GT_phytomer_pos(3) | GT_phytomer_rot(6) | GT_phytomer_scale(3) | VAE_latent(64) ]
     # and the bridge prior x_0 = [ scaffold_pos+eps | scaffold_rot+eps | N(0,I) ].
-    # The GT anchor pose comes from the matcher's cluster centers (position)
-    # and the packet reference rotation (Option 1: anchor frame).
+    # The GT phytomer pose comes from the matcher's cluster centers (position)
+    # and the packet reference rotation (Option 1: phytomer frame).
     # ------------------------------------------------------------------
     t0 = time.time()
     phyto_targets = None
@@ -221,8 +221,8 @@ def forward_backward_step(
                 continue
             # Per-sample: build canonical packets from the GT nodes, then encode
             # each packet's latent with the frozen PhytomerVAE. The matcher's
-            # anchor_tgt_pos gives the GT anchor base; the packet reference_rot
-            # gives the GT anchor rotation (the internode frame).
+            # phytomer_tgt_pos gives the GT phytomer base; the packet reference_rot
+            # gives the GT phytomer rotation (the internode frame).
             act_b = act_mask_sub[b]
             if not act_b.any():
                 phyto_targets.append(None)
@@ -240,7 +240,7 @@ def forward_backward_step(
             with torch.no_grad():
                 lat = phytomer_vae.encode(
                     phytomer_vae.pack_input(packets.to(device), presence.to(device)))[0]
-            # GT anchor pos = cluster center (metres); GT anchor rot = reference.
+            # GT phytomer pos = cluster center (metres); GT phytomer rot = reference.
             phyto_targets.append({
                 "packets": packets.to(device),
                 "presence": presence.to(device),
@@ -248,7 +248,7 @@ def forward_backward_step(
                 "refs": refs.to(device),
                 "latent": lat,  # (P, D)
             })
-        # The matcher will provide anchor_tgt_pos per matched anchor; we build
+        # The matcher will provide phytomer_tgt_pos per matched phytomer; we build
         # the full (B, K, 9+D) target after matching (below).
     prof["packet_build"] = time.time() - t0
 
@@ -290,25 +290,25 @@ def forward_backward_step(
                     image_tokens=image_tokens,
                 )
         prof["fwd1"] = time.time() - t0
-        pred_anchor_pos = outputs["pred_anchor_pos"].detach().float()   # (B, K, 3)
-        pred_anchor_rot = outputs["pred_anchor_rot"].detach().float()   # (B, K, 6)
-        K_eff = pred_anchor_pos.shape[1]
+        pred_phytomer_pos = outputs["pred_phytomer_pos"].detach().float()   # (B, K, 3)
+        pred_phytomer_rot = outputs["pred_phytomer_rot"].detach().float()   # (B, K, 6)
+        K_eff = pred_phytomer_pos.shape[1]
         # Standard Gaussian prior in 64D VAE latent space (No bridge coupling into z_0)
         z_0 = torch.randn(B, K_eff, D, device=device)
         z_t = z_0.clone()
 
-    # Model may resolve a wider anchor slice than the padded GT tensor provides
+    # Model may resolve a wider phytomer slice than the padded GT tensor provides
     # (active_fine is clamped to nodes.shape[1] above); align the z tensors.
     K_out = int(outputs["active_k"]) if "active_k" in outputs else active_k
     if flow_granularity == "phytomer":
-        active_fine = K_out * slots_per_anchor  # legacy flat surface (K*8)
+        active_fine = K_out * slots_per_phytomer  # legacy flat surface (K*8)
         if z_t.shape[1] != K_out:
             if z_t.shape[1] < K_out:
                 pad_n = K_out - z_t.shape[1]
                 z_t = torch.nn.functional.pad(z_t, (0, 0, 0, pad_n))
                 z_0 = torch.nn.functional.pad(z_0, (0, 0, 0, pad_n))
     else:
-        active_fine = K_out * slots_per_anchor
+        active_fine = K_out * slots_per_phytomer
         if active_fine != z_t.shape[1]:
             if z_t.shape[1] < active_fine:
                 pad = active_fine - z_t.shape[1]
@@ -332,13 +332,13 @@ def forward_backward_step(
         if active_fine == cap_mask_sub.shape[1]:
             act_mask_sub = act_mask_sub & cap_mask_sub
 
-    pred_anchor_pos = outputs["pred_anchor_pos"].float()              # (B, K, 3)
-    pred_anchor_logits = outputs["pred_anchor_logits"].float()          # (B, K, 1)
+    pred_phytomer_pos = outputs["pred_phytomer_pos"].float()              # (B, K, 3)
+    pred_phytomer_logits = outputs["pred_phytomer_logits"].float()          # (B, K, 1)
     pred_velocity = outputs["pred_velocity"].float()                  # (B, active_fine, node_dim)
     pred_fine_exist_logits = outputs["pred_fine_exist_logits"].float()  # (B, active_fine, 1)
-    pred_anchor_scale = outputs.get("pred_anchor_scale")  # (B, K, 3) or None
-    if pred_anchor_scale is not None:
-        pred_anchor_scale = pred_anchor_scale.float()
+    pred_phytomer_scale = outputs.get("pred_phytomer_scale")  # (B, K, 3) or None
+    if pred_phytomer_scale is not None:
+        pred_phytomer_scale = pred_phytomer_scale.float()
     pred_dap = outputs["pred_dap"].float()
     pred_num_phytomers = outputs.get("pred_num_phytomers")
     soft_margin_weights = outputs.get("soft_margin_weights")
@@ -360,8 +360,8 @@ def forward_backward_step(
     # Hierarchical Bipartite Matching in 16D Latent Space with Soft Margin Modulation
     t0 = time.time()
     matches = matcher(
-        pred_anchor_pos=pred_anchor_pos,
-        pred_anchor_logits=pred_anchor_logits,
+        pred_phytomer_pos=pred_phytomer_pos,
+        pred_phytomer_logits=pred_phytomer_logits,
         pred_fine_geom=clean_z1,
         pred_fine_logits=pred_fine_exist_logits,
         tgt_geoms=tgt_geoms_list,
@@ -381,53 +381,53 @@ def forward_backward_step(
     ).unsqueeze(-1)  # (B, 1)
 
     # ------------------------------------------------------------------
-    # PHYTOMER MODE: build the 64D VAE latent target z_1 per matched anchor
+    # PHYTOMER MODE: build the 64D VAE latent target z_1 per matched phytomer
     # with pure standard Gaussian prior z_0 ~ N(0, I_D).
     #   z_1 = VAE_latent(64)
-    # GT anchor pos = matcher cluster center; GT anchor rot = packet reference.
+    # GT phytomer pos = matcher cluster center; GT phytomer rot = packet reference.
     # ------------------------------------------------------------------
     if flow_granularity == "phytomer":
         D = raw_model.phytomer_latent_dim
-        K_eff = pred_anchor_pos.shape[1]
-        M = raw_model.slots_per_anchor
+        K_eff = pred_phytomer_pos.shape[1]
+        M = raw_model.slots_per_phytomer
         tgt_z1_phyto = torch.zeros(B, K_eff, D, device=device)
         slot_presence_target = torch.zeros(B, K_eff, M, device=device)
-        matched_anchor_mask = torch.zeros(B, K_eff, dtype=torch.bool, device=device)
-        anchor_exist_targets = torch.zeros(B, K_eff, 1, device=device)
-        gt_anchor_pos_target = torch.zeros(B, K_eff, 3, device=device)
-        gt_anchor_rot_target = torch.zeros(B, K_eff, 6, device=device)
-        gt_anchor_scl_target = torch.zeros(B, K_eff, 3, device=device)
+        matched_phytomer_mask = torch.zeros(B, K_eff, dtype=torch.bool, device=device)
+        phytomer_exist_targets = torch.zeros(B, K_eff, 1, device=device)
+        gt_phytomer_pos_target = torch.zeros(B, K_eff, 3, device=device)
+        gt_phytomer_rot_target = torch.zeros(B, K_eff, 6, device=device)
+        gt_phytomer_scl_target = torch.zeros(B, K_eff, 3, device=device)
         cls_acc_data = []
         for b in range(B):
             m_b = matches[b]
-            anc_src = m_b["anchor_src_idx"]
-            anc_tgt = m_b["anchor_tgt_idx"]
+            anc_src = m_b["phytomer_src_idx"]
+            anc_tgt = m_b["phytomer_tgt_idx"]
             if len(anc_src) == 0 or phyto_targets[b] is None:
                 continue
             pt = phyto_targets[b]
-            # GT anchor pos from matcher cluster centers (metres)
-            gt_pos = m_b["anchor_tgt_pos"]  # (M_anc, 3)
+            # GT phytomer pos from matcher cluster centers (metres)
+            gt_pos = m_b["phytomer_tgt_pos"]  # (M_anc, 3)
             # The matcher's anc_tgt indexes its CAPACITY-CLAMPED cluster set, but
             # pt (packets) is the FULL cluster list. Match by position: each GT
-            # anchor pos corresponds to the packet whose center is nearest.
+            # phytomer pos corresponds to the packet whose center is nearest.
             if pt["centers"].shape[0] == 0:
                 continue
             dist = torch.cdist(gt_pos.float(), pt["centers"].float())  # (M_anc, P)
             pkt_idx = dist.argmin(dim=1)                               # (M_anc,)
-            # GT anchor rot = packet reference rotation (Option 1 frame)
+            # GT phytomer rot = packet reference rotation (Option 1 frame)
             gt_rot = pt["refs"][pkt_idx].float()    # (M_anc, 6)
             gt_lat = pt["latent"][pkt_idx].float()  # (M_anc, D)
-            # GT anchor scale = petiole (slot 1) scale row of the matched packets
+            # GT phytomer scale = petiole (slot 1) scale row of the matched packets
             # (absolute FM units; the latent carries only normalized scales).
-            gt_scl = anchor_scale(pt["packets"].to(device, dtype=torch.float32))[pkt_idx].float()  # (M_anc, 3)
+            gt_scl = phytomer_scale(pt["packets"].to(device, dtype=torch.float32))[pkt_idx].float()  # (M_anc, 3)
             tgt_z1_phyto[b, anc_src] = gt_lat
             slot_presence_target[b, anc_src] = pt["presence"][pkt_idx].float()
 
-            matched_anchor_mask[b, anc_src] = True
-            anchor_exist_targets[b, anc_src, 0] = 1.0
-            gt_anchor_pos_target[b, anc_src] = gt_pos.float()
-            gt_anchor_rot_target[b, anc_src] = gt_rot
-            gt_anchor_scl_target[b, anc_src] = gt_scl.float()
+            matched_phytomer_mask[b, anc_src] = True
+            phytomer_exist_targets[b, anc_src, 0] = 1.0
+            gt_phytomer_pos_target[b, anc_src] = gt_pos.float()
+            gt_phytomer_rot_target[b, anc_src] = gt_rot
+            gt_phytomer_scl_target[b, anc_src] = gt_scl.float()
 
             tgt_cls = pt["packets"][pkt_idx, :, :FM_OT_END].argmax(-1)
             pres = pt["presence"][pkt_idx]
@@ -449,19 +449,19 @@ def forward_backward_step(
         prof["fwd2"] = time.time() - t0
         pred_velocity = outputs["pred_velocity"].float()          # (B, K, D)
         pred_fine_exist_logits = outputs["pred_fine_exist_logits"].float()  # (B, K, M)
-        pred_anchor_pos = outputs["pred_anchor_pos"].float()      # (B, K, 3) - live gradient to pos_head
-        pred_anchor_rot = outputs["pred_anchor_rot"].float()      # (B, K, 6) - live gradient to rot_head
-        pred_anchor_logits = outputs["pred_anchor_logits"].float() # (B, K, 1) - live gradient to exist_head
-        pred_anchor_scale = outputs.get("pred_anchor_scale")
-        if pred_anchor_scale is not None:
-            pred_anchor_scale = pred_anchor_scale.float()
+        pred_phytomer_pos = outputs["pred_phytomer_pos"].float()      # (B, K, 3) - live gradient to pos_head
+        pred_phytomer_rot = outputs["pred_phytomer_rot"].float()      # (B, K, 6) - live gradient to rot_head
+        pred_phytomer_logits = outputs["pred_phytomer_logits"].float() # (B, K, 1) - live gradient to exist_head
+        pred_phytomer_scale = outputs.get("pred_phytomer_scale")
+        if pred_phytomer_scale is not None:
+            pred_phytomer_scale = pred_phytomer_scale.float()
 
         # Option B: Detached-feature render branch (shields Transformer & Backbone, trains only 3D heads)
-        pred_anchor_pos_render = outputs.get("pred_anchor_pos_render", pred_anchor_pos).float()
-        pred_anchor_rot_render = outputs.get("pred_anchor_rot_render", pred_anchor_rot).float()
-        pred_anchor_scale_render = outputs.get("pred_anchor_scale_render", pred_anchor_scale)
-        if pred_anchor_scale_render is not None:
-            pred_anchor_scale_render = pred_anchor_scale_render.float()
+        pred_phytomer_pos_render = outputs.get("pred_phytomer_pos_render", pred_phytomer_pos).float()
+        pred_phytomer_rot_render = outputs.get("pred_phytomer_rot_render", pred_phytomer_rot).float()
+        pred_phytomer_scale_render = outputs.get("pred_phytomer_scale_render", pred_phytomer_scale)
+        if pred_phytomer_scale_render is not None:
+            pred_phytomer_scale_render = pred_phytomer_scale_render.float()
         pred_dap = outputs["pred_dap"].float()
         pred_num_phytomers = outputs.get("pred_num_phytomers")
         soft_margin_weights = outputs.get("soft_margin_weights")
@@ -477,11 +477,11 @@ def forward_backward_step(
         clean_z1 = clean_z1.clamp(-6.0, 6.0)
         # Velocity target: v = z_1 - z_0 in standard Gaussian space.
         tgt_velocity = tgt_z1_phyto - z_0
-        total_matched_anc = matched_anchor_mask.sum().item()
+        total_matched_anc = matched_phytomer_mask.sum().item()
         norm_anc = max(total_matched_anc, 1)
         norm_m = norm_anc
 
-        # Class accuracy on matched anchors' present slots (frozen VAE decode)
+        # Class accuracy on matched phytomers' present slots (frozen VAE decode)
         correct_cls = 0
         total_cls_slots = 0
         with torch.no_grad():
@@ -493,18 +493,18 @@ def forward_backward_step(
                 correct_cls += ((pred_cls_m == tgt_cls_b).float() * pres_b.float()).sum().item()
                 total_cls_slots += int(pres_b.sum().item())
 
-        # 1. Fine Velocity MSE on matched anchors (Vectorized 1-shot in 64D VAE space)
+        # 1. Fine Velocity MSE on matched phytomers (Vectorized 1-shot in 64D VAE space)
         if total_matched_anc > 0:
             loss_fine_vel = F.mse_loss(
-                pred_velocity[matched_anchor_mask],
-                tgt_velocity[matched_anchor_mask],
+                pred_velocity[matched_phytomer_mask],
+                tgt_velocity[matched_phytomer_mask],
                 reduction="sum",
             ) / (float(D) * float(norm_m))
         else:
             loss_fine_vel = torch.tensor(0.0, device=device)
 
-        # 2. Idle Anchor Damping (Vectorized 1-shot per sample, properly normalized by num_idle)
-        idle_mask = ~matched_anchor_mask
+        # 2. Idle Phytomer Damping (Vectorized 1-shot per sample, properly normalized by num_idle)
+        idle_mask = ~matched_phytomer_mask
         num_idle = idle_mask.sum().item()
         if num_idle > 0:
             loss_fine_vel = loss_fine_vel + (
@@ -517,41 +517,41 @@ def forward_backward_step(
             pred_fine_exist_logits.clamp(min=-10.0, max=10.0), slot_presence_target, pos_weight=pos_w, reduction="mean"
         )
 
-        # 4. Anchor Existence Loss (Vectorized 1-shot across B, K, 1)
+        # 4. Phytomer Existence Loss (Vectorized 1-shot across B, K, 1)
         pos_weight_anc = torch.tensor([8.0], device=device)
-        loss_anchor_exist = F.binary_cross_entropy_with_logits(
-            pred_anchor_logits.clamp(min=-10.0, max=10.0), anchor_exist_targets, pos_weight=pos_weight_anc, reduction="mean"
+        loss_phytomer_exist = F.binary_cross_entropy_with_logits(
+            pred_phytomer_logits.clamp(min=-10.0, max=10.0), phytomer_exist_targets, pos_weight=pos_weight_anc, reduction="mean"
         )
 
-        # 5. Anchor Position Loss (Vectorized 1-shot)
+        # 5. Phytomer Position Loss (Vectorized 1-shot)
         if total_matched_anc > 0:
-            loss_anchor_pos = F.smooth_l1_loss(
-                pred_anchor_pos[matched_anchor_mask],
-                gt_anchor_pos_target[matched_anchor_mask],
+            loss_phytomer_pos = F.smooth_l1_loss(
+                pred_phytomer_pos[matched_phytomer_mask],
+                gt_phytomer_pos_target[matched_phytomer_mask],
                 reduction="sum",
             ) / float(norm_anc)
         else:
-            loss_anchor_pos = torch.tensor(0.0, device=device)
+            loss_phytomer_pos = torch.tensor(0.0, device=device)
 
-        # 6. Anchor Rotation Loss (Vectorized 1-shot)
+        # 6. Phytomer Rotation Loss (Vectorized 1-shot)
         if total_matched_anc > 0:
-            loss_anchor_rot = F.smooth_l1_loss(
-                pred_anchor_rot[matched_anchor_mask],
-                gt_anchor_rot_target[matched_anchor_mask],
+            loss_phytomer_rot = F.smooth_l1_loss(
+                pred_phytomer_rot[matched_phytomer_mask],
+                gt_phytomer_rot_target[matched_phytomer_mask],
                 reduction="sum",
             ) / float(norm_anc)
         else:
-            loss_anchor_rot = torch.tensor(0.0, device=device)
+            loss_phytomer_rot = torch.tensor(0.0, device=device)
 
-        # 7. Anchor Scale Loss (Vectorized 1-shot)
-        if pred_anchor_scale is not None and total_matched_anc > 0:
-            loss_anchor_scale = F.smooth_l1_loss(
-                pred_anchor_scale[matched_anchor_mask],
-                gt_anchor_scl_target[matched_anchor_mask],
+        # 7. Phytomer Scale Loss (Vectorized 1-shot)
+        if pred_phytomer_scale is not None and total_matched_anc > 0:
+            loss_phytomer_scale = F.smooth_l1_loss(
+                pred_phytomer_scale[matched_phytomer_mask],
+                gt_phytomer_scl_target[matched_phytomer_mask],
                 reduction="sum",
             ) / float(norm_anc)
         else:
-            loss_anchor_scale = torch.tensor(0.0, device=device)
+            loss_phytomer_scale = torch.tensor(0.0, device=device)
 
         # Skip the organ-mode loss loop below.
         phyto_mode_done = True
@@ -560,8 +560,8 @@ def forward_backward_step(
 
     # Loss Computation
     if not phyto_mode_done:
-        loss_anchor_pos_acc = torch.tensor(0.0, device=device)
-        loss_anchor_exist_acc = torch.tensor(0.0, device=device)
+        loss_phytomer_pos_acc = torch.tensor(0.0, device=device)
+        loss_phytomer_exist_acc = torch.tensor(0.0, device=device)
         loss_fine_vel_acc = torch.tensor(0.0, device=device)
         loss_fine_exist_acc = torch.tensor(0.0, device=device)
 
@@ -572,8 +572,8 @@ def forward_backward_step(
 
         for b in range(B):
             m_b = matches[b]
-            anc_src = m_b["anchor_src_idx"]
-            anc_tgt = m_b["anchor_tgt_idx"]
+            anc_src = m_b["phytomer_src_idx"]
+            anc_tgt = m_b["phytomer_tgt_idx"]
             fine_src = m_b["fine_src_idx"]
             fine_tgt = m_b["fine_tgt_idx"]
 
@@ -582,19 +582,19 @@ def forward_backward_step(
             num_fine_m = len(fine_src)
             total_matched_fine += num_fine_m
 
-            # Stage 1 Anchor Losses
+            # Stage 1 Phytomer Losses
             if num_anc_m > 0:
                 exist_targets = torch.zeros(active_k, 1, device=device)
                 exist_targets[anc_src] = 1.0
                 pos_weight_anc = torch.tensor([8.0], device=device)
-                loss_anchor_exist_acc += F.binary_cross_entropy_with_logits(
-                    pred_anchor_logits[b], exist_targets, pos_weight=pos_weight_anc
+                loss_phytomer_exist_acc += F.binary_cross_entropy_with_logits(
+                    pred_phytomer_logits[b], exist_targets, pos_weight=pos_weight_anc
                 )
 
-                if "anchor_tgt_pos" in m_b and len(m_b["anchor_tgt_pos"]) > 0:
-                    p_anc = pred_anchor_pos[b, anc_src]
-                    t_anc = m_b["anchor_tgt_pos"]
-                    loss_anchor_pos_acc += F.smooth_l1_loss(p_anc, t_anc, reduction="sum")
+                if "phytomer_tgt_pos" in m_b and len(m_b["phytomer_tgt_pos"]) > 0:
+                    p_anc = pred_phytomer_pos[b, anc_src]
+                    t_anc = m_b["phytomer_tgt_pos"]
+                    loss_phytomer_pos_acc += F.smooth_l1_loss(p_anc, t_anc, reduction="sum")
 
             # Stage 2 Fine Losses
             exist_targets_fine = torch.zeros(active_fine, 1, device=device)
@@ -638,14 +638,14 @@ def forward_backward_step(
         norm_m = max(total_matched_fine, 1)
         norm_anc = max(total_matched_anc, 1)
 
-        loss_anchor_pos = loss_anchor_pos_acc / norm_anc
-        loss_anchor_exist = loss_anchor_exist_acc / max(B, 1)
+        loss_phytomer_pos = loss_phytomer_pos_acc / norm_anc
+        loss_phytomer_exist = loss_phytomer_exist_acc / max(B, 1)
         loss_fine_vel = loss_fine_vel_acc / norm_m
         loss_fine_exist = loss_fine_exist_acc / max(B, 1)
-        # Anchor scale loss is phytomer-mode only (Stage-2 scale head supervises
+        # Phytomer scale loss is phytomer-mode only (Stage-2 scale head supervises
         # the 76D flow's s_a); organ mode has no scale target.
-        loss_anchor_rot = torch.tensor(0.0, device=device)
-        loss_anchor_scale = torch.tensor(0.0, device=device)
+        loss_phytomer_rot = torch.tensor(0.0, device=device)
+        loss_phytomer_scale = torch.tensor(0.0, device=device)
 
     # Stage 1: Macro Losses (Phytomer Count & DAP)
     loss_phy_count = torch.tensor(0.0, device=device)
@@ -688,9 +688,9 @@ def forward_backward_step(
             if flow_granularity == "phytomer" and n_render > 0:
                 _rz_render = _rz[render_indices]  # (n_render, K, D)
                 lat_all = _rz_render.detach()     # Render gradients should NOT backprop through VAE latent flow
-                pos_all = pred_anchor_pos_render[render_indices] if render_grad_on else pred_anchor_pos_render[render_indices].detach()
-                rot_all = pred_anchor_rot_render[render_indices].detach()  # Rot supervised purely by 3D GT loss
-                scl_all = pred_anchor_scale_render[render_indices] if pred_anchor_scale_render is not None else torch.ones_like(pos_all)
+                pos_all = pred_phytomer_pos_render[render_indices] if render_grad_on else pred_phytomer_pos_render[render_indices].detach()
+                rot_all = pred_phytomer_rot_render[render_indices].detach()  # Rot supervised purely by 3D GT loss
+                scl_all = pred_phytomer_scale_render[render_indices] if pred_phytomer_scale_render is not None else torch.ones_like(pos_all)
                 if not render_grad_on:
                     scl_all = scl_all.detach()
                 else:
@@ -786,10 +786,10 @@ def forward_backward_step(
     # Composite Loss (8-Loss Ratified System: Macro + Scaffold + Micro Flow + Photometric)
     rot_weight = 1.0
     loss = (
-        2.0 * loss_anchor_pos
-        + rot_weight * loss_anchor_rot
-        + scale_weight * loss_anchor_scale
-        + 1.0 * loss_anchor_exist
+        2.0 * loss_phytomer_pos
+        + rot_weight * loss_phytomer_rot
+        + scale_weight * loss_phytomer_scale
+        + 1.0 * loss_phytomer_exist
         + 1.0 * loss_fine_vel
         + 1.0 * loss_fine_exist
         + phy_count_weight * loss_phy_count
@@ -815,10 +815,10 @@ def forward_backward_step(
 
     return {
         "loss": loss.item(),
-        "anchor_pos_loss": loss_anchor_pos.item(),
-        "anchor_rot_loss": loss_anchor_rot.item(),
-        "anchor_exist_loss": loss_anchor_exist.item(),
-        "anchor_scale_loss": loss_anchor_scale.item(),
+        "phytomer_pos_loss": loss_phytomer_pos.item(),
+        "phytomer_rot_loss": loss_phytomer_rot.item(),
+        "phytomer_exist_loss": loss_phytomer_exist.item(),
+        "phytomer_scale_loss": loss_phytomer_scale.item(),
         "phy_count_loss": loss_phy_count.item(),
         "dap_loss": loss_dap.item(),
         "pred_phy_mean": pred_num_phytomers.mean().item() if pred_num_phytomers is not None else 0.0,
@@ -871,8 +871,8 @@ def probe_optimal_batch_size(
     total_vram_bytes = torch.cuda.get_device_properties(device).total_memory
 
     raw_model = model.module if hasattr(model, "module") else model
-    slots_per_anchor = raw_model.slots_per_anchor
-    max_fine_slots = raw_model.max_anchors * slots_per_anchor
+    slots_per_phytomer = raw_model.slots_per_phytomer
+    max_fine_slots = raw_model.max_phytomers * slots_per_phytomer
 
     probe_n = min(min_batch, len(dataset))
     probe_items = [dataset[i] for i in range(probe_n)]
@@ -901,7 +901,7 @@ def probe_optimal_batch_size(
         scheduler=scheduler,
         matcher=matcher,
         device=device,
-        slots_per_anchor=slots_per_anchor,
+        slots_per_phytomer=slots_per_phytomer,
         renderer=renderer,
         vae=vae,
         depth_loss_weight=depth_loss_weight,
@@ -1041,10 +1041,10 @@ def train_one_epoch(
     # Optional per-step LR warmup callback (set by main(); scales optimizer lrs linearly)
     lr_warmup_cb = kwargs.pop("lr_warmup_cb", None)
     total_loss = 0.0
-    total_anchor_pos_loss = 0.0
-    total_anchor_rot_loss = 0.0
-    total_anchor_exist_loss = 0.0
-    total_anchor_scale_loss = 0.0
+    total_phytomer_pos_loss = 0.0
+    total_phytomer_rot_loss = 0.0
+    total_phytomer_exist_loss = 0.0
+    total_phytomer_scale_loss = 0.0
     total_phy_count_loss = 0.0
     total_dap_loss = 0.0
     total_pred_phy_mean = 0.0
@@ -1058,7 +1058,7 @@ def train_one_epoch(
     total_cls_acc = 0.0
     count = 0
 
-    slots_per_anchor = model.slots_per_anchor if not hasattr(model, "module") else model.module.slots_per_anchor
+    slots_per_phytomer = model.slots_per_phytomer if not hasattr(model, "module") else model.module.slots_per_phytomer
 
     for batch_idx, batch in enumerate(dataloader):
         # Per-step LR warmup scaling (before optimizer.step inside fwd/bwd)
@@ -1072,7 +1072,7 @@ def train_one_epoch(
             scheduler=scheduler,
             matcher=matcher,
             device=device,
-            slots_per_anchor=slots_per_anchor,
+            slots_per_phytomer=slots_per_phytomer,
             renderer=renderer,
             vae=vae,
             depth_loss_weight=depth_loss_weight,
@@ -1139,10 +1139,10 @@ def train_one_epoch(
                 warmup_n()
 
         total_loss += step_metrics["loss"]
-        total_anchor_pos_loss += step_metrics["anchor_pos_loss"]
-        total_anchor_rot_loss += step_metrics.get("anchor_rot_loss", 0.0)
-        total_anchor_exist_loss += step_metrics["anchor_exist_loss"]
-        total_anchor_scale_loss += step_metrics.get("anchor_scale_loss", 0.0)
+        total_phytomer_pos_loss += step_metrics["phytomer_pos_loss"]
+        total_phytomer_rot_loss += step_metrics.get("phytomer_rot_loss", 0.0)
+        total_phytomer_exist_loss += step_metrics["phytomer_exist_loss"]
+        total_phytomer_scale_loss += step_metrics.get("phytomer_scale_loss", 0.0)
         total_phy_count_loss += step_metrics.get("phy_count_loss", 0.0)
         total_dap_loss += step_metrics.get("dap_loss", 0.0)
         total_pred_phy_mean += step_metrics.get("pred_phy_mean", 0.0)
@@ -1167,7 +1167,7 @@ def train_one_epoch(
             print(
                 f"  [Epoch {epoch:02d}] Step {batch_idx+1:03d}/{len(dataloader):03d} | Loss: {step_metrics['loss']:.4f} | "
                 f"[S1 Macro] Phy: {step_metrics.get('phy_count_loss', 0.0):.4f} [P:{step_metrics.get('pred_phy_mean', 0.0):.1f}/G:{step_metrics.get('gt_phy_mean', 0.0):.1f}], DAP: {step_metrics.get('dap_loss', 0.0):.4f} [P:{step_metrics.get('pred_dap_mean', 0.0):.1f}/G:{step_metrics.get('gt_dap_mean', 0.0):.1f}] | "
-                f"[S2 Scaffold] Pos: {step_metrics['anchor_pos_loss']:.4f}, Rot: {step_metrics.get('anchor_rot_loss', 0.0):.4f}, Scl: {step_metrics.get('anchor_scale_loss', 0.0):.4f}, Ext: {step_metrics.get('anchor_exist_loss', 0.0):.4f} | "
+                f"[S2 Scaffold] Pos: {step_metrics['phytomer_pos_loss']:.4f}, Rot: {step_metrics.get('phytomer_rot_loss', 0.0):.4f}, Scl: {step_metrics.get('phytomer_scale_loss', 0.0):.4f}, Ext: {step_metrics.get('phytomer_exist_loss', 0.0):.4f} | "
                 f"[S3 Micro] Vel: {step_metrics['fine_vel_loss']:.4f}, Ext: {step_metrics['fine_exist_loss']:.4f}, Acc: {step_metrics['cls_acc']*100:.1f}% | "
                 f"[S4 Render] {render_str} | "
                 f"fwd/bwd {t_step1-t_step0:.2f}s opt {t_step2-t_step1:.2f}s | "
@@ -1179,10 +1179,10 @@ def train_one_epoch(
 
     return {
         "loss": total_loss / max(count, 1),
-        "anchor_pos_loss": total_anchor_pos_loss / max(count, 1),
-        "anchor_rot_loss": total_anchor_rot_loss / max(count, 1),
-        "anchor_exist_loss": total_anchor_exist_loss / max(count, 1),
-        "anchor_scale_loss": total_anchor_scale_loss / max(count, 1),
+        "phytomer_pos_loss": total_phytomer_pos_loss / max(count, 1),
+        "phytomer_rot_loss": total_phytomer_rot_loss / max(count, 1),
+        "phytomer_exist_loss": total_phytomer_exist_loss / max(count, 1),
+        "phytomer_scale_loss": total_phytomer_scale_loss / max(count, 1),
         "phy_count_loss": total_phy_count_loss / max(count, 1),
         "dap_loss": total_dap_loss / max(count, 1),
         "pred_phy_mean": total_pred_phy_mean / max(count, 1),
@@ -1211,16 +1211,16 @@ def main():
     parser.add_argument("--target_vram_ratio", type=float, default=0.90, help="Target fraction of total GPU VRAM (default: 0.90)")
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
-    parser.add_argument("--max_anchors", type=int, default=512)
-    parser.add_argument("--slots_per_anchor", type=int, default=10, help="Slots per phytomer packet (v2: 10 = stem, petiole, 3 leaflets, peduncle, 4 repro)")
-    parser.add_argument("--anchor_locality_radius", type=float, default=None,
-                        help="Soft locality radius (meters) for anchor matching: quadratic "
+    parser.add_argument("--max_phytomers", type=int, default=512)
+    parser.add_argument("--slots_per_phytomer", type=int, default=10, help="Slots per phytomer packet (v2: 10 = stem, petiole, 3 leaflets, peduncle, 4 repro)")
+    parser.add_argument("--phytomer_locality_radius", type=float, default=None,
+                        help="Soft locality radius (meters) for phytomer matching: quadratic "
                              "penalty beyond R on top of L1 position cost. Calibrated "
                              "2026-09-09: R=0.10-0.15 covers >99%% of plausible matches "
-                             "(GT NN-dist median 2.5cm vs anchor RMSE ~2cm). None = disabled "
+                             "(GT NN-dist median 2.5cm vs phytomer RMSE ~2cm). None = disabled "
                              "(exact legacy parity). Recommended: 0.12 with weight 50.0.")
-    parser.add_argument("--anchor_locality_weight", type=float, default=50.0,
-                        help="Weight of the soft locality penalty (see --anchor_locality_radius).")
+    parser.add_argument("--phytomer_locality_weight", type=float, default=50.0,
+                        help="Weight of the soft locality penalty (see --phytomer_locality_radius).")
     parser.add_argument("--embed_dim", type=int, default=384)
     parser.add_argument("--vit_layers", type=int, default=8)
     parser.add_argument("--vit_heads", type=int, default=8)
@@ -1230,7 +1230,7 @@ def main():
     parser.add_argument("--organ_vae_checkpoint", type=str, default="diffusion_based/checkpoints/organ_vae/organ_latent_vae_best.pt", help="Path to pretrained OrganLatentVAE checkpoint")
     parser.add_argument("--flow_granularity", type=str, default="organ", choices=["organ", "phytomer"],
                         help="Stage-3 flow granularity: 'organ' = per-organ slots (8K x 16D, pose as conditioning); "
-                             "'phytomer' = per-anchor 9+D vector [base(3) | rot(6) | latent(D)] refining the scaffold pose (bridge flow).")
+                             "'phytomer' = per-phytomer 9+D vector [base(3) | rot(6) | latent(D)] refining the scaffold pose (bridge flow).")
     parser.add_argument("--phytomer_latent_dim", type=int, default=64, help="PhytomerVAE latent dim (flow_granularity=phytomer)")
     parser.add_argument("--phytomer_vae_checkpoint", type=str, default="diffusion_based/checkpoints/phytomer_vae_v2/phytomer_vae_64d_best.pt",
                         help="Path to frozen PhytomerVAE checkpoint (flow_granularity=phytomer)")
@@ -1249,7 +1249,7 @@ def main():
                         help="Render-loop gradients activate at this epoch; before it the render "
                              "loop is bypassed completely to speed up early LR warmup.")
     parser.add_argument("--scale_weight", type=float, default=2.0,
-                        help="Loss weight for the Stage-2 anchor-scale head (76D flow s_a).")
+                        help="Loss weight for the Stage-2 phytomer-scale head (76D flow s_a).")
     parser.add_argument("--eval_min_interval_minutes", type=int, default=30, help="Time-based eval fallback: force an eval panel if at least this many minutes elapsed since the last one (0 disables). Keeps diagnostic cadence roughly constant as dataset size grows per-epoch time.")
     parser.add_argument("--eval_samples_per_bucket", type=int, default=2, help="Fixed stratified eval set: samples per 10-DAP bucket (2 => ~20 samples).")
     parser.add_argument("--eval_seed", type=int, default=1234, help="Deterministic seed for the fixed stratified eval set.")
@@ -1257,7 +1257,7 @@ def main():
     parser.add_argument("--phy_count_weight", type=float, default=2.0, help="Loss weight for phytomer-count (was 0.5 — macro head learned ~6x slower than the Sep-8 organ run)")
     parser.add_argument("--dap_weight", type=float, default=0.05, help="Loss weight for DAP prediction (auxiliary regularizer)")
     parser.add_argument("--init_phytomer_count", type=float, default=50.0,
-                        help="Bias-init phy_head so pred_num starts near the dataset mean; removes the dead-anchor existence gate at epoch 0")
+                        help="Bias-init phy_head so pred_num starts near the dataset mean; removes the dead-phytomer existence gate at epoch 0")
     parser.add_argument("--warmup_epochs", type=int, default=3, help="Linear LR warmup epochs (0.1x -> 1.0x per step; 0 disables)")
     parser.add_argument("--init_checkpoint", type=str, default=None, help="Path to checkpoint to initialize weights from (strict=False)")
     parser.add_argument("--dap_buckets", type=int, default=8, help="Number of DAP buckets for capacity-homogeneous batching (0 = plain shuffle)")
@@ -1268,7 +1268,7 @@ def main():
     parser.add_argument("--detect_anomaly", action="store_true",
                         help="torch.autograd.set_detect_anomaly(True) — pinpoints inplace/NaN backward errors")
     parser.add_argument("--matcher_type", type=str, default="greedy", choices=["greedy", "hungarian"],
-                        help="Anchor bipartite matching algorithm: 'greedy' (GPU batched, ~0.02s) or 'hungarian' (CPU Scipy, ~0.24s)")
+                        help="Phytomer bipartite matching algorithm: 'greedy' (GPU batched, ~0.02s) or 'hungarian' (CPU Scipy, ~0.24s)")
     parser.add_argument("--wandb_project", type=str, default="part-flow-matching")
     parser.add_argument("--wandb_run_name", type=str, default="hierarchical-matryoshka-cowpea")
     args = parser.parse_args()
@@ -1307,7 +1307,7 @@ def main():
     # Dataset
     dataset = PartArrayDataset(
         data_root=args.data_dir,
-        max_nodes=args.max_anchors * args.slots_per_anchor,
+        max_nodes=args.max_phytomers * args.slots_per_phytomer,
         cache_dir=args.cache_dir,
         pkt_cache_dir=args.pkt_cache_dir or None,
         species="cowpea",
@@ -1356,8 +1356,8 @@ def main():
 
     # Model & Optimizers (Instantiated first for memory profiling)
     model = HierarchicalPartFlowMatchingModel(
-        max_anchors=args.max_anchors,
-        slots_per_anchor=args.slots_per_anchor,
+        max_phytomers=args.max_phytomers,
+        slots_per_phytomer=args.slots_per_phytomer,
         node_dim=args.node_dim,
         num_classes=NUM_ORGAN_TYPES,
         image_size=128,
@@ -1375,7 +1375,7 @@ def main():
     ).to(device)
 
     # Frozen PhytomerVAE (flow_granularity=phytomer): encodes/decodes the
-    # anchor-relative M-slot packet latent. Loaded once, frozen.
+    # phytomer-relative M-slot packet latent. Loaded once, frozen.
     phytomer_vae = None
     if args.flow_granularity == "phytomer":
         if not os.path.exists(args.phytomer_vae_checkpoint):
@@ -1483,9 +1483,9 @@ def main():
 
     flow_scheduler = FlowMatchingScheduler()
     matcher = HierarchicalBotanicalMatcher(
-        slots_per_anchor=args.slots_per_anchor,
-        anchor_locality_radius=args.anchor_locality_radius,
-        anchor_locality_weight=args.anchor_locality_weight,
+        slots_per_phytomer=args.slots_per_phytomer,
+        phytomer_locality_radius=args.phytomer_locality_radius,
+        phytomer_locality_weight=args.phytomer_locality_weight,
         matcher_type=args.matcher_type,
     ).to(device)
 
@@ -1523,7 +1523,7 @@ def main():
 
     # Build DataLoader with resolved batch size
     # DAP-bucketed batching keeps each mini-batch developmentally homogeneous so the
-    # anchor-slice capacity matches the botanical content (large Stage 3 FLOPs saving).
+    # phytomer-slice capacity matches the botanical content (large Stage 3 FLOPs saving).
     if args.dap_buckets > 0:
         sample_daps = []
         for s in dataset.samples:
@@ -1646,7 +1646,7 @@ def main():
             print(
                 f"Epoch {epoch:03d} | Loss: {epoch_metrics['loss']:.4f} | "
                 f"[S1 Macro] Phy: {epoch_metrics['phy_count_loss']:.4f} (P:{epoch_metrics['pred_phy_mean']:.1f}/G:{epoch_metrics['gt_phy_mean']:.1f}), DAP: {epoch_metrics.get('dap_loss', 0.0):.4f} (P:{epoch_metrics.get('pred_dap_mean', 0.0):.1f}/G:{epoch_metrics.get('gt_dap_mean', 0.0):.1f}) | "
-                f"[S2 Scaffold] Pos: {epoch_metrics['anchor_pos_loss']:.4f}, Rot: {epoch_metrics.get('anchor_rot_loss', 0.0):.4f}, Scl: {epoch_metrics.get('anchor_scale_loss', 0.0):.4f}, Ext: {epoch_metrics['anchor_exist_loss']:.4f} | "
+                f"[S2 Scaffold] Pos: {epoch_metrics['phytomer_pos_loss']:.4f}, Rot: {epoch_metrics.get('phytomer_rot_loss', 0.0):.4f}, Scl: {epoch_metrics.get('phytomer_scale_loss', 0.0):.4f}, Ext: {epoch_metrics['phytomer_exist_loss']:.4f} | "
                 f"[S3 Micro] Vel: {epoch_metrics['fine_vel_loss']:.4f}, Ext: {epoch_metrics['fine_exist_loss']:.4f}, Acc: {epoch_metrics['cls_acc']*100:.1f}% | "
                 f"[S4 Render] {render_epoch_str} | "
                 f"VRAM: {max_vram_gb:.1f}/{total_vram_gb:.1f} GB ({vram_pct:.1f}%)"
@@ -1662,10 +1662,10 @@ def main():
                 "train/s1_pred_dap_mean": epoch_metrics.get("pred_dap_mean", 0.0),
                 "train/s1_gt_dap_mean": epoch_metrics.get("gt_dap_mean", 0.0),
                 # Stage 2: Coarse 3D Scaffold
-                "train/s2_anchor_pos_loss": epoch_metrics["anchor_pos_loss"],
-                "train/s2_anchor_rot_loss": epoch_metrics.get("anchor_rot_loss", 0.0),
-                "train/s2_anchor_scale_loss": epoch_metrics.get("anchor_scale_loss", 0.0),
-                "train/s2_anchor_exist_loss": epoch_metrics["anchor_exist_loss"],
+                "train/s2_phytomer_pos_loss": epoch_metrics["phytomer_pos_loss"],
+                "train/s2_phytomer_rot_loss": epoch_metrics.get("phytomer_rot_loss", 0.0),
+                "train/s2_phytomer_scale_loss": epoch_metrics.get("phytomer_scale_loss", 0.0),
+                "train/s2_phytomer_exist_loss": epoch_metrics["phytomer_exist_loss"],
                 # Stage 3: Fine Flow Matching
                 "train/s3_fine_vel_loss": epoch_metrics["fine_vel_loss"],
                 "train/s3_fine_exist_loss": epoch_metrics["fine_exist_loss"],
@@ -1679,7 +1679,7 @@ def main():
                 "lr": optimizer.param_groups[0]["lr"],
                 # Legacy keys kept for dashboard continuity
                 "train/phy_count_loss": epoch_metrics["phy_count_loss"],
-                "train/anchor_pos_loss": epoch_metrics["anchor_pos_loss"],
+                "train/phytomer_pos_loss": epoch_metrics["phytomer_pos_loss"],
                 "train/fine_vel_loss": epoch_metrics["fine_vel_loss"],
             }, step=epoch)
 

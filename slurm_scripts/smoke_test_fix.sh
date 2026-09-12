@@ -82,8 +82,8 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     --phytomer_latent_dim 64 \
     --phytomer_vae_checkpoint diffusion_based/checkpoints/phytomer_vae_v4/phytomer_vae_64d_best.pt \
     --pkt_cache_dir dataset/cache/cowpea_curv26_pkt \
-    --max_anchors 512 \
-    --slots_per_anchor 9 \
+    --max_phytomers 512 \
+    --slots_per_phytomer 9 \
     --embed_dim 384 \
     --vit_layers 8 \
     --vit_heads 8 \

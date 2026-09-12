@@ -1,7 +1,7 @@
 """
 Unit tests for 3-Stage Cascaded Hierarchical Botanical Flow Matching Architecture:
   Stage 1: Macro Biological Prior (DAP & Phytomer Count with Soft Tapering Margin)
-  Stage 2: 3D Node Point Cloud Scaffold (DETR3D-style continuous 3D anchor placement)
+  Stage 2: 3D Node Point Cloud Scaffold (DETR3D-style continuous 3D phytomer placement)
   Stage 3: Intra-Phytomer Canonical Flow Matching (Kinematic conditioning on 3D scaffold)
 """
 
@@ -31,22 +31,22 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
     def test_matryoshka_slicing_with_phytomer_count(self):
         """Verify dynamic Matryoshka slicing based on phytomer count and DAP."""
         # Current semantics (2026-09-08 recalibration): continuous capacity
-        # K = ceil(val * ANCHOR_MARGIN + ANCHOR_MARGIN_FLAT), clamped to [8, 512].
+        # K = ceil(val * PHYTOMER_MARGIN + PHYTOMER_MARGIN_FLAT), clamped to [8, 512].
         # 1. Low phytomer count seedling: 3 phytomers -> ceil(3*1.1 + 6) = 10
         phy_low = torch.tensor([3.0])
-        self.assertEqual(compute_matryoshka_slice(num_phytomers=phy_low, max_anchors=512), 10)
+        self.assertEqual(compute_matryoshka_slice(num_phytomers=phy_low, max_phytomers=512), 10)
 
         # 2. Mid plant: 10 phytomers -> ceil(10*1.1 + 6) = 17
         phy_mid = torch.tensor([10.0])
-        self.assertEqual(compute_matryoshka_slice(num_phytomers=phy_mid, max_anchors=512), 17)
+        self.assertEqual(compute_matryoshka_slice(num_phytomers=phy_mid, max_phytomers=512), 17)
 
         # 3. Mature bushy canopy: 45 phytomers -> ceil(45*1.1 + 6) = 56
         phy_high = torch.tensor([45.0])
-        self.assertEqual(compute_matryoshka_slice(num_phytomers=phy_high, max_anchors=512), 56)
+        self.assertEqual(compute_matryoshka_slice(num_phytomers=phy_high, max_phytomers=512), 56)
 
         # 4. Fallback DAP slicing (continuous logistic curve, clamped [8, 512])
         dap = torch.tensor([10.0])
-        k_dap = compute_matryoshka_slice(dap=dap, max_anchors=512)
+        k_dap = compute_matryoshka_slice(dap=dap, max_phytomers=512)
         self.assertGreaterEqual(k_dap, 8)
         self.assertLessEqual(k_dap, 512)
 
@@ -87,27 +87,27 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
 
     def test_stage2_coarse_skeletal_node_scaffold(self):
         """Verify Stage 2 CoarseSkeletalTransformer generates 3D nodes with soft margin logit bias."""
-        coarse = CoarseSkeletalTransformer(max_anchors=32, embed_dim=384, num_heads=4, num_layers=2).to(self.device)
+        coarse = CoarseSkeletalTransformer(max_phytomers=32, embed_dim=384, num_heads=4, num_layers=2).to(self.device)
         B, K = 2, 16
         dummy_tokens = torch.randn(B, 64, 384, device=self.device)
 
         out = coarse(dummy_tokens, active_k=K)
 
-        self.assertIn("anchor_pos", out)
-        self.assertIn("anchor_rot", out)
-        self.assertIn("anchor_logits", out)
+        self.assertIn("phytomer_pos", out)
+        self.assertIn("phytomer_rot", out)
+        self.assertIn("phytomer_logits", out)
         self.assertIn("pred_num_phytomers", out)
         self.assertIn("soft_margin_weights", out)
 
-        self.assertEqual(out["anchor_pos"].shape, (B, K, 3))
-        self.assertEqual(out["anchor_rot"].shape, (B, K, 6))
-        self.assertEqual(out["anchor_logits"].shape, (B, K, 1))
+        self.assertEqual(out["phytomer_pos"].shape, (B, K, 3))
+        self.assertEqual(out["phytomer_rot"].shape, (B, K, 6))
+        self.assertEqual(out["phytomer_logits"].shape, (B, K, 1))
         self.assertEqual(out["soft_margin_weights"].shape, (B, K))
 
     def test_stage3_fine_decoder_with_3d_scaffold_conditioning(self):
         """Verify Stage 3 FineBotanicalFlowMatchingDecoder conditions on 3D node coordinates."""
         decoder = FineBotanicalFlowMatchingDecoder(
-            slots_per_anchor=8,
+            slots_per_phytomer=8,
             node_dim=16,
             embed_dim=384,
             num_heads=4,
@@ -118,18 +118,18 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
         N_fine = K * M
         noisy_nodes = torch.randn(B, N_fine, 16, device=self.device)
         timesteps = torch.rand(B, device=self.device)
-        anchor_features = torch.randn(B, K, 384, device=self.device)
+        phytomer_features = torch.randn(B, K, 384, device=self.device)
         image_tokens = torch.randn(B, 32, 384, device=self.device)
-        anchor_pos = torch.randn(B, K, 3, device=self.device)
-        anchor_rot = torch.randn(B, K, 6, device=self.device)
+        phytomer_pos = torch.randn(B, K, 3, device=self.device)
+        phytomer_rot = torch.randn(B, K, 6, device=self.device)
 
         out = decoder(
             noisy_fine_nodes=noisy_nodes,
             timesteps=timesteps,
-            anchor_features=anchor_features,
+            phytomer_features=phytomer_features,
             image_tokens=image_tokens,
-            anchor_pos=anchor_pos,
-            anchor_rot=anchor_rot,
+            phytomer_pos=phytomer_pos,
+            phytomer_rot=phytomer_rot,
         )
 
         self.assertEqual(out["pred_velocity"].shape, (B, N_fine, 16))
@@ -137,7 +137,7 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
 
     def test_hierarchical_matcher_with_soft_margin_and_gt_clusters(self):
         """Verify Hungarian matcher returns num_gt_phytomers and accepts soft_margin_weights."""
-        matcher = HierarchicalBotanicalMatcher(slots_per_anchor=8)
+        matcher = HierarchicalBotanicalMatcher(slots_per_phytomer=8)
         B, K, M = 2, 8, 8
         N_fine = K * M
 
@@ -156,8 +156,8 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
         tgt_pos = [torch.randn(6, 3, device=self.device), torch.randn(10, 3, device=self.device)]
 
         matches = matcher(
-            pred_anchor_pos=pred_pos,
-            pred_anchor_logits=pred_logits,
+            pred_phytomer_pos=pred_pos,
+            pred_phytomer_logits=pred_logits,
             pred_fine_geom=pred_geom,
             pred_fine_logits=pred_fine_logits,
             tgt_geoms=tgt_geoms,
@@ -173,19 +173,19 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
             self.assertGreater(m["num_gt_phytomers"], 0)
             self.assertEqual(m["gt_node_centers"].shape[1], 3)
 
-    def test_anchor_locality_radius_parity_and_swap_suppression(self):
+    def test_phytomer_locality_radius_parity_and_swap_suppression(self):
         """Radius=None reproduces legacy assignments; radius set suppresses far swaps.
 
-        Setup: 1 GT cluster at origin; anchor #0 at 2cm with very low existence,
-        anchor #1 at 30cm with very high existence. Legacy cost prefers the FAR
-        anchor (0.9 - 0.993 = -0.093 < 0.06 - 0.007 = 0.053). With R=0.12m the
+        Setup: 1 GT cluster at origin; phytomer #0 at 2cm with very low existence,
+        phytomer #1 at 30cm with very high existence. Legacy cost prefers the FAR
+        phytomer (0.9 - 0.993 = -0.093 < 0.06 - 0.007 = 0.053). With R=0.12m the
         quadratic penalty (50 * 0.18^2 = 1.62) flips the assignment to the near
-        anchor — the correct behavior when node RMSE is ~2cm.
+        phytomer — the correct behavior when node RMSE is ~2cm.
         """
         torch.manual_seed(0)
-        matcher_plain = HierarchicalBotanicalMatcher(slots_per_anchor=8)
+        matcher_plain = HierarchicalBotanicalMatcher(slots_per_phytomer=8)
         matcher_local = HierarchicalBotanicalMatcher(
-            slots_per_anchor=8, anchor_locality_radius=0.12, anchor_locality_weight=50.0
+            slots_per_phytomer=8, phytomer_locality_radius=0.12, phytomer_locality_weight=50.0
         )
         B, K, M = 1, 2, 8
         N_fine = K * M
@@ -196,8 +196,8 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
         tgt_labels = [torch.tensor([3, 4], dtype=torch.long, device=self.device)]
         tgt_geoms = [torch.randn(2, 16, device=self.device)]
         pred_pos = torch.tensor([[
-            [0.02, 0.00, 0.10],   # anchor 0: 2cm away, low existence
-            [0.30, 0.00, 0.10],   # anchor 1: 30cm away, high existence
+            [0.02, 0.00, 0.10],   # phytomer 0: 2cm away, low existence
+            [0.30, 0.00, 0.10],   # phytomer 1: 30cm away, high existence
         ]], dtype=torch.float32, device=self.device)
         pred_logits = torch.tensor([[[ -5.0], [5.0]]], dtype=torch.float32, device=self.device)
         pred_geom = torch.randn(B, N_fine, 16, device=self.device)
@@ -206,8 +206,8 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
         def run(matcher):
             with torch.no_grad():
                 return matcher(
-                    pred_anchor_pos=pred_pos,
-                    pred_anchor_logits=pred_logits,
+                    pred_phytomer_pos=pred_pos,
+                    pred_phytomer_logits=pred_logits,
                     pred_fine_geom=pred_geom,
                     pred_fine_logits=pred_fine_logits,
                     tgt_geoms=tgt_geoms,
@@ -217,10 +217,10 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
 
         m_plain = run(matcher_plain)
         m_local = run(matcher_local)
-        # Legacy: far anchor wins on existence bias.
-        self.assertEqual(m_plain["anchor_src_idx"].tolist(), [1])
-        # Locality: near anchor wins once the 30cm swap is penalized.
-        self.assertEqual(m_local["anchor_src_idx"].tolist(), [0])
+        # Legacy: far phytomer wins on existence bias.
+        self.assertEqual(m_plain["phytomer_src_idx"].tolist(), [1])
+        # Locality: near phytomer wins once the 30cm swap is penalized.
+        self.assertEqual(m_local["phytomer_src_idx"].tolist(), [0])
         # Both still report the single GT cluster.
         self.assertEqual(m_plain["num_gt_phytomers"], 1)
         self.assertEqual(m_local["num_gt_phytomers"], 1)
@@ -228,8 +228,8 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
     def test_end_to_end_3stage_forward_and_ode_sampling(self):
         """Verify full 3-Stage Cascaded model forward pass and ODE generation."""
         model = HierarchicalPartFlowMatchingModel(
-            max_anchors=16,
-            slots_per_anchor=8,
+            max_phytomers=16,
+            slots_per_phytomer=8,
             node_dim=16,
             embed_dim=384,
             coarse_layers=2,
@@ -257,7 +257,7 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
 
         self.assertIn("pred_num_phytomers", out)
         self.assertIn("soft_margin_weights", out)
-        self.assertIn("pred_anchor_pos", out)
+        self.assertIn("pred_phytomer_pos", out)
         self.assertIn("pred_velocity", out)
         self.assertEqual(out["pred_num_phytomers"].shape, (B, 1))
         self.assertEqual(out["soft_margin_weights"].shape, (B, out["active_k"]))
@@ -272,14 +272,14 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
         self.assertIn("pred_latent", sample_out)
         self.assertIn("slot_active", sample_out)
         self.assertIn("pred_num_phytomers", sample_out)
-        self.assertIn("anchor_pos", sample_out)
+        self.assertIn("phytomer_pos", sample_out)
         self.assertEqual(sample_out["pred_num_phytomers"].shape, (B, 1))
 
     def test_end_to_end_phytomer_mode_forward_and_ode(self):
         """Phytomer granularity: forward + sample_ode on the (B, K, 12+D) path."""
         model = HierarchicalPartFlowMatchingModel(
-            max_anchors=16,
-            slots_per_anchor=8,
+            max_phytomers=16,
+            slots_per_phytomer=8,
             node_dim=16,
             embed_dim=96,
             coarse_layers=1,
@@ -309,14 +309,14 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
         # 2. Sample ODE
         sample_out = model.sample_ode(images=dummy_img, daps=daps, num_steps=2)
         self.assertEqual(sample_out["flow_granularity"], "phytomer")
-        self.assertIn("refined_anchor_pos", sample_out)
-        self.assertIn("refined_anchor_rot", sample_out)
+        self.assertIn("refined_phytomer_pos", sample_out)
+        self.assertIn("refined_phytomer_rot", sample_out)
         self.assertIn("phytomer_latent", sample_out)
         self.assertIn("pred_slot_exist_logits", sample_out)
         self.assertEqual(sample_out["phytomer_latent"].shape[-1], 32)
 
     def test_phytomer_flow_decoder_shapes_and_gradients(self):
-        """Phytomer mode: flow-matches [base(3) + rot(6) + scale(3) + latent(D)] per anchor."""
+        """Phytomer mode: flow-matches [base(3) + rot(6) + scale(3) + latent(D)] per phytomer."""
         latent_dim = 64
         D = 12 + latent_dim
         decoder = PhytomerFlowMatchingDecoder(
@@ -325,13 +325,13 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
         B, K, T = 2, 8, 16
         noisy = torch.randn(B, K, D, device=self.device, requires_grad=True)
         t = torch.rand(B, device=self.device)
-        anchor_feat = torch.randn(B, K, 128, device=self.device)
+        phytomer_feat = torch.randn(B, K, 128, device=self.device)
         img_tokens = torch.randn(B, T, 128, device=self.device)
-        anchor_pos = torch.randn(B, K, 3, device=self.device)
-        anchor_rot = torch.randn(B, K, 6, device=self.device)
+        phytomer_pos = torch.randn(B, K, 3, device=self.device)
+        phytomer_rot = torch.randn(B, K, 6, device=self.device)
         out = decoder(
-            noisy_flow=noisy, timesteps=t, anchor_features=anchor_feat,
-            image_tokens=img_tokens, anchor_pos=anchor_pos, anchor_rot=anchor_rot,
+            noisy_flow=noisy, timesteps=t, phytomer_features=phytomer_feat,
+            image_tokens=img_tokens, phytomer_pos=phytomer_pos, phytomer_rot=phytomer_rot,
         )
         self.assertEqual(out["pred_velocity"].shape, (B, K, D))
         self.assertEqual(out["pred_slot_exist_logits"].shape, (B, K, 10))

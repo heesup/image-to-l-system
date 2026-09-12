@@ -1,10 +1,10 @@
 """
 Hierarchical Bipartite Matcher for Botanical Flow Matching.
 
-Matches coarse predicted anchors to ground-truth phytomer clusters,
+Matches coarse predicted phytomers to ground-truth phytomer clusters,
 then performs ultra-fast local bipartite matching (M=8 slots) within each cluster.
 Replaces the expensive O(4096^3) global Hungarian assignment with two lightweight stages:
-  1. Coarse Anchor Matching: O(K^3) with K <= 512 (<1ms)
+  1. Coarse Phytomer Matching: O(K^3) with K <= 512 (<1ms)
   2. Fine Intra-Cluster Matching: O(M^3) with M = 10 (<0.01ms)
 """
 
@@ -73,38 +73,38 @@ def gpu_batch_greedy_assignment(costs: List[torch.Tensor]) -> List[Tuple[torch.T
 
 
 class HierarchicalBotanicalMatcher(nn.Module):
-    """Hierarchical Matcher: Coarse Phytomer Anchor Matching + Fine Organ Matching."""
+    """Hierarchical Matcher: Coarse Phytomer Phytomer Matching + Fine Organ Matching."""
 
     def __init__(
         self,
-        cost_anchor_pos: float = 3.0,
-        cost_anchor_exist: float = 1.0,
+        cost_phytomer_pos: float = 3.0,
+        cost_phytomer_exist: float = 1.0,
         cost_cls: float = 2.0,
         cost_geom: float = 2.0,
-        slots_per_anchor: int = 10,
-        anchor_locality_radius: Optional[float] = None,
-        anchor_locality_weight: float = 50.0,
+        slots_per_phytomer: int = 10,
+        phytomer_locality_radius: Optional[float] = None,
+        phytomer_locality_weight: float = 50.0,
         matcher_type: str = "greedy",
     ):
         super().__init__()
-        self.cost_anchor_pos = cost_anchor_pos
-        self.cost_anchor_exist = cost_anchor_exist
+        self.cost_phytomer_pos = cost_phytomer_pos
+        self.cost_phytomer_exist = cost_phytomer_exist
         self.cost_cls = cost_cls
         self.cost_geom = cost_geom
-        self.slots_per_anchor = slots_per_anchor
+        self.slots_per_phytomer = slots_per_phytomer
         self.matcher_type = matcher_type  # "greedy" (GPU Batched ~0.02s) or "hungarian" (CPU Scipy ~0.24s)
-        # Locality prior for anchor matching: once Stage 2 predicts 3D node positions,
-        # only GT organs near each base position should compete for that anchor.
-        # Soft quadratic penalty beyond `anchor_locality_radius` (meters) instead of a
+        # Locality prior for phytomer matching: once Stage 2 predicts 3D node positions,
+        # only GT organs near each base position should compete for that phytomer.
+        # Soft quadratic penalty beyond `phytomer_locality_radius` (meters) instead of a
         # hard cutoff: hard cutoffs drop far clusters from supervision entirely, which
-        # starves anchors of gradient early in training (random init) and causes
+        # starves phytomers of gradient early in training (random init) and causes
         # deadlock. The soft form keeps every cluster matched (Hungarian still sees a
         # finite cost) while strongly preferring local assignments.
         # Calibrated 2026-09-09 on cowpea_curv26: GT cluster-center NN distance median
-        # 2.5cm / p75 3.0cm vs anchor RMSE ~2cm -> R=0.10-0.15m covers >99% of plausible
+        # 2.5cm / p75 3.0cm vs phytomer RMSE ~2cm -> R=0.10-0.15m covers >99% of plausible
         # matches while killing absurd >10cm swaps. None = disabled (exact legacy parity).
-        self.anchor_locality_radius = anchor_locality_radius
-        self.anchor_locality_weight = anchor_locality_weight
+        self.phytomer_locality_radius = phytomer_locality_radius
+        self.phytomer_locality_weight = phytomer_locality_weight
         # Canonical role -> slot ranges (constants; SLOT_ROLE_MAPPING layout).
         # Precomputed once so the fine-matching loop never rebuilds them.
         # Role keys: 0=Stem, 1=Petiole, 2=Leaflets, 3=Peduncle, 4=Reproductive
@@ -131,8 +131,8 @@ class HierarchicalBotanicalMatcher(nn.Module):
     @torch.no_grad()
     def forward(
         self,
-        pred_anchor_pos: torch.Tensor,       # (B, K, 3)
-        pred_anchor_logits: torch.Tensor,    # (B, K, 1)
+        pred_phytomer_pos: torch.Tensor,       # (B, K, 3)
+        pred_phytomer_logits: torch.Tensor,    # (B, K, 1)
         pred_fine_geom: torch.Tensor,        # (B, N_fine, node_dim) 16D latent or 13D geom
         pred_fine_logits: torch.Tensor,      # (B, N_fine, num_classes)
         tgt_geoms: List[torch.Tensor],        # List of (N_active_i, node_dim)
@@ -140,25 +140,25 @@ class HierarchicalBotanicalMatcher(nn.Module):
         tgt_positions: Optional[List[torch.Tensor]] = None,  # Optional List of (N_active_i, 3) 3D base positions
         soft_margin_weights: Optional[torch.Tensor] = None,  # Optional (B, K) soft tapering existence prior
         per_sample_max_phytomers: Optional[torch.Tensor] = None,  # Optional (B,) capacity-clamped GT cluster cap
-        skip_fine: bool = False,             # phytomer mode: anchor-level matching only
+        skip_fine: bool = False,             # phytomer mode: phytomer-level matching only
     ) -> List[Dict[str, torch.Tensor]]:
         """
         Performs hierarchical bipartite matching for each batch item.
 
         Returns:
             List of length B containing dicts with:
-                'anchor_src_idx': 1D int64 tensor of matched predicted anchor indices.
-                'anchor_tgt_idx': 1D int64 tensor of matched GT cluster indices.
-                'anchor_tgt_pos': (M_anc, 3) GT cluster center positions for matched anchors.
+                'phytomer_src_idx': 1D int64 tensor of matched predicted phytomer indices.
+                'phytomer_tgt_idx': 1D int64 tensor of matched GT cluster indices.
+                'phytomer_tgt_pos': (M_anc, 3) GT cluster center positions for matched phytomers.
                 'fine_src_idx': 1D int64 tensor of matched fine slot indices in [0, N_fine-1].
                 'fine_tgt_idx': 1D int64 tensor of matched GT organ indices in [0, N_active_i-1].
                 'num_gt_phytomers': integer count of GT phytomer clusters (capacity-clamped).
                 'gt_node_centers': (N_gt_phytomers, 3) GT phytomer insertion node coordinates.
         """
-        B, K, _ = pred_anchor_pos.shape
-        M = self.slots_per_anchor
+        B, K, _ = pred_phytomer_pos.shape
+        M = self.slots_per_phytomer
         N_fine = pred_fine_geom.shape[1]
-        device = pred_anchor_pos.device
+        device = pred_phytomer_pos.device
 
         # Pass 1: Build cluster centers and cost matrices for all batch items (100% on GPU)
         sample_costs: List[torch.Tensor] = []
@@ -175,7 +175,7 @@ class HierarchicalBotanicalMatcher(nn.Module):
                 continue
 
             # -------------------------------------------------------------
-            # 1. Cluster GT organs into Phytomer Groups (Petiole/Node Anchors)
+            # 1. Cluster GT organs into Phytomer Groups (Petiole/Node Phytomers)
             # -------------------------------------------------------------
             if tgt_positions is not None:
                 gt_positions = tgt_positions[b]  # (M_i, 3)
@@ -204,9 +204,9 @@ class HierarchicalBotanicalMatcher(nn.Module):
             if per_sample_max_phytomers is not None:
                 max_clusters = int(per_sample_max_phytomers[b].item())
                 if num_gt_clusters > max_clusters:
-                    if len(p_pos_all := pred_anchor_pos[b]) > 0:
-                        dist_cluster_to_anchor = torch.cdist(cluster_centers, p_pos_all).min(dim=1).values
-                        keep = torch.topk(dist_cluster_to_anchor, max_clusters, largest=False).indices
+                    if len(p_pos_all := pred_phytomer_pos[b]) > 0:
+                        dist_cluster_to_phytomer = torch.cdist(cluster_centers, p_pos_all).min(dim=1).values
+                        keep = torch.topk(dist_cluster_to_phytomer, max_clusters, largest=False).indices
                         cluster_centers = cluster_centers[keep]
                         num_gt_clusters = max_clusters
 
@@ -215,26 +215,26 @@ class HierarchicalBotanicalMatcher(nn.Module):
                 sample_meta.append((cluster_centers, 0, True, None, None, None))
                 continue
 
-            # Cost between K predicted anchors and num_gt_clusters
-            p_pos = pred_anchor_pos[b]  # (K, 3)
+            # Cost between K predicted phytomers and num_gt_clusters
+            p_pos = pred_phytomer_pos[b]  # (K, 3)
             cost_pos = torch.cdist(p_pos, cluster_centers, p=1)  # (K, num_gt_clusters)
 
-            p_exist_prob = torch.sigmoid(pred_anchor_logits[b]).squeeze(-1)  # (K,)
+            p_exist_prob = torch.sigmoid(pred_phytomer_logits[b]).squeeze(-1)  # (K,)
             if soft_margin_weights is not None:
                 p_exist_prob = p_exist_prob * soft_margin_weights[b]
             cost_exist = -p_exist_prob.unsqueeze(1).expand(-1, num_gt_clusters)
 
-            total_anchor_cost = self.cost_anchor_pos * cost_pos + self.cost_anchor_exist * cost_exist
-            if self.anchor_locality_radius is not None:
-                over = F.relu(cost_pos - float(self.anchor_locality_radius))
-                total_anchor_cost = total_anchor_cost + float(self.anchor_locality_weight) * over * over
-            total_anchor_cost = torch.nan_to_num(total_anchor_cost, nan=1e5, posinf=1e5, neginf=-1e5)
+            total_phytomer_cost = self.cost_phytomer_pos * cost_pos + self.cost_phytomer_exist * cost_exist
+            if self.phytomer_locality_radius is not None:
+                over = F.relu(cost_pos - float(self.phytomer_locality_radius))
+                total_phytomer_cost = total_phytomer_cost + float(self.phytomer_locality_weight) * over * over
+            total_phytomer_cost = torch.nan_to_num(total_phytomer_cost, nan=1e5, posinf=1e5, neginf=-1e5)
 
             # Assign each GT organ to its nearest cluster center
             dist_to_centers = torch.cdist(gt_positions, cluster_centers)  # (M_i, num_gt_clusters)
             gt_cluster_assignments = torch.argmin(dist_to_centers, dim=1)  # (M_i,)
 
-            sample_costs.append(total_anchor_cost)
+            sample_costs.append(total_phytomer_cost)
             sample_meta.append((cluster_centers, num_gt_clusters, False, gt_positions, M_i, gt_cluster_assignments))
 
         # Pass 2: Resolve Bipartite Matching
@@ -264,8 +264,8 @@ class HierarchicalBotanicalMatcher(nn.Module):
             if is_empty or num_gt_clusters == 0:
                 empty = torch.empty(0, dtype=torch.int64, device=device)
                 batch_matches.append({
-                    "anchor_src_idx": empty, "anchor_tgt_idx": empty,
-                    "anchor_tgt_pos": torch.empty((0, 3), device=device),
+                    "phytomer_src_idx": empty, "phytomer_tgt_idx": empty,
+                    "phytomer_tgt_pos": torch.empty((0, 3), device=device),
                     "fine_src_idx": empty, "fine_tgt_idx": empty,
                     "num_gt_phytomers": 0,
                     "gt_node_centers": cluster_centers,
@@ -279,9 +279,9 @@ class HierarchicalBotanicalMatcher(nn.Module):
                 fine_tgt = torch.empty(0, dtype=torch.int64, device=device)
                 anc_tgt_pos = cluster_centers[anc_tgt] if len(anc_tgt) > 0 else torch.empty((0, 3), device=device)
                 batch_matches.append({
-                    "anchor_src_idx": anc_src,
-                    "anchor_tgt_idx": anc_tgt,
-                    "anchor_tgt_pos": anc_tgt_pos,
+                    "phytomer_src_idx": anc_src,
+                    "phytomer_tgt_idx": anc_tgt,
+                    "phytomer_tgt_pos": anc_tgt_pos,
                     "fine_src_idx": fine_src,
                     "fine_tgt_idx": fine_tgt,
                     "num_gt_phytomers": num_gt_clusters,
@@ -298,7 +298,7 @@ class HierarchicalBotanicalMatcher(nn.Module):
             # slot_cluster = slot_index // M (a_idx from anc_src * M arithmetic, no .item())
             slot_starts = (anc_src * M)                                  # (M_anc,) tensor arithmetic
             slot_ends = slot_starts + M
-            # All fine-slot cluster ids in one shot: slot s belongs to anchor s//M
+            # All fine-slot cluster ids in one shot: slot s belongs to phytomer s//M
             fine_slot_cluster = torch.arange(N_fine, device=device) // M  # (N_fine,)
 
             # GT role membership as boolean columns (no per-organ python filtering).
@@ -310,7 +310,7 @@ class HierarchicalBotanicalMatcher(nn.Module):
 
             for pair_i in range(len(anc_src)):
                 c_idx = anc_tgt[pair_i]
-                # Child slots for predicted anchor a_idx: contiguous block [a*M, a*M+M).
+                # Child slots for predicted phytomer a_idx: contiguous block [a*M, a*M+M).
                 # a_idx = anc_src[pair_i]; slot block derived via tensor arithmetic then a
                 # single host sync for the python range (1 sync/pair vs 16 previously).
                 slot_start = int(slot_starts[pair_i].item())
@@ -328,7 +328,7 @@ class HierarchicalBotanicalMatcher(nn.Module):
                     r: cluster_gt_indices[label_is[r][cluster_gt_indices]] for r in range(5)
                 }
 
-                # Dedicated slot indices for each functional role in this anchor
+                # Dedicated slot indices for each functional role in this phytomer
                 slots_by_role = {
                     r: slot_indices[lo:hi] for r, (lo, hi) in self._role_slot_ranges.items()
                 }
@@ -378,7 +378,7 @@ class HierarchicalBotanicalMatcher(nn.Module):
                         matched_gt_list.append(sub_gt[r_tgt_np])
 
                 # 2. Overflow matching: if any GT organs were left over (e.g. 4th leaf or 3rd flower),
-                # match them to any remaining unassigned slots in this anchor.
+                # match them to any remaining unassigned slots in this phytomer.
                 # Vectorized set membership (boolean masks) — zero .item()/tolist() syncs.
                 if matched_slots_list:
                     cur_matched_s = torch.cat(matched_slots_list)
@@ -388,7 +388,7 @@ class HierarchicalBotanicalMatcher(nn.Module):
                     cur_matched_g = torch.empty(0, dtype=torch.int64, device=device)
 
                 # slot_indices are contiguous [slot_start, slot_end): a matched slot is
-                # in this anchor's block iff (idx - slot_start) in [0, M) — no host sync.
+                # in this phytomer's block iff (idx - slot_start) in [0, M) — no host sync.
                 matched_s_mask = torch.zeros(M, dtype=torch.bool, device=device)
                 if cur_matched_s.numel() > 0:
                     rel = cur_matched_s - slot_start
@@ -435,9 +435,9 @@ class HierarchicalBotanicalMatcher(nn.Module):
 
             anc_tgt_pos = cluster_centers[anc_tgt] if len(anc_tgt) > 0 else torch.empty((0, 3), device=device)
             batch_matches.append({
-                "anchor_src_idx": anc_src,
-                "anchor_tgt_idx": anc_tgt,
-                "anchor_tgt_pos": anc_tgt_pos,
+                "phytomer_src_idx": anc_src,
+                "phytomer_tgt_idx": anc_tgt,
+                "phytomer_tgt_pos": anc_tgt_pos,
                 "fine_src_idx": fine_src,
                 "fine_tgt_idx": fine_tgt,
                 "num_gt_phytomers": num_gt_clusters,

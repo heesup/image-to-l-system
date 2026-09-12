@@ -151,10 +151,10 @@ class TestPhytomerPackets(unittest.TestCase):
         self.assertTrue(torch.allclose(back[0, 16:22], ref, atol=1e-5))
         self.assertTrue(torch.allclose(back[1, 16:22], org_rot, atol=1e-5))
 
-    def test_option1_explicit_anchor_reference(self):
-        """Option 1: an externally-provided anchor frame relativizes ALL slots.
+    def test_option1_explicit_phytomer_reference(self):
+        """Option 1: an externally-provided phytomer frame relativizes ALL slots.
 
-        Pass reference_rot = a fixed anchor rotation; every present organ
+        Pass reference_rot = a fixed phytomer rotation; every present organ
         (including slot-0 internode) is expressed relative to that frame, and
         decode_packet with the same reference recovers the original ABSOLUTE rots.
         """
@@ -166,26 +166,26 @@ class TestPhytomerPackets(unittest.TestCase):
         def Ry(a):
             c, s = torch.cos(torch.tensor(a)), torch.sin(torch.tensor(a))
             return torch.tensor([[c, 0, s], [0, 1, 0], [-s, 0, c]])
-        anchor_rot = rot6d(Ry(0.4) @ Rx(0.2))          # the anchor/node frame
-        org_rot = rot6d(Ry(1.2) @ Rx(0.5))             # a leaflet far from anchor
+        phytomer_rot = rot6d(Ry(0.4) @ Rx(0.2))          # the phytomer/node frame
+        org_rot = rot6d(Ry(1.2) @ Rx(0.5))             # a leaflet far from phytomer
         rows = [
             _make_organ(3, [0.0, 0.0, 0.10]),
             _make_organ(5, [0.05, 0.0, 0.20]),
         ]
         nodes = torch.stack(rows).clone()
-        nodes[0, 16:22] = anchor_rot                    # internode == anchor frame
+        nodes[0, 16:22] = phytomer_rot                    # internode == phytomer frame
         nodes[1, 16:22] = org_rot
         packets, presence, centers, refs = build_phytomer_packets(
-            nodes, reference_rot=anchor_rot)
-        # reference_rots output must be the provided anchor frame (option 1)
-        self.assertTrue(torch.allclose(refs[0], anchor_rot, atol=1e-5))
+            nodes, reference_rot=phytomer_rot)
+        # reference_rots output must be the provided phytomer frame (option 1)
+        self.assertTrue(torch.allclose(refs[0], phytomer_rot, atol=1e-5))
         # The leaflet (type 5) occupies slot 2 (leaflet role range), not slot 1.
         self.assertTrue(torch.allclose(packets[0, 0, 16:22],
                                        torch.tensor([1, 0, 0, 0, 1, 0], dtype=torch.float32),
                                        atol=1e-5))
-        # decode with the anchor reference recovers absolute rots
+        # decode with the phytomer reference recovers absolute rots
         back = decode_packet(packets[0], centers[0], presence[0], refs[0])
-        self.assertTrue(torch.allclose(back[0, 16:22], anchor_rot, atol=1e-5))
+        self.assertTrue(torch.allclose(back[0, 16:22], phytomer_rot, atol=1e-5))
         self.assertTrue(torch.allclose(back[2, 16:22], org_rot, atol=1e-5))
 
 

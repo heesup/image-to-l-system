@@ -84,9 +84,9 @@ class PhytomerVisualizer:
 
         # v3: the VAE decodes NORMALIZED scales; s_a per cached packet restores
         # absolute geometry for display (GT s_a for real packets, mean for sliders).
-        from diffusion_based.dataset.phytomer_packets import anchor_scale
+        from diffusion_based.dataset.phytomer_packets import phytomer_scale
         with torch.no_grad():
-            self.s_a = anchor_scale(self.packets.float())
+            self.s_a = phytomer_scale(self.packets.float())
             self.s_a_mean = self.s_a.mean(dim=0)
 
         self.model = PhytomerVAE(latent_dim=self.latent_dim, hidden_dim=256).to(device)
@@ -284,7 +284,7 @@ class PhytomerVisualizer:
         return fig
 
     # ------------------------------------------------------------- decoding
-    def _anchor_for_packet(self, idx: int):
+    def _phytomer_for_packet(self, idx: int):
         """Returns (center_m, ref_rot6d) for a real packet.
 
         Uses the stored cluster center (precompute saves centers.pt); falls
@@ -343,7 +343,7 @@ class PhytomerVisualizer:
         rel = denormalize_packet_scales(rel.unsqueeze(0), _sa)[0]
         presence = out["cls_logits"][0].argmax(-1).cpu() > 0
         if ref_mode == "real" and 0 <= ref_idx < self.n:
-            center, ref = self._anchor_for_packet(ref_idx)
+            center, ref = self._phytomer_for_packet(ref_idx)
         else:
             center, ref = np.zeros(3), np.array([1.0, 0, 0, 0, 1.0, 0])
         ref_t = torch.from_numpy(ref.astype(np.float32)).unsqueeze(0)
@@ -352,7 +352,7 @@ class PhytomerVisualizer:
 
     def _build_mesh(self, rel: torch.Tensor, presence: torch.Tensor,
                     center: np.ndarray, ref: np.ndarray, leaf_quality: str):
-        """Re-anchors a relative packet and builds the 3D mesh dict.
+        """Re-phytomers a relative packet and builds the 3D mesh dict.
 
         leaf_quality: "high" (highres OBJ leaves) or "low" (lightweight).
         """
@@ -457,7 +457,7 @@ class PhytomerVisualizer:
 
     def _render(self, rel: torch.Tensor, presence: torch.Tensor,
                 center: np.ndarray, ref: np.ndarray, leaf_quality: str = "high"):
-        """Re-anchors + renders. Returns (rgb HxWx3, depth HxW, info dict)."""
+        """Re-phytomers + renders. Returns (rgb HxWx3, depth HxW, info dict)."""
         mesh = self._build_mesh(rel, presence, center, ref, leaf_quality)
         out = self.renderer.forward(
             mesh, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0,

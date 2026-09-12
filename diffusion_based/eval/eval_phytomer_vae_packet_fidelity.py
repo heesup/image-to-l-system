@@ -5,7 +5,7 @@ Answers: does the PhytomerVAE reconstruct each phytomer's slots (class,
 rotation, scale, curvature) close to ground truth, and does the deterministic
 assemble_packets() curve-integration reproduce the true leaflet/flower/fruit
 BASE positions? This isolates the VAE's own regression fidelity from the
-downstream IK/XML/Helios pipeline, using the SAME anchor-relative packet frame
+downstream IK/XML/Helios pipeline, using the SAME phytomer-relative packet frame
 the VAE was trained on (build_phytomer_packets output) so no extra conversion
 error is introduced.
 
@@ -28,7 +28,7 @@ from diffusion_based.models.phytomer_vae import PhytomerVAE
 from diffusion_based.dataset.part_array_dataset import encode_fm, FM_NODE_DIM
 from diffusion_based.dataset.phytomer_packets import (
     build_phytomer_packets, assemble_packets, rot6d_to_matrix,
-    anchor_scale, denormalize_packet_scales,
+    phytomer_scale, denormalize_packet_scales,
     FM_BASE_START, FM_BASE_END, FM_ROT_START, FM_ROT_END,
     FM_SCALE_START, FM_SCALE_END, FM_CURV, FM_OT_END,
     ROLE_SLOT_RANGES,
@@ -89,7 +89,7 @@ def main():
         refs = refs.to(DEVICE)
         P = packets.shape[0]
 
-        s_a = anchor_scale(packets)
+        s_a = phytomer_scale(packets)
         x = vae.pack_input(packets, presence)
         with torch.no_grad():
             mu, _ = vae.encode(x)

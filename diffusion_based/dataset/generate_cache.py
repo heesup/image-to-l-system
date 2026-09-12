@@ -196,7 +196,7 @@ def build_pkt_targets(
         "centers": centers.cpu(),
         "refs": refs.cpu(),
         # v3: 10 slots, latent from scale-NORMALIZED VAE input, s_a carried by
-        # the 76D flow state (petiole scale row, see anchor_scale).
+        # the 76D flow state (petiole scale row, see phytomer_scale).
         "pkt_version": 3,
     }
     if vae is not None:

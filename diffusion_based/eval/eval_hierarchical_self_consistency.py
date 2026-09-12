@@ -89,21 +89,21 @@ def rot6d_to_matrix(rot_6d: torch.Tensor) -> torch.Tensor:
     return torch.stack([r1, r2, r3], dim=-1)
 
 
-def build_stem_parts_from_anchor_nodes(
-    anchor_pos: torch.Tensor,                    # (K, 3) in meters
-    anchor_exist: torch.Tensor,                  # (K,) in [0, 1]
-    anchor_scale: Optional[torch.Tensor] = None, # (K, 3) in FM units [L_pet, r_pet, ...]
+def build_stem_parts_from_phytomer_nodes(
+    phytomer_pos: torch.Tensor,                    # (K, 3) in meters
+    phytomer_exist: torch.Tensor,                  # (K,) in [0, 1]
+    phytomer_scale: Optional[torch.Tensor] = None, # (K, 3) in FM units [L_pet, r_pet, ...]
     stem_radius: float = 0.0035,                 # meters fallback default (3.5mm radius = 7mm diameter)
     exist_thresh: float = 0.25,
     petiole_to_stem_ratio: float = 1.8,          # Option C: stem radius derived from petiole scale
 ) -> torch.Tensor:
-    """Builds continuous botanical stem tubes (Internode, type 3) directly from Stage 2 anchor nodes.
+    """Builds continuous botanical stem tubes (Internode, type 3) directly from Stage 2 phytomer nodes.
     
     Creates a directed growth skeleton tree from ground collar (0,0,0) through all active nodes,
     connecting each node to its nearest lower-height parent node.
     
     Option C:
-    When anchor_scale is provided (Petiole scale row in FM units [L_pet, r_pet, ...]),
+    When phytomer_scale is provided (Petiole scale row in FM units [L_pet, r_pet, ...]),
     the stem segment radius is dynamically derived from the petiole radius of the parent
     node (r_stem = r_pet * petiole_to_stem_ratio), bounded between [1.2mm, 10.0mm],
     naturally reflecting whole-plant ontogeny and acropetal tapering.
@@ -112,16 +112,16 @@ def build_stem_parts_from_anchor_nodes(
         (M_stems, 14) part tensor matching HeliosPlantGeometryBuilder layout:
         [type(1)=3, base(3), rot6d(6), scale(3)=[L, r, r], curv(1)=0]
     """
-    device = anchor_pos.device
-    mask = anchor_exist > exist_thresh
-    valid_pos = anchor_pos[mask]  # (N, 3)
+    device = phytomer_pos.device
+    mask = phytomer_exist > exist_thresh
+    valid_pos = phytomer_pos[mask]  # (N, 3)
     if valid_pos.shape[0] == 0:
         return torch.empty((0, 14), dtype=torch.float32, device=device)
 
-    # Compute node-level stem radii if anchor_scale is provided (Option C)
+    # Compute node-level stem radii if phytomer_scale is provided (Option C)
     node_radii = None
-    if anchor_scale is not None:
-        valid_scale = anchor_scale[mask]  # (N, 3)
+    if phytomer_scale is not None:
+        valid_scale = phytomer_scale[mask]  # (N, 3)
         # Scale row col 1 is petiole radius in FM units (meter * 50.0)
         pet_r_m = valid_scale[:, 1] / 50.0
         # Allometric scaling: stem radius is ~1.8x petiole radius, physically clamped to [1.2mm, 10mm]
@@ -282,7 +282,7 @@ def evaluate_self_consistency_batch(
         daps = daps.to(device)
 
     B = images.shape[0]
-    # Pure Autonomous Inference: pass daps=None so model determines anchor capacity
+    # Pure Autonomous Inference: pass daps=None so model determines phytomer capacity
     # 100% autonomously from its own predicted phytomer count (pred_num_phytomers)
     sample_out = raw_model.sample_ode(images=images, daps=None, num_steps=20, vae=vae, phytomer_vae=phytomer_vae)
 
@@ -314,13 +314,13 @@ def evaluate_self_consistency_batch(
                 pred_geoms[b], pred_classes[b], slot_actives[b], device=device
             )
 
-        # Build continuous stem tubes directly from Stage 2 anchor node scaffold (Option C)
-        anc_scale_b = sample_out.get("anchor_scale")
+        # Build continuous stem tubes directly from Stage 2 phytomer node scaffold (Option C)
+        anc_scale_b = sample_out.get("phytomer_scale")
         anc_scale_b = anc_scale_b[b] if anc_scale_b is not None else None
-        stem_parts = build_stem_parts_from_anchor_nodes(
-            anchor_pos=sample_out["anchor_pos"][b],
-            anchor_exist=sample_out["anchor_existence"][b],
-            anchor_scale=anc_scale_b,
+        stem_parts = build_stem_parts_from_phytomer_nodes(
+            phytomer_pos=sample_out["phytomer_pos"][b],
+            phytomer_exist=sample_out["phytomer_existence"][b],
+            phytomer_scale=anc_scale_b,
         )
         if stem_parts.shape[0] > 0 and lateral_parts.shape[0] > 0:
             active_parts = torch.cat([stem_parts, lateral_parts], dim=0)
@@ -560,10 +560,10 @@ def evaluate_self_consistency_batch(
         # Predicted 3D Nodes
         pred_nodes = np.zeros((0, 3), dtype=np.float32)
         node_rmse_cm = 0.0
-        if "anchor_pos" in sample_out:
+        if "phytomer_pos" in sample_out:
             try:
-                pred_pos_raw = (sample_out["anchor_pos"][b] / BASE_SCALE).cpu().numpy()
-                pred_exist_raw = sample_out["anchor_existence"][b].cpu().numpy() if "anchor_existence" in sample_out else np.ones(len(pred_pos_raw))
+                pred_pos_raw = (sample_out["phytomer_pos"][b] / BASE_SCALE).cpu().numpy()
+                pred_exist_raw = sample_out["phytomer_existence"][b].cpu().numpy() if "phytomer_existence" in sample_out else np.ones(len(pred_pos_raw))
 
                 k_target = max(len(gt_nodes), 8)
                 active_anc_mask = pred_exist_raw > 0.35

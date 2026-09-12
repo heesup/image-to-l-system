@@ -39,7 +39,7 @@ from diffusion_based.models.phytomer_vae import PhytomerVAE
 from diffusion_based.dataset.part_array_dataset import encode_fm, decode_fm, FM_NODE_DIM
 from diffusion_based.dataset.phytomer_packets import (
     build_phytomer_packets, decode_packets, assemble_packets,
-    anchor_scale, denormalize_packet_scales,
+    phytomer_scale, denormalize_packet_scales,
 )
 from diffusion_based.dataset.generate_cache import extract_phytomer_ids
 
@@ -62,10 +62,10 @@ def build_vae_roundtrip_xml(arr: PlantOrganArray, vae: PhytomerVAE) -> Tuple[str
     """Helios XML -> 14D -> 10-slot packets -> PhytomerVAE encode/decode -> 14D -> XML.
 
     Returns (xml_str, n_gt_organs, n_recon_organs). Uses the GROUND-TRUTH
-    anchor scale s_a and packet reference frames (centers/refs) — this isolates
+    phytomer scale s_a and packet reference frames (centers/refs) — this isolates
     the VAE's own 64D-latent reconstruction fidelity, matching how VAE training
     loss and tools/phytomer_vae_visualizer.py evaluate reconstruction (the
-    anchor pose/scale are exogenous conditioning in the real 3-stage model,
+    phytomer pose/scale are exogenous conditioning in the real 3-stage model,
     not something the VAE itself predicts).
     """
     part_13d = arr.to_part_tensor()  # CPU (N, 14)
@@ -84,7 +84,7 @@ def build_vae_roundtrip_xml(arr: PlantOrganArray, vae: PhytomerVAE) -> Tuple[str
     centers = centers.to(DEVICE)
     refs = refs.to(DEVICE)
 
-    s_a = anchor_scale(packets)
+    s_a = phytomer_scale(packets)
     x = vae.pack_input(packets, presence)
     with torch.no_grad():
         mu, _ = vae.encode(x)

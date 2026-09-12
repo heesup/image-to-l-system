@@ -2,7 +2,7 @@
 Canonical phytomer packet builder (shared util).
 
 Groups per-organ 26D FM nodes into fixed 10-slot phytomer packets with canonical
-role ordering, for phytomer-level latent modeling (PhytomerVAE) and anchor-only
+role ordering, for phytomer-level latent modeling (PhytomerVAE) and phytomer-only
 flow supervision.
 
 Packet layout (matches HierarchicalBotanicalMatcher role semantics exactly):
@@ -20,15 +20,15 @@ canonical_sort_nodes. Roles that overflow drop extras (measured 2026-09-09 on
 cowpea_curv26, organ-level drop: stem 23.6%, petiole 1.8%, leaflet 29.8%,
 repro 15.3%, 21.1% overall — overwhelmingly neighbor-phytomer organs
 misassigned by nearest-center on dense canopies; identical truncation to
-the current 10-slot anchors, so no supervision regression vs status quo).
+the current 10-slot phytomers, so no supervision regression vs status quo).
 
-Positions in packets are ANCHOR-RELATIVE (organ base - cluster center, same
-BASE_SCALE units): the anchor/node position carries global placement, so the
+Positions in packets are PHYTOMER-RELATIVE (organ base - cluster center, same
+BASE_SCALE units): the phytomer/node position carries global placement, so the
 latent models translation-invariant local morphology. decode_packet() re-adds
 the center. Absent slots encode as NONE one-hot + zero geometry (the encode_fm
 empty convention) with presence bit 0.
 
-ROTATIONS ARE ANCHOR-RELATIVE (2026-09-09): each organ's absolute world-frame
+ROTATIONS ARE PHYTOMER-RELATIVE (2026-09-09): each organ's absolute world-frame
 6D rotation was a large co-variance the shared latent had to absorb (a leaf at
 azimuth 90 vs 270 has entirely different absolute 6D). Packets now store
 rot6d RELATIVE to the phytomer reference frame = the internode slot's rotation
@@ -131,8 +131,8 @@ def _petiole_curve_points(
     return torch.stack(pts)
 
 
-def anchor_scale(packets: torch.Tensor) -> torch.Tensor:
-    """Anchor-level scale s_a per packet: the PETIOLE (slot 1) scale row
+def phytomer_scale(packets: torch.Tensor) -> torch.Tensor:
+    """Phytomer-level scale s_a per packet: the PETIOLE (slot 1) scale row
     [length, radius, unused] in raw FM units (x SCALE_SCALE).
 
     Why petiole: it is the phytomer's structural backbone (cluster center =
@@ -173,7 +173,7 @@ def anchor_scale(packets: torch.Tensor) -> torch.Tensor:
 
 
 def normalize_packet_scales(packets: torch.Tensor, s_a: torch.Tensor) -> torch.Tensor:
-    """Divides each slot's scale row by the packet's anchor scale s_a (component-wise,
+    """Divides each slot's scale row by the packet's phytomer scale s_a (component-wise,
     safe division). The result feeds the VAE (scale-invariant latent) — the 76D flow
     state carries s_a explicitly and decode multiplies it back.
 
@@ -241,7 +241,7 @@ def assemble_packets(
     All bases are deterministic — nothing is VAE-learned (v2).
 
     Base positions are world-frame vectors relative to the cluster center (the
-    packet convention); the caller re-applies the anchor center + reference
+    packet convention); the caller re-applies the phytomer center + reference
     rotation (decode_packets / apply_ref_for_flow).
 
     NOTE: builds the base block in a fresh tensor and concatenates (no inplace
@@ -447,12 +447,12 @@ def build_phytomer_packets(
         existence_mask: optional (N,) float mask; if None, derived from one-hot.
         base_scale: normalization divisor for base coords (BASE_SCALE=20.0).
         drop_stats: optional dict incremented with 'dropped_organs' / 'total_organs'.
-        reference_rot: OPTIONAL explicit anchor-frame 6D rotation (Option 1 —
-            the node frame, e.g. Stage-2 anchor_rot). Shape (6,) broadcast to all
+        reference_rot: OPTIONAL explicit phytomer-frame 6D rotation (Option 1 —
+            the node frame, e.g. Stage-2 phytomer_rot). Shape (6,) broadcast to all
             packets, or (P, 6) per-packet. When None, defaults to the packet's
             own internode frame (slot-0 internode rot, else first present slot,
             else identity) — botanically the node frame, so equivalent when the
-            anchor frame IS the internode. Rotation is relativized to this frame
+            phytomer frame IS the internode. Rotation is relativized to this frame
             for ALL present slots (slot 0 becomes identity when it is the ref).
         phytomer_ids: OPTIONAL (N, 2) int64 (shoot_id, phytomer_idx) per organ
             row, from the XML (cache field `phytomer_ids`). When given, organs
@@ -461,8 +461,8 @@ def build_phytomer_packets(
             (nearest-center puts leaflets on the wrong petiole in dense canopies).
 
     Returns:
-        packets: (P, 10, 26) FM rows with ANCHOR-RELATIVE base positions AND
-                 ANCHOR-RELATIVE (reference-frame) rot6d.
+        packets: (P, 10, 26) FM rows with PHYTOMER-RELATIVE base positions AND
+                 PHYTOMER-RELATIVE (reference-frame) rot6d.
         presence: (P, 10) bool, True where a real organ occupies the slot.
         centers: (P, 3) cluster center positions in meters (for re-anchoring).
         reference_rot: (P, 6) ABSOLUTE 6D rotation of each packet's reference
@@ -489,7 +489,7 @@ def build_phytomer_packets(
     centers: List[torch.Tensor] = []
     ref_rots: List[torch.Tensor] = []
 
-    # External reference (Option 1: explicit anchor frame). Broadcast a (6,)
+    # External reference (Option 1: explicit phytomer frame). Broadcast a (6,)
     # vector to match the number of packets once clusters are known.
     ext_ref = None
     if reference_rot is not None:
@@ -590,7 +590,7 @@ def build_phytomer_packets(
             packet[pres, FM_BASE_START:FM_BASE_END] - (center * base_scale)
         )
         # Relativize ROTATIONS to the packet reference frame.
-        # Reference precedence: explicit anchor frame (Option 1, ext_ref) >
+        # Reference precedence: explicit phytomer frame (Option 1, ext_ref) >
         # internode slot 0 > first present slot > identity. When an explicit
         # reference is given, ALL present slots (incl. slot 0) are relativized to
         # it; when using the internal fallback, slot 0 is the reference (-> identity).
@@ -623,10 +623,10 @@ def decode_packets(
     reference_rots: torch.Tensor,
     base_scale: float = 20.0,
 ) -> torch.Tensor:
-    """Re-anchors a batch of packets to absolute coordinates (vectorized).
+    """Re-phytomers a batch of packets to absolute coordinates (vectorized).
 
     Args:
-        packets: (P, 10, 26) anchor-relative FM rows.
+        packets: (P, 10, 26) phytomer-relative FM rows.
         centers: (P, 3) absolute cluster centers (meters).
         presence: (P, 10) bool slot mask.
         reference_rots: (P, 6) absolute reference-frame 6D rotations.
@@ -655,7 +655,7 @@ def decode_packet(
     reference_rot: Optional[torch.Tensor] = None,
     base_scale: float = 20.0,
 ) -> torch.Tensor:
-    """Re-anchors a packet to absolute coordinates (inverse of build_phytomer_packets).
+    """Re-phytomers a packet to absolute coordinates (inverse of build_phytomer_packets).
 
     Only present slots are shifted/rotated back to absolute; absent slots keep
     the empty convention. Requires the packet's reference rotation (absolute),

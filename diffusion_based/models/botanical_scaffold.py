@@ -11,7 +11,7 @@ Replaces the degenerate point singularity x_0 = 0 with a physically grounded,
   -  3.6% Bud Aborted
   -  1.6% Fruit (pods/berries at distal nodes)
   -  2.1% Flower (open and closed floral structures)
-  -  1.2% Shoot/Root Meta (structural baseline anchors)
+  -  1.2% Shoot/Root Meta (structural baseline phytomers)
 """
 
 import math
@@ -99,7 +99,7 @@ class BotanicalScaffoldGenerator:
         # 2. Distribute positions and rotations based on biological organ morphology
         curr_idx = 0
 
-        # A. Root Meta (Origin anchor)
+        # A. Root Meta (Origin phytomer)
         root_cnt = slot_counts.get(ORGAN_ROOT_META, 1)
         for _ in range(root_cnt):
             if curr_idx >= self.max_nodes: break
@@ -109,7 +109,7 @@ class BotanicalScaffoldGenerator:
             scaffold[curr_idx, FM_SCALE_START:FM_SCALE_END] = torch.tensor([0.01, 0.01, 0.01]) * SCALE_SCALE
             curr_idx += 1
 
-        # B. Shoot Meta (Stem base anchor)
+        # B. Shoot Meta (Stem base phytomer)
         shoot_cnt = slot_counts.get(ORGAN_SHOOT_META, 1)
         for i in range(shoot_cnt):
             if curr_idx >= self.max_nodes: break

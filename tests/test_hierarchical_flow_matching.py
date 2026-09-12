@@ -18,15 +18,15 @@ class TestHierarchicalFlowMatching(unittest.TestCase):
     def setUp(self):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.B = 2
-        self.max_anchors = 64  # Compact scale for quick test
-        self.slots_per_anchor = 8
+        self.max_phytomers = 64  # Compact scale for quick test
+        self.slots_per_phytomer = 8
         self.image_size = 64
         self.node_dim = 13
         self.num_classes = 13
 
         self.model = HierarchicalPartFlowMatchingModel(
-            max_anchors=self.max_anchors,
-            slots_per_anchor=self.slots_per_anchor,
+            max_phytomers=self.max_phytomers,
+            slots_per_phytomer=self.slots_per_phytomer,
             node_dim=self.node_dim,
             num_classes=self.num_classes,
             image_size=self.image_size,
@@ -44,9 +44,9 @@ class TestHierarchicalFlowMatching(unittest.TestCase):
         dap_mid = torch.tensor([25.0])
         dap_old = torch.tensor([85.0])
 
-        k_young = compute_matryoshka_slice(dap_young, max_anchors=512)
-        k_mid = compute_matryoshka_slice(dap_mid, max_anchors=512)
-        k_old = compute_matryoshka_slice(dap_old, max_anchors=512)
+        k_young = compute_matryoshka_slice(dap_young, max_phytomers=512)
+        k_mid = compute_matryoshka_slice(dap_mid, max_phytomers=512)
+        k_old = compute_matryoshka_slice(dap_old, max_phytomers=512)
 
         self.assertGreaterEqual(k_young, 8)
         self.assertLess(k_young, k_mid)
@@ -59,8 +59,8 @@ class TestHierarchicalFlowMatching(unittest.TestCase):
         timesteps = torch.rand(self.B, device=self.device)
 
         # Slice fine slots
-        active_k = compute_matryoshka_slice(daps, max_anchors=self.max_anchors)
-        N_fine = active_k * self.slots_per_anchor
+        active_k = compute_matryoshka_slice(daps, max_phytomers=self.max_phytomers)
+        N_fine = active_k * self.slots_per_phytomer
         noisy_nodes = torch.randn(self.B, N_fine, self.node_dim, device=self.device)
 
         out = self.model(
@@ -70,17 +70,17 @@ class TestHierarchicalFlowMatching(unittest.TestCase):
             daps=daps,
         )
 
-        self.assertIn("pred_anchor_pos", out)
+        self.assertIn("pred_phytomer_pos", out)
         self.assertIn("pred_velocity", out)
         self.assertIn("pred_fine_exist_logits", out)
         self.assertIn("pred_dap", out)
 
-        self.assertEqual(out["pred_anchor_pos"].shape, (self.B, active_k, 3))
+        self.assertEqual(out["pred_phytomer_pos"].shape, (self.B, active_k, 3))
         self.assertEqual(out["pred_velocity"].shape, (self.B, N_fine, self.node_dim))
         self.assertEqual(out["pred_fine_exist_logits"].shape, (self.B, N_fine, 1))
 
         # Check backward pass
-        loss = out["pred_velocity"].sum() + out["pred_fine_exist_logits"].sum() + out["pred_anchor_pos"].sum()
+        loss = out["pred_velocity"].sum() + out["pred_fine_exist_logits"].sum() + out["pred_phytomer_pos"].sum()
         loss.backward()
 
         for name, param in self.model.named_parameters():
@@ -88,12 +88,12 @@ class TestHierarchicalFlowMatching(unittest.TestCase):
                 self.assertFalse(torch.isnan(param.grad).any(), f"NaN gradient in {name}")
 
     def test_matcher(self):
-        matcher = HierarchicalBotanicalMatcher(slots_per_anchor=self.slots_per_anchor)
+        matcher = HierarchicalBotanicalMatcher(slots_per_phytomer=self.slots_per_phytomer)
 
-        pred_anchor_pos = torch.randn(self.B, 32, 3, device=self.device)
-        pred_anchor_logits = torch.randn(self.B, 32, 1, device=self.device)
-        pred_fine_geom = torch.randn(self.B, 32 * self.slots_per_anchor, self.node_dim, device=self.device)
-        pred_fine_logits = torch.randn(self.B, 32 * self.slots_per_anchor, self.num_classes, device=self.device)
+        pred_phytomer_pos = torch.randn(self.B, 32, 3, device=self.device)
+        pred_phytomer_logits = torch.randn(self.B, 32, 1, device=self.device)
+        pred_fine_geom = torch.randn(self.B, 32 * self.slots_per_phytomer, self.node_dim, device=self.device)
+        pred_fine_logits = torch.randn(self.B, 32 * self.slots_per_phytomer, self.num_classes, device=self.device)
 
         # Create synthetic GT organs
         tgt_geoms = [
@@ -106,8 +106,8 @@ class TestHierarchicalFlowMatching(unittest.TestCase):
         ]
 
         matches = matcher(
-            pred_anchor_pos=pred_anchor_pos,
-            pred_anchor_logits=pred_anchor_logits,
+            pred_phytomer_pos=pred_phytomer_pos,
+            pred_phytomer_logits=pred_phytomer_logits,
             pred_fine_geom=pred_fine_geom,
             pred_fine_logits=pred_fine_logits,
             tgt_geoms=tgt_geoms,
@@ -116,7 +116,7 @@ class TestHierarchicalFlowMatching(unittest.TestCase):
 
         self.assertEqual(len(matches), self.B)
         for b in range(self.B):
-            self.assertIn("anchor_src_idx", matches[b])
+            self.assertIn("phytomer_src_idx", matches[b])
             self.assertIn("fine_src_idx", matches[b])
             self.assertIn("fine_tgt_idx", matches[b])
 
@@ -128,18 +128,18 @@ class TestHierarchicalFlowMatching(unittest.TestCase):
         self.assertIn("pred_geometry", sample_out)
         self.assertIn("pred_cls", sample_out)
         self.assertIn("slot_active", sample_out)
-        self.assertIn("anchor_pos", sample_out)
+        self.assertIn("phytomer_pos", sample_out)
 
     def test_forward_backward_step(self):
         from diffusion_based.training.train_hierarchical_flow_matching import forward_backward_step
         from diffusion_based.training.flow_matching import FlowMatchingScheduler
 
         scheduler = FlowMatchingScheduler()
-        matcher = HierarchicalBotanicalMatcher(slots_per_anchor=self.slots_per_anchor)
+        matcher = HierarchicalBotanicalMatcher(slots_per_phytomer=self.slots_per_phytomer)
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-4)
 
         # Construct synthetic batch
-        N_max = self.max_anchors * self.slots_per_anchor
+        N_max = self.max_phytomers * self.slots_per_phytomer
         nodes = torch.zeros(self.B, N_max, 26, device=self.device)
         # Set some active organs
         nodes[:, :20, 1] = 1.0  # class 1
@@ -161,7 +161,7 @@ class TestHierarchicalFlowMatching(unittest.TestCase):
             scheduler=scheduler,
             matcher=matcher,
             device=self.device,
-            slots_per_anchor=self.slots_per_anchor,
+            slots_per_phytomer=self.slots_per_phytomer,
             renderer=None,
         )
 
@@ -169,8 +169,8 @@ class TestHierarchicalFlowMatching(unittest.TestCase):
         self.assertIn("loss", metrics)
         self.assertIn("fine_vel_loss", metrics)
         self.assertIn("fine_exist_loss", metrics)
-        self.assertIn("anchor_pos_loss", metrics)
-        self.assertIn("anchor_exist_loss", metrics)
+        self.assertIn("phytomer_pos_loss", metrics)
+        self.assertIn("phytomer_exist_loss", metrics)
         self.assertIn("dense_depth_loss", metrics)
         self.assertIn("silhouette_dice_loss", metrics)
         self.assertIn("cls_acc", metrics)
@@ -180,10 +180,10 @@ class TestHierarchicalFlowMatching(unittest.TestCase):
         Slot 0 = Stem, Slot 1 = Petiole, Slots 2..4 = Leaves, Slot 5 = Peduncle, Slots 6..7 = Flower/Fruit.
         Also verifies that unifoliate (2 leaves) leaves slot 4 unmatched without error.
         """
-        matcher = HierarchicalBotanicalMatcher(slots_per_anchor=8)
+        matcher = HierarchicalBotanicalMatcher(slots_per_phytomer=8)
 
-        pred_anchor_pos = torch.zeros(1, 1, 3, device=self.device)  # 1 anchor at origin
-        pred_anchor_logits = torch.tensor([[[5.0]]], device=self.device)  # Confident anchor
+        pred_phytomer_pos = torch.zeros(1, 1, 3, device=self.device)  # 1 phytomer at origin
+        pred_phytomer_logits = torch.tensor([[[5.0]]], device=self.device)  # Confident phytomer
         pred_fine_geom = torch.randn(1, 8, 16, device=self.device)
         pred_fine_logits = torch.ones(1, 8, 1, device=self.device) * 2.0  # Confident existence
 
@@ -193,8 +193,8 @@ class TestHierarchicalFlowMatching(unittest.TestCase):
         tgt_pos_full = torch.zeros(8, 3, device=self.device)
 
         matches = matcher(
-            pred_anchor_pos=pred_anchor_pos,
-            pred_anchor_logits=pred_anchor_logits,
+            pred_phytomer_pos=pred_phytomer_pos,
+            pred_phytomer_logits=pred_phytomer_logits,
             pred_fine_geom=pred_fine_geom,
             pred_fine_logits=pred_fine_logits,
             tgt_geoms=[tgt_geoms_full],
@@ -230,8 +230,8 @@ class TestHierarchicalFlowMatching(unittest.TestCase):
         tgt_pos_unifoliate = torch.zeros(3, 3, device=self.device)
 
         matches_uni = matcher(
-            pred_anchor_pos=pred_anchor_pos,
-            pred_anchor_logits=pred_anchor_logits,
+            pred_phytomer_pos=pred_phytomer_pos,
+            pred_phytomer_logits=pred_phytomer_logits,
             pred_fine_geom=pred_fine_geom,
             pred_fine_logits=pred_fine_logits,
             tgt_geoms=[tgt_geoms_unifoliate],

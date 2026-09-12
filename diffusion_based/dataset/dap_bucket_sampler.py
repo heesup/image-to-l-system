@@ -1,7 +1,7 @@
 """DAP-bucketed batch sampler for capacity-homogeneous batches.
 
 Groups samples into DAP buckets so that each mini-batch contains samples of
-similar developmental stage. Because the anchor bank slice K is computed from
+similar developmental stage. Because the phytomer bank slice K is computed from
 the batch-max DAP (compute_matryoshka_slice), mixing DAP 1 with DAP 100 in one
 batch forces the whole batch through the full 4,096 fine slots. Bucketing makes
 the active capacity match the actual botanical content of the batch, cutting
