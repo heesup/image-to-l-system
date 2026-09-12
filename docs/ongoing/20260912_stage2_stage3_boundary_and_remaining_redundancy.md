@@ -572,6 +572,18 @@ lost -- so (2) alone does not get there. Until (1) lands, judge VAE candidates
 on packet fidelity (`_rw4` is the best) and treat the Helios figure as a
 property of the export, not of the VAE.
 
+**About `_unreferenced/phytomer_9slot_roundtrip_comparison.png`** (Heesup asked why
+its columns 2-3 look transparent and why column 3 differs from column 2): that
+figure is from 2026-09-11, produced by the 9-slot / 64D-VAE pipeline that no
+longer exists (packets have 10 slots, the VAE is 128D, and no script in the
+tree references "9slot" any more). Columns 2-3 are the PyTorch soft rasterizer
+used by the training render loss -- alpha-blended soft silhouettes on a flat
+ground, hence the washed-out look -- not Helios; and column 3 differs from
+column 2 because it went through every defect fixed since (leaflet order,
+slot-0 rotation, the analytical export's FK drift). `fig14` is the figure that
+answers the question now: opaque Helios raytraces, GT / IK-only / VAE
+round-trip side by side.
+
 ### 2.5 Stem inverse kinematics: the export now follows the nodes (`d3731d3`, `7d92840`, `5827327`)
 
 `diffusion_based/models/part_tensor_stem_ik.py`, run by `assemble_part_tensor_to_xml`
