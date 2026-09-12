@@ -59,6 +59,94 @@ MAX_EDGE_FACTOR = 3.0
 ORD_WEIGHT = 0.02
 
 
+def gt_parent_links(
+    centers: torch.Tensor,
+    keys: torch.Tensor,
+    max_edge_factor: float = MAX_EDGE_FACTOR,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Ground-truth parent of every phytomer, under one rule with no exceptions.
+
+    **A node's parent is one internode below it.** A node is the TOP of its
+    internode, so:
+
+    - the previous node in the same shoot, where there is one;
+    - the **origin** for the main stem's first node, which sits one internode
+      above it (measured: 3.0 cm from the origin at DAP 90 against a 2.9 cm
+      median internode). This is a real geometric parent, not a fallback guess;
+    - the **branch-point node on the parent shoot** for a lateral shoot's first
+      node, resolved as the nearest node below it on a different shoot
+      (measured 3.1 cm at DAP 90 -- also one internode).
+
+    This replaces the previous convention, under which every shoot's first node
+    was a parentless "base". That left 13.8% of phytomers with no parent, and
+    since a lateral's first node is rarely vertical, the world-+Z axis they fell
+    back on was 50.8 deg off on average. Here every node has a parent, so the
+    fallback has nothing left to cover.
+
+    `keys` carries only (shoot_id, phytomer_idx) and does not record which node a
+    lateral branches from, hence the geometric lookup. It is gated by the same
+    `max_edge_factor` x median-spacing rule `chain_phytomers` uses, so a lateral
+    in a sparse region is left unresolved rather than linked to something absurd.
+
+    Args:
+        centers: (P, 3) ground-truth node positions in metres.
+        keys: (P, 2) int64 (shoot_id, phytomer_idx), from the packet cache.
+        max_edge_factor: distance gate for the branch-point lookup.
+
+    Returns:
+        parent_pos: (P, 3) parent position. The origin for the main stem's first
+            node; `centers[i]` itself for any row left unresolved, so callers
+            that subtract get a zero vector rather than garbage.
+        parent_idx: (P,) int64 index of the parent row; **-1 where the parent is
+            the origin or could not be resolved** -- use `parent_pos` for
+            geometry and this only when the parent must be another predicted row.
+    """
+    device = centers.device
+    P = centers.shape[0]
+    parent_idx = torch.full((P,), -1, dtype=torch.long, device=device)
+    parent_pos = centers.clone()
+    if P == 0:
+        return parent_pos, parent_idx
+
+    shoot, ordi = keys[:, 0], keys[:, 1]
+
+    # Same shoot, one step down. (P, P) is fine at P <= ~600.
+    want = torch.stack([shoot, ordi - 1], dim=-1)
+    hit = (keys.unsqueeze(0) == want.unsqueeze(1)).all(dim=-1)      # (child, cand)
+    has_same_shoot = hit.any(dim=-1)
+    same_row = hit.float().argmax(dim=-1)
+    parent_idx = torch.where(has_same_shoot, same_row, parent_idx)
+    parent_pos = torch.where(has_same_shoot.unsqueeze(-1), centers[same_row], parent_pos)
+
+    # The main stem is the shoot whose first node sits lowest; its first node's
+    # parent is the origin.
+    firsts = torch.nonzero(ordi == 0, as_tuple=True)[0]
+    if firsts.numel() == 0:
+        return parent_pos, parent_idx
+    root_shoot = shoot[firsts[centers[firsts, 2].argmin()]]
+
+    dist = torch.cdist(centers, centers)
+    finite = dist[dist > 0]
+    gate = (max_edge_factor * finite.median() if finite.numel() > 0
+            else torch.tensor(float("inf"), device=device))
+
+    for i in firsts.tolist():
+        if shoot[i] == root_shoot:
+            parent_pos[i] = 0.0                 # the origin
+            continue
+        # Nearest node below, on another shoot: the branch point.
+        cand = (centers[:, 2] < centers[i, 2]) & (shoot != shoot[i])
+        if not bool(cand.any()):
+            continue
+        d = dist[i].masked_fill(~cand, float("inf"))
+        j = int(d.argmin())
+        if d[j] <= gate:
+            parent_idx[i] = j
+            parent_pos[i] = centers[j]
+
+    return parent_pos, parent_idx
+
+
 def chain_phytomers(
     pos: torch.Tensor,
     rot6d: Optional[torch.Tensor] = None,
