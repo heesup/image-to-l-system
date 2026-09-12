@@ -577,9 +577,9 @@ def forward_backward_step(
         clean_z1 = clean_z1.clamp(-6.0, 6.0)
         # Velocity target: v = z_1 - z_0 in standard Gaussian space.
         tgt_velocity = tgt_z1_phyto - z_0
-        total_matched_anc = matched_phytomer_mask.sum().item()
-        norm_anc = max(total_matched_anc, 1)
-        norm_m = norm_anc
+        total_matched_nodes = matched_phytomer_mask.sum().item()
+        norm_nodes = max(total_matched_nodes, 1)
+        norm_m = norm_nodes
 
         # Class accuracy on matched phytomers' present slots (frozen VAE decode)
         correct_cls = 0
@@ -594,7 +594,7 @@ def forward_backward_step(
                 total_cls_slots += int(pres_b.sum().item())
 
         # 1. Fine Velocity MSE on matched phytomers (Vectorized 1-shot in 64D VAE space)
-        if total_matched_anc > 0:
+        if total_matched_nodes > 0:
             loss_fine_vel = F.mse_loss(
                 pred_velocity[matched_phytomer_mask],
                 tgt_velocity[matched_phytomer_mask],
@@ -618,40 +618,40 @@ def forward_backward_step(
         )
 
         # 4. Phytomer Existence Loss (Vectorized 1-shot across B, K, 1)
-        pos_weight_anc = torch.tensor([8.0], device=device)
+        pos_weight_node = torch.tensor([8.0], device=device)
         loss_phytomer_exist = F.binary_cross_entropy_with_logits(
-            pred_phytomer_logits.clamp(min=-10.0, max=10.0), phytomer_exist_targets, pos_weight=pos_weight_anc, reduction="mean"
+            pred_phytomer_logits.clamp(min=-10.0, max=10.0), phytomer_exist_targets, pos_weight=pos_weight_node, reduction="mean"
         )
 
         # 5. Phytomer Position Loss (Vectorized 1-shot)
-        if total_matched_anc > 0:
+        if total_matched_nodes > 0:
             loss_phytomer_pos = F.smooth_l1_loss(
                 pred_phytomer_pos[matched_phytomer_mask],
                 gt_phytomer_pos_target[matched_phytomer_mask],
                 reduction="sum",
-            ) / float(norm_anc)
+            ) / float(norm_nodes)
         else:
             loss_phytomer_pos = torch.tensor(0.0, device=device)
 
         # 6. Phytomer Roll Loss (Vectorized 1-shot). Not "rotation" anymore --
         # the forward axis is derived from position post-hoc (phytomer_roll.py),
         # so only the roll about it needs supervision.
-        if total_matched_anc > 0:
+        if total_matched_nodes > 0:
             loss_phytomer_roll = F.smooth_l1_loss(
                 pred_phytomer_roll[matched_phytomer_mask],
                 gt_phytomer_roll_target[matched_phytomer_mask],
                 reduction="sum",
-            ) / float(norm_anc)
+            ) / float(norm_nodes)
         else:
             loss_phytomer_roll = torch.tensor(0.0, device=device)
 
         # 7. Phytomer Scale Loss (Vectorized 1-shot)
-        if pred_phytomer_scale is not None and total_matched_anc > 0:
+        if pred_phytomer_scale is not None and total_matched_nodes > 0:
             loss_phytomer_scale = F.smooth_l1_loss(
                 pred_phytomer_scale[matched_phytomer_mask],
                 gt_phytomer_scl_target[matched_phytomer_mask],
                 reduction="sum",
-            ) / float(norm_anc)
+            ) / float(norm_nodes)
         else:
             loss_phytomer_scale = torch.tensor(0.0, device=device)
 
@@ -662,17 +662,17 @@ def forward_backward_step(
         # depend on node spacing.
         pred_ord = outputs.get("pred_phytomer_ordinal")
         pred_base_logits = outputs.get("pred_phytomer_base_logits")
-        if pred_ord is not None and total_matched_anc > 0:
+        if pred_ord is not None and total_matched_nodes > 0:
             loss_phytomer_order = F.smooth_l1_loss(
                 pred_ord[matched_phytomer_mask],
                 gt_phytomer_ord_target[matched_phytomer_mask],
                 reduction="sum",
-            ) / float(norm_anc)
+            ) / float(norm_nodes)
             loss_phytomer_order = loss_phytomer_order + F.binary_cross_entropy_with_logits(
                 pred_base_logits[matched_phytomer_mask],
                 gt_phytomer_base_target[matched_phytomer_mask],
                 reduction="sum",
-            ) / float(norm_anc)
+            ) / float(norm_nodes)
         else:
             loss_phytomer_order = torch.tensor(0.0, device=device)
 
@@ -694,7 +694,7 @@ def forward_backward_step(
         loss_fine_vel_acc = torch.tensor(0.0, device=device)
         loss_fine_exist_acc = torch.tensor(0.0, device=device)
 
-        total_matched_anc = 0
+        total_matched_nodes = 0
         total_matched_fine = 0
         correct_cls = 0
         total_cls_slots = 0
@@ -707,7 +707,7 @@ def forward_backward_step(
             fine_tgt = m_b["fine_tgt_idx"]
 
             num_node_m = len(node_src)
-            total_matched_anc += num_node_m
+            total_matched_nodes += num_node_m
             num_fine_m = len(fine_src)
             total_matched_fine += num_fine_m
 
@@ -715,15 +715,15 @@ def forward_backward_step(
             if num_node_m > 0:
                 exist_targets = torch.zeros(active_k, 1, device=device)
                 exist_targets[node_src] = 1.0
-                pos_weight_anc = torch.tensor([8.0], device=device)
+                pos_weight_node = torch.tensor([8.0], device=device)
                 loss_phytomer_exist_acc += F.binary_cross_entropy_with_logits(
-                    pred_phytomer_logits[b], exist_targets, pos_weight=pos_weight_anc
+                    pred_phytomer_logits[b], exist_targets, pos_weight=pos_weight_node
                 )
 
                 if "phytomer_tgt_pos" in m_b and len(m_b["phytomer_tgt_pos"]) > 0:
                     p_node = pred_phytomer_pos[b, node_src]
-                    t_anc = m_b["phytomer_tgt_pos"]
-                    loss_phytomer_pos_acc += F.smooth_l1_loss(p_node, t_anc, reduction="sum")
+                    t_node = m_b["phytomer_tgt_pos"]
+                    loss_phytomer_pos_acc += F.smooth_l1_loss(p_node, t_node, reduction="sum")
 
             # Stage 2 Fine Losses
             exist_targets_fine = torch.zeros(active_fine, 1, device=device)
@@ -765,9 +765,9 @@ def forward_backward_step(
             )
 
         norm_m = max(total_matched_fine, 1)
-        norm_anc = max(total_matched_anc, 1)
+        norm_nodes = max(total_matched_nodes, 1)
 
-        loss_phytomer_pos = loss_phytomer_pos_acc / norm_anc
+        loss_phytomer_pos = loss_phytomer_pos_acc / norm_nodes
         loss_phytomer_exist = loss_phytomer_exist_acc / max(B, 1)
         loss_fine_vel = loss_fine_vel_acc / norm_m
         loss_fine_exist = loss_fine_exist_acc / max(B, 1)

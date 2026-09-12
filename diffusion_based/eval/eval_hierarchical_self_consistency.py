@@ -315,12 +315,12 @@ def evaluate_self_consistency_batch(
             )
 
         # Build continuous stem tubes directly from Stage 2 phytomer node scaffold (Option C)
-        anc_scale_b = sample_out.get("phytomer_scale")
-        anc_scale_b = anc_scale_b[b] if anc_scale_b is not None else None
+        node_scale_b = sample_out.get("phytomer_scale")
+        node_scale_b = node_scale_b[b] if node_scale_b is not None else None
         stem_parts = build_stem_parts_from_phytomer_nodes(
             phytomer_pos=sample_out["phytomer_pos"][b],
             phytomer_exist=sample_out["phytomer_existence"][b],
-            phytomer_scale=anc_scale_b,
+            phytomer_scale=node_scale_b,
         )
         if stem_parts.shape[0] > 0 and lateral_parts.shape[0] > 0:
             active_parts = torch.cat([stem_parts, lateral_parts], dim=0)
@@ -566,9 +566,9 @@ def evaluate_self_consistency_batch(
                 pred_exist_raw = sample_out["phytomer_existence"][b].cpu().numpy() if "phytomer_existence" in sample_out else np.ones(len(pred_pos_raw))
 
                 k_target = max(len(gt_nodes), 8)
-                active_anc_mask = pred_exist_raw > 0.35
-                if active_anc_mask.sum() >= 4:
-                    pred_nodes = pred_pos_raw[active_anc_mask]
+                active_node_mask = pred_exist_raw > 0.35
+                if active_node_mask.sum() >= 4:
+                    pred_nodes = pred_pos_raw[active_node_mask]
                 else:
                     top_k_idx = np.argsort(-pred_exist_raw)[:k_target]
                     pred_nodes = pred_pos_raw[top_k_idx]
