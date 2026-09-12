@@ -58,3 +58,6 @@ scratch/
 diffusion_based/eval/test_*.png
 diffusion_based/eval/test_*.py
 agent_temp/
+# Per-run training artifacts: self-consistency panels and the run.log symlink
+# live in slurm_scripts/logs/run_<jobid>/ beside each run's own log.
+slurm_scripts/logs/

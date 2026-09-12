@@ -44,6 +44,19 @@ mkdir -p "${REPO_ROOT}/slurm_scripts/logs"
 cd ${REPO_ROOT}
 mkdir -p "${OUTPUT_DIR}"
 
+# Per-run artifact folder: the self-consistency panels live here beside this
+# run's own log, so runs stay comparable instead of overwriting each other at
+# fixed filenames under docs/results/assets. SLURM will not create a directory
+# for --output, so the log is written where it always was and symlinked in
+# rather than moved (it is appended to for the life of the job).
+RUN_TAG="${SLURM_JOB_ID:-local_$(date +%Y%m%d_%H%M%S)}"
+RUN_DIR="${REPO_ROOT}/slurm_scripts/logs/run_${RUN_TAG}"
+mkdir -p "${RUN_DIR}"
+if [ -n "${SLURM_JOB_ID}" ]; then
+    ln -sfn "${REPO_ROOT}/slurm_scripts/logs/hierarchical_fm_${SLURM_JOB_ID}.log" "${RUN_DIR}/run.log"
+fi
+echo "Run artifacts: ${RUN_DIR} (self-consistency panels + run.log symlink)"
+
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=4
 export PYTHONPATH=.
@@ -130,6 +143,7 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     --eval_samples_per_bucket "${EVAL_SAMPLES_PER_BUCKET:-2}" \
     --dap_buckets "${DAP_BUCKETS:-8}" \
     --max_train_samples "${MAX_TRAIN_SAMPLES:-0}" \
+    --figure_dir "${RUN_DIR}" \
     --wandb_project part-flow-matching \
     --wandb_run_name "${WANDB_RUN_NAME:-hierarchical-3stage-cascaded-cowpea-100k}"
 

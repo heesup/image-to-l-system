@@ -1551,6 +1551,13 @@ def main():
                         help="Phytomer bipartite matching algorithm: 'greedy' (GPU batched, ~0.02s) or 'hungarian' (CPU Scipy, ~0.24s)")
     parser.add_argument("--wandb_project", type=str, default="part-flow-matching")
     parser.add_argument("--wandb_run_name", type=str, default="hierarchical-matryoshka-cowpea")
+    parser.add_argument("--figure_dir", type=str, default="",
+                        help="Where per-epoch self-consistency panels are written. "
+                             "Empty derives a per-run folder under slurm_scripts/logs "
+                             "(run_$SLURM_JOB_ID, or run_local_<timestamp>). Keeping each "
+                             "run's figures beside its own log makes a run self-contained; "
+                             "writing them to docs/results/assets meant every run silently "
+                             "overwrote the previous run's panels at the same filenames.")
     parser.add_argument("--seed", type=int, default=None,
                         help="Seed weight init, data shuffling and the DistributedSampler. "
                              "Unset (the historical behaviour) means every run differs, which "
@@ -1568,6 +1575,14 @@ def main():
         torch.manual_seed(_rank_seed)
         torch.cuda.manual_seed_all(_rank_seed)
         random.seed(_rank_seed)
+
+    # Per-run figure folder, so a run's panels sit beside its own log instead of
+    # overwriting the previous run's at fixed filenames under docs/results/assets.
+    figure_dir = args.figure_dir or os.path.join(
+        "slurm_scripts", "logs",
+        f"run_{os.environ['SLURM_JOB_ID']}" if os.environ.get("SLURM_JOB_ID")
+        else f"run_local_{time.strftime('%Y%m%d_%H%M%S')}")
+    os.makedirs(figure_dir, exist_ok=True)
 
     if args.detect_anomaly:
         torch.autograd.set_detect_anomaly(True)
@@ -2030,7 +2045,7 @@ def main():
                         renderer=renderer,
                         device=device,
                         epoch=epoch,
-                        output_dir="docs/results/assets",
+                        output_dir=figure_dir,
                         num_samples_to_plot=4,
                         vae=vae,
                         phytomer_vae=phytomer_vae,
