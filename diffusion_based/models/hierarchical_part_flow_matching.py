@@ -67,6 +67,34 @@ SCALE_CEIL = 25.0
 
 
 _GRAD_PROBE = os.environ.get("FM_GRAD_PROBE", "0") == "1"
+# FM_ACT_PROBE=1: forward probe on Stage 2's decoder LayerNorm inputs. A pre-LN
+# block's backward carries a 1/std factor per token through each LayerNorm, so
+# a token whose 384 features have collapsed to near-constant amplifies whatever
+# gradient reaches it (the per-layer amplification _make_layer_probe measures).
+# This reports the smallest per-token input std seen by each norm, once per
+# probe interval, so the collapse can be watched before the canary fires.
+_ACT_PROBE = os.environ.get("FM_ACT_PROBE", "0") == "1"
+_ACT_PROBE_EVERY = int(os.environ.get("FM_ACT_PROBE_EVERY", "50"))
+_act_probe_state: dict = {}
+
+
+def _make_act_probe(label: str):
+    def _pre_hook(module, args):
+        x = args[0]
+        if not torch.is_tensor(x) or x.dim() < 2:
+            return
+        with torch.no_grad():
+            std = x.float().std(dim=-1)                      # per token
+            st = _act_probe_state.setdefault(label, {"n": 0, "min": float("inf"), "n_tiny": 0, "tok": 0})
+            st["n"] += 1
+            st["min"] = min(st["min"], float(std.min()))
+            st["n_tiny"] += int((std < 1e-3).sum())
+            st["tok"] += int(std.numel())
+            if st["n"] % _ACT_PROBE_EVERY == 0:
+                print(f"  [ActProbe] {label}: min token std {st['min']:.3e} | tokens with std<1e-3: "
+                      f"{st['n_tiny']}/{st['tok']} | median this call {float(std.median()):.3e}", flush=True)
+                st["min"] = float("inf"); st["n_tiny"] = 0; st["tok"] = 0
+    return _pre_hook
 _PROBE_THRESHOLD = 1e9
 _probe_seen: set = set()
 
@@ -490,6 +518,10 @@ class CoarseSkeletalTransformer(nn.Module):
             norm_first=True,
         )
         self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
+        if _ACT_PROBE:
+            for _i, _layer in enumerate(self.decoder.layers):
+                for _nm in ("norm1", "norm2", "norm3"):
+                    getattr(_layer, _nm).register_forward_pre_hook(_make_act_probe(f"decoder.layer{_i}.{_nm}"))
         if _GRAD_PROBE:
             # The probe on the intermediates showed the gradient entering this
             # decoder's output under 1e9 and the gradient leaving its input at

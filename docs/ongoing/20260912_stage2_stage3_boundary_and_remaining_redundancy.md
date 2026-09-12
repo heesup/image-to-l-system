@@ -487,14 +487,62 @@ petiole 1.5-5.6%, peduncle 11%, flowers/fruit 12-22%, internode 17-39% (unused
 for chained nodes). Leaflet rotation error is irrelevant to Helios (see "What
 Helios actually reads"), though the PyTorch training render does draw it.
 
-**v9 in progress** (local GPU, `slurm_scripts/logs/local_vae_v9/`): the v8 recipe
-(128D = 48 + 10x8, 60 epochs on 4,000 files, 208 s) rerun with 8,000 files and
-120 epochs, once with `PHYTOMER_TERMINAL_LAST=1` (`phytomer_vae_v9_tl`) and once
-without (`phytomer_vae_v9_ctrl`) so the convention's effect is separable from the
-longer training. Judge on `eval_phytomer_vae_packet_fidelity.py` first, then the
-Helios round-trip. Adopting a v9 means bumping `PKT_VERSION`, regenerating
-`dataset/cache/cowpea_curv26_pkt` (it stores the VAE latent), and retraining
-Stage 3 -- so it should land before the next long FM run, not during one.
+**v9 candidates, measured** (local GPU, logs in `slurm_scripts/logs/local_vae_v9/`; all
+128D = 48 + 10x8, 8,000 files, 120 epochs, ~5 min each; `_ctrl` keeps the v6/v8
+bottom-to-top leaflet order, `_tl` uses `PHYTOMER_TERMINAL_LAST=1`, `_rw4` adds
+`--rot-weight 4`). Packet-level fidelity at DAP 50 (mean, p90 in parens) and the
+Helios round-trip:
+
+| VAE | petiole rot (deg) | leaflet rot | leaflet scale | stem scale | Helios FG IoU 10 / 50 / 90 |
+|---|---|---|---|---|---|
+| v8 (4,000 files, 60 ep) | 3.02 (4.30) | 2.46 (3.70) | 5.1% (11.5) | 13.5% | 81.4 / **90.2** / 79.3 |
+| v9_ctrl | 2.65 (4.88) | 1.55 (2.42) | 0.8% (1.4) | 9.9% | **83.5** / 88.0 / **85.0** |
+| v9_tl | 3.02 (5.12) | 1.52 (2.46) | 0.9% (1.6) | 8.7% | 83.2 / 84.7 / 83.1 |
+| v9_tl_rw4 | **1.58 (2.48)** | **1.07 (1.76)** | 0.8% (1.6) | 8.9% | 81.7 / 82.9 / 75.8 |
+
+Read together with the attribution rows, this says the Helios number does **not**
+track packet fidelity. `_rw4` has the best rotations by a wide margin (petiole
+direction error 1.4 deg mean, azimuth p99 4.4 deg vs v8's 20.9, and *no* node over
+10 deg) and the best scales, yet renders worst; v8 misidentifies the terminal
+leaflet on a third of its nodes (55 / 163 at DAP 50) and renders best at DAP 50.
+Its attribution: `_rw4` + exact petiole rotations = 92.7 at DAP 50 and 85.1 at
+DAP 90 -- ten points from a 1.4-degree error. So the loss is a few nodes where
+Helios's forward kinematics is ill-conditioned, not average fidelity, and which
+nodes those are is luck per model.
+
+**Where the DAP 50 loss actually sits (v9_tl, bisection by shoot and by column).**
+Replacing the decoded petiole rotations with exact ones one shoot at a time:
+shoot 3 (20 nodes) alone gives 84.7 -> **89.7**; every other shoot 0.0-0.8; the
+five lateral base nodes together +1.3. Zeroing the decoded *internode* curvature:
+84.7 -> **87.9** (exact curvature on every slot: 88.0). Both together: **93.7**,
+i.e. the identity number (94.2). The mechanism for curvature is now understood
+from `PlantArchitecture.cpp`: the converter writes the 14D internode curvature
+into Helios's `curvature_perturbations`, which Helios applies as a per-segment
+bend angle in degrees while building the shoot by FK, so a decoded 0.4-2 deg
+per node accumulates over a 20-node shoot into a tip displaced by centimetres.
+The three round-trip plants (`exact_gt_renders/`) have that value exactly 0 on
+every internode (and constant 180 deg phyllotaxy, zero yaw perturbations); the
+training distribution does **not** (internode curvature -6..+7, phyllotaxy
+195-213 per node, yaw perturbations up to 9.5 on a 60-plant sample), so zeroing
+it in export is exact for the figure and wrong for the dataset, and was not
+done. The petiole mechanism is the same in kind: `PartTensorTo40DConverter`
+ignores our internode directions (pitch is the species constant 20 deg) and
+derives the stem's shape from petiole azimuth differences, so the whole shoot is
+placed by FK from decoded petiole rotations.
+
+**What this means for the requirement.** The export path integrates a 20-node
+shoot from per-node angles that the VAE reproduces to 1-3 degrees; Helios then
+amplifies whichever node happens to be worst. Two ways forward, in order of
+leverage: (1) **stem IK in the converter** -- solve Helios's per-node
+(phyllotactic angle, curvature perturbation, yaw perturbation) from the chain's
+node positions, which Stage 2 predicts directly and the identity path has
+exactly, instead of from petiole rotations and a decoded curvature; this removes
+the FK amplification for every model at once and is the change that makes the
+round-trip equal the IK-only column by construction. (2) A VAE that is better on
+the ill-conditioned nodes, which is what `_rw4` already is on average and still
+lost -- so (2) alone does not get there. Until (1) lands, judge VAE candidates
+on packet fidelity (`_rw4` is the best) and treat the Helios figure as a
+property of the export, not of the VAE.
 
 ---
 
