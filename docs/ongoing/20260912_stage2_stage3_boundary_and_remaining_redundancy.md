@@ -20,6 +20,9 @@
 | Per-run figure folders under `slurm_scripts/logs/run_<jobid>/` | `12c0457` |
 | **§2.1 redesign: `gt_parent_links`, one parent rule, no exceptions** | `8331abf`, `5e10c15` |
 | **§2.1 redesign: every node gets a real parent; +Z fallback deleted** | `e902487` |
+| `--resume` flag restored (its parser line had been lost; launcher passed it by default) | `c192f5f` |
+| **Inference drew internodes from the decoded length, over ALL slots incl. non-existent ones** — fixed | `abce662` |
+| **Ordinal = depth from the root; parent-step loss** | `ae26ccb` |
 
 **The blocker is resolved.** The intermittent Stage 2 gradient explosion tracks the **learning rate**, not the architecture: every observed onset sat above ~1.6e-4 effective lr, and job `38240281` at `LR=1e-4` has now run **10 epochs clean** with 0 canary hits, through and well past the point where three of four runs at 3e-4 died. Eight architecture-level hypotheses were tested against minimal reproductions and refuted first; §1.9 records them so nobody pays for them twice.
 
@@ -29,7 +32,11 @@
 
 **Also note**: `38240281` was launched *before* the `8331abf`/`5e10c15`/`e902487` redesign commits, so it is training the old target convention. It is a stability and quality baseline, not a measurement of the redesign.
 
-**Next, in order**: §2.1's remaining pieces — Stage 3 consuming `(parent, self)` pairs with the parent held fixed, then noise injection on the fixed parent. §1.7's ordinal fix (supervise the parent-difference, not the absolute ordinal) is the other strong candidate, since `ord_step_mae` is still pinned at its no-information value of ~1.0 while `ord_mae` improves.
+**What the render loss did once switched on** (job `38240323`, resumed from the epoch-10 checkpoint with `RENDER_GRAD_START_EPOCH=11`, `RENDER_FRACTION=0.03`): IoU 24.2% -> 27.5% -> 27.1% -> **32.2%** over epochs 11-14, depth MAE 14.52 -> **13.29 cm**, node RMSE 1.9-2.2 cm, roll 0.8244 -> **0.7979**. A clear upward trend, and these numbers are still measured through the *old* inference path below, so the true silhouette is better than they say.
+
+**Two inference bugs found by looking at the epoch-11 panel rather than the numbers** (§2.3). A 2 cm seedling with 0.6 cm node RMSE rendered at IoU 0.0% because metre-long stems shot across the frame. Fixed in `abce662`; the ordinal follow-up is `ae26ccb`.
+
+**Next**: when `38240323` writes its epoch-15 checkpoint, stop it and resume from there with `ae26ccb`'s depth target and step loss (plus the fixed inference), so the render-on progress is kept and the ordinal head relearns on top of it. Then §2.1's remaining pieces — Stage 3 consuming `(parent, self)` pairs with the parent held fixed, and noise injection on the fixed parent.
 
 ---
 
@@ -281,6 +288,23 @@ This is worth adopting for three separate reasons. It takes parent coverage from
 3. **Dropping `roll_head`/`scale_head` from Stage 2** (§2's original plumbing), which only makes sense once Stage 3 predicts them.
 4. Worth considering while doing (1): with `is_base` reduced to the plant root, `chain_phytomers` may not need the `is_base` gate at all -- the lowest node has no candidate below it and so becomes parentless on its own.
 
+### 2.3 What the epoch-11 panel showed, and the two inference bugs behind it
+
+The self-consistency numbers are one mean over four DAP buckets and hid two separate failure modes that the panel (`slurm_scripts/logs/run_38240323/hierarchical_self_consistency_epoch_011.png`) made obvious:
+
+- **DAP 2 seedling**: node RMSE **0.6 cm**, count 4.1 of 4 -- the skeleton was essentially perfect -- yet IoU **0.0%**, because two internodes a metre long crossed the whole 1.2 m window on a 2 cm plant.
+- **DAP 68**: phytomer count **117 of 56**, a 2x overcount, so far too many organs. IoU 12.7%.
+- **DAP 97**: IoU 53.5%, already at target. Mature plants work.
+
+The seedling case was two bugs in `sample_ode`, neither present in the training render path:
+
+1. `assemble_packets` was called **without `parent_pos`/`centers`**, so every internode used the VAE-decoded slot-0 length rather than the parent->node segment the training block draws. (§3 of this doc had flagged that decoded length as "thrown away downstream" -- true in training, false at inference.)
+2. Fixing (1) alone made it *worse*, and an `FM_ASSEMBLY_PROBE=1` dump (added in `abce662`, off by default) showed why: `chain_phytomers` ran over **all `active_k` slots, existence ignored**. Non-existent slots sat 20 cm *below the soil* and 30 cm to the side; being lowest, the height rule left them parentless, they became "roots" whose parent is the origin, and 36 cm stems were drawn to them -- while real nodes chained to them as parents. Node RMSE never saw any of this because it is one-way (GT -> nearest prediction) and stray predictions are invisible to it. Chaining only slots with existence > 0.5 removes both; a non-live row's parent is now its own position (zero length, no NaN). Same fixed 10-sample set: **11.7% -> 14.4%**.
+
+A gap gate was then tried -- distrust a chained stem longer than ~6x the decoded length -- and **rejected by measurement**: 14.4% -> 12.1% on the same set, because the fallback stem still points at the wrong parent, so the stem gets shorter but no more correct. What remains after the fixes is live nodes chained **6-14 cm apart on 1-3 cm internodes**, which is the ordinal head carrying no ordering (`ord_step_mae` ~1.1 for 13 epochs). That is what `ae26ccb` addresses.
+
+**`ae26ccb` also corrects a flaw in the ordinal itself, not just its training.** Under the new parent rule a lateral's first node parents to a branch-point node on *another* shoot. `chain_phytomers` scores a candidate by `|(o_child - o_parent) - 1|`, so with per-shoot ordinals that true parent (ordinal 0 vs, say, 5) is charged 6 x `ORD_WEIGHT` = 0.12 m -- more than any internode -- and actively rejected. §1.7's 96-100% recovery figures were measured under the old convention where laterals were forced parentless and never had to be linked. The ordinal the head learns is now **depth from the root** (`gt_parent_links` returns it), under which every parent is exactly depth - 1, laterals included; the chain cost, the step loss and `is_base` (depth == 0) all follow from that one rule. Expect `ord_mae` to jump on resume (the target's range grew from a per-shoot index to ~0-50) and watch `ord_step_mae` instead -- below 1.0 is the first sign of ordering.
+
 ---
 
 ## 3. Proposed next step B: the internode redundancy that's STILL open at the packet level
@@ -354,5 +378,8 @@ d766a12 feat(launcher): pass SEED through to --seed
 8331abf feat(topology): gt_parent_links — one parent rule, no exceptions
 5e10c15 perf(topology): vectorise gt_parent_links and gate it on the internode scale
 e902487 feat(topology): every node gets a real parent; delete the +Z fallback
+c192f5f fix(train): restore the --resume flag whose parser line had been lost
+abce662 fix(inference): draw internodes from the chain, over live nodes only
+ae26ccb feat(topology): ordinal is depth from the root; supervise the parent step
 ```
 (Earlier the same day, see the previous doc's own commit log for the hybrid VAE / render-loss / canary-guard commits.)
