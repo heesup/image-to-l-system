@@ -68,9 +68,13 @@ from diffusion_based.models.phytomer_vae import PhytomerVAE
 
 PYRAMID_ZOOMS = [1.0, 2.0, 4.0, 8.0]
 DEFAULT_VAE_CHECKPOINT = os.path.join(
-    repo_root, "diffusion_based", "checkpoints", "phytomer_vae_xml", "phytomer_vae_64d_best.pt")
+    repo_root, "diffusion_based", "checkpoints", "phytomer_vae_v7", "phytomer_vae_64d_best.pt")
 
-PKT_VERSION = 3  # 1: 8-slot, 2: 10-slot absolute latent, 3: 10-slot + normalized-space latent
+# 1: 8-slot, 2: 10-slot absolute latent, 3: 10-slot + normalized-space latent,
+# 4: adds `keys` = the (shoot_id, phytomer_idx) each packet was grouped by, which
+#    supervises Stage 2's position-along-shoot head. Bumped so the v3 files the
+#    skip gate would otherwise keep get rebuilt.
+PKT_VERSION = 4
 
 
 def parse_args():
@@ -201,7 +205,7 @@ def build_pkt_targets(
         "keys": keys.cpu(),
         # v3: 10 slots, latent from scale-NORMALIZED VAE input, s_a carried by
         # the 76D flow state (petiole scale row, see phytomer_scale).
-        "pkt_version": 3,
+        "pkt_version": PKT_VERSION,
     }
     if vae is not None:
         dev = device if device is not None else next(vae.parameters()).device

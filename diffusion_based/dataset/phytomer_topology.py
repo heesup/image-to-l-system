@@ -43,6 +43,10 @@ DIR_WEIGHT = 0.05
 # A candidate parent further than this multiple of the median node spacing is
 # treated as absent, which is what makes a node a shoot base.
 MAX_EDGE_FACTOR = 3.0
+# Weight on the predicted-ordinal term, in metres per step of ordinal error.
+# Comparable to a typical internode so it can outvote a slightly closer but
+# out-of-sequence candidate.
+ORD_WEIGHT = 0.02
 
 
 def chain_phytomers(
@@ -51,6 +55,9 @@ def chain_phytomers(
     exist: Optional[torch.Tensor] = None,
     dir_weight: float = DIR_WEIGHT,
     max_edge_factor: float = MAX_EDGE_FACTOR,
+    ordinal: Optional[torch.Tensor] = None,
+    ord_weight: float = ORD_WEIGHT,
+    is_base: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Links phytomer nodes into shoots.
 
@@ -59,6 +66,12 @@ def chain_phytomers(
         rot6d: (P, 6) node rotations; column 1 of the matrix is the internode
             forward axis, pointing from the parent up to this node.
         exist: optional (P,) bool/float mask of which nodes are real.
+        ordinal: optional (P,) predicted position along the shoot (Stage 2's
+            order head). A parent should be one step below its child, so this
+            adds |(o_child - o_parent) - 1| to the cost. Geometry alone is not
+            enough where nodes are densely spaced.
+        is_base: optional (P,) bool/float, predicted shoot bases. Nodes flagged
+            here are allowed to have no parent regardless of the edge gate.
 
     Returns:
         parent_idx: (P,) int64, index of each node's parent, -1 for shoot bases.
@@ -96,6 +109,10 @@ def chain_phytomers(
     cos = torch.nn.functional.cosine_similarity(
         delta, fwd.unsqueeze(1).expand_as(delta), dim=-1)
     cost = dist + dir_weight * (1.0 - cos)
+    if ordinal is not None:
+        o = ordinal.reshape(-1)[idx]
+        step = o.unsqueeze(1) - o.unsqueeze(0)          # child - candidate
+        cost = cost + ord_weight * (step - 1.0).abs()
     cost = cost.masked_fill(higher, float("inf"))
     cost.fill_diagonal_(float("inf"))
 
@@ -104,6 +121,8 @@ def chain_phytomers(
     gate = (max_edge_factor * finite.median() if finite.numel() > 0
             else torch.tensor(float("inf"), device=device))
     has_parent = torch.isfinite(best_cost) & (best_cost <= gate)
+    if is_base is not None:
+        has_parent = has_parent & ~(is_base.reshape(-1)[idx] > 0.5)
     local_parent = torch.where(has_parent, best, torch.full_like(best, -1))
 
     # Walk each chain from its base so shoot ids and ordinals are consistent.

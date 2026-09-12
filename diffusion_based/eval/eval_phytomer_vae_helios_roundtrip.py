@@ -76,8 +76,8 @@ def build_vae_roundtrip_xml(arr: PlantOrganArray, vae: PhytomerVAE) -> Tuple[str
     existence = (part_13d[:, P_COL_ORGAN_TYPE] > ORGAN_NONE).float()
     phytomer_ids = extract_phytomer_ids(arr, num_organs)
 
-    packets, presence, centers, refs = build_phytomer_packets(
-        nodes_fm, existence_mask=existence, phytomer_ids=phytomer_ids)
+    packets, presence, centers, refs, pkt_keys = build_phytomer_packets(
+        nodes_fm, existence_mask=existence, phytomer_ids=phytomer_ids, return_keys=True)
     if packets.shape[0] == 0:
         raise RuntimeError("No phytomer packets could be built (empty plant?)")
 
@@ -97,7 +97,13 @@ def build_vae_roundtrip_xml(arr: PlantOrganArray, vae: PhytomerVAE) -> Tuple[str
 
     # Recover the stem chain from the node cloud: it supplies the internode
     # (parent -> node span) and the shoot partition the XML export needs.
-    parent_idx, shoot_id, phytomer_idx = chain_phytomers(centers, refs)
+    # Stage 2 predicts the position along the shoot; here it is stubbed with
+    # ground truth, the same way the phytomer pose and scale are. Geometry alone
+    # puts one phytomer in the wrong shoot and that costs ~50 points of IoU.
+    parent_idx, shoot_id, phytomer_idx = chain_phytomers(
+        centers, refs,
+        ordinal=pkt_keys[:, 1].to(centers.device).float(),
+        is_base=(pkt_keys[:, 1] == 0).to(centers.device).float())
     parent_pos = torch.where(
         (parent_idx >= 0).unsqueeze(-1),
         centers[parent_idx.clamp(min=0)],
