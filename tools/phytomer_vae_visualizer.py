@@ -10,7 +10,7 @@ centers, packets, dap, meta.json).
 Usage (workspace root):
     .../bin/python tools/phytomer_vae_visualizer.py \
         --cache dataset/cache/phytomer_gui_cache \
-        --ckpt diffusion_based/checkpoints/phytomer_vae_v4/phytomer_vae_64d_best.pt \
+        --ckpt diffusion_based/checkpoints/phytomer_vae_v7/phytomer_vae_64d_best.pt \
         --server-name 0.0.0.0 --server-port 7860
 """
 
@@ -58,7 +58,10 @@ ORGAN_NAMES = {
     9: "flower_closed", 10: "flower_open", 11: "fruit", 12: "bud_aborted",
 }
 
-SLOT_ROLES = ["petiole", "leaflet1", "leaflet2", "leaflet3",
+# Must match NUM_SLOTS (10) and the canonical slot order in phytomer_packets.
+# The leading "stem" was dropped during the abandoned 9-slot experiment, which
+# left every label shifted by one and raised IndexError on slot 9.
+SLOT_ROLES = ["stem", "petiole", "leaflet1", "leaflet2", "leaflet3",
               "peduncle", "repro1", "repro2", "repro3", "repro4"]
 
 PCA2D_SIZE = 700  # px, matplotlib image side
@@ -102,10 +105,26 @@ class PhytomerVisualizer:
         self.slider_lo = zmin - pad
         self.slider_hi = zmax + pad
 
-        # Latent dims are NOT equal: std spans ~0.05 (dead) .. ~1.15 (live).
-        # Raw sliders are shown variance-sorted (live first) with σ in labels.
+        # Latent dims are NOT equal. Rank them by how much a +2σ nudge actually
+        # moves the decoded organs, measured by
+        # diffusion_based/eval/eval_phytomer_vae_latent_usage.py and written next
+        # to the checkpoint. std(mu) alone cannot distinguish a dimension that is
+        # collapsed (posterior variance ~ 1) from one that is merely
+        # low-variance but used; fall back to it only when the measurement is
+        # absent. Measured on v7: 9 dims carry 50% of the KL, 19 carry 90%, and
+        # only 7 of 64 move nothing at all.
         self.z_std = self.z.std(dim=0).numpy()
-        self.dim_order = np.argsort(-self.z_std)
+        usage_path = os.path.join(os.path.dirname(ckpt), "latent_usage.json")
+        self.dim_rot_sens = None
+        if os.path.exists(usage_path):
+            usage = json.load(open(usage_path))
+            if len(usage.get("rot_sensitivity_deg_per_dim", [])) == self.latent_dim:
+                self.dim_rot_sens = np.array(usage["rot_sensitivity_deg_per_dim"],
+                                             dtype=np.float32)
+        if self.dim_rot_sens is not None:
+            self.dim_order = np.argsort(-self.dim_rot_sens)
+        else:
+            self.dim_order = np.argsort(-self.z_std)
 
         # Coarse PCA control: pca16 (16 comps, 98.2% var) → top-10 ≈ 81%.
         # Each PC move shifts many correlated dims → always visibly changes.
@@ -141,7 +160,7 @@ class PhytomerVisualizer:
         (ids (P,) int64, names list[str] indexable by id).
         """
         labels = self.packets[:, :, :FM_OT_END].argmax(-1)  # (P, 8)
-        cat_of = {4: "petiole", 5: "leaf", 6: "peduncle",
+        cat_of = {3: "internode", 4: "petiole", 5: "leaf", 6: "peduncle",
                   9: "flower", 10: "flower", 11: "fruit"}
         combos = []
         for i in range(self.n):
@@ -597,12 +616,14 @@ def build_app(viz: PhytomerVisualizer):
                     )
                     for k in range(viz.n_pc)
                 ]
-                with gr.Accordion("Raw 64D (variance-sorted, σ in label)", open=False):
+                with gr.Accordion("Raw 64D (sorted by measured shape influence)", open=False):
                     sliders = [
                         gr.Slider(
                             minimum=slider_lo[i], maximum=slider_hi[i],
                             value=0.0, step=0.01,
-                            label=f"z[{i}] σ={viz.z_std[i]:.2f}",
+                            label=(f"z[{i}] Δrot={viz.dim_rot_sens[i]:.1f}° σ={viz.z_std[i]:.2f}"
+                                   if viz.dim_rot_sens is not None
+                                   else f"z[{i}] σ={viz.z_std[i]:.2f}"),
                         )
                         for i in viz.dim_order
                     ]
@@ -664,7 +685,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cache", type=str, default="dataset/cache/phytomer_gui_cache")
     parser.add_argument("--ckpt", type=str,
-                        default="diffusion_based/checkpoints/phytomer_vae_v4/phytomer_vae_64d_best.pt")
+                        default="diffusion_based/checkpoints/phytomer_vae_v7/phytomer_vae_64d_best.pt")
     parser.add_argument("--server-name", type=str, default="0.0.0.0")
     parser.add_argument("--server-port", type=int, default=7860)
     parser.add_argument("--device", type=str, default="cuda:0")
