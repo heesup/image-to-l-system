@@ -7,6 +7,7 @@ using Matryoshka power-of-2 nested queries.
 """
 
 import math
+import os
 from typing import Dict, Optional, Tuple, List
 import torch
 import torch.nn as nn
@@ -63,6 +64,33 @@ PHYTOMER_MARGIN_MIN = 1.05
 # Ceiling on the Stage-2 phytomer scale head, in FM units (x SCALE_SCALE = 50),
 # so 25.0 = 50 cm. Ground-truth petiole length tops out near 4.0 FM units.
 SCALE_CEIL = 25.0
+
+
+_GRAD_PROBE = os.environ.get("FM_GRAD_PROBE", "0") == "1"
+_PROBE_THRESHOLD = 1e9
+_probe_seen: set = set()
+
+
+def _probe_grad(t: torch.Tensor, label: str) -> None:
+    """Report the first backward pass in which `t` carries a gradient past
+    _PROBE_THRESHOLD. Used to find which consumer of a shared tensor is the
+    source of a gradient explosion, since the parameter-level canary in the
+    training loop can only say where it landed. One report per label."""
+    if not t.requires_grad:
+        return
+
+    def _hook(g):
+        if label in _probe_seen:
+            return
+        finite = g[torch.isfinite(g)].abs()
+        mx = float(finite.max()) if finite.numel() else float("inf")
+        n_nan = int(torch.isnan(g).sum())
+        if mx > _PROBE_THRESHOLD or n_nan > 0:
+            _probe_seen.add(label)
+            print(f"  [GradProbe] {label}: max_finite={mx:.3e} nan={n_nan} "
+                  f"shape={list(g.shape)}", flush=True)
+
+    t.register_hook(_hook)
 
 
 def safe_normalize(v: torch.Tensor, eps: float = 1e-3) -> torch.Tensor:
@@ -577,6 +605,19 @@ class CoarseSkeletalTransformer(nn.Module):
         # Stage 2 Heads: predict coordinate offset from 3D reference points (physically bounded to +/- 0.5m)
         delta_pos = torch.tanh(self.pos_head(phytomer_features)) * 0.5
         phytomer_pos = self.ref_points[:K].unsqueeze(0) + delta_pos
+
+        # Opt-in backward probe (FM_GRAD_PROBE=1). The gradient canary names the
+        # PARAMETER a leak lands on, but ref_points is fed by three separate
+        # paths (this direct add, ref_pos_mlp, and the cdist edge bias), so the
+        # parameter alone does not say which consumer produced it. These hooks
+        # report on the intermediates instead, which does. Off by default:
+        # hooks on every forward are not free.
+        if _GRAD_PROBE:
+            _probe_grad(q_pos, "q_pos (ref_pos_mlp out)")
+            _probe_grad(edge_bias, "edge_bias (cdist out)")
+            _probe_grad(phytomer_features, "phytomer_features")
+            _probe_grad(delta_pos, "delta_pos (pos_head out)")
+            _probe_grad(phytomer_pos, "phytomer_pos")
 
         # Roll (1 DOF, (cos, sin)). Forward axis is derived elsewhere (after
         # topology is resolved) from position alone -- see phytomer_roll.py.
