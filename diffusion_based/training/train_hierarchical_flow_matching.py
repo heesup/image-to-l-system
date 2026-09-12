@@ -718,6 +718,10 @@ def forward_backward_step(
         loss_phytomer_exist_acc = torch.tensor(0.0, device=device)
         loss_fine_vel_acc = torch.tensor(0.0, device=device)
         loss_fine_exist_acc = torch.tensor(0.0, device=device)
+        # Ordinal diagnostics only exist in phytomer mode; the metrics dict at
+        # the end reads them either way.
+        ord_mae = torch.tensor(0.0, device=device)
+        ord_step_mae = torch.tensor(0.0, device=device)
 
         total_matched_nodes = 0
         total_matched_fine = 0
@@ -1547,7 +1551,23 @@ def main():
                         help="Phytomer bipartite matching algorithm: 'greedy' (GPU batched, ~0.02s) or 'hungarian' (CPU Scipy, ~0.24s)")
     parser.add_argument("--wandb_project", type=str, default="part-flow-matching")
     parser.add_argument("--wandb_run_name", type=str, default="hierarchical-matryoshka-cowpea")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Seed weight init, data shuffling and the DistributedSampler. "
+                             "Unset (the historical behaviour) means every run differs, which "
+                             "makes an intermittent failure impossible to iterate on -- the "
+                             "2026-09-12 gradient explosion appeared in epoch 2 of one run and "
+                             "epoch 3 of another under identical settings. Set it when chasing "
+                             "one.")
     args = parser.parse_args()
+
+    if args.seed is not None:
+        # Offset per rank for anything sampled independently, while the
+        # DistributedSampler is given the same base seed on every rank (it
+        # derives its own per-rank split from seed + epoch).
+        _rank_seed = args.seed + int(os.environ.get("RANK", 0))
+        torch.manual_seed(_rank_seed)
+        torch.cuda.manual_seed_all(_rank_seed)
+        random.seed(_rank_seed)
 
     if args.detect_anomaly:
         torch.autograd.set_detect_anomaly(True)
