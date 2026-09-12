@@ -25,7 +25,7 @@ extended with organ-combo coloring, leaf-quality toggle, and Web 3D view.
 | File | Purpose |
 | :--- | :--- |
 | `tools/precompute_phytomer_latent_pca.py` | Cache build: full rebuild (packets from cache + VAE encode) or `--from-pkt-cache` fast path (reuses stored pkt latents, no encode) → `dataset/cache/phytomer_gui_cache/` |
-| `tools/phytomer_vae_visualizer.py` | Gradio app (loads cache + frozen `phytomer_vae_v2` ckpt, `centers.pt` for exact re-anchor; 10 slots: repro1–4) |
+| `tools/phytomer_vae_visualizer.py` | Gradio app (loads cache + frozen `phytomer_vae_v2` ckpt, `centers.pt` for exact world-frame placement; 10 slots: repro1–4) |
 | `diffusion_based/models/helios_pytorch_geometry.py` | + `"lowpoly"` leaf mode (~80-vert alpha-cutout leaf, `get_generic_leaf_mesh(Nx=8,Ny=8)`) |
 
 ## Run
@@ -45,7 +45,7 @@ Access: VNC browser `localhost:7860` or SSH tunnel `ssh -L 7860:localhost:7860`.
 ## Key implementation notes / gotchas
 
 1. **Structural VAE decode**: `model.decode()` returns ZEROED base columns —
-   call `assemble_packets(recon_packets, refs)` before re-anchoring
+   call `assemble_packets(recon_packets, refs)` before placing them back into the world frame
    (leaflets attach at 0.8/0.8/1.0 × petiole length along `R_pet = R_ref @ R_rel`).
    `ref_mode="identity"` MUST pass real identity rot6d (not zeros — `rot6d_to_matrix`
    of zeros degenerates to a zero matrix).
@@ -132,7 +132,7 @@ Access: VNC browser `localhost:7860` or SSH tunnel `ssh -L 7860:localhost:7860`.
     `strip_base()` zeroes ALL deterministic bases before encoding (240D input)
     and the loss target is `tgt_base = 0` for every slot, so neither encoder
     input nor target changed. The rule lives in `assemble_packets` (decode-side
-    re-anchoring): affects (a) GUI/eval renders of decoded packets — now
+    world-frame placement): affects (a) GUI/eval renders of decoded packets — now
     botanically correct, (b) the differentiable render branch in phytomer-mode
     training (decode→assemble→render), and (c) the pkt cache stem-base values
     are untouched (GT bases stored as-is; the cache is rule-free). Net: no

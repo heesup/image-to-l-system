@@ -1,4 +1,4 @@
-# Phytomer-Level Latent Modeling & Local Anchor Matching (2026-09-09)
+# Phytomer-Level Latent Modeling & Local Node Matching (2026-09-09)
 
 **Status**: Proposal 1 implemented + tested. Proposal 2 foundation implemented;
 PhytomerVAE-64 training in progress. Flow integration staged behind validation gate.
@@ -14,46 +14,46 @@ GUI app delegated to a separate agent (see §4).
 
 ## 1. Proposal 1 — Local search around predicted node positions
 
-### Verdict: YES for anchor assignment (soft form), with measured caveats
+### Verdict: YES for node assignment (soft form), with measured caveats
 
 **What the user intuited is 90% already true**: the fine matching stage is already
-per-cluster local (role-partitioned bipartite within each anchor's cluster). The
-remaining global piece is the **anchor-level Hungarian** (K x N full cost matrix).
+per-cluster local (role-partitioned bipartite within each node's cluster). The
+remaining global piece is the **node-level Hungarian** (K x N full cost matrix).
 
 **Evidence collected 2026-09-09 on cowpea_curv26 (60 files, 2,846 clusters)**:
 - GT cluster-center nearest-neighbor distance: **median 2.5cm, p75 3.0cm**
-- Anchor position RMSE: ~1.7-2.6cm (same order as neighbor spacing!)
+- Node position RMSE: ~1.7-2.6cm (same order as neighbor spacing!)
 - 48.6% of organs share exact base positions with another organ (trifoliate leaflets
   share petiole tips, flower clusters) → position-only matching is ambiguous;
   class/existence costs do the real disambiguation work.
 
 **Consequences**:
 1. A HARD radius cutoff is UNSAFE (neighbor nodes at 2.5cm vs error 2cm → would
-   break correct matches; early-training random anchors would starve entirely).
+   break correct matches; early-training random nodes would starve entirely).
 2. A SOFT quadratic penalty beyond R is safe and principled: keeps every cluster
    matched (no supervision starvation, no annealing schedule, no deadlock) while
    strongly discouraging absurd >10cm swaps that L1 alone permits via existence bias.
-3. Compute savings are NEGLIGIBLE either way: the anchor LSA itself is 0.04ms of the
+3. Compute savings are NEGLIGIBLE either way: the node LSA itself is 0.04ms of the
    5.6s matcher step. The value is matching QUALITY (fewer far swaps → cleaner
    gradients), especially early in training.
 4. KD-tree / nearest-neighbor REPLACEMENT is the wrong tool: NN returns nearest,
    not optimal 1:1 assignment under role constraints + existence bias; multiple
-   anchors would claim the same cluster. Hungarian stays (DETR-family standard);
+   nodes would claim the same cluster. Hungarian stays (DETR-family standard);
    only its cost gets a locality bias. Measured: scipy LSA = 0.07s of 5.6s — the
    algorithm was never the bottleneck; Python orchestration + 43k `.item()` syncs were.
 
 ### Implemented
 
-`HierarchicalBotanicalMatcher(anchor_locality_radius=None, anchor_locality_weight=50.0)`:
+`HierarchicalBotanicalMatcher(phytomer_locality_radius=None, phytomer_locality_weight=50.0)`:
 - `cost += weight * relu(L1_dist - R)^2`, same L1 units as `cost_pos`.
 - Default `None` = exact legacy parity (no behavior change unless opted in).
 - **Validation**: new unit test proves the mechanism (30cm swap with strong existence
-  bias flips to the 2cm anchor under R=0.12); on converged-like inputs
+  bias flips to the 2cm node under R=0.12); on converged-like inputs
   (GT centers + 2cm noise, 25 real samples) pair agreement vs legacy = **99.45%**
   — the radius touches only pathological far swaps.
 - Recommended: `R=0.12m, weight=50.0` for the next training run.
 
-At inference (`sample_ode`) there is no matching (slots decode per anchor directly),
+At inference (`sample_ode`) there is no matching (slots decode per node directly),
 so this affects training dynamics only — stated explicitly so nobody looks for
 inference gains here.
 
@@ -75,7 +75,7 @@ inference gains here.
 - Stage 3 tokens: 8K -> K (8x fewer); decoder self-attention O((8K)^2) -> O(K^2)
   (**64x cheaper**); ODE integration (20 Heun steps x 2 evals) 8x cheaper.
 - Matcher: fine stage (12,672 tiny LSAs + 43k syncs + per-pair Python loop =
-  bulk of the 5.6s step) **disappears entirely** -> single anchor-level Hungarian
+  bulk of the 5.6s step) **disappears entirely** -> single node-level Hungarian
   per sample (~48 LSAs of ~64x60 at 0.04ms each + one batched cdist).
 - Existence stays as cheap per-slot heads (B, K, 8) supervised from cluster role
   presence via canonical ordering — no matching needed for existence.
@@ -85,17 +85,17 @@ inference gains here.
   8-slot packing: stem 23.6%, petiole 1.8%, leaflet 29.8%, repro 15.3%
   (21.1% overall) — overwhelmingly neighbor-phytomer organs misassigned by
   nearest-center on dense canopies. The CURRENT architecture also caps at 8
-  matched organs per anchor (LSA min(n,m)), so canonical packets lose nothing
+  matched organs per node (LSA min(n,m)), so canonical packets lose nothing
   the status quo doesn't already lose.
 - Canonical within-role order (z, then azimuth — mirrors `canonical_sort_nodes`)
   makes packets deterministic; overflow drops highest-first (documented bias:
   kept leaflets skew slightly low — acceptable, still representative).
 
-**Key representation decision — anchor-relative geometry**:
+**Key representation decision — node-relative geometry**:
 Packet base positions are stored as (organ base - cluster center), same normalized
-units. The anchor/node position carries global placement; the latent models
+units. The node position carries global placement; the latent models
 translation-invariant local morphology. Smaller dynamic range (~30cm vs ~1m field),
-better generalization across field positions. `decode_packet()` re-anchors with
+better generalization across field positions. `decode_packet()` places it back into the world frame with
 the node position. Absent slots keep the exact empty convention (NONE + zeros,
 no center leakage — unit-tested).
 
@@ -249,7 +249,7 @@ reaches 5.74° (latent has ~6° worth of rotation info and no more).
 PhytomerVAE-64 (Exp D, rot 6.17°, class 99.99%, base 0.19cm, scale rel 0.073)
 becomes the accepted phytomer-level bridge. Rationale:
 - **Compute win is real and large**: 8× fewer flow tokens (8K→K), 64× cheaper
-  self-attention, matcher collapses to anchor-level Hungarian only.
+  self-attention, matcher collapses to node-level Hungarian only.
 - The 6° rotation residual is a *variance/energy* limit that the flow model can
   partly absorb (it models the velocity field, not a deterministic decode).
 - Roundtrip task-level quality measured, not assumed (figure below).
@@ -285,7 +285,7 @@ tokens still K (8× win preserved), but the model has dedicated capacity for
 per-slot rotation. KL split (β_c small, β_res larger per-dim) keeps residual dims
 informative. Expect <3° if residual dims are the rotation channel.
 
-**(b) Two-level / hierarchical**: coarse latent for anchor-level flow, a second
+**(b) Two-level / hierarchical**: coarse latent for node-level flow, a second
 small flow over per-slot residuals conditioned on the coarse prediction. More
 faithful to the "coarse scaffold + fine detail" decomposition already used in the
 3-stage design, and the residual flow can be as cheap as the current fine stage.
@@ -309,11 +309,11 @@ Config flag `flow_granularity: "organ" (default) | "phytomer"`, default path unt
 1. `FineBotanicalFlowMatchingDecoder`: `node_dim` = phytomer latent dim; queries
    (B, K, D) instead of (B, 8K, 16); drop `block_self_attn` M=8 path under flag
    (joint latent needs no intra-block attention); `exist_head` -> (B, K, 8).
-2. Matcher: anchor-level Hungarian only (keep function, skip fine stage under flag);
-   NEW helper `cluster_packets_for_anchors()` returns per-matched-anchor canonical
+2. Matcher: node-level Hungarian only (keep function, skip fine stage under flag);
+   NEW helper `cluster_packets_for_phytomers()` returns per-matched-node canonical
    packets + role-presence existence targets (no LSA — deterministic ordering).
 3. Train loop: `tgt_z1` — see REFINED design below; existence targets from cluster
-   role presence; idle-anchor damping unchanged.
+   role presence; idle-node damping unchanged.
 4. `sample_ode` + eval: decode phytomer latent -> 8x26D -> 14D rows via existing
    `decode_fm` per slot; existence gating unchanged.
 5. Renderer: unchanged (consumes 14D rows).
@@ -325,36 +325,36 @@ Config flag `flow_granularity: "organ" (default) | "phytomer"`, default path unt
 ### REFINED Stage-3 flow target: refine base + rot (2026-09-09, user decision)
 
 The user wants Stage 3 to **flow-match base position + rotation**, not treat the
-anchor pose as fixed conditioning. The per-phytomer flow target becomes a **73D
-vector per anchor** (instead of 8K x 16D organ latents with pose as conditioning):
+node pose as fixed conditioning. The per-phytomer flow target becomes a **73D
+vector per node** (instead of 8K x 16D organ latents with pose as conditioning):
 
 ```
-z_1[anchor] = [ node_base_xyz(3) | node_rot_6d(6) | phytomer_latent(64) ]
+z_1[node] = [ node_base_xyz(3) | node_rot_6d(6) | phytomer_latent(64) ]
 ```
 
-- `node_base_xyz` (3): the anchor's absolute world base position (refined by flow,
+- `node_base_xyz` (3): the node's absolute world base position (refined by flow,
   as a delta-residual on top of the Stage-2 scaffold via query conditioning).
-- `node_rot_6d` (6): the anchor/node frame rotation — this doubles as the
+- `node_rot_6d` (6): the node frame rotation — this doubles as the
   **reference frame (Option 1)** for the relative packet.
-- `phytomer_latent` (64): the VAE latent of the relative (anchor-frame) packet.
+- `phytomer_latent` (64): the VAE latent of the relative (node-frame) packet.
 - **Existence is NOT in the flow vector** — it stays a separate gating head
-  (`anchor_logits` for node-active, a per-slot (B,K,8) presence head for organs).
+  (`phytomer_logits` for node-active, a per-slot (B,K,8) presence head for organs).
   Flow-matching a 0/1 gate regresses it to its mean (~0.5), destroying the gate.
 
-**Decode flow (Option 1 — reference = refined anchor rot):**
+**Decode flow (Option 1 — reference = refined node rot):**
 ```
-latent → relative packet (8x26D, anchor-relative) → apply R_rot (refined anchor rot)
-       → add R_base (refined anchor base) → absolute 14D rows → decode_fm → render
+latent → relative packet (8x26D, node-relative) → apply R_rot (refined node rot)
+       → add R_base (refined node base) → absolute 14D rows → decode_fm → render
 ```
 
 **Reference-frame change (Option 1) implemented**: `build_phytomer_packets`
-gains an explicit `reference_rot` parameter (the anchor frame, e.g. Stage-2
-`anchor_rot`). When provided, ALL present slots (incl. slot-0 internode) are
+gains an explicit `reference_rot` parameter (the node frame, e.g. Stage-2
+`phytomer_rot`). When provided, ALL present slots (incl. slot-0 internode) are
 relativized to it; when omitted, it falls back to the packet's own internode
 frame (slot 0), which is botanically the node frame. `decode_packets(packets,
 centers, presence, reference_rots)` re-applies it. New unit test
-`test_option1_explicit_anchor_reference` verifies exact roundtrip under a
-non-trivial anchor frame.
+`test_option1_explicit_phytomer_reference` verifies exact roundtrip under a
+non-trivial node frame.
 
 **VAE compute-overhead measurement (2026-09-09, addresses the concern)**:
 The overhead is NOT dimension growth (that's ~+16% latent dim ≈ +5-8% forward,
@@ -369,7 +369,7 @@ Total rotation overhead ≈ 2% of VAE time. For a ~300-packet plant: **~0.1 ms**
 The dominant cost is VAE encode+decode (~2.9 ms / 8192 packets), unchanged.
 
 So the affordable design: **flow target = 73D** ([base 3 | rot 6 | latent 64]),
-existence as a separate head, decode via the refined anchor rot (reference).
+existence as a separate head, decode via the refined node rot (reference).
 
 ### RELATIVE-ROTATION representation + Option 1 reference frame (2026-09-09)
 
@@ -378,13 +378,13 @@ existence as a separate head, decode via the refined anchor rot (reference).
   geometry builder `R_mats = stack([r1,r2,r3], -1)` and `_rot6d_to_matrix`).
 - `rotation_relative_to_reference(rot6d, ref)`: R_rel = R_ref^T @ R_org.
 - `apply_reference_rotation`: inverse (R_org = R_ref @ R_rel).
-- `build_phytomer_packets(..., reference_rot=None)` (Option 1): explicit anchor
+- `build_phytomer_packets(..., reference_rot=None)` (Option 1): explicit node
   frame relativizes ALL present slots (incl. slot-0 internode); omitted -> falls
   back to the packet's own internode frame (slot 0, botanically the node frame).
 - `decode_packets(packets, centers, presence, reference_rots)` (batched) and
   `decode_packet(...)`: re-apply the reference.
 - Tests: roundtrip exactness under a non-identity reference and Option-1 explicit
-  anchor (`test_relative_rotation_roundtrip_exact`, `test_option1_explicit_anchor_reference`).
+  node (`test_relative_rotation_roundtrip_exact`, `test_option1_explicit_phytomer_reference`).
 - **Pipe fix**: `matrix_to_rot6d` originally read ROWS (buggy); corrected to
   COLUMNS `[R[...,:,0], R[...,:,1]]` (caught by the roundtrip test).
 
@@ -416,12 +416,12 @@ the tuned one is the accepted checkpoint.**
 
 **Stage-3 phytomer flow decoder (implemented, tested)**:
 `PhytomerFlowMatchingDecoder` in `hierarchical_part_flow_matching.py` flow-matches
-the 9+D vector per anchor `[base(3) | rot(6) | latent(D)]`, refining the Stage-2
+the 9+D vector per node `[base(3) | rot(6) | latent(D)]`, refining the Stage-2
 scaffold pose. Existence is a separate per-slot (B,K,8) gating head. Tokens K vs
 8K -> 8x fewer, O(K^2) attn -> 64x cheaper. Plus `build_phytomer_flow_target` /
 `split_phytomer_flow_target` (passed roundtrip test). New integration tests:
 phytomer-mode forward + sample_ode on the (B,K,9+D) flow path (passed);
-`apply_ref_for_flow` re-anchors packets with the REFINED anchor pose.
+`apply_ref_for_flow` places packets back into the world frame with the REFINED node pose.
 
 ---
 
@@ -435,15 +435,15 @@ phytomer-mode forward + sample_ode on the (B,K,9+D) flow path (passed);
   `--phytomer_vae_checkpoint` (default `diffusion_based/checkpoints/phytomer_vae_relative_d/phytomer_vae_64d_best.pt`).
 - **Frozen PhytomerVAE** loaded once in `main()` (eval mode, requires_grad=False).
 - **Per-sample packet targets**: `build_phytomer_packets` on the GT active nodes →
-  frozen VAE encode → per-anchor latent; matcher provides GT anchor pos (cluster
-  center) and the packet reference rot (Option 1 anchor frame).
+  frozen VAE encode → per-node latent; matcher provides GT node pos (cluster
+  center) and the packet reference rot (Option 1 node frame).
 - **73D bridge target**: `z_1 = [GT_pos(3) | GT_rot(6) | latent(D)]`; bridge prior
   `z_0 = [scaffold_pos+0.05ε | scaffold_rot+0.05ε | N(0,I)(D)]` (refine, not
   regenerate). Velocity target `v = z_1 - z_0`.
-- **Losses**: velocity MSE on matched anchors (norm by 9+D), slot-existence BCE
-  (B,K,8, pos_weight 12), idle-anchor velocity damping (0.02), anchor pos/exist
+- **Losses**: velocity MSE on matched nodes (norm by 9+D), slot-existence BCE
+  (B,K,8, pos_weight 12), idle-node velocity damping (0.02), node pos/exist
   losses unchanged, macro losses unchanged.
-- **Matcher**: `skip_fine=True` in phytomer mode (anchor-level Hungarian only).
+- **Matcher**: `skip_fine=True` in phytomer mode (node-level Hungarian only).
 - **Renderer**: phytomer mode decodes the 73D flow vector → split pose+latent →
   VAE decode → `apply_ref_for_flow` → 14D rows → mesh (differentiable).
 - **Smoke test**: CPU forward_backward_step with tiny model + fake PhytomerVAE
@@ -535,7 +535,7 @@ matcher, render) and per-step print. Subset (4k) run with render_fraction=1.0:
 **Actions taken** (user-approved, gradient-balance considered):
 - `render_fraction` 1.0 → **0.167** (5 samples; per-epoch supervision volume
   unchanged — the 09/07 baseline setting; render gradient is a small fraction of
-  the total loss anyway: vel 2.0 + exist 1.0 + anchor 2.0 dominate).
+  the total loss anyway: vel 2.0 + exist 1.0 + node 2.0 dominate).
 - Pyramid 4-scale → **2-scale (1x/2x)**: 4x/8x zoom covers a single leaf —
   small, noisy gradients; halves render time.
 - Result: render 5.2s → 0.4-0.75s; step ~8s → ~2s.
@@ -549,7 +549,7 @@ matcher, render) and per-step print. Subset (4k) run with render_fraction=1.0:
 `XML -> 40D typed -> to_part_tensor() 14D -> encode_fm() 26D -> build_phytomer_packets
 (uses 40D topology) -> packets (P, 8, 26) -> pack_input 192D -> VAE -> 64D latent`.
 The 14D/26D is **not** dropped — it is the geometry content the VAE compresses and
-the FM regenerates (73D flow state = anchor_pos(3) + anchor_rot(6) + latent(64)).
+the FM regenerates (73D flow state = phytomer_pos(3) + phytomer_rot(6) + latent(64)).
 What the XML-direct path removes is the need to *store/re-read* the 63GB image
 cache to build packets: XML is ~250KB and reconstructs the 26D rows exactly.
 The 40D typed tensor is only needed at packet-build time (exact phytomer
@@ -600,8 +600,8 @@ Packet cache 38,610/100,000 — resume with the backfill launcher.
   assembled at the CURVED PEDUNCLE TIP (arc-fraction 1.0) — nothing is
   VAE-learned anymore. `strip_base`/`assemble_packets` updated; roundtrip
   verified 100% (mean 1.0cm, p90 2.6cm).
-- VAE input 192D -> 240D (10 x (23+1)); `slots_per_anchor` default 8 -> 10
-  (model, matcher, training arg, launcher env `SLOTS_PER_ANCHOR`).
+- VAE input 192D -> 240D (10 x (23+1)); `slots_per_phytomer` default 8 -> 10
+  (model, matcher, training arg, launcher env `SLOTS_PER_PHYTOMER`).
 - Tests updated to 10 slots; 25/25 pass.
 - Pipeline: train v2 VAE (`train_phytomer_vae.sh`, rot-branch, 60 epochs) ->
   `--pkt-cache-dir` auto-precomputes the 100k pkt cache in v2 format.
@@ -688,7 +688,7 @@ Original handoff requirements (historical):
 
 ### 4.9 v3 SCALE-NORMALIZED PACKETS + 76D FLOW (2026-09-10)
 
-**Anchor scale s_a**: per-packet (P, 3) = the PETIOLE (slot 1) scale row
+**Node scale s_a**: per-packet (P, 3) = the PETIOLE (slot 1) scale row
 `[length, radius, unused]` in raw FM units. Why petiole: it is the phytomer's
 structural backbone (cluster center = its base; leaflets attach on its curve)
 and its length carries the real size variation across DAP (measured: 6.0cm
@@ -706,7 +706,7 @@ caller can forget). The 76D flow state carries s_a explicitly. Decode:
 **76D flow state**: `[pos(3) | rot(6) | s_a(3) | latent(64)]` (was 73D).
 Stage-2 gains a `scale_head` (coarse s_a for bridge init + smooth_l1 loss,
 weight 2.0). pkt cache stores ABSOLUTE packets + normalized-space latent;
-flow GT s_a comes from `anchor_scale` on the cache packets. `pkt_version: 3`
+flow GT s_a comes from `phytomer_scale` on the cache packets. `pkt_version: 3`
 (1 = 8-slot, 2 = 10-slot absolute latent).
 
 **Render pipeline (measured, CUDA-synced timers)**:
@@ -729,7 +729,7 @@ flow GT s_a comes from `anchor_scale` on the cache packets. `pkt_version: 3`
   double-backward + DDP risk.
 
 **Layout reminder**: 4096x26 = cache node tensor (max observed rows 2,625);
-5120 = max_fine_slots (512 anchors x 10 slots, flow/existence tensor width);
+5120 = max_fine_slots (512 nodes x 10 slots, flow/existence tensor width);
 6 = per-tube curve segments (n_seg_curv) in the geometry builder.
 
 ---
@@ -756,14 +756,14 @@ STATUS: All root causes resolved. Cluster training Job **38234682** submitted an
 
 ## 3. Answers to the two questions (one-paragraph versions)
 
-**Q1 — local search around predicted nodes?** Yes for anchor assignment, as a soft
+**Q1 — local search around predicted nodes?** Yes for node assignment, as a soft
 cost bias (implemented, default off, 99.45% agreement on converged inputs). No to
 replacing Hungarian with KD-tree NN (position-only matching is ambiguous — 48.6%
 shared bases — and LSA was never the bottleneck: 0.07s of 5.6s). No inference impact
-(slots already decode per-anchor).
+(slots already decode per-node).
 
 **Q2 — whole-phytomer 64D latent?** Yes, evidence supports it (r=0.78/0.52 joint
-structure; 8x fewer tokens; matcher collapses to anchor-only; identical supervision
+structure; 8x fewer tokens; matcher collapses to node-only; identical supervision
 coverage). Implement as PhytomerVAE-64 with 128D capacity-matched fallback; gate
 Stage-3 integration on roundtrip parity with the OrganLatentVAE baseline. Existence
 stays as separate per-slot heads supervised from role presence — the discrete part

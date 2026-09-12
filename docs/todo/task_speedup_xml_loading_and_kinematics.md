@@ -39,12 +39,12 @@ In our empirical performance benchmarks on the NVIDIA A100 GPU (Figure 1), we ob
 ## 3. Proposed Architectures & Implementation Strategies
 
 ### Strategy A: Shoot-Level Independence & Chunked Assembly (Recommended)
-**Core Idea**: Plants have few shoots ($\sim 10-30$) but many organs ($2,500+$). Lateral shoots are independent kinematic sub-trees attached to specific parent anchors.
+**Core Idea**: Plants have few shoots ($\sim 10-30$) but many organs ($2,500+$). Lateral shoots are independent kinematic sub-trees attached to specific parent nodes.
 
 1. **Phase 1: Shoot-Local Kinematics (Parallel / Vectorized)**
    - Evaluate each shoot $s$ in its own canonical local reference frame (base at $(0, 0, 0)$, initial stem pointing along $+Z$).
    - Because shoots do not depend on each other's internal geometry, local poses can be computed concurrently using Python multiprocessing / thread pools or batched NumPy arrays.
-2. **Phase 2: Shoot-Base Anchor DAG (Shallow Tree)**
+2. **Phase 2: Shoot-Base Node DAG (Shallow Tree)**
    - Build a lightweight Directed Acyclic Graph (DAG) connecting only shoot bases:
      $$\text{Shoot } 0 \longrightarrow \text{Shoot } 1, 2, \dots \longrightarrow \text{Sub-branches}$$
    - Tree depth is shallow ($\le 3$). Computing global $4 \times 4$ base transformation matrices $\mathbf{T}_s$ for all 10–30 shoots takes $< 1\text{ ms}$.

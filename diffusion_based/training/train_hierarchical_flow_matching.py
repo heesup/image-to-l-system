@@ -425,54 +425,54 @@ def forward_backward_step(
         gt_stem_dir_target = torch.zeros(B, K_eff, 3, device=device)
         stem_dir_mask = torch.zeros(B, K_eff, dtype=torch.bool, device=device)
         WORLD_UP = torch.tensor([0.0, 0.0, 1.0], device=device)
-        # Which OTHER predicted anchor (if any) is this one's parent, so the
+        # Which OTHER predicted node (if any) is this one's parent, so the
         # render-loss internode can be assembled from two PREDICTED positions
         # instead of an independently-regressed length (see phytomer_topology
         # module docstring on the redundancy). Built from the same GT-key
         # parent lookup as gt_stem_dir_target, but only kept where the parent's
-        # OWN GT packet was also matched to some predicted anchor this step --
+        # OWN GT packet was also matched to some predicted node this step --
         # using the model's own (possibly-wrong) predicted topology here would
-        # bootstrap off unreliable early predictions; anchoring to the existing,
+        # bootstrap off unreliable early predictions; reusing the existing,
         # already-computed GT match keeps this stable at every epoch.
         gt_render_parent_idx = torch.full((B, K_eff), -1, dtype=torch.long, device=device)
         has_render_parent = torch.zeros(B, K_eff, dtype=torch.bool, device=device)
         cls_acc_data = []
         for b in range(B):
             m_b = matches[b]
-            anc_src = m_b["phytomer_src_idx"]
-            anc_tgt = m_b["phytomer_tgt_idx"]
-            if len(anc_src) == 0 or phyto_targets[b] is None:
+            node_src = m_b["phytomer_src_idx"]
+            node_tgt = m_b["phytomer_tgt_idx"]
+            if len(node_src) == 0 or phyto_targets[b] is None:
                 continue
             pt = phyto_targets[b]
             # GT phytomer pos from matcher cluster centers (metres)
-            gt_pos = m_b["phytomer_tgt_pos"]  # (M_anc, 3)
-            # The matcher's anc_tgt indexes its CAPACITY-CLAMPED cluster set, but
+            gt_pos = m_b["phytomer_tgt_pos"]  # (M_node, 3)
+            # The matcher's node_tgt indexes its CAPACITY-CLAMPED cluster set, but
             # pt (packets) is the FULL cluster list. Match by position: each GT
             # phytomer pos corresponds to the packet whose center is nearest.
             if pt["centers"].shape[0] == 0:
                 continue
-            dist = torch.cdist(gt_pos.float(), pt["centers"].float())  # (M_anc, P)
-            pkt_idx = dist.argmin(dim=1)                               # (M_anc,)
+            dist = torch.cdist(gt_pos.float(), pt["centers"].float())  # (M_node, P)
+            pkt_idx = dist.argmin(dim=1)                               # (M_node,)
             # GT phytomer rot = packet reference rotation (Option 1 frame)
-            gt_rot = pt["refs"][pkt_idx].float()    # (M_anc, 6)
-            gt_lat = pt["latent"][pkt_idx].float()  # (M_anc, D)
+            gt_rot = pt["refs"][pkt_idx].float()    # (M_node, 6)
+            gt_lat = pt["latent"][pkt_idx].float()  # (M_node, D)
             # GT phytomer scale = petiole (slot 1) scale row of the matched packets
             # (absolute FM units; the latent carries only normalized scales).
-            gt_scl = phytomer_scale(pt["packets"].to(device, dtype=torch.float32))[pkt_idx].float()  # (M_anc, 3)
-            tgt_z1_phyto[b, anc_src] = gt_lat
-            slot_presence_target[b, anc_src] = pt["presence"][pkt_idx].float()
+            gt_scl = phytomer_scale(pt["packets"].to(device, dtype=torch.float32))[pkt_idx].float()  # (M_node, 3)
+            tgt_z1_phyto[b, node_src] = gt_lat
+            slot_presence_target[b, node_src] = pt["presence"][pkt_idx].float()
 
-            matched_phytomer_mask[b, anc_src] = True
-            phytomer_exist_targets[b, anc_src, 0] = 1.0
-            gt_phytomer_pos_target[b, anc_src] = gt_pos.float()
-            gt_phytomer_scl_target[b, anc_src] = gt_scl.float()
+            matched_phytomer_mask[b, node_src] = True
+            phytomer_exist_targets[b, node_src, 0] = 1.0
+            gt_phytomer_pos_target[b, node_src] = gt_pos.float()
+            gt_phytomer_scl_target[b, node_src] = gt_scl.float()
 
             # (shoot_id, phytomer_idx) of the matched packets. Cached by
             # generate_cache.build_pkt_targets; skipped for older caches.
             if "keys" in pt:
-                gt_keys = pt["keys"][pkt_idx].to(device)          # (M_anc, 2)
-                gt_phytomer_ord_target[b, anc_src] = gt_keys[:, 1].float()
-                gt_phytomer_base_target[b, anc_src] = (gt_keys[:, 1] == 0).float()
+                gt_keys = pt["keys"][pkt_idx].to(device)          # (M_node, 2)
+                gt_phytomer_ord_target[b, node_src] = gt_keys[:, 1].float()
+                gt_phytomer_base_target[b, node_src] = (gt_keys[:, 1] == 0).float()
 
                 # Look up each matched packet's parent: same shoot, one step down.
                 all_keys = pt["keys"].to(device)                   # (P, 2)
@@ -484,19 +484,19 @@ def forward_backward_step(
                     par_row = hit.float().argmax(dim=-1)
                     par_pos = pt["centers"][par_row].to(device, dtype=torch.float32)
                     d = gt_pos.float() - par_pos
-                    gt_stem_dir_target[b, anc_src] = F.normalize(d, dim=-1)
-                    stem_dir_mask[b, anc_src] = has_par
+                    gt_stem_dir_target[b, node_src] = F.normalize(d, dim=-1)
+                    stem_dir_mask[b, node_src] = has_par
 
                     # Was the parent's own GT row ALSO matched to a predicted
-                    # anchor this step? same[m, j] = True iff phytomer m's
+                    # node this step? same[m, j] = True iff phytomer m's
                     # parent row equals the GT row matched at position j.
-                    same = pkt_idx.unsqueeze(0) == par_row.unsqueeze(1)   # (M_anc, M_anc)
+                    same = pkt_idx.unsqueeze(0) == par_row.unsqueeze(1)   # (M_node, M_node)
                     parent_matched = same.any(dim=1) & has_par
                     if bool(parent_matched.any()):
                         j_idx = same.float().argmax(dim=1)
-                        parent_anchor = anc_src[j_idx]
-                        sel = anc_src[parent_matched]
-                        gt_render_parent_idx[b, sel] = parent_anchor[parent_matched]
+                        parent_node = node_src[j_idx]
+                        sel = node_src[parent_matched]
+                        gt_render_parent_idx[b, sel] = parent_node[parent_matched]
                         has_render_parent[b, sel] = True
 
             # Roll target: encode_roll reads GT's own rotation relative to
@@ -505,16 +505,16 @@ def forward_backward_step(
             # the same WORLD_UP fallback derive_forward() uses otherwise (base
             # phytomers, or older caches with no "keys"/topology at all).
             fwd_for_roll = torch.where(
-                stem_dir_mask[b, anc_src].unsqueeze(-1),
-                gt_stem_dir_target[b, anc_src],
-                WORLD_UP.expand(len(anc_src), 3),
+                stem_dir_mask[b, node_src].unsqueeze(-1),
+                gt_stem_dir_target[b, node_src],
+                WORLD_UP.expand(len(node_src), 3),
             )
-            gt_phytomer_roll_target[b, anc_src] = encode_roll(
+            gt_phytomer_roll_target[b, node_src] = encode_roll(
                 rot6d_to_matrix(gt_rot), fwd_for_roll)
 
             tgt_cls = pt["packets"][pkt_idx, :, :FM_OT_END].argmax(-1)
             pres = pt["presence"][pkt_idx]
-            cls_acc_data.append((b, anc_src, tgt_cls, pres))
+            cls_acc_data.append((b, node_src, tgt_cls, pres))
 
         # Decoupled Flow Matching: standard normal Gaussian prior z_0 ~ N(0, I_D)
         z_0 = torch.randn(B, K_eff, D, device=device)
@@ -571,8 +571,8 @@ def forward_backward_step(
             clean_lat = clean_z1
             vae_out = phytomer_vae.decode(clean_lat.reshape(-1, D))
             pred_cls_all = vae_out["cls_logits"].argmax(-1).reshape(B, K_eff, M)  # (B, K, M)
-            for b, anc_src, tgt_cls_b, pres_b in cls_acc_data:
-                pred_cls_m = pred_cls_all[b, anc_src]
+            for b, node_src, tgt_cls_b, pres_b in cls_acc_data:
+                pred_cls_m = pred_cls_all[b, node_src]
                 correct_cls += ((pred_cls_m == tgt_cls_b).float() * pres_b.float()).sum().item()
                 total_cls_slots += int(pres_b.sum().item())
 
@@ -684,29 +684,29 @@ def forward_backward_step(
 
         for b in range(B):
             m_b = matches[b]
-            anc_src = m_b["phytomer_src_idx"]
-            anc_tgt = m_b["phytomer_tgt_idx"]
+            node_src = m_b["phytomer_src_idx"]
+            node_tgt = m_b["phytomer_tgt_idx"]
             fine_src = m_b["fine_src_idx"]
             fine_tgt = m_b["fine_tgt_idx"]
 
-            num_anc_m = len(anc_src)
-            total_matched_anc += num_anc_m
+            num_node_m = len(node_src)
+            total_matched_anc += num_node_m
             num_fine_m = len(fine_src)
             total_matched_fine += num_fine_m
 
             # Stage 1 Phytomer Losses
-            if num_anc_m > 0:
+            if num_node_m > 0:
                 exist_targets = torch.zeros(active_k, 1, device=device)
-                exist_targets[anc_src] = 1.0
+                exist_targets[node_src] = 1.0
                 pos_weight_anc = torch.tensor([8.0], device=device)
                 loss_phytomer_exist_acc += F.binary_cross_entropy_with_logits(
                     pred_phytomer_logits[b], exist_targets, pos_weight=pos_weight_anc
                 )
 
                 if "phytomer_tgt_pos" in m_b and len(m_b["phytomer_tgt_pos"]) > 0:
-                    p_anc = pred_phytomer_pos[b, anc_src]
+                    p_node = pred_phytomer_pos[b, node_src]
                     t_anc = m_b["phytomer_tgt_pos"]
-                    loss_phytomer_pos_acc += F.smooth_l1_loss(p_anc, t_anc, reduction="sum")
+                    loss_phytomer_pos_acc += F.smooth_l1_loss(p_node, t_anc, reduction="sum")
 
             # Stage 2 Fine Losses
             exist_targets_fine = torch.zeros(active_fine, 1, device=device)
@@ -837,7 +837,7 @@ def forward_backward_step(
                 # available, instead of an independently-regressed length that
                 # can disagree with the scaffold and draw a disconnected stem
                 # (see phytomer_packets.assemble_packets docstring). Falls back
-                # to the decoded length for anchors with no matched parent this
+                # to the decoded length for nodes with no matched parent this
                 # step (shoot bases, or the parent's row wasn't matched) via
                 # assemble_packets' own NaN-gated fallback.
                 par_idx_r = gt_render_parent_idx[render_indices]            # (n_render, K)

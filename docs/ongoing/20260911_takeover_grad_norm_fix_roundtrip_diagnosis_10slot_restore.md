@@ -124,10 +124,10 @@ v4(9슬롯, internode 제외)로의 전환이 작업 트리에 있었으나 **�
 
 | 파일 | 변경 |
 |---|---|
-| `phytomer_packets.py` | v2 10슬롯 빌더 복원 (`NUM_SLOTS=10`, `ROLE_SLOT_RANGES` 4:(6,10), `LABEL_ROLE_RANGES` stem 1..3). v4 신규 3함수를 **10슬롯 인덱스로 어댑트**해 보존: `anchor_scale` (petiole=slot 1), `normalize/denormalize_packet_scales`, `assemble_phytomer_ordered_14d_tensor` (internode slot 0, cotyledon twin 로직 포함) |
-| `hierarchical_part_flow_matching.py` | `SLOT_ROLE_MAPPING = [0,1,2,2,2,3,4,4,4,4]` (10개), `SLOT_SUB_ROLE_MAPPING = [0,0,0,1,2,0,0,1,2,3]`, `slots_per_anchor` 기본 9→10 |
+| `phytomer_packets.py` | v2 10슬롯 빌더 복원 (`NUM_SLOTS=10`, `ROLE_SLOT_RANGES` 4:(6,10), `LABEL_ROLE_RANGES` stem 1..3). v4 신규 3함수를 **10슬롯 인덱스로 어댑트**해 보존: `phytomer_scale` (petiole=slot 1), `normalize/denormalize_packet_scales`, `assemble_phytomer_ordered_14d_tensor` (internode slot 0, cotyledon twin 로직 포함) |
+| `hierarchical_part_flow_matching.py` | `SLOT_ROLE_MAPPING = [0,1,2,2,2,3,4,4,4,4]` (10개), `SLOT_SUB_ROLE_MAPPING = [0,0,0,1,2,0,0,1,2,3]`, `slots_per_phytomer` 기본 9→10 |
 | `hierarchical_hungarian_matcher.py` | `_role_slot_ranges[4]: (6,8)→(6,10)` (repro ×4) |
-| `slurm_scripts/train_hierarchical_flow_matching.sh` | `SLOTS_PER_ANCHOR` 기본 9→10 (v3 240D VAE와 일치) |
+| `slurm_scripts/train_hierarchical_flow_matching.sh` | `SLOTS_PER_PHYTOMER` 기본 9→10 (v3 240D VAE와 일치) |
 | `tests/test_phytomer_packets.py` | v2-era 기대값 복원 (7 passed) |
 | `tests/test_phytomer_vae.py` | synthetic bag role map 10슬롯化 (8 passed) |
 
@@ -152,7 +152,7 @@ v4(9슬롯, internode 제외)로의 전환이 작업 트리에 있었으나 **�
 
 ### 6.2 다음 에이전트 실행 순서 (필독)
 
-1. **`scancel 38238218`** 후 `sbatch slurm_scripts/train_hierarchical_flow_matching.sh` — 10슬롯 코드로 메인 재시작. 시작 로그에서 `512 anchors x 10 slots/anchor` 확인.
+1. **`scancel 38238218`** 후 `sbatch slurm_scripts/train_hierarchical_flow_matching.sh` — 10슬롯 코드로 메인 재시작. 시작 로그에서 `512 nodes x 10 slots/node` 확인.
 2. **`38238368` smoke 결과 확인**: `slurm_scripts/logs/fm_smoke_low_38238368.log`에서 Epoch 4(렌더 활성) 도달 + `[Recovery]` 미발생 + Loss 감소 확인 → 통과 시 메인 잡 신뢰 가능.
 3. smoke 실패 시: 마지막 실패가 `hierarchical_hungarian_matcher.py:328` (CUDA device-side assert, 13D organ 모드)였음 — `--flow_granularity phytomer` 추가로 우회 시도했으나 **미검증 상태로 PENDING**. organ 모드가 필요하면 매처의 13D 경로 role 분배를 먼저 검증.
 4. **P1 FK 누적 오차**: `part_tensor_to_40d.py` internode pitch(400-403행) 하드코딩 제거 + `eval_13d_xml_organ_masks.py` 재실행으로 per-organ IoU 재측정.

@@ -16,7 +16,7 @@ This directory tracks **only actively running work** for the **Image-to-L-System
 | :--- | :---: | :--- |
 | **Main Training Job** | 🟢 RUNNING | Job `38236720` (4x RTX 6000 Ada, `gpu-10-50`) — **하이브리드 디커플링 + GPU Batch Greedy Matcher 가동 중** |
 | **Architecture Decision**| 🟢 RATIFIED | **하이브리드 디커플링 (Hybrid Decoupled Architecture)** 확정: Stage 2 3D 뼈대 전담 + Stage 3 64D VAE Latent Flow Matching ($z_0 \sim \mathcal{N}(0, I_{64})$) |
-| **Loss Function Diet** | 🟢 RATIFIED | 10개 $\to$ 8개 정예 손실 체계 (`loss_cos`, `loss_dap` 제거, `loss_anchor_rot` 정규 지도 추가) |
+| **Loss Function Diet** | 🟢 RATIFIED | 10개 $\to$ 8개 정예 손실 체계 (`loss_cos`, `loss_dap` 제거, `loss_phytomer_rot` 정규 지도 추가) |
 | **PhytomerVAE v3 (normalized)** | 🟢 DEFAULT | `phytomer_vae_v3` — val recon **0.070**, cls **100%** (10-slot, 240D in, scale-normalized targets) |
 | **Dataset (images+nodes)** | 🟢 COMPLETE | **100,000 / 100,000** XMLs + cache `.pt` (all with `phytomer_ids`) |
 | **Phytomer packet cache** | 🟢 COMPLETE | **100,000 / 100,000** v3 (10-slot, absolute packets + normalized latent, `pkt_version: 3`) |
@@ -32,7 +32,7 @@ This directory tracks **only actively running work** for the **Image-to-L-System
 | **[`docs/results/20260910_gradient_explosion_debug_and_architecture_comparison.md`](../results/20260910_gradient_explosion_debug_and_architecture_comparison.md)** | 오늘 세션: .detach() 버그 해부, 하이브리드 디커플링 아키텍처 확정 및 Loss 정예화 분석 |
 | **[20260909_phytomer_latent_and_local_matching.md](20260909_phytomer_latent_and_local_matching.md)** | Master engineering log: phytomer latent, Stage-3 decoder, pipeline refactor |
 | **[20260909_phytomer_latent_visualizer_gui.md](20260909_phytomer_latent_visualizer_gui.md)** | Completed PhytomerVAE latent visualizer GUI |
-| **[20260908_anchor_capacity_recalibration_and_pred_phytomer_slicing.md](20260908_anchor_capacity_recalibration_and_pred_phytomer_slicing.md)** | Anchor capacity logistic recalibration, gradient-safety audit |
+| **[20260908_phytomer_capacity_recalibration_and_pred_phytomer_slicing.md](20260908_phytomer_capacity_recalibration_and_pred_phytomer_slicing.md)** | Node capacity logistic recalibration, gradient-safety audit |
 
 ---
 

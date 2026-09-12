@@ -149,7 +149,7 @@ class HierarchicalBotanicalMatcher(nn.Module):
             List of length B containing dicts with:
                 'phytomer_src_idx': 1D int64 tensor of matched predicted phytomer indices.
                 'phytomer_tgt_idx': 1D int64 tensor of matched GT cluster indices.
-                'phytomer_tgt_pos': (M_anc, 3) GT cluster center positions for matched phytomers.
+                'phytomer_tgt_pos': (M_node, 3) GT cluster center positions for matched phytomers.
                 'fine_src_idx': 1D int64 tensor of matched fine slot indices in [0, N_fine-1].
                 'fine_tgt_idx': 1D int64 tensor of matched GT organ indices in [0, N_active_i-1].
                 'num_gt_phytomers': integer count of GT phytomer clusters (capacity-clamped).
@@ -253,9 +253,9 @@ class HierarchicalBotanicalMatcher(nn.Module):
                     c_cpu = c.detach().cpu().numpy()
                     if not np.isfinite(c_cpu).all():
                         c_cpu = np.nan_to_num(c_cpu, nan=1e5, posinf=1e5, neginf=-1e5)
-                    anc_src_np, anc_tgt_np = linear_sum_assignment(c_cpu)
-                    matched_pairs.append((torch.as_tensor(anc_src_np, dtype=torch.int64, device=device),
-                                          torch.as_tensor(anc_tgt_np, dtype=torch.int64, device=device)))
+                    node_src_np, node_tgt_np = linear_sum_assignment(c_cpu)
+                    matched_pairs.append((torch.as_tensor(node_src_np, dtype=torch.int64, device=device),
+                                          torch.as_tensor(node_tgt_np, dtype=torch.int64, device=device)))
 
         # Pass 3: Assemble Batch Results
         batch_matches: List[Dict[str, torch.Tensor]] = []
@@ -272,16 +272,16 @@ class HierarchicalBotanicalMatcher(nn.Module):
                 })
                 continue
 
-            anc_src, anc_tgt = matched_pairs[b]
+            node_src, node_tgt = matched_pairs[b]
 
             if skip_fine:
                 fine_src = torch.empty(0, dtype=torch.int64, device=device)
                 fine_tgt = torch.empty(0, dtype=torch.int64, device=device)
-                anc_tgt_pos = cluster_centers[anc_tgt] if len(anc_tgt) > 0 else torch.empty((0, 3), device=device)
+                node_tgt_pos = cluster_centers[node_tgt] if len(node_tgt) > 0 else torch.empty((0, 3), device=device)
                 batch_matches.append({
-                    "phytomer_src_idx": anc_src,
-                    "phytomer_tgt_idx": anc_tgt,
-                    "phytomer_tgt_pos": anc_tgt_pos,
+                    "phytomer_src_idx": node_src,
+                    "phytomer_tgt_idx": node_tgt,
+                    "phytomer_tgt_pos": node_tgt_pos,
                     "fine_src_idx": fine_src,
                     "fine_tgt_idx": fine_tgt,
                     "num_gt_phytomers": num_gt_clusters,
@@ -295,8 +295,8 @@ class HierarchicalBotanicalMatcher(nn.Module):
             pred_fine_geom_b = pred_fine_geom[b]                        # (N_fine, node_dim)
 
             # Vectorized cluster membership: (N_fine,) -> cluster of each fine slot
-            # slot_cluster = slot_index // M (a_idx from anc_src * M arithmetic, no .item())
-            slot_starts = (anc_src * M)                                  # (M_anc,) tensor arithmetic
+            # slot_cluster = slot_index // M (a_idx from node_src * M arithmetic, no .item())
+            slot_starts = (node_src * M)                                  # (M_node,) tensor arithmetic
             slot_ends = slot_starts + M
             # All fine-slot cluster ids in one shot: slot s belongs to phytomer s//M
             fine_slot_cluster = torch.arange(N_fine, device=device) // M  # (N_fine,)
@@ -308,10 +308,10 @@ class HierarchicalBotanicalMatcher(nn.Module):
             all_fine_src = []
             all_fine_tgt = []
 
-            for pair_i in range(len(anc_src)):
-                c_idx = anc_tgt[pair_i]
+            for pair_i in range(len(node_src)):
+                c_idx = node_tgt[pair_i]
                 # Child slots for predicted phytomer a_idx: contiguous block [a*M, a*M+M).
-                # a_idx = anc_src[pair_i]; slot block derived via tensor arithmetic then a
+                # a_idx = node_src[pair_i]; slot block derived via tensor arithmetic then a
                 # single host sync for the python range (1 sync/pair vs 16 previously).
                 slot_start = int(slot_starts[pair_i].item())
                 slot_indices = torch.arange(slot_start, slot_start + M, device=device)  # (M,)
@@ -433,11 +433,11 @@ class HierarchicalBotanicalMatcher(nn.Module):
                 fine_src = torch.empty(0, dtype=torch.int64, device=device)
                 fine_tgt = torch.empty(0, dtype=torch.int64, device=device)
 
-            anc_tgt_pos = cluster_centers[anc_tgt] if len(anc_tgt) > 0 else torch.empty((0, 3), device=device)
+            node_tgt_pos = cluster_centers[node_tgt] if len(node_tgt) > 0 else torch.empty((0, 3), device=device)
             batch_matches.append({
-                "phytomer_src_idx": anc_src,
-                "phytomer_tgt_idx": anc_tgt,
-                "phytomer_tgt_pos": anc_tgt_pos,
+                "phytomer_src_idx": node_src,
+                "phytomer_tgt_idx": node_tgt,
+                "phytomer_tgt_pos": node_tgt_pos,
                 "fine_src_idx": fine_src,
                 "fine_tgt_idx": fine_tgt,
                 "num_gt_phytomers": num_gt_clusters,

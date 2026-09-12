@@ -37,7 +37,7 @@ RGB-D image (4×256×256)
 [Stage 1] MacroBiologicalHead (CLS token)   → phytomer count + soft-margin existence prior
    │
    ▼
-[Stage 2] CoarseSkeletalTransformer          → per-anchor pos(3D)/rot(6D)/scale(3D)/existence
+[Stage 2] CoarseSkeletalTransformer          → per-node pos(3D)/rot(6D)/scale(3D)/existence
           (deterministic set transformer, "botanical scaffold")
    │
    ▼
@@ -53,7 +53,7 @@ HeliosPyTorchRenderer                        → multi-scale CHM depth + soft-Di
 
 `diffusion_based/models/hierarchical_part_flow_matching.py` implements Stages 1–3;
 `diffusion_based/models/phytomer_vae.py` implements Stage 4;
-`diffusion_based/training/hierarchical_hungarian_matcher.py` does anchor↔GT bipartite matching.
+`diffusion_based/training/hierarchical_hungarian_matcher.py` does node↔GT bipartite matching.
 
 A separate, earlier-generation **direct 26D-node Flow Matching** track
 (`diffusion_based/models/part_flow_matching.py`, `training/train_part_flow_matching.py`) still
@@ -86,7 +86,7 @@ image-to-l-system/
 │   ├── training/
 │   │   ├── train_hierarchical_flow_matching.py  # [CRITICAL] main loop for the 3-stage pipeline
 │   │   ├── train_phytomer_vae.py         # PhytomerVAE trainer (canonical packets)
-│   │   ├── hierarchical_hungarian_matcher.py  # coarse-anchor + local bipartite matching
+│   │   ├── hierarchical_hungarian_matcher.py  # coarse-node + local bipartite matching
 │   │   ├── flow_matching.py              # Rectified Flow scheduler
 │   │   └── train_part_flow_matching.py   # trainer for the direct 26D-node FM baseline
 │   ├── dataset/

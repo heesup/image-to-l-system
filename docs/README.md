@@ -2,9 +2,9 @@
 
 **Project**: Single-view aerial RGB/RGB-D drone image → 3D plant organ parameter reconstruction via Hierarchical Botanical Flow Matching.  
 **Active Representation**: 16D Organ Latent Space ($\mathbf{z} \in \mathbb{R}^{16} \sim \mathcal{N}(0, I)$ via pre-trained `OrganLatentVAE`) + 14D Canonical Part Tensor (`[cls, base(3), rot(6), scale(3), curv(1)]`).  
-**Active Model**: Two-Stage Hierarchical Botanical Flow Matching (Stage 1: Coarse Set Transformer with Matryoshka Phytomer Anchor Queries; Stage 2: Fine Flow Matching Decoder over 16D Latents + Frozen Differentiable VAE Decoder).  
+**Active Model**: Two-Stage Hierarchical Botanical Flow Matching (Stage 1: Coarse Set Transformer with Matryoshka Phytomer Node Queries; Stage 2: Fine Flow Matching Decoder over 16D Latents + Frozen Differentiable VAE Decoder).  
 **Cluster Infrastructure**: UC Davis Farm HPC | **Active Nodes**: 4× NVIDIA RTX 6000 Ada Generation (192 GB VRAM) & 4× NVIDIA H100 NVL.  
-**Latest Milestone (2026-09-07)**: Option B (16D Latent Hierarchical Flow Matching) completed 500 epochs (Job `38143585`). Velocity loss collapsed by 83% ($1.71 \to 0.29$), 3D anchor position RMSE reduced to 4.24 cm, organ classification accuracy reached 85.6%, achieving **55.1% mean silhouette IoU** (peaking at **67.9%** on mature canopies), **2.49 cm peak height error**, and complete elimination of ghost organ artifacts.  
+**Latest Milestone (2026-09-07)**: Option B (16D Latent Hierarchical Flow Matching) completed 500 epochs (Job `38143585`). Velocity loss collapsed by 83% ($1.71 \to 0.29$), 3D node position RMSE reduced to 4.24 cm, organ classification accuracy reached 85.6%, achieving **55.1% mean silhouette IoU** (peaking at **67.9%** on mature canopies), **2.49 cm peak height error**, and complete elimination of ghost organ artifacts.  
 **Active Checkpoints**: `diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_500.pt` & `diffusion_based/checkpoints/organ_vae/organ_latent_vae_best.pt`.
 
 ---
@@ -51,7 +51,7 @@ Comprehensive empirical verification of 3D spatial vision (DINOv2 + PETR 3D Ray 
 
 ### → [`results/20260907_latent_hierarchical_flow_matching_500epoch_report.md`](results/20260907_latent_hierarchical_flow_matching_500epoch_report.md)
 **Option B: 16D Latent Hierarchical Botanical Flow Matching — 500-Epoch Training & 3D Reconstruction Report (2026-09-07)**  
-Complete realization and empirical verification of Option B (16D Latent Botanical Flow Matching) using a frozen `OrganLatentVAE`. 500 epochs completed on 4× RTX 6000 Ada (18h 57m, job `38143585`). Velocity loss dropped by 83% ($1.71 \to 0.29$), 3D anchor position RMSE collapsed from 35.9 cm to 4.24 cm, and organ classification accuracy reached 85.6%. Demonstrates **55.1% Mean Silhouette IoU** (peaking at **67.9%** on mature plants), **2.49 cm Peak Height Error**, and complete elimination of ghost organ artifacts.
+Complete realization and empirical verification of Option B (16D Latent Botanical Flow Matching) using a frozen `OrganLatentVAE`. 500 epochs completed on 4× RTX 6000 Ada (18h 57m, job `38143585`). Velocity loss dropped by 83% ($1.71 \to 0.29$), 3D node position RMSE collapsed from 35.9 cm to 4.24 cm, and organ classification accuracy reached 85.6%. Demonstrates **55.1% Mean Silhouette IoU** (peaking at **67.9%** on mature plants), **2.49 cm Peak Height Error**, and complete elimination of ghost organ artifacts.
 
 ### → [`ongoing/20260907_latent_hierarchical_flow_matching_specification.md`](ongoing/20260907_latent_hierarchical_flow_matching_specification.md)
 **Latent Hierarchical Flow Matching (Option B) Architecture & Transition Specification (2026-09-07)**  
@@ -59,7 +59,7 @@ Detailed architectural blueprint explaining the resolution of the 150× gradient
 
 ### → [`ongoing/20260906_hierarchical_matryoshka_botanical_flow_matching_architecture.md`](ongoing/20260906_hierarchical_matryoshka_botanical_flow_matching_architecture.md)
 **Hierarchical Matryoshka Botanical Flow Matching & In-Loop Differentiable Loss Architecture (2026-09-06)**  
-Two-stage hierarchical Flow Matching architecture with DAP-conditional Matryoshka anchor allocation, linear scaling with plant maturity ($O(K \log K)$ bipartite matching), in-loop differentiable dense depth (2.5D ICP) loss ($\lambda=0.5$), and lighting/shadow-invariant pixel-wise cosine color loss ($\lambda=0.2$). Backpropagates full autograd gradients through nvdiffrast rasterization into 3D organ geometries directly within training.
+Two-stage hierarchical Flow Matching architecture with DAP-conditional Matryoshka node allocation, linear scaling with plant maturity ($O(K \log K)$ bipartite matching), in-loop differentiable dense depth (2.5D ICP) loss ($\lambda=0.5$), and lighting/shadow-invariant pixel-wise cosine color loss ($\lambda=0.2$). Backpropagates full autograd gradients through nvdiffrast rasterization into 3D organ geometries directly within training.
 
 ### → [`ongoing/20260903_14d_part_tensor_to_xml_dynamic_ik_report.md`](ongoing/20260903_14d_part_tensor_to_xml_dynamic_ik_report.md)
 **14D Part Tensor to Helios XML: Analytical Inverse Kinematics & Dynamic Reproductive Reconstruction Report (2026-09-03)**  

@@ -32,7 +32,7 @@ Other rationale (validated 2026-09-09 on cowpea_curv26):
   on the SAME per-phytomer token, not extra tokens.
 - Geometry is PHYTOMER-RELATIVE (organ base - cluster center): the phytomer/node
   position carries global placement, the latent models translation-invariant
-  local morphology. decode_packet() re-anchors with the node position.
+  local morphology. decode_packet() places it back into the world frame with the node position.
 
 Conventions mirror OrganLatentVAE (LayerNorm+SiLU MLPs, specialized heads,
 masked recon weights cls 1 / base 3 / rot 2 / scale 3 / curv 0.5, beta-KL).

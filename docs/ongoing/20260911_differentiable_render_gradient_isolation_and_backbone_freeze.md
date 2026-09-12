@@ -80,7 +80,7 @@ outputs = model(
 class CoarseSkeletalTransformer(nn.Module):
     def forward(self, image_tokens, ...):
         # 1. Main visual cross-attention (Scaffold & Flow matching supervision)
-        anchor_features = self.transformer(query_embed, image_tokens)
+        phytomer_features = self.transformer(query_embed, image_tokens)
 
         # 2. Render-dedicated branch: detach visual tokens before feeding heads,
         #    so render gradients update head weights (pos/rot/scale) but stop at the backbone.
@@ -157,6 +157,6 @@ Positional Encoding의 본질은 **"좌표 공간(Coordinate Space)을 주파수
 
 ### 8.3 6D Gram-Schmidt 도함수 폭발 차단
 - `safe_normalize` 함수에서 `v / norm` 대신 `v / norm.detach()`를 적용하여 분모의 $1/\|v\|^3$ 그래디언트 폭발을 수학적으로 원천 차단.
-- 렌더러 입력 텐서에서 `rot_all`을 `detach()`하여 3D 마디 회전각은 오직 깨끗한 3D Ground Truth 손실(`loss_anchor_rot`)로만 안정적으로 수렴하도록 격리.
+- 렌더러 입력 텐서에서 `rot_all`을 `detach()`하여 3D 마디 회전각은 오직 깨끗한 3D Ground Truth 손실(`loss_phytomer_rot`)로만 안정적으로 수렴하도록 격리.
 
 

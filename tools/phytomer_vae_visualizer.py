@@ -1,7 +1,7 @@
 """PhytomerVAE-64 latent visualizer (Gradio web app).
 
 PCA latent cloud (2D clickable + 3D rotatable) + 64D latent sliders -> decode
--> re-anchor (reference frame) -> HeliosPyTorchRenderer RGB + depth.
+-> place into world frame (reference frame) -> HeliosPyTorchRenderer RGB + depth.
 
 Data: precomputed by tools/precompute_phytomer_latent_pca.py into
 dataset/cache/phytomer_gui_cache/ (z, pca, proj2d/3d, presence, refs,

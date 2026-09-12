@@ -1,13 +1,13 @@
-# Anchor Capacity Recalibration & Predicted-Phytomer Dynamic Slicing (2026-09-08)
+# Node Capacity Recalibration & Predicted-Phytomer Dynamic Slicing (2026-09-08)
 
 **Status**: Implemented + tested (CPU smoke tests + gradient audit PASS) — updated after evening full rescan
-**Scope**: `diffusion_based/models/hierarchical_part_flow_matching.py`, `training/train_hierarchical_flow_matching.py`, `training/hierarchical_hungarian_matcher.py`, new `dataset/dap_bucket_sampler.py`, new `tools/calibrate_anchor_capacity.py`
+**Scope**: `diffusion_based/models/hierarchical_part_flow_matching.py`, `training/train_hierarchical_flow_matching.py`, `training/hierarchical_hungarian_matcher.py`, new `dataset/dap_bucket_sampler.py`, new `tools/calibrate_phytomer_capacity.py`
 
 ---
 
 ## 1. Problem
 
-The Matryoshka anchor-slice formula `K = ceil(8 * 2^(DAP/8.5))` (doubling every 8.5 days) was
+The Matryoshka node-slice formula `K = ceil(8 * 2^(DAP/8.5))` (doubling every 8.5 days) was
 botanically wrong and computationally wasteful:
 
 | DAP | GT phytomer clusters (실측) | old formula | old tier K (fine slots) | actually needed |
@@ -24,7 +24,7 @@ Consequences:
 
 ## 2. Changes
 
-### 2.1 Calibrated logistic anchor-capacity curve (replaces exponential + tier snap)
+### 2.1 Calibrated logistic node-capacity curve (replaces exponential + tier snap)
 
 **Evening rescan (2026-09-08, 59,441 cache files, 100–300 samples/DAP)**: The earlier
 p97.5-envelope fit (25 samples/DAP) left **11% of DAP buckets** with at least one observed
@@ -55,16 +55,16 @@ headroom for the still-filling 1,000-seed/dap dataset (unobserved tails possible
 
 Raw-XML upper-bound check (8,896 mature files DAP≥85): max **2,271 organ elements**;
 after +31 meta/bud-expansion rows → max part rows 2,625 < 4,096 slots → **no cache truncation**.
-"4,096" is the tensor width (512 anchors × 8 slots), not an observed organ count.
+"4,096" is the tensor width (512 nodes × 8 slots), not an observed organ count.
 
-Regenerate: `tools/calibrate_anchor_capacity.py --fit_target max --samples_per_dap 300`.
+Regenerate: `tools/calibrate_phytomer_capacity.py --fit_target max --samples_per_dap 300`.
 
 ### 2.2 Predicted-phytomer dynamic slicing (Proposal B, inference path)
 
 - `CoarseSkeletalTransformer.forward(..., capacity_mode=...)`:
   - `given` (default, training): slice from GT DAP via `compute_matryoshka_slice` (teacher forcing).
   - `pred_phyto` (two-pass): `MacroBiologicalHead` runs **first** on the CLS token (full max_k width);
-    the predicted phytomer count determines the anchor bank prefix slice
+    the predicted phytomer count determines the node bank prefix slice
     `K = ceil(max_sample(pred) * margin + flat)`.
 - `HierarchicalPartFlowMatchingModel.forward(..., capacity_mode="pred_phyto")` propagates the
   resolved K; `sample_ode` now uses `capacity_mode="pred_phyto"` and, when GT DAP is supplied
@@ -93,25 +93,25 @@ Training now ramps the predicted-phytomer capacity path:
 Stage 1/2 gradients remain fully connected:
 1. `MacroBiologicalHead` now runs before slicing on the CLS token → `pred_dap`/`pred_num_phytomers`
    losses keep their direct gradient path regardless of K.
-2. `pred_num_phytomers` → `init_logits` (soft margin) → `anchor_logits` is **differentiable** and
+2. `pred_num_phytomers` → `init_logits` (soft margin) → `phytomer_logits` is **differentiable** and
    unaffected by the discrete K decision; count supervision flows through it (audited).
 3. The discrete K decision is a capacity choice only (`detach()`ed count used for slicing);
    the soft-margin prior (τ=0.8 sigmoid tapering) carries the botanical capacity pressure.
-4. Slice is still a prefix of the trained parameter bank (`anchor_queries[:K]`, `ref_points[:K]`),
+4. Slice is still a prefix of the trained parameter bank (`phytomer_queries[:K]`, `ref_points[:K]`),
    so slot-index semantics stay consistent; `soft_margin_weights`/`init_logits` are resliced
    deterministically from the full-width computation.
-5. Audited by `tests/test_gradient_flow.py`: pos/rot/exist heads, anchor queries, ref points,
+5. Audited by `tests/test_gradient_flow.py`: pos/rot/exist heads, node queries, ref points,
    decoder layers, dap/phy heads all receive non-zero grads in both modes. NOTE: `dap_head`
    gradient flows only via `loss_dap` (ReLU can be in dead-zone at random init — non-issue
    with trained weights, verified positive preactivation on real forward).
 
 ### 2.5 Under-allocation safety (training)
 
-- `estimate_anchor_capacity(dap)` gives per-sample capacity; GT existence targets are masked
+- `estimate_phytomer_capacity(dap)` gives per-sample capacity; GT existence targets are masked
   to slots below capacity (`act_mask_sub &= cap_mask`), so the existence head is never punished
   for organs the slice cannot reach.
 - `HierarchicalBotanicalMatcher(per_sample_max_phytomers=...)` clamps GT phytomer clusters
-  (drops those farthest from predicted anchors) so the phytomer-count loss is unbiased by
+  (drops those farthest from predicted nodes) so the phytomer-count loss is unbiased by
   unreachable topology.
 
 ### 2.6 DAP-bucketed batch sampler (`dataset/dap_bucket_sampler.py`)
@@ -123,7 +123,7 @@ plain `DistributedSampler` shuffle.
 
 ### 2.7 Model forward width-alignment hardening
 
-`forward` now pads `noisy_fine_nodes` up to `K_out * M` (anchor slice is authoritative) and the
+`forward` now pads `noisy_fine_nodes` up to `K_out * M` (node slice is authoritative) and the
 train loop pads GT tensors when the model resolves a wider slice (rare; only when a batch-max
 DAP exceeds the GT padding width).
 
@@ -190,7 +190,7 @@ them. Distribution: those 4 young DAPs alone are **29% of the current dataset**
    Young plants have 7–12 organ rows vs 2,445 at maturity — the capacity/velocity/classification
    statistics the model must fit differ hugely across the skew, raising per-batch gradient noise.
 2. **`0389ca5` (14:54, ~20 min before launch)** changed four things at once:
-   anchor-pos weight ×4, idle-slot velocity damping (0.05), backbone lr 2e-5 → 6e-5, and the
+   node-pos weight ×4, idle-slot velocity damping (0.05), backbone lr 2e-5 → 6e-5, and the
    top-k 0.15 existence guard. Backbone lr ×3 alone destabilizes early training; combined
    with the loss re-weighting, the optimization landscape reset — visible in VelLoss at ep25:
    0.35 (old) vs 0.85 (current) despite *more* sample-visits (336k vs 250k).
@@ -215,7 +215,7 @@ panels. Interim comparisons must use fixed-seed eval batches and mean±std over 
 
 ## 8. Hyperparameter Recommendations for the 100k Scaling Run
 
-Context: 100k frozen dataset (1000 seeds/DAP balanced), capacity-recalibrated anchor slicing
+Context: 100k frozen dataset (1000 seeds/DAP balanced), capacity-recalibrated node slicing
 (avg ~2,110 fine slots), DAP-bucketed batching, scheduled capacity decay. Recommendations
 grounded in the three completed runs' evidence:
 
@@ -236,7 +236,7 @@ grounded in the three completed runs' evidence:
 | Parameter | Old (38146809) | **Recommended** | Rationale |
 |---|---|---|---|
 | backbone lr | 6e-5 (`args.lr × 0.3`) | **3e-5** (`args.lr × 0.15`) | ×3 jump destabilized early training (VelLoss 0.35→0.85 at ep25); foundation priors need gentler adaptation on 100k diverse data, and 6e-5 was tuned against a 4-DAP-skewed set |
-| `loss_anchor_pos` weight | 4.0 | **2.0** (revert) | ×4 was compensating for the young-skewed dataset's poor anchor spread; on balanced 100k, 2.0 (the pre-`0389ca5` value that produced the 49.2% panel) is correct; revisit only if AncPosLoss plateaus >0.015 by ep50 |
+| `loss_phytomer_pos` weight | 4.0 | **2.0** (revert) | ×4 was compensating for the young-skewed dataset's poor node spread; on balanced 100k, 2.0 (the pre-`0389ca5` value that produced the 49.2% panel) is correct; revisit only if AncPosLoss plateaus >0.015 by ep50 |
 | idle-slot damping | 0.05 | **0.02** | with capacity clamp + top-k guard + pred-capacity path, unmatched-slot drift is already triple-suppressed; 0.05 over-regularizes velocity on genuinely dormant reproductive slots |
 | top-k existence guard | 0.15 | **keep 0.15** (no change) | fine as-is; monitor ghost-organ count in panels |
 | `--lr` (decoder) | 2e-4 | **3e-4** | 100k samples is 7.4× the old 13.6k; slightly higher decoder lr with cosine T_max=500 converges the larger capacity slice variety faster; backbone stays decoupled at 3e-5 |
@@ -248,13 +248,13 @@ grounded in the three completed runs' evidence:
 |---|---|---|
 | VelLoss @ ep25 | > 0.45 | backbone lr too high → restart at 2e-5 |
 | PhyLoss (Pred/GT gap) @ ep50 | relative gap > 15% | count head under-trained → raise `loss_phy_count` weight 0.5 → 1.0 |
-| AncPosLoss @ ep50 | > 0.015 | anchor head under-weighted → 2.0 → 3.0 (do NOT jump to 4.0) |
+| AncPosLoss @ ep50 | > 0.015 | node head under-weighted → 2.0 → 3.0 (do NOT jump to 4.0) |
 | ClsAcc @ ep100 | < 70% | check DAP-bucket sampler balance; verify VAE frozen roundtrip |
 | Capacity p_pred @ ep150 | = 1.0 | scheduled decay didn't engage → check `--capacity_full_epochs` |
 
 ### 8.4 Deferred decisions (do NOT bundle into the scaling run)
 
-- `slots_per_anchor` 8 → 9/10 (M=8 per-cluster overflow): separate design pass; bundling it
+- `slots_per_phytomer` 8 → 9/10 (M=8 per-cluster overflow): separate design pass; bundling it
   changes the 14D contract mid-experiment and invalidates the checkpoint lineage.
 - Bidirectional Chamfer distance (P4): eval-metric change, keep out of the training run.
 - Eval GT-DAP removal (`max(K_pred, K_dap)` → pure pred): only after §8.3 gates pass.

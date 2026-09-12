@@ -523,7 +523,7 @@ def build_phytomer_packets(
         packets: (P, 10, 26) FM rows with PHYTOMER-RELATIVE base positions AND
                  PHYTOMER-RELATIVE (reference-frame) rot6d.
         presence: (P, 10) bool, True where a real organ occupies the slot.
-        centers: (P, 3) cluster center positions in meters (for re-anchoring).
+        centers: (P, 3) cluster center positions in meters (for placing packets back into the world frame).
         reference_rot: (P, 6) ABSOLUTE 6D rotation of each packet's reference
                  frame (the internode slot, or first present slot, or identity).
                  Stored in absolute coords so decode_packet() can re-apply it.

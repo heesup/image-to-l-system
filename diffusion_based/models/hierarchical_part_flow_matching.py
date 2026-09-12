@@ -1502,7 +1502,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                     phytomer_scale.reshape(-1, 3) if phytomer_scale is not None else torch.ones((B*active_k, 3), device=device),
                 ).reshape(B, active_k, M, 26)
                 # Structurally assemble slot bases from the petiole geometry
-                # (deterministic), then re-anchor with the phytomer pose.
+                # (deterministic), then place into the world frame with the phytomer pose.
                 packet_hat = assemble_packets(
                     packet_hat.reshape(-1, M, 26),
                     phytomer_rot.reshape(-1, 6),

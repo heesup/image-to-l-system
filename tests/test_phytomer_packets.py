@@ -84,7 +84,7 @@ class TestPhytomerPackets(unittest.TestCase):
             self.assertTrue((packets[0, s, FM_BASE_START:] == 0).all())
         back = decode_packet(packets[0], centers[0], presence[0], refs[0])
         self.assertTrue(torch.allclose(back[:2], nodes[:2], atol=1e-5))
-        # Absent slots untouched by re-anchoring
+        # Absent slots untouched by the world-frame placement
         self.assertTrue((back[2:, FM_BASE_START:] == 0).all())
 
     def test_overflow_drops_by_canonical_order(self):

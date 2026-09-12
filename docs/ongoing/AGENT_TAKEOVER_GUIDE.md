@@ -44,14 +44,14 @@ Input: RGB-D 4ch image (256×256)
 [Stage 1] MacroBiologicalHead (CLS token) → Phytomer count (Soft margin capacity prior)
        ↓
 [Stage 2] CoarseSkeletalTransformer — DETERMINISTIC Set Transformer (Scaffold)
-          → anchor pos (3D), rot (6D), scale (3D), existence logits (1D)
-          → supervised by loss_anchor_pos, loss_anchor_rot, loss_anchor_scale, loss_anchor_exist
+          → node pos (3D), rot (6D), scale (3D), existence logits (1D)
+          → supervised by loss_phytomer_pos, loss_phytomer_rot, loss_phytomer_scale, loss_phytomer_exist
        ↓
 [Stage 3] PhytomerFlowMatchingDecoder (Conditioned on Stage 2 Scaffold & Image)
           → Flow Vector: 64D Phytomer VAE Latent ONLY
           → Prior: Standard Gaussian z_0 ~ N(0, I_64) (No bridge coupling → VelLoss stable ~1.0)
-          → Conditioning: anchor_pos.detach(), anchor_rot.detach(), anchor_scale.detach(), anchor_features
-          → 10 organ slots existence logits (P(organ) = P(anchor) * P(slot|anchor))
+          → Conditioning: phytomer_pos.detach(), phytomer_rot.detach(), phytomer_scale.detach(), phytomer_features
+          → 10 organ slots existence logits (P(organ) = P(node) * P(slot|node))
        ↓
 [Stage 4] PhytomerVAE v3 (frozen) → 64D Latent decoded to 10-organ canonical packet
           → Assembled via denormalize_packet_scales(scale) & apply_ref_for_flow(pos, rot)
@@ -59,15 +59,15 @@ Input: RGB-D 4ch image (256×256)
 ```
 
 > **Design Decision (2026-09-10)**:
-> - 76D Bridge Flow ($z_0 = \text{anchor\_pos} + \epsilon$)의 오차 증폭(`VelLoss: 1050~2000`)을 해소하기 위해 **하이브리드 디커플링**으로 완전 전환.
+> - 76D Bridge Flow ($z_0 = \text{node\_pos} + \epsilon$)의 오차 증폭(`VelLoss: 1050~2000`)을 해소하기 위해 **하이브리드 디커플링**으로 완전 전환.
 > - Stage 2는 전신 3D 골격(`pos`, `rot`, `scale`, `exist`)을 전담하고, Stage 3은 표준 정규분포에서 파이토머 내부 64D 잠재공간 Flow Matching을 전담.
-> - 손실 함수 10개 $\to$ 8개 정예화 (`loss_cos`, `loss_dap` 제거, `loss_anchor_rot` 정규 지도 추가).
+> - 손실 함수 10개 $\to$ 8개 정예화 (`loss_cos`, `loss_dap` 제거, `loss_phytomer_rot` 정규 지도 추가).
 
 ### Milestone History:
 - ✅ **Phase 1** (ICP / Diff Render / Flow Matching benchmark): Complete.
 - ✅ **Phase 2** (Over-allocation topology, variable organ counts): Complete.
 - ✅ **Option B: 500-Epoch 16D Latent Hierarchical FM** (Job `38143585`): 55.1% mean IoU, peak 67.9%, 2.49cm height error, 0 ghost organs.
-- ✅ **3-Stage Cascaded Architecture** (Current, Job `38146809`): Running past Epoch 54 with idle slot damping, scaled global batch size (192), and accelerated anchor convergence.
+- ✅ **3-Stage Cascaded Architecture** (Current, Job `38146809`): Running past Epoch 54 with idle slot damping, scaled global batch size (192), and accelerated node convergence.
 
 ---
 
@@ -95,7 +95,7 @@ Epoch 040 | Loss: 0.0000 | ... | Vel: 0.0000 ... | VRAM: 26.9/47.4 GB
 | 후보 | 증상 | 조사 방법 |
 | :--- | :--- | :--- |
 | `init_logits` Float32 overflow | $\ell_k = (N_{phy}+m-k)/\tau \to 96.25 \to e^{96.25} = \infty$ | clamp to [-15, +15] |
-| Stage 2→3 gradient leak (missing `.detach()`) | `tgt_velocity = z1 - z0` where `z0` contains `pred_anchor_pos` without detach | verify all `z_0` construction |
+| Stage 2→3 gradient leak (missing `.detach()`) | `tgt_velocity = z1 - z0` where `z0` contains `pred_phytomer_pos` without detach | verify all `z_0` construction |
 | NaN propagation from Depth/Dice render loss | nvdiffrast nan on degenerate mesh at early epochs | `torch.nan_to_num` on render output |
 
 ### 권장 재시작 절차:
@@ -129,7 +129,7 @@ sbatch slurm_scripts/train_hierarchical_flow_matching.sh
 ### 3.1 Algorithm Improvements (Commits `0389ca5`, `5b9fbf0`, `54579bc`)
 - **Idle Slot Damping**: Added $L_2$ velocity regularizer $\mathcal{L}_{\text{idle}} = 0.05 \sum_{i \notin \mathcal{M}} \|\mathbf{v}_i\|^2$ for unmatched slots to prevent ghost organs during vegetative stages (DAP < 40).
 - **Top-k Threshold Guard**: `valid_topk = top_k_indices[combined_prob[b, top_k_indices] > 0.15]` prevents dormant ghost slot emergence.
-- **Backbone & Anchor Acceleration**: `loss_anchor_pos` weight increased to **4.0**, DINOv2 backbone LR increased to **6e-5** (`args.lr * 0.3`).
+- **Backbone & Node Acceleration**: `loss_phytomer_pos` weight increased to **4.0**, DINOv2 backbone LR increased to **6e-5** (`args.lr * 0.3`).
 
 ### 3.2 Batch Size Scaling (Commit `0389ca5`)
 - Batch size scaled to 48 per GPU (global batch 192).
@@ -275,7 +275,7 @@ sbatch slurm_scripts/train_hierarchical_flow_matching.sh
 │   ├── training/
 │   │   ├── train_hierarchical_flow_matching.py   ← [CRITICAL] main loop: --flow-granularity phytomer, probe reuse, --render_grad_start_epoch, --detect_anomaly
 │   │   ├── train_phytomer_vae.py                 ← PhytomerVAE trainer (canonical packets)
-│   │   ├── hierarchical_hungarian_matcher.py     ← [CRITICAL] coarse anchor + local fine bipartite matching
+│   │   ├── hierarchical_hungarian_matcher.py     ← [CRITICAL] coarse node + local fine bipartite matching
 │   │   └── flow_matching.py                      ← Rectified Flow scheduler
 │   ├── dataset/
 │   │   ├── part_array_dataset.py                 ← [CRITICAL] cache-first filtering, 16-ch pyramid, pkt v3 gate
@@ -289,7 +289,7 @@ sbatch slurm_scripts/train_hierarchical_flow_matching.sh
 │       ├── organ_vae/organ_latent_vae_best.pt    ← frozen OrganLatentVAE bridge
 │       └── phytomer_vae_v3/                      ← [ACCEPTED DEFAULT] PhytomerVAE-64 v3, 10-slot normalized (val recon 0.070, cls 100%)
 ├── slurm_scripts/
-│   ├── train_hierarchical_flow_matching.sh       ← launcher; defaults: VAE v3, SLOTS_PER_ANCHOR=10, BACKBONE_LR_RATIO=0.3
+│   ├── train_hierarchical_flow_matching.sh       ← launcher; defaults: VAE v3, SLOTS_PER_PHYTOMER=10, BACKBONE_LR_RATIO=0.3
 │   ├── generate_helios_dataset_jobs.sh           ← full pipeline: XML synth + cache (+ pkt/latent) in one pass
 │   └── submit_backbone_ablation.sh               ← A/B dispatcher (DAP-spread arms, sequential chain)
 ├── dataset/

@@ -23,7 +23,7 @@ Both save everything the visualizer needs:
         presence.pt     (P, 10)  bool slot mask
         refs.pt         (P, 6)  absolute reference-frame rot6d per packet
         centers.pt      (P, 3)  absolute cluster centers (metres)
-        packets.pt      (P, 10, 26) relative packets (for re-anchoring)
+        packets.pt      (P, 10, 26) relative packets (for placing packets back into the world frame)
         dap.pt          (P,)    DAP label per packet
         meta.json       config + per-dim percentile ranges for sliders
 

@@ -5,7 +5,7 @@
 In Phase 2 (the current 4-in-1 architecture), the model combines:
 1. **Pretrained DINOv2-S/14 Backbone** (`embed_dim=384`).
 2. **3D Camera Ray Positional Embedding (PETR-style)**.
-3. **3D Anchor Queries with 3D Reference Points (DETR3D-style)**.
+3. **3D Node Queries with 3D Reference Points (DETR3D-style)**.
 4. **Phytomer Block Flow Matching Decoder ($M=8$ slots)**.
 
 This roadmap documents the remaining experimental modules deferred to Phase 3 to preserve engineering simplicity, fast training throughput, and ease of ablation.
@@ -45,7 +45,7 @@ Because the ground-truth Depth/CHM maps (Channels 3, 7, 11, 15) are **already pr
 * **Goal**: Force the visual backbone to maintain strict physical depth calibration in real-world metric units.
 
 ### C. Deformable Cross-Attention for 3D Queries
-* **Concept**: Given a 3D anchor reference point $\mathbf{p}_k = (x, y, z)$, project it into the 2D image plane via camera matrices:
+* **Concept**: Given a 3D node reference point $\mathbf{p}_k = (x, y, z)$, project it into the 2D image plane via camera matrices:
   $$(u_k, v_k) = \mathbf{K} \cdot [\mathbf{R} | \mathbf{t}] \cdot \mathbf{p}_k$$
 * Sample $P$ local offsets around $(u_k, v_k)$ across the multi-scale DPT feature maps using bilinear interpolation.
 * **Goal**: Focus cross-attention exclusively on the local visual foliage surrounding each specific botanical node, minimizing background noise.
