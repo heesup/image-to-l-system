@@ -57,12 +57,19 @@ MAX_EDGE_FACTOR = 3.0
 # Comparable to a typical internode so it can outvote a slightly closer but
 # out-of-sequence candidate.
 ORD_WEIGHT = 0.02
+# gt_parent_links gates its branch-point lookup on the INTERNODE scale, not on
+# chain_phytomers' median-of-all-pairwise-distances (which grows with the plant:
+# 10.7 cm median at DAP 90, so a 3x gate is 32 cm and rejects almost nothing).
+# Measured over 24 plants, a true child-to-parent distance is 1.00x the median
+# internode at the median, 2.78x at p99 and 5.32x at the maximum, so 6.0 accepts
+# every observed true parent while still rejecting anything absurd.
+MAX_INTERNODE_FACTOR = 6.0
 
 
 def gt_parent_links(
     centers: torch.Tensor,
     keys: torch.Tensor,
-    max_edge_factor: float = MAX_EDGE_FACTOR,
+    max_internode_factor: float = MAX_INTERNODE_FACTOR,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Ground-truth parent of every phytomer, under one rule with no exceptions.
 
@@ -84,14 +91,15 @@ def gt_parent_links(
     fallback has nothing left to cover.
 
     `keys` carries only (shoot_id, phytomer_idx) and does not record which node a
-    lateral branches from, hence the geometric lookup. It is gated by the same
-    `max_edge_factor` x median-spacing rule `chain_phytomers` uses, so a lateral
-    in a sparse region is left unresolved rather than linked to something absurd.
+    lateral branches from, hence the geometric lookup. It is gated on this
+    plant's own median internode (see `MAX_INTERNODE_FACTOR`), so a lateral in a
+    sparse region is left unresolved rather than linked to something absurd.
 
     Args:
         centers: (P, 3) ground-truth node positions in metres.
         keys: (P, 2) int64 (shoot_id, phytomer_idx), from the packet cache.
-        max_edge_factor: distance gate for the branch-point lookup.
+        max_internode_factor: branch-point lookup gate, in multiples of this
+            plant's own median internode (see MAX_INTERNODE_FACTOR).
 
     Returns:
         parent_pos: (P, 3) parent position. The origin for the main stem's first
@@ -118,31 +126,42 @@ def gt_parent_links(
     parent_idx = torch.where(has_same_shoot, same_row, parent_idx)
     parent_pos = torch.where(has_same_shoot.unsqueeze(-1), centers[same_row], parent_pos)
 
-    # The main stem is the shoot whose first node sits lowest; its first node's
-    # parent is the origin.
-    firsts = torch.nonzero(ordi == 0, as_tuple=True)[0]
-    if firsts.numel() == 0:
+    # The internode scale comes free from the same-shoot links just resolved:
+    # each of those IS one internode.
+    seg = (centers - centers[same_row])[has_same_shoot].norm(dim=-1)
+    internode = seg.median() if seg.numel() > 0 else centers.new_tensor(float("inf"))
+    gate = max_internode_factor * internode
+
+    is_first = ordi == 0
+    first_rows = torch.nonzero(is_first, as_tuple=True)[0]
+    if first_rows.numel() == 0:
         return parent_pos, parent_idx
-    root_shoot = shoot[firsts[centers[firsts, 2].argmin()]]
 
+    # The main stem is the shoot whose first node sits lowest. Derived from
+    # geometry rather than assuming shoot_id 0, so a relabelled cache still works.
+    root_shoot = shoot[first_rows[centers[first_rows, 2].argmin()]]
+    is_root = is_first & (shoot == root_shoot)
+
+    # Branch point for every lateral's first node: nearest node below it on a
+    # different shoot. Fully vectorised -- the earlier per-shoot Python loop cost
+    # 4 ms per call from its .item() syncs, which at 48 samples per step was +64%
+    # of step time.
     dist = torch.cdist(centers, centers)
-    finite = dist[dist > 0]
-    gate = (max_edge_factor * finite.median() if finite.numel() > 0
-            else torch.tensor(float("inf"), device=device))
+    below = centers[:, 2].unsqueeze(1) > centers[:, 2].unsqueeze(0)
+    cand = below & (shoot.unsqueeze(1) != shoot.unsqueeze(0))
+    d_lat = dist.masked_fill(~cand, float("inf"))
+    best = d_lat.argmin(dim=1)
+    best_d = d_lat.gather(1, best.unsqueeze(1)).squeeze(1)
 
-    for i in firsts.tolist():
-        if shoot[i] == root_shoot:
-            parent_pos[i] = 0.0                 # the origin
-            continue
-        # Nearest node below, on another shoot: the branch point.
-        cand = (centers[:, 2] < centers[i, 2]) & (shoot != shoot[i])
-        if not bool(cand.any()):
-            continue
-        d = dist[i].masked_fill(~cand, float("inf"))
-        j = int(d.argmin())
-        if d[j] <= gate:
-            parent_idx[i] = j
-            parent_pos[i] = centers[j]
+    use_branch = is_first & ~is_root & (best_d <= gate)
+    parent_idx = torch.where(use_branch, best, parent_idx)
+    parent_pos = torch.where(use_branch.unsqueeze(-1), centers[best], parent_pos)
+
+    # The root's parent is the origin: a real geometric parent one internode
+    # below it, not a row of `centers`.
+    parent_pos = torch.where(is_root.unsqueeze(-1),
+                             torch.zeros_like(parent_pos), parent_pos)
+    parent_idx = torch.where(is_root, torch.full_like(parent_idx, -1), parent_idx)
 
     return parent_pos, parent_idx
 
