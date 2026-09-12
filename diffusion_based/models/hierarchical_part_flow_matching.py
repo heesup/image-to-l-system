@@ -93,6 +93,39 @@ def _probe_grad(t: torch.Tensor, label: str) -> None:
     t.register_hook(_hook)
 
 
+def _make_layer_probe(label: str):
+    """full-backward hook reporting a module's own gradient amplification.
+
+    The intermediate probe showed the gradient entering Stage 2's decoder
+    output under 1e9 and leaving its input at ~1e13, so ~1e4 of amplification
+    happens inside those layers. Reasoning about which op does it has a poor
+    track record here (seven architectural hypotheses tested and refuted on
+    2026-09-12), so this measures each layer's out->in ratio directly and
+    reports the first layer to exceed 100x. One report per label."""
+
+    def _hook(module, grad_input, grad_output):
+        if label in _probe_seen:
+            return
+
+        def _mx(ts):
+            best = 0.0
+            for t in ts:
+                if t is None:
+                    continue
+                f = t[torch.isfinite(t)].abs()
+                if f.numel():
+                    best = max(best, float(f.max()))
+            return best
+
+        g_in, g_out = _mx(grad_input), _mx(grad_output)
+        if g_out > 0 and g_in / g_out > 100.0:
+            _probe_seen.add(label)
+            print(f"  [LayerProbe] {label}: grad_out={g_out:.3e} -> grad_in={g_in:.3e} "
+                  f"(amplification {g_in / g_out:.1f}x)", flush=True)
+
+    return _hook
+
+
 def safe_normalize(v: torch.Tensor, eps: float = 1e-3) -> torch.Tensor:
     """Safely normalizes vectors along the last dimension with bounded gradient.
     Detaching the denominator norm prevents collinear/zero division where d/dv(v/||v||)
@@ -428,6 +461,14 @@ class CoarseSkeletalTransformer(nn.Module):
             norm_first=True,
         )
         self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
+        if _GRAD_PROBE:
+            # The probe on the intermediates showed the gradient entering this
+            # decoder's output under 1e9 and the gradient leaving its input at
+            # ~1e13, so the ~1e4 amplification is inside these layers. These
+            # per-layer hooks report each layer's own output->input ratio,
+            # which says WHICH layer rather than just that it is in here.
+            for _i, _layer in enumerate(self.decoder.layers):
+                _layer.register_full_backward_hook(_make_layer_probe(f"decoder.layer{_i}"))
 
         # Stage 1: Macro Biological Head
         self.macro_head = MacroBiologicalHead(embed_dim=embed_dim,
