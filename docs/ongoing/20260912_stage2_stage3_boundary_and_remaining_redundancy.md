@@ -26,6 +26,7 @@
 | **Packet slot-0 rotation forced to identity (it is the reference frame)** | `ef5802d` |
 | **Leaflets emitted as lateral, terminal, lateral — the packet path is now lossless (§2.4)** | `ff5beb4` |
 | **Leaf size is one scalar per node (1 : 1 : 10/9); terminal leaflet identified per node; opt-in terminal-last packet order for v9** | `2f1691b` |
+| **Stem inverse kinematics in the export: Helios's FK now follows the predicted nodes (§2.5)** | `d3731d3`, `7d92840`, `5827327` |
 
 **The blocker is NOT resolved -- see §1.9.2 (2026-09-12 afternoon): it recurred at epoch 28 with lr below 1e-4.** The earlier reading, kept for the record: the intermittent Stage 2 gradient explosion tracks the **learning rate**, not the architecture: every observed onset sat above ~1.6e-4 effective lr, and job `38240281` at `LR=1e-4` has now run **10 epochs clean** with 0 canary hits, through and well past the point where three of four runs at 3e-4 died. Eight architecture-level hypotheses were tested against minimal reproductions and refuted first; §1.9 records them so nobody pays for them twice.
 
@@ -39,7 +40,7 @@
 
 **Two inference bugs found by looking at the epoch-11 panel rather than the numbers** (§2.3). A 2 cm seedling with 0.6 cm node RMSE rendered at IoU 0.0% because metre-long stems shot across the frame. Fixed in `abce662`; the ordinal follow-up is `ae26ccb`.
 
-**Helios round-trip (§2.4)**: **the packet path is now lossless.** With the VAE replaced by identity it renders at 95.8 / 94.2 / 87.9% FG IoU against IK-only 95.7 / 94.1 / 87.4% (it was 78.9 / 91.6 / 87.4 this morning). The whole loss was leaflet ordering: the XML converter assigns leaf yaw by encounter order (lateral, terminal, lateral) and reads only the scale from the row, `emit_slot_order` wrote slots in numeric order, and the terminal leaflet lives in slot 4 on a rising petiole but slot 2 on a drooping one -- so the terminal's scale landed on a lateral and vice versa, an 11% size swap on two of every three leaflets (`ff5beb4`, `2f1691b`). The seedling's 17 points were this, not the cotyledon. What remains is the VAE alone: the v8 round-trip is at 81.4 / 90.2 / 79.3% (from 70.3 / 87.8 / 76.2 at the start of the day), and the attribution says rotation and scale errors must both come down -- neither alone recovers it. A v9 VAE is training (§2.4, end). Routing the export through the branch-point parent rule is still 16 points *worse* -- a lateral's first internode axis is not the node-to-node segment.
+**Helios round-trip (§2.4, §2.5): solved.** Two things were wrong and both are fixed. The packet path lost the leaflet order (`ff5beb4`, `2f1691b`); with the VAE replaced by identity it is exact. Then the analytical 14D -> XML export turned out to be the real ceiling for *every* VAE: Helios rebuilds a shoot by forward kinematics from per-node angles the converter derives from petiole azimuths and a decoded curvature, so a 1-3 degree error at one node moves every node above it, and a VAE with 1.4-degree petiole rotations still lost ten points to it. `part_tensor_stem_ik` (§2.5) now solves those per-node parameters so the same FK lands on the predicted nodes. Helios FG IoU at DAP 50: identity 94.2 -> **99.4%**, v9_tl_rw4 82.9 -> **98.3%**, v9_tl 84.7 -> 96.8%, v8 90.2 -> 94.2% (IK-only, the old ceiling, was 94.1). The export is on by default (`PART_TENSOR_STEM_IK=0` gives the old analytical path); the full three-plant figure is being regenerated with it.
 
 **Next**: `38242849` (resumed from epoch 25 at `LR=5e-5`, §1.9.2) is the live run; watch the Stage 2 Scl/Ord/Ext losses for the epoch-27-style precursor, not just the canary. In parallel: pick a v9 VAE (§2.4, end), then §2.1's remaining pieces -- Stage 3 consuming `(parent, self)` pairs with the parent held fixed, and noise injection on the fixed parent -- and the gradient bisection in §1.9.2.
 
@@ -544,6 +545,61 @@ lost -- so (2) alone does not get there. Until (1) lands, judge VAE candidates
 on packet fidelity (`_rw4` is the best) and treat the Helios figure as a
 property of the export, not of the VAE.
 
+### 2.5 Stem inverse kinematics: the export now follows the nodes (`d3731d3`, `7d92840`, `5827327`)
+
+`diffusion_based/models/part_tensor_stem_ik.py`, run by `assemble_part_tensor_to_xml`
+after `PartTensorTo40DConverter` (default on; `PART_TENSOR_STEM_IK=0` for the
+plain analytical export). It treats the 14D internode rows -- the parent-node ->
+node chords Stage 2 predicts and the identity path has exactly -- as the target
+and solves the parameters Helios integrates the stem from: each internode's
+curvature and yaw perturbation (elevation and azimuth of its chord), each
+petiole's pitch and its node's phyllotactic angle (the petiole's direction), and
+each shoot's base pitch, yaw and first-internode length (the first internode,
+which Helios never perturbs). It is a fixed-point iteration on the Python mirror
+of Helios's phytomer builder (`HeliosPlantGeometryBuilder.extract_part_tensor`,
+which now returns per-row poses), so it cannot drift from the FK.
+
+Three versions were needed to make it converge, each recorded in the module
+docstring because the failure modes are not obvious: (1) aiming each internode
+at its absolute target tip from the current FK base diverges, because a
+millimetre of accumulated base error at a 5 mm shoot-tip internode is a
+100-degree "correction"; (2) fitting each internode's own direction but
+updating all nodes at once diverges too, because Helios builds each internode
+relative to the previous one's *final* axis but not to that axis's effect on
+the petiole frame, so an upstream correction propagates downstream with
+alternating sign; (3) a sequential sweep -- one node, re-run the FK, next node
+-- converges in one pass, since every step is then exactly the unit-gain
+response measured by finite differences (+1 deg of curvature = +1 deg of
+elevation, +1 deg of yaw = +1 deg of azimuth). Cost: one FK per node per sweep,
+about 2 minutes for a 164-node plant on CPU; a second sweep changes nothing and
+is skipped.
+
+| DAP 50, Helios FG IoU vs GT | analytical export | with stem IK | FK stem residual (mean / max) |
+|---|---|---|---|
+| identity (VAE bypassed) | 94.2 | **99.4** | 0.47 / 1.20 -> 0.04 / 0.11 cm |
+| v9_tl_rw4 | 82.9 | **98.3** | 1.71 / 3.84 -> 0.04 cm |
+| v9_tl | 84.7 | 96.8 | 1.35 / 4.41 -> 0.05 / 0.11 cm |
+| v8 | 90.2 | 94.2 | 1.51 / 4.31 -> 0.61 cm (before the base step) |
+| IK-only (GT 14D, old ceiling) | 94.1 | -- | -- |
+
+Two readings. First, the identity export now exceeds the old IK-only ceiling,
+because IK-only went through the same analytical converter and carried the
+same FK drift (0.47 cm mean at DAP 50 on exact input): the ceiling was the
+export, not the representation. Second, the VAE ranking is now the packet
+fidelity ranking (`_rw4` best), as it should be -- the round-trip finally
+measures the VAE. What the solver does not touch: leaflet scales (already one
+scalar per node, §2.4), peduncle/flower placement, and the ~1 pixel-level
+framing effects of `--focus-plant`.
+
+The unit tests (`tests/test_part_tensor_stem_ik.py`) run the solver on a
+dataset seedling with real perturbations and check that it reduces the FK tip
+error on exact input and recovers from 3-5 degree noise on curvature, yaw and
+phyllotaxy. An unguarded version of the shoot-base step made the exact-input
+case *worse* on that seedling (0.13 -> 0.24 cm) -- the finite-difference
+Jacobian is degenerate when the child axis is parallel to the parent's --
+which is why the base step skips small singular values and caps its step at
+1.5x the angular error.
+
 ---
 
 ## 3. Proposed next step B: the internode redundancy that's STILL open at the packet level
@@ -626,5 +682,11 @@ ef5802d fix(packets): slot-0 rotation is the reference frame; force it to identi
 ff5beb4 fix(packets): emit leaflets as lateral, terminal, lateral
 c658416 docs: the packet path is lossless; regenerate fig14 after the leaflet-order fix
 2f1691b feat(packets): leaf size is one scalar per node; identify the terminal leaflet per node
+b7fce9a docs: packet path exact at all three stages; VAE attribution table; v9 plan
+daffc46 docs: the Stage 2 explosion recurred at lr below 1e-4; run resumed from epoch 25 at 5e-5
+bd04b9c docs: v9 VAE candidates; the Helios round-trip is bounded by the export's FK, not VAE fidelity
+d3731d3 feat(export): stem inverse kinematics so Helios's FK follows the predicted nodes
+7d92840 feat(stem-ik): solve each shoot's base pitch/yaw and base-internode length
+5827327 fix(stem-ik): guard the shoot-base solve against degenerate Jacobians and oversized steps
 ```
 (Earlier the same day, see the previous doc's own commit log for the hybrid VAE / render-loss / canary-guard commits.)
