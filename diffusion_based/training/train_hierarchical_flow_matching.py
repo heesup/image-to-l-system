@@ -859,7 +859,11 @@ def forward_backward_step(
                 # was never rotation's job -- "Rot supervised purely by 3D GT
                 # loss" in the prior version of this comment).
                 roll_all = pred_phytomer_roll_render[render_indices].detach()
-                rot_all = reconstruct_phytomer_rot(
+                # The chain's own parent positions are not used here: the render
+                # block pairs nodes through the GT-derived, matched-only map
+                # (gt_render_parent_idx) built above, which is stable from
+                # epoch 1 where self-predicted topology is not.
+                rot_all, _ = reconstruct_phytomer_rot(
                     pos_all.detach(), roll_all,
                     pred_ord[render_indices].detach(), pred_base_logits[render_indices].detach(),
                 )

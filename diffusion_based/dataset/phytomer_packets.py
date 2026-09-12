@@ -41,6 +41,7 @@ rotation variance, freeing 64D latent capacity for the affine morphology.
 """
 
 from typing import Dict, List, Optional, Tuple
+import os
 
 import torch
 import torch.nn.functional as F
@@ -243,6 +244,16 @@ def assemble_packets(
 ) -> torch.Tensor:
     """Reconstructs DETERMINISTIC slot bases from assembly rules.
 
+    A note on a guard that was tried and removed (2026-09-12): rejecting a
+    chained internode whose parent gap exceeds ~6x the decoded length, falling
+    back to the decoded length. At inference with an uninformative ordinal the
+    chain pairs live nodes 6-14 cm apart on a plant whose internodes are 1-3
+    cm, so the idea was to distrust those. Measured on the same fixed 10-sample
+    set it made silhouette IoU WORSE (14.4% -> 12.1%): the fallback stem is
+    short but still points at the wrong parent, so nothing is gained and the
+    stem no longer even reaches a node. The real fix is an ordinal head that
+    orders nodes, so the chain picks the right parent in the first place.
+
     GT-verified deterministic rules (XML-phytomer clustering, full cowpea_curv26):
       stem/petiole/peduncle/bud base = cluster center (error <= 0.07cm p99).
       lateral leaflets (slots 2-3) = 0.8 x the CURVED petiole centerline.
@@ -292,9 +303,9 @@ def assemble_packets(
 
         if parent_pos is not None and centers is not None:
             chained = torch.isfinite(parent_pos).all(dim=-1) & stem
+            to_parent = parent_pos - centers                      # metres
+            gap = to_parent.norm(dim=-1, keepdim=True).clamp(min=1e-6)
             if bool(chained.any()):
-                to_parent = parent_pos - centers                  # metres
-                gap = to_parent.norm(dim=-1, keepdim=True).clamp(min=1e-6)
                 stem_base = torch.where(chained.unsqueeze(-1),
                                         to_parent * base_scale, stem_base)
                 # Point the tube along parent -> node and give it that length,
@@ -313,6 +324,18 @@ def assemble_packets(
                                       out[:, 0, FM_ROT_START:FM_ROT_END])
                 new_len = torch.where(chained, gap.squeeze(-1) * SCALE_SCALE,
                                       out[:, 0, FM_SCALE_START])
+                if os.environ.get("FM_ASSEMBLY_PROBE") == "1":
+                    # Per-row internode decision, in cm. Diagnoses whether an
+                    # oversized stem comes from the decoded length (chained
+                    # False), a far parent (chained True, large gap), or from
+                    # downstream of here (chained True, small gap, still wrong).
+                    n = min(P, 12)
+                    print("  [AssemblyProbe] row chained gap_cm decoded_len_cm final_len_cm", flush=True)
+                    for r in range(n):
+                        print(f"  [AssemblyProbe] {r:3d} {bool(chained[r])!s:7} "
+                              f"{float(gap[r, 0]) * 100:8.2f} "
+                              f"{float(stem_len[r]) * 100:14.2f} "
+                              f"{float(new_len[r]) / SCALE_SCALE * 100:12.2f}", flush=True)
                 slot0 = torch.cat([
                     out[:, 0, :FM_ROT_START],
                     new_rot,

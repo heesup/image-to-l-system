@@ -141,7 +141,8 @@ def reconstruct_phytomer_rot(
     roll: torch.Tensor,
     ordinal: torch.Tensor,
     is_base_logits: torch.Tensor,
-) -> torch.Tensor:
+    exist: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """Full node rotation (B, K, 6) from predicted position + roll, deriving
     the forward axis from resolved topology instead of predicting it.
 
@@ -159,19 +160,46 @@ def reconstruct_phytomer_rot(
         roll: (B, K, 2) predicted (cos, sin) roll.
         ordinal: (B, K) predicted position along the shoot.
         is_base_logits: (B, K) predicted is-shoot-base logit (>0 = base).
+        exist: optional (B, K) existence probability. **Pass it at inference.**
+            Stage 2 predicts K slots but only some are real phytomers; the rest
+            sit wherever the head left them, which on the epoch-10 checkpoint
+            meant 20 cm below the soil and 30 cm off to the side. Chained over
+            all K slots, such a stray node is the lowest of everything, so the
+            height rule leaves it parentless, it becomes a "root" whose parent
+            is the origin, and a 36 cm internode gets drawn from the origin to
+            it -- while real nodes near it pick it as THEIR parent. Chaining
+            only the live slots (chain_phytomers' own exist>0.5 gate) removes
+            both. None (the training render block) chains everything, which is
+            fine there because that path pairs nodes through the GT-derived
+            matched-only map instead.
     Returns:
-        (B, K, 6) reconstructed rot6d.
+        rot6d: (B, K, 6) reconstructed rotation.
+        parent_pos: (B, K, 3) each node's parent position under the resolved
+            chain: the ORIGIN for the root, and a non-live row's OWN position
+            (zero gap, so assemble_packets draws it with zero length rather
+            than a NaN-triggered fallback). Hand this to
+            assemble_packets(parent_pos=..., centers=pos) so the internode is
+            the parent->node segment, as the training render block already
+            does; without it inference used the decoded slot-0 length.
     """
     B, K, _ = pos.shape
     out = torch.zeros(B, K, 6, device=pos.device, dtype=pos.dtype)
+    parent_pos = pos.clone()
     for b in range(B):
         parent_idx, _, _ = chain_phytomers(
-            pos[b], ordinal=ordinal[b], is_base=(is_base_logits[b] > 0).float())
-        # A parentless row is the plant root, whose parent is the origin.
+            pos[b], ordinal=ordinal[b], is_base=(is_base_logits[b] > 0).float(),
+            exist=None if exist is None else exist[b])
+        # A parentless LIVE row is the plant root, whose parent is the origin.
+        live = (torch.ones(K, dtype=torch.bool, device=pos.device) if exist is None
+                else exist[b] > 0.5)
         fwd = derive_forward(pos[b], parent_idx)
         R = roll_to_matrix(fwd, roll[b])
         out[b] = matrix_to_rot6d(R)
-    return out
+        has_parent = parent_idx >= 0
+        parent_pos[b] = torch.where(
+            has_parent.unsqueeze(-1), pos[b][parent_idx.clamp(min=0)],
+            torch.where(live.unsqueeze(-1), torch.zeros_like(pos[b]), pos[b]))
+    return out, parent_pos
 
 
 # =============================================================================
@@ -1564,10 +1592,14 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         # ordinal are Stage-2-only outputs, never touched by Stage 3's ODE in
         # this Hybrid Decoupled config (only the VAE latent is flow-matched).
         if self.flow_granularity == "phytomer":
-            phytomer_rot = reconstruct_phytomer_rot(
-                phytomer_pos, phytomer_roll, phytomer_ordinal, phytomer_base_logits)
+            # Chain only the live slots: stray non-existent slots otherwise
+            # become "roots" below the plant and draw long internodes (see
+            # reconstruct_phytomer_rot's `exist` note).
+            phytomer_rot, phytomer_parent_pos = reconstruct_phytomer_rot(
+                phytomer_pos, phytomer_roll, phytomer_ordinal, phytomer_base_logits,
+                exist=phytomer_existence)
         else:
-            phytomer_rot = None
+            phytomer_rot, phytomer_parent_pos = None, None
 
         res = {
             "pred_latent": pred_latent,
@@ -1607,9 +1639,30 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                 ).reshape(B, active_k, M, 26)
                 # Structurally assemble slot bases from the petiole geometry
                 # (deterministic), then place into the world frame with the phytomer pose.
+                # The internode is the parent->node segment of the resolved chain
+                # (the training render block already does this); the decoded
+                # slot-0 length is only a fallback and was drawing metre-long
+                # stems on seedlings when used here.
+                if os.environ.get("FM_ASSEMBLY_PROBE") == "1":
+                    # Which predicted nodes even exist, and where. Stray nodes
+                    # (K > true count) that survive into the chain drag a long
+                    # internode with them; this shows whether that is happening.
+                    _ex = phytomer_existence
+                    _p0 = phytomer_pos[0]
+                    _pp0 = phytomer_parent_pos[0]
+                    print(f"  [AssemblyProbe] batch0: active_k={active_k}  "
+                          f"exist_prob={[round(float(v), 2) for v in _ex[0, :12].reshape(-1)]}",
+                          flush=True)
+                    for r in range(min(_p0.shape[0], 12)):
+                        print(f"  [AssemblyProbe] node {r:2d} pos_cm="
+                              f"({float(_p0[r, 0])*100:6.1f},{float(_p0[r, 1])*100:6.1f},{float(_p0[r, 2])*100:6.1f}) "
+                              f"parent_cm=({float(_pp0[r, 0])*100:6.1f},{float(_pp0[r, 1])*100:6.1f},{float(_pp0[r, 2])*100:6.1f})",
+                              flush=True)
                 packet_hat = assemble_packets(
                     packet_hat.reshape(-1, M, 26),
                     phytomer_rot.reshape(-1, 6),
+                    parent_pos=phytomer_parent_pos.reshape(-1, 3),
+                    centers=phytomer_pos.reshape(-1, 3),
                 ).reshape(B, active_k, M, 26)
                 abs_packets = apply_ref_for_flow(packet_hat, phytomer_pos, phytomer_rot)
                 flat_abs = abs_packets.reshape(B, active_k * M, 26)
