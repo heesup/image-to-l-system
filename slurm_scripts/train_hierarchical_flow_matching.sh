@@ -74,6 +74,10 @@ MASTER_PORT=$(shuf -i 29500-29999 -n 1)
 
 # Checkpoint Resume configuration
 EXTRA_ARGS=""
+if [ -n "${SEED}" ]; then
+    EXTRA_ARGS="${EXTRA_ARGS} --seed ${SEED}"
+    echo "Seeded run: ${SEED} (init + shuffling reproducible; needed to iterate on intermittent failures)"
+fi
 if [ -n "${INIT_CHECKPOINT}" ] && [ -f "${INIT_CHECKPOINT}" ]; then
     EXTRA_ARGS="--init_checkpoint ${INIT_CHECKPOINT}"
     if [ "${RESUME:-1}" = "1" ]; then
