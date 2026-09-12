@@ -145,10 +145,16 @@ def chain_phytomers(
             kids = children[node]
             if not kids:
                 continue
-            # The straightest child continues this shoot; the rest start their
-            # own, which is how a lateral branch becomes a separate shoot.
+            # One child continues this shoot; the rest start their own, which is
+            # how a lateral branch becomes a separate shoot. With ordinals the
+            # successor is simply the one a step further along; otherwise fall
+            # back to the straightest child.
             if len(kids) == 1:
                 cont = kids[0]
+            elif ordinal is not None:
+                o = ordinal.reshape(-1)[idx]
+                want = o[node] + 1.0
+                cont = kids[int(torch.stack([(o[k] - want).abs() for k in kids]).argmin())]
             else:
                 ax = fwd[node]
                 cos_k = torch.stack([
