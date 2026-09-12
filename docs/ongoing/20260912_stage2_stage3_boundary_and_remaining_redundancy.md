@@ -26,6 +26,28 @@ Previous doc: [`20260911_hybrid_vae_rotation_capacity_and_topology_experiments.m
 
 ---
 
+## 1.5 Later the same day: terminology, and the shoot-base forward axis
+
+**Terminology (commit `558d3ee`)**: the word **"anchor" is retired from this project**. Say **node** or **node position**. It named a live predicted 3D position that bipartite matching pairs with a ground-truth phytomer, but imported connotations from detection anchor boxes -- a fixed, pre-defined prior grid -- that describe nothing this model does. Local identifiers were renamed (`anc_src`/`anc_tgt` -> `node_src`/`node_tgt`), "re-anchor" was reworded to say what it does (place a packet back into the world frame), and active docs were updated; doc mentions of long-renamed symbols (`loss_anchor_pos`, `SLOTS_PER_ANCHOR`, ...) were corrected to their current names in the same pass. Historical records under `docs/done`, `docs/results` and `docs/archived` were deliberately left untouched.
+
+**Shoot-base forward axis (commit `87ff1fb`)**, prompted by the user asking whether Stage 3 should be predicting which direction a phytomer faces. The answer is that it already does -- "facing" is 3 DOF, of which 2 (the forward axis) are determined by position and 1 (roll) is not, and roll is exactly what §2 proposes moving to Stage 3. But the question exposed a real gap underneath it:
+
+`derive_forward` fell back to world +Z for any node with no parent. "Shoot base" sounds like it means the handful of stems rising from the plant's own base, but **a lateral branch's first phytomer is a base too** -- Stage 2's is-base head is trained to flag it (its GT key ordinal is 0), and `chain_phytomers` honours that flag by refusing it a parent. Lateral branches are rarely vertical. Measured against ground-truth reference frames over 392 base phytomers:
+
+| forward axis for a base | mean | median | p90 | max |
+|---|---|---|---|---|
+| world +Z (old) | **50.8°** | 54.2° | 87.7° | 129.4° |
+| successor direction (new) | **14.5°** | 12.5° | 23.1° | 24.5° |
+| *(chained nodes, parent direction, for scale)* | *0.6°* | *0.5°* | *1.3°* | *2.8°* |
+
+Bases are ~13% of all phytomers at DAP 50 (96 of 757). End to end, reconstructing the full node rotation from GT positions with a perfect roll head, over ALL phytomers: mean **10.40° -> 7.40°**, p90 **46.13° -> 12.96°**.
+
+The base tail does get worse (p90 98.9° -> 123.0°), and it is worth knowing why before anyone "fixes" it: 6% of bases pick the wrong successor, and that group is **entirely `chain_phytomers` mislabelling the shoot** (chain-vs-GT successor agreement 0% in that group, 96.8% in the other 94%), with a mean axis error of 120°. It is the same topology-resolution exposure chained nodes already carry, not a flaw in the successor rule, and a distance gate cannot separate the two groups (successor distance / median spacing is 0.26 for the bad group vs 0.14 for the good one -- both well inside any plausible gate). Improving it means improving chaining, which has its own measurement harness in `diffusion_based/eval/measure_topology_recovery_ablation.py`.
+
+The training target follows the same fallback order (parent direction, else successor, else +Z), read from GT `keys` rather than from `chain_phytomers`, so the target teaches the correct relationship and only inference carries the chaining error. `gt_stem_dir_target` was renamed `gt_forward_target` to match what it now holds.
+
+---
+
 ## 2. Proposed next step A: move roll + scale prediction from Stage 2 to Stage 3
 
 **The question that motivated this** (user, 2026-09-12): does Stage 3 actually need Stage 2's roll and scale as conditioning at all?
@@ -65,7 +87,19 @@ Raised by the user in the context of a rejected idea (predicting BOTH a phytomer
 
 This project has hit this exact failure mode once already and documented it: "Exp E (in-loop Hungarian): FAILED. Train rot plateaued... assignment flicker (targets move every step) prevents convergence... Lesson: optimal-but-moving targets < stable-but-biased targets, at least without stabilization machinery" (2026-09-09, referenced in the prior doc). Treat any future proposal that has one predicted quantity's target depend on another simultaneously-refined quantity from the same batch/set as suspect by default, and check specifically whether one side of the pair can be made to reference something already-fixed (e.g., Stage 2's position, treated as settled before any parent-relative reasoning happens) rather than something still in flux in the same forward pass.
 
-This does not forbid *asymmetric* designs (e.g., predicting a parent-relative displacement as a function of ALREADY-DECIDED positions, refined by its own small process against that fixed backdrop) -- those are fine. It specifically forbids two things converging toward each other in the same loop with no node.
+This does not forbid *asymmetric* designs (e.g., predicting a parent-relative displacement as a function of ALREADY-DECIDED positions, refined by its own small process against that fixed backdrop) -- those are fine. It specifically forbids two things converging toward each other in the same loop with nothing fixed to reference.
+
+### 4.1 The stabiliser, and the two things it does not fix
+
+**The proposal** (user, 2026-09-12): if two quantities chasing each other is the problem, pin one of them -- the parent, say, or the child -- to ground truth during training. Then only one side moves.
+
+**This is sound, and it is exactly the asymmetric shape the paragraph above allows.** It is worth recording as the tool to reach for *if* a future design genuinely needs parent-relative prediction. Three caveats decide whether it is the right tool at the time:
+
+1. **It buys stability with train/inference mismatch.** At training the parent is perfect; at inference it is the model's own, imperfect prediction. A cowpea shoot is tens to hundreds of phytomers long, so error compounding along the chain is precisely the failure mode teacher forcing conceals until the first real rollout. The cheap mitigation is **not** scheduled sampling (which adds a schedule to tune) but **noise injection**: perturb the ground-truth parent by roughly the position error the model actually makes, so the downstream quantity learns to be robust against a wrong parent rather than assuming a right one. Measure the model's own position RMSE first and use that as the noise scale.
+
+2. **It fixes co-evolving VALUES, not a co-evolving ASSIGNMENT.** Exp E did not fail because two values chased each other; it failed because the bipartite *matching* changed every step. Pinning a parent to ground truth cannot help there, because knowing which ground-truth row is "this node's parent" already presupposes a resolved matching. The matching in `hierarchical_hungarian_matcher.py` is still solved fresh every step from predicted node positions against GT cluster centres, so it sits *below* this stabiliser, not above it. The codebase's own answer to assignment flicker was different and is worth copying instead: **warm-starting** from an already-sane checkpoint (`train_phytomer_vae.py`'s `--hungarian-roles` refuses to run without `--init-checkpoint`, for exactly this reason).
+
+3. **There is currently nothing to apply it to.** Once Stage 2's forward axis became a quantity *derived* from already-decided positions (2026-09-11/12, §1) rather than one predicted alongside them, the "A chases B" pair inside Stage 2 disappeared -- topology resolution is `@no_grad`, so nothing flows back into a target. Reach for this only when reintroducing a parent-relative prediction, e.g. if §2's Stage 3 restructuring ever grows one.
 
 ---
 
@@ -88,5 +122,7 @@ This does not forbid *asymmetric* designs (e.g., predicting a parent-relative di
 ```
 0341be2 feat(topology): derive node rotation's forward axis instead of predicting it
 8a98cfd feat(model): shrink Stage 2's node rotation head from 6D to a 1-DOF roll
+558d3ee refactor: drop "anchor" vocabulary in favour of node / node position
+87ff1fb fix(topology): derive a shoot base's forward axis from its successor
 ```
 (Earlier the same day, see the previous doc's own commit log for the hybrid VAE / render-loss / canary-guard commits.)
