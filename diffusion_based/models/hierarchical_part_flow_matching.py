@@ -624,6 +624,27 @@ class CoarseSkeletalTransformer(nn.Module):
             d = (pred_dap.float().view(B, 1) / 100.0)  # normalize to [0, 1]
             q = q + self.dap_embed(d).unsqueeze(1).expand(-1, K, -1)
 
+        # Gradient barrier at the query boundary, same pattern already used on
+        # the render path's pos_all / fine-exist logits.
+        #
+        # Measured 2026-09-12: the gradient reaching this decoder's OUTPUT stays
+        # under 1e9 while the gradient leaving its INPUT reaches ~1e13, and
+        # decoder layer 0 alone amplifies ~107x at healthy magnitudes. Every
+        # leaf that feeds this query -- phytomer_queries, ref_points and
+        # ref_pos_mlp -- therefore hangs off the end of a large amplifier, and
+        # an intermittent explosion landed on exactly those (ref_points first,
+        # one element at 1.3e15, no NaN). Healthy gradients here are ~1e-2, so a
+        # +-5 clamp never binds in normal training; it only stops a pathological
+        # step from destroying the reference-point prior, which then takes the
+        # whole run down (job 38240070: every step of epoch 4 skipped).
+        #
+        # This is a barrier, NOT a root cause. Seven architectural hypotheses
+        # were tested and refuted (see the 2026-09-12 handoff doc §1.9); the
+        # amplifier itself is still unexplained, and the canary is deliberately
+        # left in place to report if it fires anyway.
+        if q.requires_grad:
+            q.register_hook(lambda g: torch.nan_to_num(g.clamp(-5.0, 5.0), nan=0.0))
+
         # Cross-attend with 3D-aware image tokens
         phytomer_features = self.decoder(q, image_tokens)
 
