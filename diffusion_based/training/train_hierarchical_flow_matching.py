@@ -1295,6 +1295,8 @@ def train_one_epoch(
         if lr_warmup_cb is not None:
             lr_warmup_cb()
         t_step0 = time.time()
+        if os.environ.get("FM_SPIKE_DUMP", "0") == "1":
+            _spike_batch_prefix = batch.get("prefix", "?")
         step_metrics = forward_backward_step(
             model=model,
             batch=batch,
@@ -1318,6 +1320,10 @@ def train_one_epoch(
             stem_dir_weight=stem_dir_weight,
             render_grad=render_grad,
         )
+        if os.environ.get("FM_SPIKE_DUMP", "0") == "1" and rank == 0:
+            _scl = float(step_metrics.get("phytomer_scale_loss", 0.0)); _ord = float(step_metrics.get("phytomer_order_loss", 0.0)); _ext = float(step_metrics.get("phytomer_exist_loss", 0.0))
+            if _scl > 1.0 or _ord > 6.0 or _ext > 1.2:
+                print(f"  [SpikeDump] Step {batch_idx+1}: Scl {_scl:.3f} Ord {_ord:.3f} Ext {_ext:.3f} | samples: {_spike_batch_prefix}", flush=True)
         t_step1 = time.time()
         if step_metrics is None:
             if lr_warmup_cb is not None:
@@ -1373,6 +1379,10 @@ def train_one_epoch(
                           f"parameters (this is the localisation, read it):")
                     for cn in canary_named:
                         print(f"    => {cn}")
+                    # The sampler's shuffle is keyed by epoch only (DistributedSampler
+                    # seed 0), so two runs with different --seed see the same batch at
+                    # the same step; naming the samples lets a burst be traced to data.
+                    print(f"  [Canary] batch samples: {batch.get('prefix', '?')}")
 
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         if torch.isnan(grad_norm) or torch.isinf(grad_norm):
