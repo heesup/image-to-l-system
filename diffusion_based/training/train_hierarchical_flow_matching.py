@@ -1538,6 +1538,12 @@ def main():
                         help="Bias-init phy_head so pred_num starts near the dataset mean; removes the dead-phytomer existence gate at epoch 0")
     parser.add_argument("--warmup_epochs", type=int, default=3, help="Linear LR warmup epochs (0.1x -> 1.0x per step; 0 disables)")
     parser.add_argument("--init_checkpoint", type=str, default=None, help="Path to checkpoint to initialize weights from (strict=False)")
+    parser.add_argument("--resume", action="store_true",
+                        help="With --init_checkpoint: also restore the epoch counter and optimizer "
+                             "state, so training continues from ckpt['epoch']+1 instead of "
+                             "restarting at epoch 1 on the loaded weights. Restores commit 0435325's "
+                             "flag, whose parser line had been lost while its consumer survived -- "
+                             "the launcher passed --resume by default and argparse rejected it.")
     parser.add_argument("--dap_buckets", type=int, default=8, help="Number of DAP buckets for capacity-homogeneous batching (0 = plain shuffle)")
     parser.add_argument("--max_train_samples", type=int, default=0,
                         help="DAP-stratified subset of the dataset for fast convergence smoke tests (0 = full dataset)")
