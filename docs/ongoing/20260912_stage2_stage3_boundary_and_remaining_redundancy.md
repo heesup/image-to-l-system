@@ -36,6 +36,8 @@
 
 **Two inference bugs found by looking at the epoch-11 panel rather than the numbers** (§2.3). A 2 cm seedling with 0.6 cm node RMSE rendered at IoU 0.0% because metre-long stems shot across the frame. Fixed in `abce662`; the ordinal follow-up is `ae26ccb`.
 
+**Helios round-trip (§2.4)**: regenerated fig14 shows the VAE-v8 round-trip at 70.3 / 87.8 / 76.2% FG IoU against IK-only 95.7 / 94.1 / 87.4% (the old figure's 52.8 / 20.4 / 24.7% was stale). The packet path alone is lossless at DAP 90 and loses 17 points at DAP 10 (cotyledon handling, first suspect); the VAE loses 4-11 points through Helios's angle-based FK. Routing it through the new branch-point parent rule makes it 16 points *worse* -- a lateral's first internode axis is not the node-to-node segment.
+
 **Next**: when `38240323` writes its epoch-15 checkpoint, stop it and resume from there with `ae26ccb`'s depth target and step loss (plus the fixed inference), so the render-on progress is kept and the ordinal head relearns on top of it. Then §2.1's remaining pieces — Stage 3 consuming `(parent, self)` pairs with the parent held fixed, and noise injection on the fixed parent.
 
 ---
@@ -304,6 +306,74 @@ The seedling case was two bugs in `sample_ode`, neither present in the training 
 A gap gate was then tried -- distrust a chained stem longer than ~6x the decoded length -- and **rejected by measurement**: 14.4% -> 12.1% on the same set, because the fallback stem still points at the wrong parent, so the stem gets shorter but no more correct. What remains after the fixes is live nodes chained **6-14 cm apart on 1-3 cm internodes**, which is the ordinal head carrying no ordering (`ord_step_mae` ~1.1 for 13 epochs). That is what `ae26ccb` addresses.
 
 **`ae26ccb` also corrects a flaw in the ordinal itself, not just its training.** Under the new parent rule a lateral's first node parents to a branch-point node on *another* shoot. `chain_phytomers` scores a candidate by `|(o_child - o_parent) - 1|`, so with per-shoot ordinals that true parent (ordinal 0 vs, say, 5) is charged 6 x `ORD_WEIGHT` = 0.12 m -- more than any internode -- and actively rejected. §1.7's 96-100% recovery figures were measured under the old convention where laterals were forced parentless and never had to be linked. The ordinal the head learns is now **depth from the root** (`gt_parent_links` returns it), under which every parent is exactly depth - 1, laterals included; the chain cost, the step loss and `is_base` (depth == 0) all follow from that one rule. Expect `ord_mae` to jump on resume (the target's range grew from a per-shoot index to ~0-50) and watch `ord_step_mae` instead -- below 1.0 is the first sign of ordering.
+
+### 2.4 The Helios round-trip: where the VAE path actually loses the plant
+
+Heesup's requirement (2026-09-12, "very important"): the VAE round-trip
+(14D -> packet -> VAE -> 14D -> XML -> Helios) must reproduce the IK-only
+reconstruction (14D -> XML -> Helios, no VAE). `fig14_phytomer_vae_helios_roundtrip.png`
+showed 52.8 / 20.4 / 24.7% FG IoU against 95.7 / 94.1 / 87.4% -- but that figure
+(now in `docs/results/assets/_unreferenced/`) predates the 2026-09-11 emit-order and
+shoot-partition fixes. **Regenerated with the current code and the v8 VAE
+(`docs/results/assets/fig14_phytomer_vae_helios_roundtrip.png`):**
+
+| DAP | IK-only | packet path only (VAE = identity) | VAE-v8 round-trip | old figure |
+|---|---|---|---|---|
+| 10 | 95.7% | **78.9%** | 70.3% | 52.8% |
+| 50 | 94.1% | 91.6% | 87.8% | 20.4% |
+| 90 | 87.4% | **87.4%** | 76.2% | 24.7% |
+
+The middle column is the decisive one: it runs the same post-decode path with the
+VAE replaced by identity (`strip_base(normalize(packets))`), so it isolates the
+deterministic packet representation from the VAE. At the 14D tensor level both are
+nearly exact -- identity within 0.01-0.25 cm of GT per organ, VAE-v8 within
+0.05-0.69 cm mean, scales within 1%, counts matching -- so nothing here is a
+position bug. Helios never sees those positions: `PartTensorTo40DConverter` solves
+angles from organ direction vectors and Helios rebuilds the plant by forward
+kinematics, so small rotation errors are integrated along chains and branches.
+
+**Two different problems, by stage:**
+- **DAP 10: the packet path itself loses 17 points** (95.7 -> 78.9) with a perfect
+  VAE. Leaf IoU 79%. The seedling is where the cotyledon node's synthesized second
+  petiole (`emit_part_tensor_with_shoot_meta`'s 180-degree mirror) is a large share of
+  the silhouette; that is the first suspect. Deterministic, so fully recoverable.
+- **DAP 90: the packet path is lossless** (87.4 = 87.4) and the VAE alone loses 11
+  points. Per-slot rotation error at DAP 50 is internode 0.38 deg, petiole 3.0,
+  leaflets 2.5 (p90 3.6-4.3), and leaves are the silhouette: leaf IoU 93.3 -> 86.9.
+  Replacing all VAE rotations with exact ones recovers only 87.8 -> 90.4 at DAP 50,
+  so at DAP 90 the many flowers/fruit riding peduncle tips presumably amplify it.
+  This is VAE capacity (§3's v9), or export robustness to small rotation errors.
+- DAP 50 splits 2.5 (packet path) + 3.8 (VAE, of which rotations 2.6).
+
+**A negative result that corrects §2.2 and the `e902487` commit message.** Routing the
+round-trip through `gt_parent_links` (laterals get their branch-point parent, root
+gets the origin) instead of the old chain (every shoot's first node parentless)
+drops DAP 50 from 91.6% to **75.8%** (identity) and 87.8% to 75.9% (VAE). Attributed
+cleanly: root -> origin costs nothing (91.6% unchanged); **the lateral link costs all
+16 points** -- even though the geometric pick matches the XML's true attachment in 8
+of 10 laterals. So it is not *which* node: `assemble_packets` overwrites a lateral's
+first internode with the straight branch-node -> node segment, and **a lateral's
+first internode axis is not that segment** (the same ~10-15 deg residual the
+successor rule showed in §1.5). Helios's shoot-base IK turns that into a rotation of
+the entire branch. Consequences:
+1. The XML/Helios export path must keep the **decoded** rotation and length for a
+   shoot's first internode (the round-trip eval already does; do not "upgrade" it).
+2. `e902487`'s claim that the branch-point parent "removes the error rather than
+   shrinking it" is **wrong for laterals' first nodes**: no position-derived rule
+   recovers that axis, so the roll target there is ~10-15 deg off under either rule.
+   Not a regression versus this morning, but not the fix the message claimed. The
+   only exact source is the GT internode rotation, which at inference would have to
+   be predicted -- Heesup's original question about Stage 3 predicting direction is
+   back on the table for exactly these ~13% of nodes.
+3. For the PyTorch render used in training and self-consistency, the straight
+   segment is a 3 cm tube a few degrees off -- minor. It is Helios's FK that
+   amplifies it.
+
+Also noted, not chased: with exact scales in place of the VAE's, DAP 50 IoU
+*fell* 87.8 -> 85.0 (fewer foreground pixels), i.e. the VAE's slightly larger
+scales are compensating for something else in the export; and the emitted XML
+carries no `<peduncle>` blocks where the IK-only XML has 163 dormant ones (harmless
+at DAP 50; check at DAP 90).
 
 ---
 
