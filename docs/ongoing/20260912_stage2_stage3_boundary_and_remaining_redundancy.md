@@ -1,13 +1,41 @@
-# Session Handoff: Roll-Head Reduction Validated, Stage 2/3 Boundary Redesign Proposed, One Redundancy Still Open
+# Session Handoff: Gradient Explosion Root-Caused to the Learning Rate, Stage 2/3 Boundary Redesign Underway
 
 - **Author**: Claude (pair programming with Heesup Yun)
 - **Date**: 2026-09-12 (continuation of 2026-09-11's work)
-- **Status**: Stage 2 rotation head (6D -> 1-DOF roll) implemented, tested, and validated by a real 6-epoch training smoke test through the epoch-4 render-gate danger zone (0 recovery skips, 0 canary hits). **NEXT (not yet implemented)**: two concrete design changes below, both discussed and agreed in principle but not yet coded.
 - **Read this doc's own §5 first if you are starting a new session** — it lists exactly which prior docs to read and in what order.
+
+## 0. Where things stand
+
+**Landed and tested this session** (suite stays at its 3 known failures + 1 known error throughout):
+
+| | commit |
+|---|---|
+| "anchor" retired from the vocabulary; say node / node position | `558d3ee`, `d4a745c` |
+| Shoot-base forward axis from the successor (later superseded, see below) | `87ff1fb` |
+| `ord_mae` and `ord_step_mae` diagnostics; topology gates on the STEP error | `02a7e29`, `e6e1f32` |
+| Gradient canary names the parameter it fired on | `5e34a3d` |
+| `FM_GRAD_PROBE=1` intermediate + per-layer gradient probes | `ab0910f`, `582d03a` |
+| `--seed`, and an `UnboundLocalError` it exposed | `2fac3dc`, `d766a12` |
+| Query-boundary gradient barrier (a barrier, not a fix — see §1.9) | `684a9f1` |
+| Per-run figure folders under `slurm_scripts/logs/run_<jobid>/` | `12c0457` |
+| **§2.1 redesign: `gt_parent_links`, one parent rule, no exceptions** | `8331abf`, `5e10c15` |
+| **§2.1 redesign: every node gets a real parent; +Z fallback deleted** | `e902487` |
+
+**The blocker is resolved.** The intermittent Stage 2 gradient explosion tracks the **learning rate**, not the architecture: every observed onset sat above ~1.6e-4 effective lr, and job `38240281` at `LR=1e-4` has now run **10 epochs clean** with 0 canary hits, through and well past the point where three of four runs at 3e-4 died. Eight architecture-level hypotheses were tested against minimal reproductions and refuted first; §1.9 records them so nobody pays for them twice.
+
+**Quality on that run** (render loss still off, it enables at epoch 40): IoU 14.0% -> 25.9%, depth MAE 17.67 -> 13.74 cm, node RMSE 2.4 -> 2.0 cm, predicted phytomer count 52.2 against 54.4. Node RMSE is already inside the 2.5 cm target; IoU is far from the 50%+ target but the photometric signal has not been switched on yet. **Roll has started to learn** — 0.885 (the no-information value, §1.6) down to 0.8250 — which is why it was right not to restructure the roll head on the strength of a few flat epochs.
+
+**Careful about attribution**: `38240281` carries *both* the low lr and the query barrier from `684a9f1`, and "1e-4 without the barrier" has not been run. The barrier alone is known insufficient (`38240158` exploded with it at 3e-4). Test removal when the redesign next changes this code, rather than assuming.
+
+**Also note**: `38240281` was launched *before* the `8331abf`/`5e10c15`/`e902487` redesign commits, so it is training the old target convention. It is a stability and quality baseline, not a measurement of the redesign.
+
+**Next, in order**: §2.1's remaining pieces — Stage 3 consuming `(parent, self)` pairs with the parent held fixed, then noise injection on the fixed parent. §1.7's ordinal fix (supervise the parent-difference, not the absolute ordinal) is the other strong candidate, since `ord_step_mae` is still pinned at its no-information value of ~1.0 while `ord_mae` improves.
 
 ---
 
 ## 1. What changed and was validated since the previous doc
+
+> **Chronological record, partly superseded.** §1 describes the state as of the roll-head reduction. Its world-+Z fallback for shoot bases was replaced by a successor rule in §1.5 and then deleted entirely in §2.2, where every node gets a real parent instead. Read §0 for the current state.
 
 Previous doc: [`20260911_hybrid_vae_rotation_capacity_and_topology_experiments.md`](20260911_hybrid_vae_rotation_capacity_and_topology_experiments.md) ended with a cheap, training-free measurement showing `chain_phytomers` loses at most 2.5 points of parent-recovery accuracy without a rotation-based directional cue, once the ordinal cue is present. That measurement justified shrinking Stage 2's node rotation head.
 
@@ -102,9 +130,9 @@ The step timing makes the split obvious -- warmup epochs ran at `fwd/bwd 1.33s`,
 
 **What replaced it**: job `38240070`, `FORCE_BATCH_SIZE=48` (520 steps/epoch), `RENDER_FRACTION=0.05`, `RENDER_GRAD_START_EPOCH=40`, `SAVE_EVERY=10`, output `checkpoints/hierarchical_fm_derived_rot_v2/`. The reasoning behind deferring the gate to epoch 40: in the cancelled run, self-consistency IoU had already reached 18.3% at epoch 3 with the render loss still off, and only moved to 20.0% once it came on -- so the early gains come from the scaffold and latent losses, and the expensive photometric signal is better spent refining a model that is already roughly right.
 
-### 1.9 OPEN: an intermittent Stage 2 gradient explosion, localised but not root-caused
+### 1.9 RESOLVED: the intermittent Stage 2 gradient explosion, and the eight hypotheses it was not
 
-**Status: blocking a real training run.** Read this before launching one.
+**Resolution is in §1.9.1: the learning rate.** This section is kept for the eight architecture-level hypotheses that were tested and refuted on the way there -- read it before proposing a ninth.
 
 **Symptom.** With the render loss OFF, Stage 2 diverges somewhere in epoch 2-3. Onset is a handful of gradient elements past 1e15 with **no NaN**; within ~60 steps it floods, and `clip_grad_norm_` then rescales the whole gradient by ~1e-19, so real signal is crushed and later steps are skipped outright. Job `38240070` ended at `Recovery: 118/524` in epoch 3 and every step of epoch 4 skipped; self-consistency collapsed to IoU 0.0% / Dice 1.000 (an empty silhouette).
 
@@ -148,7 +176,7 @@ Also note that *down-weighting* is not the fix even if the hypothesis holds, bec
 
 **The eighth hypothesis, and the pattern that motivated it.** Every explosion hits **all four decoder layers' `multihead_attn.in_proj_weight` simultaneously**, usually alongside their `norm3`. Those four layers all consume the *same* memory (the image tokens), and `d(in_proj_weight) = grad_out x input^T` picks up the memory magnitude on the K and V rows -- so a single pathological sample would produce exactly that all-layers-at-once signature, and DINOv2 is known to emit high-norm artifact tokens. **Refuted**: scanning 720 cached samples across DAP 1-90 through the frozen encoder, the maximum token element is 33.10 against a median of 28.82 (ratio 1.1x) and the maximum token L2 norm 63.15 against a median of 59.41. There are no outliers.
 
-**State at the end of 2026-09-12: open, well-instrumented, eight hypotheses refuted, no root cause.** No job is left running. What a next session has to work with:
+**State when this section was written: open, eight hypotheses refuted, no root cause.** §1.9.1 then found it. The tooling below is still what to reach for if anything like this recurs:
 
 - `FM_GRAD_PROBE=1` gives the intermediate hooks (`q_pos`, `edge_bias`, `phytomer_features`, `delta_pos`, `phytomer_pos`) and the per-layer amplification hooks.
 - The canary names the parameters of its first burst per epoch.
@@ -175,7 +203,11 @@ Acting on that framing immediately produced the strongest correlation in the who
 
 This also fits the one run that survived longest at batch 256 (global 1024, job `38239988`, four epochs clean): the same `lr` over a 5.3x larger batch is a much smaller effective step.
 
-**Prediction, and the test now running**: capping `lr` below ~1.5e-4 should remove the explosion. Job `38240281` is `LR=1e-4` with everything else unchanged from `38240158` (`SEED=1234`, batch 48, render deferred to epoch 40, `SAVE_EVERY=10`). If it clears epochs 3-6, the mechanism is optimisation dynamics and the fix is a schedule, not an architecture change -- and the query barrier from `684a9f1` should then be re-examined and probably removed, since it would no longer be load-bearing.
+**CONFIRMED.** Job `38240281` (`LR=1e-4`, everything else unchanged from `38240158`: `SEED=1234`, batch 48, render deferred to epoch 40) ran **10 epochs with 0 canary hits**, through the end of warmup at epoch 3 where the lr reaches its peak and well past it. For comparison, at 3e-4 three of four runs were already dead by epoch 3. Quality improved monotonically over those epochs rather than collapsing: IoU 14.0% -> 25.9%, depth MAE 17.67 -> 13.74 cm, node RMSE 2.4 -> 2.0 cm.
+
+So the mechanism is **optimisation dynamics, and the fix is a schedule** -- not an architecture change, and not the per-element clamp the previous session removed. Use `LR=1e-4` for now; raising it later is a tuning question to revisit only from a known-stable baseline, and the onset threshold (~1.6e-4) is the number to stay under.
+
+**Two caveats on this result, both worth respecting.** `38240281` carries the query barrier from `684a9f1` as well as the low lr, and "1e-4 without the barrier" was never run -- so the barrier's necessity is unproven either way (it is known *insufficient* on its own: `38240158` exploded with it at 3e-4). Re-test removal when the redesign next touches that code. And the run predates the §2.1 redesign commits, so it measures the old target convention.
 2. If it survives, reproduce deterministically with `--seed`, then bisect inside the decoder by extending `_probe_grad` to each layer's input and output -- the amplification is somewhere in those four layers.
 3. Only then consider re-introducing bounded per-element clipping. Note that the previous session *removed* a blanket +-100 per-element pre-clamp specifically to stop it masking leaks, and this is plausibly the leak it was masking -- so re-adding it would hide a real defect and should be a deliberate, documented choice, not a reflex.
 
@@ -233,6 +265,22 @@ This is worth adopting for three separate reasons. It takes parent coverage from
 
 **Calibrate to the achievable rate, not the current one.** The ordinal head currently sits at the no-information value (`ord_step_mae` ~1.0, §1.7), so using today's measured failure rate would train against a wrong parent roughly half the time and the supervision would be close to worthless. Start at **5% substitution plus 1-2 cm jitter** -- the operating point chaining reaches when the ordinal works -- and re-calibrate from `ord_step_mae` once it actually falls below 1.0.
 
+### 2.2 §2.1 implementation status
+
+**Landed.**
+
+- `phytomer_topology.gt_parent_links(centers, keys)` (`8331abf`, `5e10c15`) implements the one-parent rule and returns the parent **position** plus its row index, so the root's origin parent needs no special case at any call site. Validated on 24 plants over DAP 10-90: coverage **86.2% -> 100.0%** (85.6% same-shoot, 1.7% origin, 12.7% branch-point, 0 unresolved), and the child-to-parent distance is **1.00x the median internode at the median** -- direct confirmation of the rule. Vectorised to 1.28 ms per call from 3.99 ms (the per-shoot Python loop's `.item()` syncs would have cost +64% of step time at 48 samples per step); it is still +20.5%, and the way to remove that is to cache per plant in the dataloader workers, since GT topology is fixed across epochs. Gated on the plant's own median internode via `MAX_INTERNODE_FACTOR = 6.0` rather than `chain_phytomers`' median-of-all-pairwise (which is 10.7 cm at DAP 90, so a 32 cm gate that rejects almost nothing).
+- The training loop resolves parents through it (`e902487`), so the forward-axis target is defined for 100% of matched nodes, and `is_base` now means **the single plant root** -- one positive per plant instead of 4-11.
+- `derive_forward`'s fallback chain is **deleted**. This also removes the successor patch from §1.5 made earlier the same day: that took the 13.8% of nodes it covered from 50.8 deg of error to 14.5, but the residual was real curvature, and a true branch-point parent removes the error rather than shrinking it. A genuinely degenerate row now returns zeros instead of claiming vertical.
+- Checked end to end with the render loss on from epoch 1: no recovery skips, no canary hits.
+
+**Not yet done.**
+
+1. **Stage 3 consuming `(parent, self)` pairs with the parent held fixed.** The pairing itself already exists as `gt_render_parent_idx` / `has_render_parent`; what is missing is Stage 3 actually taking the parent as input and predicting the child's position, roll, scale and shape against it.
+2. **Noise injection on the fixed parent** (§2.1: 5% substitution plus 1-2 cm jitter to start, re-calibrated from `ord_step_mae` once it falls below 1.0).
+3. **Dropping `roll_head`/`scale_head` from Stage 2** (§2's original plumbing), which only makes sense once Stage 3 predicts them.
+4. Worth considering while doing (1): with `is_base` reduced to the plant root, `chain_phytomers` may not need the `is_base` gate at all -- the lowest node has no candidate below it and so becomes parentless on its own.
+
 ---
 
 ## 3. Proposed next step B: the internode redundancy that's STILL open at the packet level
@@ -275,8 +323,10 @@ This does not forbid *asymmetric* designs (e.g., predicting a parent-relative di
 1. **`docs/ongoing/AGENT_TAKEOVER_GUIDE.md`** -- general orientation (environment, how to launch jobs locally vs SLURM, established conventions).
 2. **`docs/ongoing/20260911_hybrid_vae_rotation_capacity_and_topology_experiments.md`** -- hybrid PhytomerVAE architecture (coarse+residual latent), the pkt-cache `keys` bug, the render-loss internode `parent_pos` fix, why the gradient guard is canary-only, and the topology-recovery measurement that justified the roll-head reduction.
 3. **This doc** -- what was actually implemented from that plan (roll-head reduction, validated), and the two next proposed changes (§2 Stage 2/3 boundary, §3 packet-level internode redundancy) plus the moving-target design lesson (§4).
-4. Before starting §2's implementation specifically: read `forward_backward_step` in `train_hierarchical_flow_matching.py` directly to see exactly how `pred_slot_exist_logits` is supervised during TRAINING (not just `sample_ode`'s inference-time t=1 read) -- this determines whether moving roll/scale to Stage 3 can reuse that exact mechanism.
-5. Before starting §3's implementation specifically: re-read `phytomer_packets.strip_base()` and `PhytomerVAE.compute_loss()` in full -- the fix is meant to be a small, mechanical extension of the pattern already there, not a new mechanism.
+4. **§2.1 and §2.2** -- the adopted Stage 2/3 redesign, what has landed of it, and what has not. This is where to start implementing.
+5. Before the next piece of §2.1 (Stage 3 taking `(parent, self)` pairs): read `forward_backward_step` in `train_hierarchical_flow_matching.py` directly to see exactly how `pred_slot_exist_logits` is supervised during TRAINING (not just `sample_ode`'s inference-time t=1 read) -- this determines whether roll/scale can reuse that exact mechanism when they move to Stage 3.
+6. Before starting §3's implementation specifically: re-read `phytomer_packets.strip_base()` and `PhytomerVAE.compute_loss()` in full -- the fix is meant to be a small, mechanical extension of the pattern already there, not a new mechanism.
+7. **Before launching any training run**: §1.8 (budget the render loss with arithmetic; do not trust `--batch_size auto`) and §1.9.1 (**use `LR=1e-4`**; 3e-4 reliably destroys the run).
 
 **Checkpoint lineage**: `diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt` is the current accepted PhytomerVAE (unchanged by this doc's work -- §3's fix would produce v9). `dataset/cache/cowpea_curv26_pkt/` is at `pkt_version=6` (100,000/100,000, `keys` present). No real (non-smoke) hierarchical FM training has been launched yet. `diffusion_based/checkpoints/fm_smoke_test/hierarchical_fm_epoch_006.pt` is a disposable smoke-test artifact, not a real checkpoint to build on -- delete it before a real run occupies that directory, or point `--output_dir` elsewhere.
 
@@ -284,12 +334,25 @@ This does not forbid *asymmetric* designs (e.g., predicting a parent-relative di
 
 ---
 
-## 6. Commit log (2026-09-11 evening through 2026-09-12, roll-head portion)
+## 6. Commit log (2026-09-11 evening through 2026-09-12)
 
 ```
 0341be2 feat(topology): derive node rotation's forward axis instead of predicting it
 8a98cfd feat(model): shrink Stage 2's node rotation head from 6D to a 1-DOF roll
 558d3ee refactor: drop "anchor" vocabulary in favour of node / node position
 87ff1fb fix(topology): derive a shoot base's forward axis from its successor
+d4a745c refactor: rename the anchor identifiers missed by 558d3ee
+02a7e29 feat(train): report ordinal MAE, the metric topology actually depends on
+e6e1f32 feat(train): gate topology on the ordinal STEP error, not absolute error
+5e34a3d feat(train): make the gradient canary name the parameter it fired on
+ab0910f feat(debug): opt-in backward probe on the Stage 2 intermediates
+2fac3dc feat(train): add --seed, and fix an UnboundLocalError it exposed
+d766a12 feat(launcher): pass SEED through to --seed
+582d03a feat(debug): per-layer gradient amplification probe for Stage 2's decoder
+684a9f1 fix(model): gradient barrier at Stage 2's query boundary
+12c0457 feat(train): write each run's figures into its own log folder
+8331abf feat(topology): gt_parent_links — one parent rule, no exceptions
+5e10c15 perf(topology): vectorise gt_parent_links and gate it on the internode scale
+e902487 feat(topology): every node gets a real parent; delete the +Z fallback
 ```
 (Earlier the same day, see the previous doc's own commit log for the hybrid VAE / render-loss / canary-guard commits.)
