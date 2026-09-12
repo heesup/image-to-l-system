@@ -258,8 +258,23 @@ def assemble_packets(
     # autograd version of out's slices (AsStridedBackward0 conflict).
     base = out[:, :, FM_BASE_START:FM_BASE_END].clone()
     base = torch.where(det.unsqueeze(-1), torch.zeros_like(base), base)
-    # Leaflet bases: arc-fraction point on the CURVED petiole centerline.
     R_ref = rot6d_to_matrix(reference_rots)  # (P, 3, 3)
+    # Stem base: one internode LENGTH back along its own forward axis, not the
+    # cluster centre. The centre is the petiole base, which sits at the TOP of
+    # the internode, so zeroing slot 0 drew every internode shifted up by its
+    # own length (measured 2026-09-11: offset-vs-length correlation exactly
+    # 1.0000, mean 2.1 cm at DAP 50). Tube forward axis is column 1, matching
+    # the mesh builder; verified to 0.007 cm mean against ground truth.
+    stem = det[:, 0]
+    if bool(stem.any()):
+        R_stem = R_ref @ rot6d_to_matrix(out[:, 0, FM_ROT_START:FM_ROT_END])
+        stem_len = out[:, 0, FM_SCALE_START] / SCALE_SCALE  # metres
+        stem_base = -stem_len.unsqueeze(-1) * R_stem[:, :, 1] * base_scale
+        base = torch.cat([
+            torch.where(stem.unsqueeze(-1), stem_base, base[:, 0]).unsqueeze(1),
+            base[:, 1:],
+        ], dim=1)
+    # Leaflet bases: arc-fraction point on the CURVED petiole centerline.
     for p in range(P):
         if not bool(det[p, 1]):
             continue
