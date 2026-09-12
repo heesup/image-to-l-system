@@ -111,9 +111,19 @@ def render_helios_full(xml_path: str, name_prefix: str, species: str = "cowpea")
                 coco = json.load(f)
             orig_h = coco.get("images", [{}])[0].get("height", IMG_SIZE)
             orig_w = coco.get("images", [{}])[0].get("width", IMG_SIZE)
+            # Helios COCO category convention (verified 2026-09-11 from GT dumps):
+            #   0 = shoot (internode stem), 1 = petiole, 2 = leaf,
+            #   3 = floral_bud, 4 = flower, 5 = pod.
+            # Remap onto our 6-class semantic layout, which is 1-indexed by
+            # organ type (ORGAN_INTERNODE=3 ...). The old code assumed the COCO
+            # ids were already 1-indexed per ORGAN_CLASSES, which shifted every
+            # class by one slot and collapsed Internode/Petiole IoU to ~0%.
+            COCO_TO_CLASS = {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5}
             temp_map = np.zeros((orig_h, orig_w), dtype=np.int32) - 1
             for ann in coco.get("annotations", []):
-                cid = ann.get("category_id", -1)
+                cid = COCO_TO_CLASS.get(ann.get("category_id", -1), -1)
+                if cid < 0:
+                    continue
                 for seg in ann.get("segmentation", []):
                     pts = np.array(seg, dtype=np.int32).reshape(-1, 2)
                     cv2.fillPoly(temp_map, [pts], int(cid))
