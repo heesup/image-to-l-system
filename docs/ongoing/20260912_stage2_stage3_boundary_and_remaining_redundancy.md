@@ -46,6 +46,19 @@ The base tail does get worse (p90 98.9° -> 123.0°), and it is worth knowing wh
 
 The training target follows the same fallback order (parent direction, else successor, else +Z), read from GT `keys` rather than from `chain_phytomers`, so the target teaches the correct relationship and only inference carries the chaining error. `gt_stem_dir_target` was renamed `gt_forward_target` to match what it now holds.
 
+### 1.6 What the roll target actually looks like, and what to do if roll stalls
+
+Worth knowing before anyone reads the roll loss. The scaffold losses reduce as `sum / norm_nodes`, so they are **per-node sums of per-component errors**, not per-element means. For roll, a 2-vector, that doubles the familiar number: a prediction carrying *no information* about the target sits at **0.88**, not 0.44. (Reference values, smooth_l1 on unit 2-vectors, doubled: random or collapsed 0.88; exactly 45 deg off 0.29; 15 deg off 0.034; the theoretical maximum, predicting the exact opposite, 1.65.) Training runs so far sit at 0.87-0.89 through the first several epochs, which is exactly the no-information value -- not a bug, but the number to watch.
+
+Measured on ground truth (32 plants, DAP 30-90, 2274 consecutive pairs):
+
+- **Absolute roll is uniform.** All twelve 30-degree bins are populated within a factor of two. There is no prior to exploit and no constant a model can collapse onto profitably.
+- **The increment between consecutive phytomers in a shoot is alternate (distichous) phyllotaxy.** Circular mean **-179.9 deg** -- dead on 180 -- with resultant length R = 0.441. 51% of increments fall within +-30 deg of 180, 62% within +-45; only 12% sit near 0.
+
+So the *hard* part of roll is one phase per shoot, which only the image can supply; everything after it is "add 180 and repeat", recoverable from the ordinal the model already predicts. The current `roll_head` predicts each node's roll independently from its own features, which is a strictly harder problem than the data requires, and it carries a specific failure mode: where the image does not pin the phase down, the posterior over roll is near-uniform, and the smooth_l1-optimal point estimate of a near-uniform circular target is the **zero vector** -- which `safe_normalize` then turns into an arbitrary unit direction. A model in that state is indistinguishable from an untrained one by the loss alone.
+
+**If roll is still at ~0.88 after the scaffold losses have otherwise converged**, do not conclude roll is unlearnable. Check the *raw* `roll_head` output norm before `safe_normalize` first: a collapse to near-zero norm confirms the averaging failure above. The fix that follows from the measurement is to stop predicting K independent rolls -- predict one phase per shoot plus a parity term driven by the predicted ordinal -- rather than to reweight the loss.
+
 ---
 
 ## 2. Proposed next step A: move roll + scale prediction from Stage 2 to Stage 3
