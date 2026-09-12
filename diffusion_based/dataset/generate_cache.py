@@ -186,8 +186,9 @@ def build_pkt_targets(
     device: Optional[torch.device] = None,
 ) -> Optional[Dict[str, torch.Tensor]]:
     """Canonical packet targets + optional frozen-VAE latent for one sample."""
-    packets, presence, centers, refs = build_phytomer_packets(
-        nodes_26d, existence_mask=existence_mask, phytomer_ids=phytomer_ids)
+    packets, presence, centers, refs, keys = build_phytomer_packets(
+        nodes_26d, existence_mask=existence_mask, phytomer_ids=phytomer_ids,
+        return_keys=True)
     if packets.shape[0] == 0:
         return None
     pkt = {
@@ -195,6 +196,9 @@ def build_pkt_targets(
         "presence": presence.cpu(),
         "centers": centers.cpu(),
         "refs": refs.cpu(),
+        # (shoot_id, phytomer_idx) per packet — supervises Stage 2's position
+        # along the shoot, which the chain recovery needs (see phytomer_packets).
+        "keys": keys.cpu(),
         # v3: 10 slots, latent from scale-NORMALIZED VAE input, s_a carried by
         # the 76D flow state (petiole scale row, see phytomer_scale).
         "pkt_version": 3,

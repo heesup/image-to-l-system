@@ -395,6 +395,22 @@ class CoarseSkeletalTransformer(nn.Module):
             nn.Linear(embed_dim, 3),
         )
 
+        # 2c. Where this phytomer sits on its shoot: a normalised position along
+        # the shoot, and whether it is the shoot's base. Geometry alone cannot
+        # recover the stem chain reliably enough — measured, a chain built from
+        # positions and rotations puts 200 of 201 phytomers in the right shoot,
+        # and that single mistake relocates an entire branch and costs ~50
+        # points of rendered IoU, because the XML export places a shoot by
+        # continuing its chain. Predicting the ordinal directly gives the
+        # chaining a cue that does not degrade with node spacing (DAP 10 nodes
+        # sit 0.47 cm apart). Ordinal + base flag rather than a shoot id: ids
+        # are permutation-arbitrary and would need their own matching.
+        self.order_head = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim),
+            nn.GELU(),
+            nn.Linear(embed_dim, 2),   # [normalised ordinal, is_shoot_base logit]
+        )
+
         # 3. Phytomer existence probability logit (delta relative to soft margin prior)
         self.exist_head = nn.Sequential(
             nn.Linear(embed_dim, embed_dim // 2),
@@ -528,6 +544,10 @@ class CoarseSkeletalTransformer(nn.Module):
             (F.softplus(self.scale_head(phytomer_features)) + 1e-4) / SCALE_CEIL)  # (B, K, 3)
 
         # Option B Gradient Isolation Barrier for Differentiable Rendering:
+        order_raw = self.order_head(phytomer_features)              # (B, K, 2)
+        phytomer_ordinal = F.softplus(order_raw[..., 0])           # >= 0, unbounded above
+        phytomer_base_logits = order_raw[..., 1]
+
         # Render loss (depth & dice) directly trains pos_head, rot_head, and scale_head weights
         # to ground the 3D plant in drone camera space, but gradients STOP at feat_render (detached),
         # completely shielding the 4-layer Transformer decoder, self-attention, and phytomer queries
@@ -565,6 +585,8 @@ class CoarseSkeletalTransformer(nn.Module):
             "phytomer_pos_render": phytomer_pos_render,
             "phytomer_rot_render": phytomer_rot_render,
             "phytomer_scale_render": phytomer_scale_render,
+            "phytomer_ordinal": phytomer_ordinal,
+            "phytomer_base_logits": phytomer_base_logits,
             "phytomer_logits": phytomer_logits,
             "phytomer_features": phytomer_features,
             "pred_dap": macro_out["pred_dap"],
@@ -1224,6 +1246,8 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             "pred_phytomer_pos_render": coarse_out.get("phytomer_pos_render", coarse_out["phytomer_pos"]),
             "pred_phytomer_rot_render": coarse_out.get("phytomer_rot_render", coarse_out["phytomer_rot"]),
             "pred_phytomer_scale_render": coarse_out.get("phytomer_scale_render", coarse_out["phytomer_scale"]),
+            "pred_phytomer_ordinal": coarse_out["phytomer_ordinal"],
+            "pred_phytomer_base_logits": coarse_out["phytomer_base_logits"],
             "pred_phytomer_logits": coarse_out["phytomer_logits"],
             "active_k": active_k,
             # Stage 3: Intra-Phytomer Canonical Flow Matching

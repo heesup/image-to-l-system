@@ -490,7 +490,8 @@ def build_phytomer_packets(
     drop_stats: Optional[Dict[str, int]] = None,
     reference_rot: Optional[torch.Tensor] = None,
     phytomer_ids: Optional[torch.Tensor] = None,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    return_keys: bool = False,
+) -> Tuple[torch.Tensor, ...]:
     """Packs active organs into canonical 10-slot phytomer packets.
 
     Args:
@@ -519,6 +520,14 @@ def build_phytomer_packets(
         reference_rot: (P, 6) ABSOLUTE 6D rotation of each packet's reference
                  frame (the internode slot, or first present slot, or identity).
                  Stored in absolute coords so decode_packet() can re-apply it.
+        keys: (P, 2) int64 (shoot_id, phytomer_idx) per packet, only when
+                 return_keys=True. This is the XML topology the packets were
+                 grouped by, which is otherwise discarded — Stage 2 needs it to
+                 supervise a position-along-shoot head, because recovering the
+                 chain from geometry alone is not accurate enough: one phytomer
+                 in the wrong shoot out of 201 relocates a whole branch and
+                 costs ~50 points of rendered IoU. (-1, -1) when phytomer_ids
+                 was not supplied.
     """
     device = nodes_26d.device
     ot = nodes_26d[:, :FM_OT_END].argmax(dim=-1)
@@ -539,6 +548,7 @@ def build_phytomer_packets(
     presence: List[torch.Tensor] = []
     centers: List[torch.Tensor] = []
     ref_rots: List[torch.Tensor] = []
+    pkt_keys: List[torch.Tensor] = []
 
     # External reference (Option 1: explicit phytomer frame). Broadcast a (6,)
     # vector to match the number of packets once clusters are known.
@@ -549,12 +559,13 @@ def build_phytomer_packets(
             ext_ref = ext_ref.unsqueeze(0)
 
     if int(active.sum().item()) == 0:
-        return (
+        empty = (
             torch.zeros((0, NUM_SLOTS, FM_NODE_DIM), device=device, dtype=nodes_26d.dtype),
             torch.zeros((0, NUM_SLOTS), device=device, dtype=torch.bool),
             torch.zeros((0, 3), device=device, dtype=nodes_26d.dtype),
             torch.zeros((0, 6), device=device, dtype=nodes_26d.dtype),
         )
+        return empty + (torch.zeros((0, 2), dtype=torch.int64, device=device),) if return_keys else empty
 
     act_idx = torch.nonzero(active, as_tuple=True)[0]
     positions = nodes_26d[act_idx][:, FM_BASE_START:FM_BASE_END] / base_scale  # meters
@@ -663,8 +674,13 @@ def build_phytomer_packets(
         presence.append(pres)
         centers.append(center)
         ref_rots.append(ref_rot)
+        pkt_keys.append(
+            uniq_keys[c] if phytomer_ids is not None
+            else torch.full((2,), -1, dtype=torch.int64, device=device))
 
-    return torch.stack(packets), torch.stack(presence), torch.stack(centers), torch.stack(ref_rots)
+    out = (torch.stack(packets), torch.stack(presence),
+           torch.stack(centers), torch.stack(ref_rots))
+    return out + (torch.stack(pkt_keys),) if return_keys else out
 
 
 def decode_packets(
