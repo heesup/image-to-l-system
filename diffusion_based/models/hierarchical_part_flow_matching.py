@@ -28,7 +28,10 @@ from diffusion_based.dataset.phytomer_packets import (
     apply_reference_rotation,
     assemble_packets,
     denormalize_packet_scales,
+    matrix_to_rot6d,
 )
+from diffusion_based.dataset.phytomer_topology import chain_phytomers
+from diffusion_based.dataset.phytomer_roll import derive_forward, roll_to_matrix
 
 
 # =============================================================================
@@ -71,54 +74,97 @@ def safe_normalize(v: torch.Tensor, eps: float = 1e-3) -> torch.Tensor:
     return v / norm.detach()
 
 
+@torch.no_grad()
+def reconstruct_phytomer_rot(
+    pos: torch.Tensor,
+    roll: torch.Tensor,
+    ordinal: torch.Tensor,
+    is_base_logits: torch.Tensor,
+) -> torch.Tensor:
+    """Full node rotation (B, K, 6) from predicted position + roll, deriving
+    the forward axis from resolved topology instead of predicting it.
+
+    Topology resolution (chain_phytomers) is a discrete, non-differentiable
+    argmin over a distance/ordinal cost -- there is no gradient to preserve
+    here regardless of caller context, hence @no_grad. Called at inference
+    (sample_ode) and, per-render-sample only, from the training loop's
+    differentiable render block (position/roll themselves keep their own
+    gradients from wherever this function's OUTPUT feeds back into, e.g.
+    assemble_packets' `centers` argument -- only the topology lookup itself
+    is detached).
+
+    Args:
+        pos: (B, K, 3) node positions.
+        roll: (B, K, 2) predicted (cos, sin) roll.
+        ordinal: (B, K) predicted position along the shoot.
+        is_base_logits: (B, K) predicted is-shoot-base logit (>0 = base).
+    Returns:
+        (B, K, 6) reconstructed rot6d.
+    """
+    B, K, _ = pos.shape
+    out = torch.zeros(B, K, 6, device=pos.device, dtype=pos.dtype)
+    for b in range(B):
+        parent_idx, _, _ = chain_phytomers(
+            pos[b], ordinal=ordinal[b], is_base=(is_base_logits[b] > 0).float())
+        fwd = derive_forward(pos[b], parent_idx)
+        R = roll_to_matrix(fwd, roll[b])
+        out[b] = matrix_to_rot6d(R)
+    return out
+
+
 # =============================================================================
-# PHYTOMER-LEVEL FLOW TARGET LAYOUT (Stage 3 refinement of base + rot + latent)
+# PHYTOMER-LEVEL FLOW TARGET LAYOUT (base + roll + scale + latent, combined-flow
+# configuration -- NOT what HierarchicalPartFlowMatchingModel currently wires
+# up: it constructs PhytomerFlowMatchingDecoder with base_dim=rot_dim=scale_dim=0,
+# so the ACTIVE flow target is the 128D VAE latent alone, and base/roll/scale
+# are Stage-2-only outputs supervised by their own direct losses, never part of
+# the ODE state -- see the "Hybrid Decoupled" comments in
+# HierarchicalPartFlowMatchingModel.__init__ and PhytomerFlowMatchingDecoder's
+# own docstring. These two helpers exist for the alternative, larger combined
+# flow vector this class's constructor arguments still support, kept in sync
+# with the 2026-09-11 roll change for whenever that configuration is used.)
 # =============================================================================
-# Per-phytomer Stage-3 flow target. Stage 2 predicts a deterministic 3D node
-# scaffold (+ coarse scale); Stage 3 FLOW-REFINES the node pose (base + rot +
-# scale) jointly with the per-phytomer latent, rather than treating the pose
-# as fixed conditioning.
-#   z_1[phytomer] = [ node_base_xyz(3) | node_rot_6d(6) | phytomer_scale(3) | phytomer_latent(D) ]
+#   z_1[phytomer] = [ node_base_xyz(3) | node_roll(2) | phytomer_scale(3) | phytomer_latent(D) ]
 # The phytomer scale s_a (petiole length row [len, radius, unused], v3 packet
 # format) is explicit so the flow refines phytomer size directly (GS-style
 # primitive scale); the latent carries only scale-NORMALIZED relative geometry.
 # Layout indices (relative to z_1's first dim):
 PHYTO_FLOW_BASE_START = 0          # xyz (3)  — refined phytomer base position (metres)
 PHYTO_FLOW_BASE_END = 3
-PHYTO_FLOW_ROT_START = 3           # rot6d (6) — refined phytomer rotation (also the
-PHYTO_FLOW_ROT_END = 9             #              reference frame for the packet)
-PHYTO_FLOW_SCALE_START = 9         # scale (3) — refined phytomer scale (petiole row)
-PHYTO_FLOW_SCALE_END = 12
-PHYTO_FLOW_LATENT_START = 12       # latent (D) — VAE latent of the relative packet
+PHYTO_FLOW_ROLL_START = 3          # (cos, sin) (2) — forward axis is derived from
+PHYTO_FLOW_ROLL_END = 5            #                  position, not part of this vector
+PHYTO_FLOW_SCALE_START = 5         # scale (3) — refined phytomer scale (petiole row)
+PHYTO_FLOW_SCALE_END = 8
+PHYTO_FLOW_LATENT_START = 8        # latent (D) — VAE latent of the relative packet
 
 
 def build_phytomer_flow_target(
     phytomer_pos: torch.Tensor,
-    phytomer_rot: torch.Tensor,
+    phytomer_roll: torch.Tensor,
     phytomer_scale: torch.Tensor,
     phytomer_latent: torch.Tensor,
 ) -> torch.Tensor:
-    """Concatenates per-phytomer pose + scale + latent into the Stage-3 flow target (B, K, 12+D).
+    """Concatenates per-phytomer pose + scale + latent into the Stage-3 flow target (B, K, 8+D).
 
     Args:
         phytomer_pos: (B, K, 3) refined phytomer base positions (metres).
-        phytomer_rot: (B, K, 6) refined phytomer 6D rotation (reference frame).
+        phytomer_roll: (B, K, 2) refined phytomer (cos, sin) roll.
         phytomer_scale: (B, K, 3) GT phytomer scale (petiole scale row, FM units).
         phytomer_latent: (B, K, D) VAE latent of the phytomer-relative packets.
 
     Returns:
-        (B, K, 12 + D) flow target.
+        (B, K, 8 + D) flow target.
     """
-    return torch.cat([phytomer_pos, phytomer_rot, phytomer_scale, phytomer_latent], dim=-1)
+    return torch.cat([phytomer_pos, phytomer_roll, phytomer_scale, phytomer_latent], dim=-1)
 
 
 def split_phytomer_flow_target(z: torch.Tensor, latent_dim: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Splits a Stage-3 flow vector back into (phytomer_pos, phytomer_rot, phytomer_scale, latent)."""
+    """Splits a Stage-3 flow vector back into (phytomer_pos, phytomer_roll, phytomer_scale, latent)."""
     pos = z[..., PHYTO_FLOW_BASE_START:PHYTO_FLOW_BASE_END]
-    rot = z[..., PHYTO_FLOW_ROT_START:PHYTO_FLOW_ROT_END]
+    roll = z[..., PHYTO_FLOW_ROLL_START:PHYTO_FLOW_ROLL_END]
     scl = z[..., PHYTO_FLOW_SCALE_START:PHYTO_FLOW_SCALE_END]
     lat = z[..., PHYTO_FLOW_LATENT_START:PHYTO_FLOW_LATENT_START + latent_dim]
-    return pos, rot, scl, lat
+    return pos, roll, scl, lat
 
 
 def apply_ref_for_flow(
@@ -379,11 +425,19 @@ class CoarseSkeletalTransformer(nn.Module):
             nn.Linear(embed_dim, 3),
         )
 
-        # 2. Phytomer 6D continuous rotation
-        self.rot_head = nn.Sequential(
+        # 2. Phytomer roll (1 DOF, (cos, sin) representation). The forward axis
+        # (the other 2 of rotation's 3 DOF) is DERIVED post-hoc from resolved
+        # topology (this_node_pos - parent_node_pos, see phytomer_roll.py) --
+        # predicting it independently was redundant with position. Measured
+        # 2026-09-11: chain_phytomers loses <=2.5 points of parent-recovery
+        # accuracy without a rotation-based directional cue once the ordinal
+        # cue below is present (97.5/94.5/97.7% vs 100.0/95.4/98.9% at DAP
+        # 10/50/90), which is what makes topology resolvable from position
+        # alone and rotation reconstructable only afterward.
+        self.roll_head = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
             nn.GELU(),
-            nn.Linear(embed_dim, 6),
+            nn.Linear(embed_dim, 2),
         )
 
         # 2b. Coarse phytomer scale (petiole scale row [len, radius, unused], FM
@@ -454,7 +508,9 @@ class CoarseSkeletalTransformer(nn.Module):
         Returns:
             Dict containing:
                 'phytomer_pos': (B, K, 3) predicted 3D phytomer base positions.
-                'phytomer_rot': (B, K, 6) predicted 6D rotation.
+                'phytomer_roll': (B, K, 2) predicted (cos, sin) roll -- the forward
+                    axis (the other 2 of rotation's 3 DOF) is not part of this
+                    output; derive it from resolved topology (phytomer_roll.py).
                 'phytomer_logits': (B, K, 1) existence logits with soft margin bias.
                 'phytomer_features': (B, K, embed_dim) phytomer latent representations.
                 'pred_dap': (B, 1) auxiliary estimated DAP.
@@ -522,14 +578,9 @@ class CoarseSkeletalTransformer(nn.Module):
         delta_pos = torch.tanh(self.pos_head(phytomer_features)) * 0.5
         phytomer_pos = self.ref_points[:K].unsqueeze(0) + delta_pos
 
-        # Continuous 6D rotation with Gram-Schmidt orthonormalization (Zhou et al., CVPR 2019)
-        raw_rot = self.rot_head(phytomer_features)
-        v1 = raw_rot[..., :3]
-        v2 = raw_rot[..., 3:]
-        e1 = safe_normalize(v1, eps=1e-3)
-        u2 = v2 - (e1 * v2).sum(dim=-1, keepdim=True) * e1
-        e2 = safe_normalize(u2, eps=1e-3)
-        phytomer_rot = torch.cat([e1, e2], dim=-1)
+        # Roll (1 DOF, (cos, sin)). Forward axis is derived elsewhere (after
+        # topology is resolved) from position alone -- see phytomer_roll.py.
+        phytomer_roll = safe_normalize(self.roll_head(phytomer_features), eps=1e-3)
 
         # Soft ceiling, not clamp(max=2.0). That clamp capped s_a at 4 cm while
         # the target (the petiole scale row, x SCALE_SCALE=50) averages 6.23 cm:
@@ -548,7 +599,7 @@ class CoarseSkeletalTransformer(nn.Module):
         phytomer_ordinal = F.softplus(order_raw[..., 0])           # >= 0, unbounded above
         phytomer_base_logits = order_raw[..., 1]
 
-        # Render loss (depth & dice) directly trains pos_head, rot_head, and scale_head weights
+        # Render loss (depth & dice) directly trains pos_head, roll_head, and scale_head weights
         # to ground the 3D plant in drone camera space, but gradients STOP at feat_render (detached),
         # completely shielding the 4-layer Transformer decoder, self-attention, and phytomer queries
         # from rasterizer boundary noise and gradient explosions.
@@ -556,13 +607,7 @@ class CoarseSkeletalTransformer(nn.Module):
         delta_pos_r = torch.tanh(self.pos_head(feat_render)) * 0.5
         phytomer_pos_render = self.ref_points[:K].detach().unsqueeze(0) + delta_pos_r
 
-        raw_rot_r = self.rot_head(feat_render)
-        v1_r = raw_rot_r[..., :3]
-        v2_r = raw_rot_r[..., 3:]
-        e1_r = safe_normalize(v1_r, eps=1e-3)
-        u2_r = v2_r - (e1_r * v2_r).sum(dim=-1, keepdim=True) * e1_r
-        e2_r = safe_normalize(u2_r, eps=1e-3)
-        phytomer_rot_render = torch.cat([e1_r, e2_r], dim=-1)
+        phytomer_roll_render = safe_normalize(self.roll_head(feat_render), eps=1e-3)
 
         phytomer_scale_render = SCALE_CEIL * torch.tanh(
             (F.softplus(self.scale_head(feat_render)) + 1e-4) / SCALE_CEIL)
@@ -580,10 +625,10 @@ class CoarseSkeletalTransformer(nn.Module):
 
         return {
             "phytomer_pos": phytomer_pos,
-            "phytomer_rot": phytomer_rot,
+            "phytomer_roll": phytomer_roll,
             "phytomer_scale": phytomer_scale,
             "phytomer_pos_render": phytomer_pos_render,
-            "phytomer_rot_render": phytomer_rot_render,
+            "phytomer_roll_render": phytomer_roll_render,
             "phytomer_scale_render": phytomer_scale_render,
             "phytomer_ordinal": phytomer_ordinal,
             "phytomer_base_logits": phytomer_base_logits,
@@ -752,8 +797,8 @@ class FineBotanicalFlowMatchingDecoder(nn.Module):
             nn.GELU(),
             nn.Linear(embed_dim, embed_dim),
         )
-        self.node_rot_mlp = nn.Sequential(
-            nn.Linear(6, embed_dim),
+        self.node_roll_mlp = nn.Sequential(
+            nn.Linear(2, embed_dim),
             nn.GELU(),
             nn.Linear(embed_dim, embed_dim),
         )
@@ -788,7 +833,7 @@ class FineBotanicalFlowMatchingDecoder(nn.Module):
         phytomer_features: torch.Tensor,
         image_tokens: torch.Tensor,
         phytomer_pos: Optional[torch.Tensor] = None,
-        phytomer_rot: Optional[torch.Tensor] = None,
+        phytomer_roll: Optional[torch.Tensor] = None,
         existence_mask: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """
@@ -798,7 +843,7 @@ class FineBotanicalFlowMatchingDecoder(nn.Module):
             phytomer_features: (B, K, embed_dim) from Stage 2 CoarseSkeletalTransformer.
             image_tokens: (B, T, embed_dim) from ViT.
             phytomer_pos: Optional (B, K, 3) predicted 3D node scaffold coordinates.
-            phytomer_rot: Optional (B, K, 6) predicted 3D node orientations.
+            phytomer_roll: Optional (B, K, 2) predicted node (cos, sin) roll.
             existence_mask: Optional (B, N_fine) boolean mask of active slots.
         Returns:
             Dict containing:
@@ -824,8 +869,8 @@ class FineBotanicalFlowMatchingDecoder(nn.Module):
             node_pos_emb = 0.0
             proj_emb = 0.0
 
-        if phytomer_rot is not None:
-            node_rot_emb = self.node_rot_mlp(phytomer_rot).unsqueeze(2).expand(-1, -1, M, -1).reshape(B, N_fine, self.embed_dim)
+        if phytomer_roll is not None:
+            node_rot_emb = self.node_roll_mlp(phytomer_roll).unsqueeze(2).expand(-1, -1, M, -1).reshape(B, N_fine, self.embed_dim)
         else:
             node_rot_emb = 0.0
 
@@ -889,7 +934,7 @@ class PhytomerFlowMatchingDecoder(nn.Module):
         self,
         latent_dim: int = 16,
         base_dim: int = 3,
-        rot_dim: int = 6,
+        rot_dim: int = 2,
         scale_dim: int = 3,
         num_classes: int = NUM_ORGAN_TYPES,
         embed_dim: int = 384,
@@ -935,8 +980,8 @@ class PhytomerFlowMatchingDecoder(nn.Module):
             nn.GELU(),
             nn.Linear(embed_dim, embed_dim),
         )
-        self.node_rot_mlp = nn.Sequential(
-            nn.Linear(6, embed_dim),
+        self.node_roll_mlp = nn.Sequential(
+            nn.Linear(2, embed_dim),
             nn.GELU(),
             nn.Linear(embed_dim, embed_dim),
         )
@@ -980,10 +1025,13 @@ class PhytomerFlowMatchingDecoder(nn.Module):
         phytomer_features: torch.Tensor,
         image_tokens: torch.Tensor,
         phytomer_pos: Optional[torch.Tensor] = None,
-        phytomer_rot: Optional[torch.Tensor] = None,
+        phytomer_roll: Optional[torch.Tensor] = None,
         phytomer_scale: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Flow-matches a per-phytomer latent vector (12 + latent_dim-D).
+        """Flow-matches a per-phytomer latent vector (node_flow_dim-D, pure
+        VAE latent in the currently wired Hybrid Decoupled configuration --
+        base_dim=rot_dim=scale_dim=0 at construction, see
+        HierarchicalPartFlowMatchingModel.__init__).
 
         Args:
             noisy_flow: (B, K, node_flow_dim) interpolated x_t.
@@ -991,7 +1039,7 @@ class PhytomerFlowMatchingDecoder(nn.Module):
             phytomer_features: (B, K, embed) from Stage 2 CoarseSkeletalTransformer.
             image_tokens: (B, T, embed) from ViT.
             phytomer_pos: Optional (B, K, 3) Stage-2 scaffold base positions.
-            phytomer_rot: Optional (B, K, 6) Stage-2 scaffold rotations.
+            phytomer_roll: Optional (B, K, 2) Stage-2 scaffold (cos, sin) roll.
             phytomer_scale: Optional (B, K, 3) Stage-2 scaffold scales.
         Returns:
             'pred_velocity': (B, K, node_flow_dim) velocity field.
@@ -1010,8 +1058,8 @@ class PhytomerFlowMatchingDecoder(nn.Module):
             queries = queries + self.node_pos_mlp(phytomer_pos)
             # Hybrid Projection: inject local 2D-projected visual token into query
             queries = queries + self.phytomer_projector(image_tokens, phytomer_pos)
-        if phytomer_rot is not None:
-            queries = queries + self.node_rot_mlp(phytomer_rot)
+        if phytomer_roll is not None:
+            queries = queries + self.node_roll_mlp(phytomer_roll)
         if phytomer_scale is not None:
             queries = queries + self.node_scale_mlp(phytomer_scale)
 
@@ -1187,7 +1235,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
 
         phytomer_features = coarse_out["phytomer_features"]
         phytomer_pos = coarse_out["phytomer_pos"]
-        phytomer_rot = coarse_out["phytomer_rot"]
+        phytomer_roll = coarse_out["phytomer_roll"]
         active_k = int(coarse_out["active_k"])
 
         # If noisy nodes exceed active fine slots, slice accordingly; if fewer, pad
@@ -1208,10 +1256,10 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                 noisy_fine_nodes = F.pad(noisy_fine_nodes, (0, 0, 0, pad_n))
 
         # 4. Stage 3: Fine Botanical Flow Matching conditioned on 3D Scaffold
-        # phytomer_features, phytomer_pos, phytomer_rot, and phytomer_scale are detached as conditioning inputs so the velocity
+        # phytomer_features, phytomer_pos, phytomer_roll, and phytomer_scale are detached as conditioning inputs so the velocity
         # loss refines latent geometry without backpropagating into Stage-2 scaffold heads or features.
         phytomer_pos = coarse_out["phytomer_pos"]
-        phytomer_rot = coarse_out["phytomer_rot"]
+        phytomer_roll = coarse_out["phytomer_roll"]
         phytomer_scale = coarse_out.get("phytomer_scale")
         if self.flow_granularity == "phytomer":
             fine_out = self.fine_stage(
@@ -1220,7 +1268,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                 phytomer_features=phytomer_features.detach(),
                 image_tokens=image_tokens,
                 phytomer_pos=phytomer_pos.detach() if phytomer_pos is not None else None,
-                phytomer_rot=phytomer_rot.detach() if phytomer_rot is not None else None,
+                phytomer_roll=phytomer_roll.detach() if phytomer_roll is not None else None,
                 phytomer_scale=phytomer_scale.detach() if phytomer_scale is not None else None,
             )
             pred_velocity = fine_out["pred_velocity"]
@@ -1231,7 +1279,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                 phytomer_features=phytomer_features.detach(),
                 image_tokens=image_tokens,
                 phytomer_pos=phytomer_pos.detach() if phytomer_pos is not None else None,
-                phytomer_rot=phytomer_rot.detach() if phytomer_rot is not None else None,
+                phytomer_roll=phytomer_roll.detach() if phytomer_roll is not None else None,
             )
             pred_velocity = fine_out["pred_velocity"]
 
@@ -1242,10 +1290,10 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             "soft_margin_weights": coarse_out["soft_margin_weights"],
             # Stage 2: 3D Node Point Cloud Scaffold
             "pred_phytomer_pos": coarse_out["phytomer_pos"],
-            "pred_phytomer_rot": coarse_out["phytomer_rot"],
+            "pred_phytomer_roll": coarse_out["phytomer_roll"],
             "pred_phytomer_scale": coarse_out["phytomer_scale"],
             "pred_phytomer_pos_render": coarse_out.get("phytomer_pos_render", coarse_out["phytomer_pos"]),
-            "pred_phytomer_rot_render": coarse_out.get("phytomer_rot_render", coarse_out["phytomer_rot"]),
+            "pred_phytomer_roll_render": coarse_out.get("phytomer_roll_render", coarse_out["phytomer_roll"]),
             "pred_phytomer_scale_render": coarse_out.get("phytomer_scale_render", coarse_out["phytomer_scale"]),
             "pred_phytomer_ordinal": coarse_out["phytomer_ordinal"],
             "pred_phytomer_base_logits": coarse_out["phytomer_base_logits"],
@@ -1308,7 +1356,9 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             active_k = k_pred
 
         phytomer_pos = coarse_out["phytomer_pos"]      # (B, K, 3)
-        phytomer_rot = coarse_out["phytomer_rot"]      # (B, K, 6)
+        phytomer_roll = coarse_out["phytomer_roll"]    # (B, K, 2)
+        phytomer_ordinal = coarse_out["phytomer_ordinal"]        # (B, K)
+        phytomer_base_logits = coarse_out["phytomer_base_logits"]  # (B, K)
         phytomer_features = coarse_out["phytomer_features"]
         soft_margin_weights = coarse_out["soft_margin_weights"]
         phytomer_existence = torch.sigmoid(coarse_out["phytomer_logits"]).squeeze(-1) * soft_margin_weights  # (B, K)
@@ -1332,7 +1382,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             phytomer_features=phytomer_features,
             image_tokens=image_tokens,
             phytomer_pos=phytomer_pos,
-            phytomer_rot=phytomer_rot,
+            phytomer_roll=phytomer_roll,
         )
         if self.flow_granularity == "phytomer":
             forward_kwargs["phytomer_scale"] = phytomer_scale
@@ -1404,11 +1454,23 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             slot_active = torch.clamp(slot_active + (combined_prob > 0.35).float(), 0.0, 1.0)
             pred_latent = x
 
+        # Full node rotation is DERIVED here (forward axis from resolved
+        # topology + position, roll from Stage 2's head) rather than predicted
+        # directly -- see phytomer_roll.py. Valid post-ODE since position and
+        # ordinal are Stage-2-only outputs, never touched by Stage 3's ODE in
+        # this Hybrid Decoupled config (only the VAE latent is flow-matched).
+        if self.flow_granularity == "phytomer":
+            phytomer_rot = reconstruct_phytomer_rot(
+                phytomer_pos, phytomer_roll, phytomer_ordinal, phytomer_base_logits)
+        else:
+            phytomer_rot = None
+
         res = {
             "pred_latent": pred_latent,
             "pred_fine_exist_logits": pred_fine_exist_logits,
             "slot_active": slot_active,
             "phytomer_pos": phytomer_pos,
+            "phytomer_roll": phytomer_roll,
             "phytomer_rot": phytomer_rot,
             "phytomer_scale": coarse_out.get("phytomer_scale"),
             "phytomer_existence": phytomer_existence,

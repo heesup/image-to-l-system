@@ -506,7 +506,8 @@ def build_phytomer_packets(
         base_scale: normalization divisor for base coords (BASE_SCALE=20.0).
         drop_stats: optional dict incremented with 'dropped_organs' / 'total_organs'.
         reference_rot: OPTIONAL explicit phytomer-frame 6D rotation (Option 1 —
-            the node frame, e.g. Stage-2 phytomer_rot). Shape (6,) broadcast to all
+            the node frame, e.g. Stage-2's reconstructed rotation -- see
+            hierarchical_part_flow_matching.reconstruct_phytomer_rot). Shape (6,) broadcast to all
             packets, or (P, 6) per-packet. When None, defaults to the packet's
             own internode frame (slot-0 internode rot, else first present slot,
             else identity) — botanically the node frame, so equivalent when the

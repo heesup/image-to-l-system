@@ -55,10 +55,11 @@ from diffusion_based.models.hierarchical_part_flow_matching import (
     build_phytomer_flow_target,
     split_phytomer_flow_target,
     apply_ref_for_flow,
+    reconstruct_phytomer_rot,
     PHYTO_FLOW_BASE_START,
     PHYTO_FLOW_BASE_END,
-    PHYTO_FLOW_ROT_START,
-    PHYTO_FLOW_ROT_END,
+    PHYTO_FLOW_ROLL_START,
+    PHYTO_FLOW_ROLL_END,
     PHYTO_FLOW_SCALE_START,
     PHYTO_FLOW_SCALE_END,
     PHYTO_FLOW_LATENT_START,
@@ -68,10 +69,13 @@ from diffusion_based.dataset.phytomer_packets import (
     build_phytomer_packets,
     decode_packets,
     rot6d_to_matrix,
+    matrix_to_rot6d,
     assemble_packets,
     phytomer_scale,
     denormalize_packet_scales,
 )
+from diffusion_based.dataset.phytomer_roll import encode_roll, derive_forward
+from diffusion_based.dataset.phytomer_topology import chain_phytomers
 from diffusion_based.training.hierarchical_hungarian_matcher import (
     HierarchicalBotanicalMatcher,
 )
@@ -297,7 +301,7 @@ def forward_backward_step(
                 )
         prof["fwd1"] = time.time() - t0
         pred_phytomer_pos = outputs["pred_phytomer_pos"].detach().float()   # (B, K, 3)
-        pred_phytomer_rot = outputs["pred_phytomer_rot"].detach().float()   # (B, K, 6)
+        pred_phytomer_roll = outputs["pred_phytomer_roll"].detach().float()  # (B, K, 2)
         K_eff = pred_phytomer_pos.shape[1]
         # Standard Gaussian prior in 64D VAE latent space (No bridge coupling into z_0)
         z_0 = torch.randn(B, K_eff, D, device=device)
@@ -401,17 +405,26 @@ def forward_backward_step(
         matched_phytomer_mask = torch.zeros(B, K_eff, dtype=torch.bool, device=device)
         phytomer_exist_targets = torch.zeros(B, K_eff, 1, device=device)
         gt_phytomer_pos_target = torch.zeros(B, K_eff, 3, device=device)
-        gt_phytomer_rot_target = torch.zeros(B, K_eff, 6, device=device)
+        # Roll target (2D, not the old 6D rot): the forward axis is DERIVED
+        # from gt_stem_dir_target below (parent -> this node), not predicted,
+        # so only the roll about that axis needs a supervised target -- see
+        # phytomer_roll.py. There is no separate "loss_stem_dir" consistency
+        # loss anymore: with the forward axis no longer independently
+        # predicted, nothing can disagree with it by construction.
+        gt_phytomer_roll_target = torch.zeros(B, K_eff, 2, device=device)
         gt_phytomer_scl_target = torch.zeros(B, K_eff, 3, device=device)
         # Position along the shoot, and whether this phytomer starts one.
         gt_phytomer_ord_target = torch.zeros(B, K_eff, device=device)
         gt_phytomer_base_target = torch.zeros(B, K_eff, device=device)
-        # Unit direction from the ground-truth parent node up to this one. The
-        # internode's own forward axis should equal it — measured on ground
-        # truth, the two agree to 0.66-1.54 deg — so this supervises directly
-        # the cue the chain recovery depends on.
+        # Unit direction from the ground-truth parent node up to this one --
+        # the forward axis encode_roll() needs to read off the roll target
+        # below, and (for base phytomers, where there is no parent) the same
+        # world-+Z fallback derive_forward() uses at reconstruction time, so
+        # the roll target stays defined relative to whatever forward axis
+        # reconstruction will actually pair it with.
         gt_stem_dir_target = torch.zeros(B, K_eff, 3, device=device)
         stem_dir_mask = torch.zeros(B, K_eff, dtype=torch.bool, device=device)
+        WORLD_UP = torch.tensor([0.0, 0.0, 1.0], device=device)
         # Which OTHER predicted anchor (if any) is this one's parent, so the
         # render-loss internode can be assembled from two PREDICTED positions
         # instead of an independently-regressed length (see phytomer_topology
@@ -452,7 +465,6 @@ def forward_backward_step(
             matched_phytomer_mask[b, anc_src] = True
             phytomer_exist_targets[b, anc_src, 0] = 1.0
             gt_phytomer_pos_target[b, anc_src] = gt_pos.float()
-            gt_phytomer_rot_target[b, anc_src] = gt_rot
             gt_phytomer_scl_target[b, anc_src] = gt_scl.float()
 
             # (shoot_id, phytomer_idx) of the matched packets. Cached by
@@ -487,6 +499,19 @@ def forward_backward_step(
                         gt_render_parent_idx[b, sel] = parent_anchor[parent_matched]
                         has_render_parent[b, sel] = True
 
+            # Roll target: encode_roll reads GT's own rotation relative to
+            # whichever forward axis reconstruction will actually use for this
+            # phytomer -- the just-computed parent direction where one exists,
+            # the same WORLD_UP fallback derive_forward() uses otherwise (base
+            # phytomers, or older caches with no "keys"/topology at all).
+            fwd_for_roll = torch.where(
+                stem_dir_mask[b, anc_src].unsqueeze(-1),
+                gt_stem_dir_target[b, anc_src],
+                WORLD_UP.expand(len(anc_src), 3),
+            )
+            gt_phytomer_roll_target[b, anc_src] = encode_roll(
+                rot6d_to_matrix(gt_rot), fwd_for_roll)
+
             tgt_cls = pt["packets"][pkt_idx, :, :FM_OT_END].argmax(-1)
             pres = pt["presence"][pkt_idx]
             cls_acc_data.append((b, anc_src, tgt_cls, pres))
@@ -508,7 +533,7 @@ def forward_backward_step(
         pred_velocity = outputs["pred_velocity"].float()          # (B, K, D)
         pred_fine_exist_logits = outputs["pred_fine_exist_logits"].float()  # (B, K, M)
         pred_phytomer_pos = outputs["pred_phytomer_pos"].float()      # (B, K, 3) - live gradient to pos_head
-        pred_phytomer_rot = outputs["pred_phytomer_rot"].float()      # (B, K, 6) - live gradient to rot_head
+        pred_phytomer_roll = outputs["pred_phytomer_roll"].float()    # (B, K, 2) - live gradient to roll_head
         pred_phytomer_logits = outputs["pred_phytomer_logits"].float() # (B, K, 1) - live gradient to exist_head
         pred_phytomer_scale = outputs.get("pred_phytomer_scale")
         if pred_phytomer_scale is not None:
@@ -516,7 +541,7 @@ def forward_backward_step(
 
         # Option B: Detached-feature render branch (shields Transformer & Backbone, trains only 3D heads)
         pred_phytomer_pos_render = outputs.get("pred_phytomer_pos_render", pred_phytomer_pos).float()
-        pred_phytomer_rot_render = outputs.get("pred_phytomer_rot_render", pred_phytomer_rot).float()
+        pred_phytomer_roll_render = outputs.get("pred_phytomer_roll_render", pred_phytomer_roll).float()
         pred_phytomer_scale_render = outputs.get("pred_phytomer_scale_render", pred_phytomer_scale)
         if pred_phytomer_scale_render is not None:
             pred_phytomer_scale_render = pred_phytomer_scale_render.float()
@@ -591,15 +616,17 @@ def forward_backward_step(
         else:
             loss_phytomer_pos = torch.tensor(0.0, device=device)
 
-        # 6. Phytomer Rotation Loss (Vectorized 1-shot)
+        # 6. Phytomer Roll Loss (Vectorized 1-shot). Not "rotation" anymore --
+        # the forward axis is derived from position post-hoc (phytomer_roll.py),
+        # so only the roll about it needs supervision.
         if total_matched_anc > 0:
-            loss_phytomer_rot = F.smooth_l1_loss(
-                pred_phytomer_rot[matched_phytomer_mask],
-                gt_phytomer_rot_target[matched_phytomer_mask],
+            loss_phytomer_roll = F.smooth_l1_loss(
+                pred_phytomer_roll[matched_phytomer_mask],
+                gt_phytomer_roll_target[matched_phytomer_mask],
                 reduction="sum",
             ) / float(norm_anc)
         else:
-            loss_phytomer_rot = torch.tensor(0.0, device=device)
+            loss_phytomer_roll = torch.tensor(0.0, device=device)
 
         # 7. Phytomer Scale Loss (Vectorized 1-shot)
         if pred_phytomer_scale is not None and total_matched_anc > 0:
@@ -632,17 +659,11 @@ def forward_backward_step(
         else:
             loss_phytomer_order = torch.tensor(0.0, device=device)
 
-        # 7c. The internode's forward axis should point from its parent node to
-        # its own. Without this nothing ties the predicted rotation to the node
-        # cloud, so the two are free to disagree about the same direction —
-        # assembly then has to overwrite one of them.
-        if pred_phytomer_rot is not None and bool(stem_dir_mask.any()):
-            fwd_pred = rot6d_to_matrix(pred_phytomer_rot)[..., 1]   # (B, K, 3)
-            cos_dir = (F.normalize(fwd_pred, dim=-1)
-                       * gt_stem_dir_target).sum(dim=-1)
-            loss_stem_dir = (1.0 - cos_dir)[stem_dir_mask].sum() / float(norm_anc)
-        else:
-            loss_stem_dir = torch.tensor(0.0, device=device)
+        # (No separate stem-direction consistency loss anymore: the forward
+        # axis is derived from position, not independently predicted, so
+        # nothing can disagree with it by construction -- see the roll target
+        # comment above.)
+        loss_stem_dir = torch.tensor(0.0, device=device)
 
         # Skip the organ-mode loss loop below.
         phyto_mode_done = True
@@ -736,7 +757,7 @@ def forward_backward_step(
         # Phytomer scale and shoot-position losses are phytomer-mode only (they
         # supervise the Stage-2 heads that feed packet assembly); organ mode has
         # no packet targets to take them from.
-        loss_phytomer_rot = torch.tensor(0.0, device=device)
+        loss_phytomer_roll = torch.tensor(0.0, device=device)
         loss_phytomer_scale = torch.tensor(0.0, device=device)
         loss_phytomer_order = torch.tensor(0.0, device=device)
         loss_stem_dir = torch.tensor(0.0, device=device)
@@ -783,7 +804,21 @@ def forward_backward_step(
                 _rz_render = _rz[render_indices]  # (n_render, K, D)
                 lat_all = _rz_render.detach()     # Render gradients should NOT backprop through VAE latent flow
                 pos_all = pred_phytomer_pos_render[render_indices] if render_grad_on else pred_phytomer_pos_render[render_indices].detach()
-                rot_all = pred_phytomer_rot_render[render_indices].detach()  # Rot supervised purely by 3D GT loss
+                # Full rotation is DERIVED for this render batch (forward axis
+                # from resolved topology -- position + ordinal alone, no
+                # rotation cue needed, see phytomer_topology docstring -- plus
+                # this batch's predicted roll), not read off a predicted 6D
+                # value: Stage 2 no longer produces one. reconstruct_phytomer_rot
+                # is @no_grad internally regardless (topology resolution has no
+                # gradient to give), matching this render path's pre-existing
+                # behavior of detaching rotation (roll/pos-head training here
+                # was never rotation's job -- "Rot supervised purely by 3D GT
+                # loss" in the prior version of this comment).
+                roll_all = pred_phytomer_roll_render[render_indices].detach()
+                rot_all = reconstruct_phytomer_rot(
+                    pos_all.detach(), roll_all,
+                    pred_ord[render_indices].detach(), pred_base_logits[render_indices].detach(),
+                )
                 scl_all = pred_phytomer_scale_render[render_indices] if pred_phytomer_scale_render is not None else torch.ones_like(pos_all)
                 if not render_grad_on:
                     scl_all = scl_all.detach()
@@ -903,7 +938,7 @@ def forward_backward_step(
     rot_weight = 1.0
     loss = (
         2.0 * loss_phytomer_pos
-        + rot_weight * loss_phytomer_rot
+        + rot_weight * loss_phytomer_roll
         + scale_weight * loss_phytomer_scale
         + order_weight * loss_phytomer_order
         + stem_dir_weight * loss_stem_dir
@@ -934,7 +969,7 @@ def forward_backward_step(
     return {
         "loss": loss.item(),
         "phytomer_pos_loss": loss_phytomer_pos.item(),
-        "phytomer_rot_loss": loss_phytomer_rot.item(),
+        "phytomer_rot_loss": loss_phytomer_roll.item(),
         "phytomer_exist_loss": loss_phytomer_exist.item(),
         "phytomer_scale_loss": loss_phytomer_scale.item(),
         "phytomer_order_loss": loss_phytomer_order.item(),
@@ -1322,7 +1357,7 @@ def train_one_epoch(
             print(
                 f"  [Epoch {epoch:02d}] Step {batch_idx+1:03d}/{len(dataloader):03d} | Loss: {step_metrics['loss']:.4f} | "
                 f"[S1 Macro] Phy: {step_metrics.get('phy_count_loss', 0.0):.4f} [P:{step_metrics.get('pred_phy_mean', 0.0):.1f}/G:{step_metrics.get('gt_phy_mean', 0.0):.1f}], DAP: {step_metrics.get('dap_loss', 0.0):.4f} [P:{step_metrics.get('pred_dap_mean', 0.0):.1f}/G:{step_metrics.get('gt_dap_mean', 0.0):.1f}] | "
-                f"[S2 Scaffold] Pos: {step_metrics['phytomer_pos_loss']:.4f}, Rot: {step_metrics.get('phytomer_rot_loss', 0.0):.4f}, Scl: {step_metrics.get('phytomer_scale_loss', 0.0):.4f}, Ord: {step_metrics.get('phytomer_order_loss', 0.0):.4f}, Dir: {step_metrics.get('stem_dir_loss', 0.0):.4f}, Ext: {step_metrics.get('phytomer_exist_loss', 0.0):.4f} | "
+                f"[S2 Scaffold] Pos: {step_metrics['phytomer_pos_loss']:.4f}, Roll: {step_metrics.get('phytomer_rot_loss', 0.0):.4f}, Scl: {step_metrics.get('phytomer_scale_loss', 0.0):.4f}, Ord: {step_metrics.get('phytomer_order_loss', 0.0):.4f}, Ext: {step_metrics.get('phytomer_exist_loss', 0.0):.4f} | "
                 f"[S3 Micro] Vel: {step_metrics['fine_vel_loss']:.4f}, Ext: {step_metrics['fine_exist_loss']:.4f}, Acc: {step_metrics['cls_acc']*100:.1f}% | "
                 f"[S4 Render] {render_str} | "
                 f"fwd/bwd {t_step1-t_step0:.2f}s opt {t_step2-t_step1:.2f}s | "
@@ -1822,7 +1857,7 @@ def main():
             print(
                 f"Epoch {epoch:03d} | Loss: {epoch_metrics['loss']:.4f} | "
                 f"[S1 Macro] Phy: {epoch_metrics['phy_count_loss']:.4f} (P:{epoch_metrics['pred_phy_mean']:.1f}/G:{epoch_metrics['gt_phy_mean']:.1f}), DAP: {epoch_metrics.get('dap_loss', 0.0):.4f} (P:{epoch_metrics.get('pred_dap_mean', 0.0):.1f}/G:{epoch_metrics.get('gt_dap_mean', 0.0):.1f}) | "
-                f"[S2 Scaffold] Pos: {epoch_metrics['phytomer_pos_loss']:.4f}, Rot: {epoch_metrics.get('phytomer_rot_loss', 0.0):.4f}, Scl: {epoch_metrics.get('phytomer_scale_loss', 0.0):.4f}, Ord: {epoch_metrics.get('phytomer_order_loss', 0.0):.4f}, Dir: {epoch_metrics.get('stem_dir_loss', 0.0):.4f}, Ext: {epoch_metrics['phytomer_exist_loss']:.4f} | "
+                f"[S2 Scaffold] Pos: {epoch_metrics['phytomer_pos_loss']:.4f}, Roll: {epoch_metrics.get('phytomer_rot_loss', 0.0):.4f}, Scl: {epoch_metrics.get('phytomer_scale_loss', 0.0):.4f}, Ord: {epoch_metrics.get('phytomer_order_loss', 0.0):.4f}, Ext: {epoch_metrics['phytomer_exist_loss']:.4f} | "
                 f"[S3 Micro] Vel: {epoch_metrics['fine_vel_loss']:.4f}, Ext: {epoch_metrics['fine_exist_loss']:.4f}, Acc: {epoch_metrics['cls_acc']*100:.1f}% | "
                 f"[S4 Render] {render_epoch_str} | "
                 f"VRAM: {max_vram_gb:.1f}/{total_vram_gb:.1f} GB ({vram_pct:.1f}%)"

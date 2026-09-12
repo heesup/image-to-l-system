@@ -39,7 +39,7 @@ class TestDINOv23DSpatial(unittest.TestCase):
         out = coarse(dummy_tokens, active_k=16)
 
         self.assertEqual(out["phytomer_pos"].shape, (2, 16, 3))
-        self.assertEqual(out["phytomer_rot"].shape, (2, 16, 6))
+        self.assertEqual(out["phytomer_roll"].shape, (2, 16, 2))
         self.assertEqual(out["phytomer_logits"].shape, (2, 16, 1))
         self.assertEqual(out["phytomer_features"].shape, (2, 16, 384))
 

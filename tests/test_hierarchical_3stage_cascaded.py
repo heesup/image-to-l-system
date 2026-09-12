@@ -94,13 +94,13 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
         out = coarse(dummy_tokens, active_k=K)
 
         self.assertIn("phytomer_pos", out)
-        self.assertIn("phytomer_rot", out)
+        self.assertIn("phytomer_roll", out)
         self.assertIn("phytomer_logits", out)
         self.assertIn("pred_num_phytomers", out)
         self.assertIn("soft_margin_weights", out)
 
         self.assertEqual(out["phytomer_pos"].shape, (B, K, 3))
-        self.assertEqual(out["phytomer_rot"].shape, (B, K, 6))
+        self.assertEqual(out["phytomer_roll"].shape, (B, K, 2))
         self.assertEqual(out["phytomer_logits"].shape, (B, K, 1))
         self.assertEqual(out["soft_margin_weights"].shape, (B, K))
 
@@ -121,7 +121,7 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
         phytomer_features = torch.randn(B, K, 384, device=self.device)
         image_tokens = torch.randn(B, 32, 384, device=self.device)
         phytomer_pos = torch.randn(B, K, 3, device=self.device)
-        phytomer_rot = torch.randn(B, K, 6, device=self.device)
+        phytomer_roll = torch.randn(B, K, 2, device=self.device)
 
         out = decoder(
             noisy_fine_nodes=noisy_nodes,
@@ -129,7 +129,7 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
             phytomer_features=phytomer_features,
             image_tokens=image_tokens,
             phytomer_pos=phytomer_pos,
-            phytomer_rot=phytomer_rot,
+            phytomer_roll=phytomer_roll,
         )
 
         self.assertEqual(out["pred_velocity"].shape, (B, N_fine, 16))
@@ -316,11 +316,11 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
         self.assertEqual(sample_out["phytomer_latent"].shape[-1], 32)
 
     def test_phytomer_flow_decoder_shapes_and_gradients(self):
-        """Phytomer mode: flow-matches [base(3) + rot(6) + scale(3) + latent(D)] per phytomer."""
+        """Phytomer mode: flow-matches [base(3) + roll(2) + scale(3) + latent(D)] per phytomer."""
         latent_dim = 64
-        D = 12 + latent_dim
+        D = 8 + latent_dim
         decoder = PhytomerFlowMatchingDecoder(
-            latent_dim=latent_dim, embed_dim=128, num_heads=4, num_layers=2
+            latent_dim=latent_dim, rot_dim=2, embed_dim=128, num_heads=4, num_layers=2
         ).to(self.device)
         B, K, T = 2, 8, 16
         noisy = torch.randn(B, K, D, device=self.device, requires_grad=True)
@@ -328,10 +328,12 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
         phytomer_feat = torch.randn(B, K, 128, device=self.device)
         img_tokens = torch.randn(B, T, 128, device=self.device)
         phytomer_pos = torch.randn(B, K, 3, device=self.device)
-        phytomer_rot = torch.randn(B, K, 6, device=self.device)
+        phytomer_roll = torch.randn(B, K, 2, device=self.device)
+        phytomer_scale = torch.randn(B, K, 3, device=self.device)
         out = decoder(
             noisy_flow=noisy, timesteps=t, phytomer_features=phytomer_feat,
-            image_tokens=img_tokens, phytomer_pos=phytomer_pos, phytomer_rot=phytomer_rot,
+            image_tokens=img_tokens, phytomer_pos=phytomer_pos, phytomer_roll=phytomer_roll,
+            phytomer_scale=phytomer_scale,
         )
         self.assertEqual(out["pred_velocity"].shape, (B, K, D))
         self.assertEqual(out["pred_slot_exist_logits"].shape, (B, K, 10))
@@ -342,18 +344,19 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
             self.assertIsNotNone(p.grad, f"missing grad: {name}")
 
     def test_phytomer_flow_target_roundtrip(self):
-        """build/split the 12+D flow vector and recover the parts exactly."""
+        """build/split the 8+D flow vector (roll, not full 6D rot) and recover
+        the parts exactly."""
         latent_dim = 64
         B, K = 2, 8
         pos = torch.randn(B, K, 3)
-        rot = torch.randn(B, K, 6)
+        roll = torch.randn(B, K, 2)
         scl = torch.randn(B, K, 3).abs() + 0.1
         lat = torch.randn(B, K, latent_dim)
-        z = build_phytomer_flow_target(pos, rot, scl, lat)
-        self.assertEqual(z.shape, (B, K, 12 + latent_dim))
+        z = build_phytomer_flow_target(pos, roll, scl, lat)
+        self.assertEqual(z.shape, (B, K, 8 + latent_dim))
         p2, r2, s2, l2 = split_phytomer_flow_target(z, latent_dim)
         self.assertTrue(torch.allclose(p2, pos))
-        self.assertTrue(torch.allclose(r2, rot))
+        self.assertTrue(torch.allclose(r2, roll))
         self.assertTrue(torch.allclose(s2, scl))
         self.assertTrue(torch.allclose(l2, lat))
 

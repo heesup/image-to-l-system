@@ -1,7 +1,7 @@
 """Gradient flow audit for the cascaded hierarchical model.
 
 Verifies that Stage 1 (MacroBiologicalHead) and Stage 2 (CoarseSkeletalTransformer
-pos/rot/exist heads) receive non-zero gradients under both capacity modes:
+pos/roll/exist heads) receive non-zero gradients under both capacity modes:
   - 'given' (GT DAP teacher forcing, standard training path)
   - 'pred_phyto' (two-pass predicted-phytomer slicing, inference path)
 
@@ -51,7 +51,7 @@ def audit(capacity_mode: str, dap: float) -> bool:
 
     loss = (
         out["phytomer_pos"].pow(2).mean()
-        + out["phytomer_rot"].pow(2).mean()
+        + out["phytomer_roll"].pow(2).mean()
         + torch.sigmoid(out["phytomer_logits"]).mean()
         + out["pred_dap"].pow(2).mean()
         + out["pred_num_phytomers"].pow(2).mean()
@@ -60,7 +60,7 @@ def audit(capacity_mode: str, dap: float) -> bool:
 
     ok = True
     ok &= _check_grad("pos_head (Stage 2 xyz)", layer.pos_head[0].weight)
-    ok &= _check_grad("rot_head (Stage 2 6D)", layer.rot_head[0].weight)
+    ok &= _check_grad("roll_head (Stage 2 roll)", layer.roll_head[0].weight)
     ok &= _check_grad("exist_head (Stage 2 exist)", layer.exist_head[0].weight)
     ok &= _check_grad("phytomer_queries[:K]", layer.phytomer_queries)
     ok &= _check_grad("ref_points[:K]", layer.ref_points)
