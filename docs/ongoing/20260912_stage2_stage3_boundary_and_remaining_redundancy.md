@@ -40,7 +40,7 @@
 
 **Two inference bugs found by looking at the epoch-11 panel rather than the numbers** (§2.3). A 2 cm seedling with 0.6 cm node RMSE rendered at IoU 0.0% because metre-long stems shot across the frame. Fixed in `abce662`; the ordinal follow-up is `ae26ccb`.
 
-**Helios round-trip (§2.4, §2.5): solved.** Two things were wrong and both are fixed. The packet path lost the leaflet order (`ff5beb4`, `2f1691b`); with the VAE replaced by identity it is exact. Then the analytical 14D -> XML export turned out to be the real ceiling for *every* VAE: Helios rebuilds a shoot by forward kinematics from per-node angles the converter derives from petiole azimuths and a decoded curvature, so a 1-3 degree error at one node moves every node above it, and a VAE with 1.4-degree petiole rotations still lost ten points to it. `part_tensor_stem_ik` (§2.5) now solves those per-node parameters so the same FK lands on the predicted nodes. Helios FG IoU at DAP 50: identity 94.2 -> **99.4%**, v9_tl_rw4 82.9 -> **98.3%**, v9_tl 84.7 -> 96.8%, v8 90.2 -> 94.2% (IK-only, the old ceiling, was 94.1). The export is on by default (`PART_TENSOR_STEM_IK=0` gives the old analytical path); the full three-plant figure is being regenerated with it.
+**Helios round-trip (§2.4, §2.5): solved for DAP 50 and 90, one item left for the seedling.** `docs/results/assets/fig14_phytomer_vae_helios_roundtrip.png` (v9_tl_rw4 VAE, stem IK on both export columns) now reads IK-only 95.7 / 99.5 / 96.7% and VAE round-trip **83.2 / 98.3 / 95.8%** FG IoU, against 81.4 / 90.2 / 79.3 this morning (v8, analytical export). Two things were wrong and both are fixed: the packet path lost the leaflet order (`ff5beb4`, `2f1691b`), and the analytical 14D -> XML export was the real ceiling for every VAE -- Helios rebuilds a shoot by forward kinematics from per-node angles the converter derived from petiole azimuths and a decoded curvature, so a 1-3 degree error at one node moved every node above it. `part_tensor_stem_ik` (§2.5) solves those per-node parameters so the same FK lands on the predicted nodes; it lifts the identity export to 99.6% at DAP 50, above the old IK-only 94.1 (which carried the same FK drift). What remains at DAP 10 is one thing: with the VAE's trifoliate leaflet scales replaced by exact ones the seedling renders at 95.6% (= IK-only); their error is 4.4% on those young nodes versus 0.8% at DAP 50, and young nodes are a small minority of the training packets, so a VAE on 20,000 files is training for it.
 
 **Next**: `38242849` (resumed from epoch 25 at `LR=5e-5`, §1.9.2) is the live run; watch the Stage 2 Scl/Ord/Ext losses for the epoch-27-style precursor, not just the canary. In parallel: pick a v9 VAE (§2.4, end), then §2.1's remaining pieces -- Stage 3 consuming `(parent, self)` pairs with the parent held fixed, and noise injection on the fixed parent -- and the gradient bisection in §1.9.2.
 
@@ -608,6 +608,27 @@ is skipped.
 | v9_tl | 84.7 | 96.8 | 1.35 / 4.41 -> 0.05 / 0.11 cm |
 | v8 | 90.2 | 94.2 | 1.51 / 4.31 -> 0.61 cm (before the base step) |
 | IK-only (GT 14D, old ceiling) | 94.1 | -- | -- |
+
+The full three-plant figure with `v9_tl_rw4` and the completed solver (base
+pitch/yaw/length included, both export columns solved):
+
+| DAP | IK-only, analytical -> solved | VAE round-trip, v8 analytical -> v9_tl_rw4 solved |
+|---|---|---|
+| 10 | 95.7 -> 95.7 | 81.4 -> 83.2 |
+| 50 | 94.1 -> **99.5** | 90.2 -> **98.3** |
+| 90 | 87.4 -> **96.7** | 79.3 -> **95.8** |
+
+DAP 10 is the one place the solver does not help, because a seedling's stem is
+13 short internodes and the FK drift there was already small. Its attribution
+with the solver on: VAE as-is 83.2; exact petiole rotations 86.1; exact leaflet
+scales **95.6** (exact scales on the cotyledon node alone 83.2, on the 12
+trifoliate nodes alone 95.6); exact everything 95.9. So the seedling's whole
+remaining gap is the trifoliate leaflet scale, 4.4% relative error on those
+young nodes against 0.8% at DAP 50 -- the leaves *are* the seedling's
+silhouette and `--focus-plant` re-frames on them, so 4% of size is 12 points of
+IoU. Young nodes are a small minority of the training packets (a DAP 10 plant
+has 13 nodes, a DAP 90 plant 200); `phytomer_vae_v9_tl_rw4_20k` (same recipe,
+20,000 files) is training to see whether more of them is enough.
 
 Two readings. First, the identity export now exceeds the old IK-only ceiling,
 because IK-only went through the same analytical converter and carried the
