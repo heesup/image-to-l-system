@@ -170,6 +170,30 @@ def emit_part_tensor_with_shoot_meta(
             keep = presence[m]
             if bool(keep.any()):
                 rows.append(part_all[m][keep][emit_slot_order(part_all[m], keep)].cpu())
+                # Cotyledon node (shoot 0, phytomer 0): cowpea germinates with a
+                # pair of OPPOSITE petioles, but a packet has only one petiole
+                # slot (slot 1), so the second is dropped during packet
+                # construction (measured: exactly 1 of the phytomer's petioles
+                # is lost, always at this node). Measured on 40 DAP1 plants
+                # (2026-09-11): the missing petiole's rotation is well
+                # approximated by a 180 deg turn of the kept one about the
+                # vertical (internode) axis -- up-axis angle between the two
+                # real petioles is 179.9995 +/- 0.003 deg and forward azimuth
+                # is 174.6 +/- 5.9 deg apart, at matching length/radius/base.
+                # A world Z-axis 180 deg rotation (diag(-1,-1,1) @ R) reproduces
+                # both at once and is exact in rot6d: negate the horizontal
+                # (x,y) components of both stored columns, keep the vertical
+                # (z) components. Elevation (droop) is independently random
+                # (~10 deg std) and not recoverable from one sample, so this
+                # is an approximation, not an exact reconstruction -- better
+                # than the alternative of leaving that petiole absent.
+                if sid == 0 and int(phytomer_idx[m]) == 0 and bool(keep[1]):
+                    mirror = part_all[m, 1].clone()
+                    mirror[4] *= -1.0   # x-column, x-component
+                    mirror[5] *= -1.0   # x-column, y-component
+                    mirror[7] *= -1.0   # y-column, x-component
+                    mirror[8] *= -1.0   # y-column, y-component
+                    rows.append(mirror.unsqueeze(0).cpu())
 
     return torch.cat(rows, dim=0)
 
