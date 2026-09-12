@@ -40,7 +40,7 @@
 
 **Two inference bugs found by looking at the epoch-11 panel rather than the numbers** (§2.3). A 2 cm seedling with 0.6 cm node RMSE rendered at IoU 0.0% because metre-long stems shot across the frame. Fixed in `abce662`; the ordinal follow-up is `ae26ccb`.
 
-**Helios round-trip (§2.4, §2.5): solved for DAP 50 and 90, one item left for the seedling.** `docs/results/assets/fig14_phytomer_vae_helios_roundtrip.png` (v9_tl_rw4 VAE, stem IK on both export columns) now reads IK-only 95.7 / 99.5 / 96.7% and VAE round-trip **83.2 / 98.3 / 95.8%** FG IoU, against 81.4 / 90.2 / 79.3 this morning (v8, analytical export). Two things were wrong and both are fixed: the packet path lost the leaflet order (`ff5beb4`, `2f1691b`), and the analytical 14D -> XML export was the real ceiling for every VAE -- Helios rebuilds a shoot by forward kinematics from per-node angles the converter derived from petiole azimuths and a decoded curvature, so a 1-3 degree error at one node moved every node above it. `part_tensor_stem_ik` (§2.5) solves those per-node parameters so the same FK lands on the predicted nodes; it lifts the identity export to 99.6% at DAP 50, above the old IK-only 94.1 (which carried the same FK drift). What remains at DAP 10 is one thing: with the VAE's trifoliate leaflet scales replaced by exact ones the seedling renders at 95.6% (= IK-only); their error is 4.4% on those young nodes versus 0.8% at DAP 50, and young nodes are a small minority of the training packets, so a VAE on 20,000 files is training for it.
+**Helios round-trip (§2.4, §2.5): solved.** `docs/results/assets/fig14_phytomer_vae_helios_roundtrip.png` (v9_tl_rw4_20k VAE, stem IK on both export columns) reads IK-only 95.7 / 99.5 / 96.7% and VAE round-trip **92.2 / 98.4 / 95.7%** FG IoU, against 81.4 / 90.2 / 79.3 this morning (v8, analytical export). Three things were wrong and all are fixed: the packet path lost the leaflet order (`ff5beb4`, `2f1691b`); the analytical 14D -> XML export was the real ceiling for every VAE, because Helios rebuilds a shoot by forward kinematics from per-node angles the converter derived from petiole azimuths and a decoded curvature, so a 1-3 degree error at one node moved every node above it -- `part_tensor_stem_ik` (§2.5) solves those parameters so the same FK lands on the predicted nodes and lifts even the identity export above the old IK-only number; and the seedling's young nodes were a small minority of the VAE's training packets, so their leaflet scale was 4.4% off -- training the same recipe on 20,000 files instead of 8,000 brings that to 1.0% and DAP 10 from 83.2 to 92.2. `phytomer_vae_v9_tl_rw4_20k` is the accepted VAE for the export path; the eval scripts default to it. It is NOT yet the FM training VAE -- that needs the packet cache regenerated with terminal-last packets and its latents (PKT_VERSION 7) and a Stage 3 retrain, see §5.
 
 **Next**: `38242849` (resumed from epoch 25 at `LR=5e-5`, §1.9.2) is the live run; watch the Stage 2 Scl/Ord/Ext losses for the epoch-27-style precursor, not just the canary. In parallel: pick a v9 VAE (§2.4, end), then §2.1's remaining pieces -- Stage 3 consuming `(parent, self)` pairs with the parent held fixed, and noise injection on the fixed parent -- and the gradient bisection in §1.9.2.
 
@@ -527,6 +527,7 @@ Helios round-trip:
 | v9_ctrl | 2.65 (4.88) | 1.55 (2.42) | 0.8% (1.4) | 9.9% | **83.5** / 88.0 / **85.0** |
 | v9_tl | 3.02 (5.12) | 1.52 (2.46) | 0.9% (1.6) | 8.7% | 83.2 / 84.7 / 83.1 |
 | v9_tl_rw4 | **1.58 (2.48)** | **1.07 (1.76)** | 0.8% (1.6) | 8.9% | 81.7 / 82.9 / 75.8 |
+| v9_tl_rw4_20k (20,000 files) | 1.56 (3.18) | **0.86 (1.48)** | **0.6% (1.1)**; DAP 10 3.4% -> 1.0% | -- | with stem IK: **92.2 / 98.4 / 95.7** |
 
 Read together with the attribution rows, this says the Helios number does **not**
 track packet fidelity. `_rw4` has the best rotations by a wide margin (petiole
@@ -624,11 +625,11 @@ is skipped.
 The full three-plant figure with `v9_tl_rw4` and the completed solver (base
 pitch/yaw/length included, both export columns solved):
 
-| DAP | IK-only, analytical -> solved | VAE round-trip, v8 analytical -> v9_tl_rw4 solved |
+| DAP | IK-only, analytical -> solved | VAE round-trip: v8 analytical -> v9_tl_rw4 solved -> v9_tl_rw4_20k solved |
 |---|---|---|
-| 10 | 95.7 -> 95.7 | 81.4 -> 83.2 |
-| 50 | 94.1 -> **99.5** | 90.2 -> **98.3** |
-| 90 | 87.4 -> **96.7** | 79.3 -> **95.8** |
+| 10 | 95.7 -> 95.7 | 81.4 -> 83.2 -> **92.2** |
+| 50 | 94.1 -> **99.5** | 90.2 -> 98.3 -> **98.4** |
+| 90 | 87.4 -> **96.7** | 79.3 -> 95.8 -> **95.7** |
 
 DAP 10 is the one place the solver does not help, because a seedling's stem is
 13 short internodes and the FK drift there was already small. Its attribution
@@ -640,7 +641,8 @@ young nodes against 0.8% at DAP 50 -- the leaves *are* the seedling's
 silhouette and `--focus-plant` re-frames on them, so 4% of size is 12 points of
 IoU. Young nodes are a small minority of the training packets (a DAP 10 plant
 has 13 nodes, a DAP 90 plant 200); `phytomer_vae_v9_tl_rw4_20k` (same recipe,
-20,000 files) is training to see whether more of them is enough.
+20,000 files, best val recon 0.0037 vs 0.0065) brings the DAP 10 leaflet scale
+error to 1.0% (p90 2%) and the seedling to 92.2 -- the committed figure.
 
 Two readings. First, the identity export now exceeds the old IK-only ceiling,
 because IK-only went through the same analytical converter and carried the
@@ -707,7 +709,7 @@ This does not forbid *asymmetric* designs (e.g., predicting a parent-relative di
 6. Before starting §3's implementation specifically: re-read `phytomer_packets.strip_base()` and `PhytomerVAE.compute_loss()` in full -- the fix is meant to be a small, mechanical extension of the pattern already there, not a new mechanism.
 7. **Before launching any training run**: §1.8 (budget the render loss with arithmetic; do not trust `--batch_size auto`) and §1.9.1 (**use `LR=1e-4`**; 3e-4 reliably destroys the run).
 
-**Checkpoint lineage**: `diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt` is the current accepted PhytomerVAE (unchanged by this doc's work -- §3's fix would produce v9). `dataset/cache/cowpea_curv26_pkt/` is at `pkt_version=6` (100,000/100,000, `keys` present). No real (non-smoke) hierarchical FM training has been launched yet. `diffusion_based/checkpoints/fm_smoke_test/hierarchical_fm_epoch_006.pt` is a disposable smoke-test artifact, not a real checkpoint to build on -- delete it before a real run occupies that directory, or point `--output_dir` elsewhere.
+**Checkpoint lineage**: `diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt` is the accepted PhytomerVAE for the export/round-trip path (§2.4: 128D = 48 + 10x8, `--rot-weight 4`, 20,000 files, 120 epochs, trained on terminal-last packets -- `PHYTOMER_TERMINAL_LAST=1`, which the eval scripts set for any `_tl` checkpoint). `phytomer_vae_v8` remains what the FM checkpoints and the v6 packet cache were built on; switching the FM to v9 means `PKT_VERSION` 7, a cache regeneration with terminal-last packets, and a Stage 3 retrain. `dataset/cache/cowpea_curv26_pkt/` is at `pkt_version=6` (100,000/100,000, `keys` present). No real (non-smoke) hierarchical FM training has been launched yet. `diffusion_based/checkpoints/fm_smoke_test/hierarchical_fm_epoch_006.pt` is a disposable smoke-test artifact, not a real checkpoint to build on -- delete it before a real run occupies that directory, or point `--output_dir` elsewhere.
 
 **Recommendation on sequencing §2 vs §3 vs a real training run**: §2 and §3 both change what the FM/VAE checkpoints look like, so either should happen *before* committing to a long real training run, not after (avoid training for hours against an architecture you're about to change again). §3 is the smaller, more mechanical change (a VAE-only retrain, ~3.5 minutes on a TITAN RTX per the v8 precedent) and has no open design questions -- do it first. §2 has one open question (§2's "not yet resolved" paragraph) to settle before writing code. Only after both land does a real, non-smoke hierarchical FM training run make sense.
 

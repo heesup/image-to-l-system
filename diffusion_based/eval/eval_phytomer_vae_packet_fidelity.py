@@ -38,7 +38,7 @@ from diffusion_based.eval.eval_13d_xml_organ_masks import TEST_PLANTS
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 DEFAULT_VAE_CHECKPOINT = os.path.join(
-    REPO_ROOT, "diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt")
+    REPO_ROOT, "diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt")
 SLOT_NAMES = ["Internode", "Petiole", "Leaflet2", "Leaflet3", "Leaflet4",
               "Peduncle", "Repro6", "Repro7", "Repro8", "Repro9"]
 
@@ -56,6 +56,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--vae_checkpoint", type=str, default=DEFAULT_VAE_CHECKPOINT)
     args = parser.parse_args()
+    # A "_tl" VAE was trained on terminal-last packets (phytomer_packets.build_phytomer_packets
+    # terminal_leaflet_last=True); build this run's packets the same way unless the caller
+    # already chose. v8 and the v6 cache are bottom-to-top ("0").
+    os.environ.setdefault("PHYTOMER_TERMINAL_LAST", "1" if "_tl" in os.path.basename(os.path.dirname(args.vae_checkpoint)) else "0")
 
     print("=" * 90)
     print("PACKET-LEVEL (26D) VAE RECONSTRUCTION FIDELITY — no XML, no Helios")

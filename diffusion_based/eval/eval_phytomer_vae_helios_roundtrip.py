@@ -53,7 +53,7 @@ from diffusion_based.eval.eval_13d_xml_organ_masks import (
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 DEFAULT_VAE_CHECKPOINT = os.path.join(
-    REPO_ROOT, "diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt")
+    REPO_ROOT, "diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt")
 
 
 def build_ik_only_xml(part_13d: torch.Tensor) -> str:
@@ -138,6 +138,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--vae_checkpoint", type=str, default=DEFAULT_VAE_CHECKPOINT)
     args = parser.parse_args()
+    # A "_tl" VAE was trained on terminal-last packets (phytomer_packets.build_phytomer_packets
+    # terminal_leaflet_last=True); build this run's packets the same way unless the caller
+    # already chose. v8 and the v6 cache are bottom-to-top ("0").
+    os.environ.setdefault("PHYTOMER_TERMINAL_LAST", "1" if "_tl" in os.path.basename(os.path.dirname(args.vae_checkpoint)) else "0")
 
     print("=" * 80)
     print("PHYTOMER VAE + HELIOS ROUNDTRIP CHECK")
