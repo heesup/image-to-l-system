@@ -102,6 +102,36 @@ The step timing makes the split obvious -- warmup epochs ran at `fwd/bwd 1.33s`,
 
 **What replaced it**: job `38240070`, `FORCE_BATCH_SIZE=48` (520 steps/epoch), `RENDER_FRACTION=0.05`, `RENDER_GRAD_START_EPOCH=40`, `SAVE_EVERY=10`, output `checkpoints/hierarchical_fm_derived_rot_v2/`. The reasoning behind deferring the gate to epoch 40: in the cancelled run, self-consistency IoU had already reached 18.3% at epoch 3 with the render loss still off, and only moved to 20.0% once it came on -- so the early gains come from the scaffold and latent losses, and the expensive photometric signal is better spent refining a model that is already roughly right.
 
+### 1.9 OPEN: an intermittent Stage 2 gradient explosion, localised but not root-caused
+
+**Status: blocking a real training run.** Read this before launching one.
+
+**Symptom.** With the render loss OFF, Stage 2 diverges somewhere in epoch 2-3. Onset is a handful of gradient elements past 1e15 with **no NaN**; within ~60 steps it floods, and `clip_grad_norm_` then rescales the whole gradient by ~1e-19, so real signal is crushed and later steps are skipped outright. Job `38240070` ended at `Recovery: 118/524` in epoch 3 and every step of epoch 4 skipped; self-consistency collapsed to IoU 0.0% / Dice 1.000 (an empty silhouette).
+
+**It is not reproducible run-to-run**: epoch 2 in one probe, epoch 3 in another, and clean through epoch 2 in a third, all byte-identical. Nothing seeded weight init or shuffling, which is why `--seed` now exists (commit `2fac3dc`). **Use it from now on when chasing this.**
+
+**What the instrumentation says.** Two tools were added, both of which the previous canary work implied but did not provide:
+
+- The canary now names the parameter it fires on (commit `5e34a3d`). The `[Recovery]` dump cannot: by the time `grad_norm` is NaN, every `coarse_stage` parameter is NaN with `max_finite 0.0`. Only the FIRST canary burst is trustworthy, and it named `coarse_stage.ref_points` -- **one element of 1536, 1.325e15, no NaN**.
+- `FM_GRAD_PROBE=1` hooks the Stage 2 intermediates (commit `ab0910f`). It showed **only `q_pos` (the `ref_pos_mlp` output) carrying the explosion, at 6.3e10 to 1.0e13**, while `edge_bias`, `delta_pos`, `phytomer_pos` and the final `phytomer_features` all stayed under 1e9.
+
+So the gradient **arriving at Stage 2's transformer output is normal (<1e9) while the gradient leaving its input is ~1e13** -- the decoder amplifies internally by about four orders of magnitude, and `ref_points` is simply where that lands, via `q_pos`. Later bursts name `decoder.layers.{1,2,3}` LayerNorm weights and biases and the attention `in_proj` weights, spread widely rather than concentrated.
+
+**Five mechanisms were hypothesised and all five refuted by minimal reproduction** -- recorded so nobody pays for them twice:
+
+1. *The `anc` -> `node` identifier rename aliased two variables.* No: none of the new names existed in either file beforehand.
+2. *`cdist` self-distance backward at coincident points.* No: finite even at exactly zero separation (max grad ~21 with a uniform upstream gradient, ~2.8e-3 through the real attention module).
+3. *Perspective division in `PhytomerVisualProjector`.* No: it is `tanh(pos_to_uv(...))` into a border-padded `grid_sample`, with no division at all.
+4. *An unguarded loss denominator.* No: idle damping is behind `num_idle > 0` and the scaffold losses divide by `max(matched, 1)`, which scales with the numerator.
+5. *The edge-bias magnitude growing as `ref_points` spread.* No: driving the bias from -7 to -988 leaves the gradient into the query flat at ~2e-8.
+
+**The most promising untested lead is loss imbalance, not a numerical singularity.** The evidence for divergence rather than a singularity: in the epoch where the canary first fires, several losses are simultaneously getting *worse* (`Scl` 0.40 -> 0.88, `DAP` 18.4 -> 28.0, ordinal MAE 1.99 -> 2.31, `Pos` 0.0074 -> 0.0126). And the objective is badly unbalanced -- the logged macro losses are printed **pre-weight**, so `Phy: 12.89` at `phy_count_weight 2.0` contributes ~25.8 of a ~33 total, about **78% of the objective**, from a single count regression that feeds the shared trunk. `DAP: 27.99` at weight 0.05 contributes only 1.4 by comparison.
+
+**Suggested order of attack** (none of it tried yet):
+1. Lower `PHY_COUNT_WEIGHT` (one flag, no code change) and see whether the explosion goes away. Cheapest test of the leading hypothesis.
+2. If it survives, reproduce deterministically with `--seed`, then bisect inside the decoder by extending `_probe_grad` to each layer's input and output -- the amplification is somewhere in those four layers.
+3. Only then consider re-introducing bounded per-element clipping. Note that the previous session *removed* a blanket +-100 per-element pre-clamp specifically to stop it masking leaks, and this is plausibly the leak it was masking -- so re-adding it would hide a real defect and should be a deliberate, documented choice, not a reflex.
+
 ---
 
 ## 2. Proposed next step A: move roll + scale prediction from Stage 2 to Stage 3
