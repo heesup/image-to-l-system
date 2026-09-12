@@ -25,6 +25,7 @@
 | **Ordinal = depth from the root; parent-step loss** | `ae26ccb` |
 | **Packet slot-0 rotation forced to identity (it is the reference frame)** | `ef5802d` |
 | **Leaflets emitted as lateral, terminal, lateral — the packet path is now lossless (§2.4)** | `ff5beb4` |
+| **Leaf size is one scalar per node (1 : 1 : 10/9); terminal leaflet identified per node; opt-in terminal-last packet order for v9** | `2f1691b` |
 
 **The blocker is resolved.** The intermittent Stage 2 gradient explosion tracks the **learning rate**, not the architecture: every observed onset sat above ~1.6e-4 effective lr, and job `38240281` at `LR=1e-4` has now run **10 epochs clean** with 0 canary hits, through and well past the point where three of four runs at 3e-4 died. Eight architecture-level hypotheses were tested against minimal reproductions and refuted first; §1.9 records them so nobody pays for them twice.
 
@@ -38,7 +39,7 @@
 
 **Two inference bugs found by looking at the epoch-11 panel rather than the numbers** (§2.3). A 2 cm seedling with 0.6 cm node RMSE rendered at IoU 0.0% because metre-long stems shot across the frame. Fixed in `abce662`; the ordinal follow-up is `ae26ccb`.
 
-**Helios round-trip (§2.4)**: **the packet path is now lossless.** With the VAE replaced by identity it renders at 95.1 / 93.8 / 88.0% FG IoU against IK-only 95.7 / 94.1 / 87.4% (it was 78.9 / 91.6 / 87.4). The whole loss was one ordering bug: `emit_slot_order` wrote a node's leaflets as (lateral, lateral, terminal) while the XML converter assigns leaf yaw by encounter order (lateral, terminal, lateral) and reads only the scale from the row, so the terminal leaflet's scale landed on a lateral and vice versa -- an 11% size swap on two of every three leaflets (`ff5beb4`). The seedling's 17 points were this, not the cotyledon. What remains is the VAE alone: the v8 round-trip is at 83.0 / 89.9 / 79.2% (from 70.3 / 87.8 / 76.2 at the start of the day; `ef5802d` forcing slot-0's rotation to identity gave the middle step). Routing the export through the branch-point parent rule is still 16 points *worse* -- a lateral's first internode axis is not the node-to-node segment.
+**Helios round-trip (§2.4)**: **the packet path is now lossless.** With the VAE replaced by identity it renders at 95.8 / 94.2 / 87.9% FG IoU against IK-only 95.7 / 94.1 / 87.4% (it was 78.9 / 91.6 / 87.4 this morning). The whole loss was leaflet ordering: the XML converter assigns leaf yaw by encounter order (lateral, terminal, lateral) and reads only the scale from the row, `emit_slot_order` wrote slots in numeric order, and the terminal leaflet lives in slot 4 on a rising petiole but slot 2 on a drooping one -- so the terminal's scale landed on a lateral and vice versa, an 11% size swap on two of every three leaflets (`ff5beb4`, `2f1691b`). The seedling's 17 points were this, not the cotyledon. What remains is the VAE alone: the v8 round-trip is at 81.4 / 90.2 / 79.3% (from 70.3 / 87.8 / 76.2 at the start of the day), and the attribution says rotation and scale errors must both come down -- neither alone recovers it. A v9 VAE is training (§2.4, end). Routing the export through the branch-point parent rule is still 16 points *worse* -- a lateral's first internode axis is not the node-to-node segment.
 
 **Next**: when `38240323` writes its epoch-15 checkpoint, stop it and resume from there with `ae26ccb`'s depth target and step loss (plus the fixed inference), so the render-on progress is kept and the ordinal head relearns on top of it. Then §2.1's remaining pieces — Stage 3 consuming `(parent, self)` pairs with the parent held fixed, and noise injection on the fixed parent.
 
@@ -321,13 +322,14 @@ three plants throughout:
 
 | DAP | IK-only | packet path only (VAE = identity) | VAE-v8 round-trip |
 |---|---|---|---|
-| 10 | 95.7% | 78.9 -> **95.1%** | 70.3 -> 70.5 -> **83.0%** |
-| 50 | 94.1% | 91.6 -> **93.8%** | 87.8 -> 90.0 -> **89.9%** |
-| 90 | 87.4% | 87.4 -> **88.0%** | 76.2 -> 79.9 -> **79.2%** |
+| 10 | 95.7% | 78.9 -> 95.1 -> **95.8%** | 70.3 -> 70.5 -> 83.0 -> **81.4%** |
+| 50 | 94.1% | 91.6 -> 93.8 -> **94.2%** | 87.8 -> 90.0 -> 89.9 -> **90.2%** |
+| 90 | 87.4% | 87.4 -> 88.0 -> **87.9%** | 76.2 -> 79.9 -> 79.2 -> **79.3%** |
 
 The middle column runs the same post-decode path with the VAE replaced by identity
 (`strip_base(normalize(packets))`), so it isolates the deterministic packet
-representation from the VAE. The arrows are the two fixes of the afternoon, in order:
+representation from the VAE. The arrows are the three fixes of the afternoon, in
+order (`ef5802d`, `ff5beb4`, `2f1691b`):
 
 **`ef5802d` -- slot 0's rotation is the reference frame.** A packet's slot-0
 (internode) rotation is stored relative to `refs`, which *is* that internode's
@@ -352,6 +354,25 @@ leaflet's scale to a lateral and the lateral's to the terminal. Patching only
 `leaf_scale` in the emitted XML back to the IK values gave 94.3% (IK-only 94.1);
 the code fix gives 95.1 / 93.8 / 88.0. The seedling's 17-point loss was this too:
 the cotyledon second-petiole story below was real but worth well under a point.
+
+**`2f1691b` -- the terminal leaflet is not always slot 4, and leaf size is one
+scalar.** `_canonical_order_key` fills slots 2-4 bottom-to-top; the two laterals
+share a height (0.8 of the petiole) and the terminal sits at the tip, which is
+*below* them when the petiole droops. Terminal in slot 4: 98 of 142 trifoliate
+nodes at DAP 50, 116 of 162 at DAP 90; **in slot 2: the other 44 / 46**; never
+slot 3. `ff5beb4`'s fixed (2, 4, 3) order therefore still swapped 31% of nodes.
+The terminal is now identified per node as the larger of slots 2 and 4 -- exact
+on GT because, on 4,214 trifoliate nodes from 80 plants, the laterals are
+*exactly* equal and the terminal is *exactly* 10/9 of a lateral (std 0.0 on
+both). That same fact makes leaf size one scalar per node, so `assemble_packets`
+re-imposes the 1 : 1 : 10/9 ratio from the mean of the three decoded values and
+puts the identified terminal at the petiole tip. Identity: 95.8 / 94.2 / 87.9 --
+the packet path is exact. On the VAE path the ratio rule is a wash (+/- 1.6
+points; the argmax misfires when the decoded scales are within their ~8% noise
+of each other), which is expected: it cannot create information the VAE lost.
+`build_phytomer_packets(terminal_leaflet_last=True)` (or
+`PHYTOMER_TERMINAL_LAST=1`) orders leaflets by size so the terminal is always
+slot 4; it is opt-in until the v9 cache and VAE adopt it.
 
 **What Helios actually reads from a packet**, established along the way, and the
 reason rotation-error tables for leaflets are irrelevant to this figure: internode
@@ -412,15 +433,41 @@ looked like 17 points, and still true at its real size:
   to IK's values changes 0 pixels. Lost between the 40D tensor and Helios's
   unifoliate phytomer; seedling-only in practice (1 leaf of ~600 at DAP 90).
 
-**What is left is the VAE**: 12.7 / 4.2 / 8.8 points. The earlier attribution (DAP
-90, pre-fix: exact rotations +5.9 of which slot 0 +3.7 and the petiole +2.3; exact
-scale+curvature +2.9; exact leaflet scales alone 76.2 -> 80.2; everything exact
-83.9) was measured with the leaflet order wrong, so it is being re-measured with
-the fix in place and will replace this paragraph. The per-slot VAE-v8 rotation
-error at DAP 90 (present slots, mean / p90 degrees): internode 0.56 / 0.90,
-petiole 2.93 / 4.10, leaflets 2.4 / 3.9, peduncle 5.04 / 7.42, flowers/fruit
-2.3-2.6 / 3.6-4.1. Given what Helios reads (above), the petiole and peduncle
-numbers are the ones that matter; the leaflet numbers do not.
+**What is left is the VAE**: 14.3 / 3.9 / 8.1 points. Re-measured with the fixed
+emit order (before `2f1691b`; FG IoU, GT presence throughout, each row replaces
+the named decoded columns with the exact ones):
+
+| variant | DAP 10 | DAP 50 | DAP 90 |
+|---|---|---|---|
+| VAE-v8 as-is | 83.0 | 89.9 | 79.2 |
+| + exact leaflet scales (slots 2-4) | 88.8 | 89.4 | 80.1 |
+| + exact petiole scale+curvature | 83.2 | 89.8 | 79.1 |
+| + exact petiole rotation | 84.8 | 90.5 | 83.0 |
+| + exact internode rotation | 83.0 | 89.9 | 79.2 |
+| + exact rotations, all slots | 84.8 | 90.5 | 82.6 |
+| + exact scales, all slots | 90.1 | 89.9 | 79.7 |
+| + exact scales+curvature, all slots | 90.1 | 89.5 | 83.9 |
+| + exact rot+scale+curv, all slots (= identity) | 95.1 | 93.8 | 88.0 |
+
+Two things to read off. (1) **The loss is not additive**: at DAP 50 no single
+family recovers anything (rotations 90.5, scales 89.9) yet both together give
+93.8 -- a leaf that is both displaced and mis-sized fails to overlap until *both*
+are right, so a v9 has to improve rotation and scale fidelity together, not one
+of them. (2) The internode row is flat because `ef5802d` already forces slot 0 to
+identity. The VAE-v8 errors that matter, per slot (present slots, mean): petiole
+rotation 2.9 deg (p90 4.1), peduncle 5.0 deg; relative scale error leaflets 7-8%,
+petiole 1.5-5.6%, peduncle 11%, flowers/fruit 12-22%, internode 17-39% (unused
+for chained nodes). Leaflet rotation error is irrelevant to Helios (see "What
+Helios actually reads"), though the PyTorch training render does draw it.
+
+**v9 in progress** (local GPU, `slurm_scripts/logs/local_vae_v9/`): the v8 recipe
+(128D = 48 + 10x8, 60 epochs on 4,000 files, 208 s) rerun with 8,000 files and
+120 epochs, once with `PHYTOMER_TERMINAL_LAST=1` (`phytomer_vae_v9_tl`) and once
+without (`phytomer_vae_v9_ctrl`) so the convention's effect is separable from the
+longer training. Judge on `eval_phytomer_vae_packet_fidelity.py` first, then the
+Helios round-trip. Adopting a v9 means bumping `PKT_VERSION`, regenerating
+`dataset/cache/cowpea_curv26_pkt` (it stores the VAE latent), and retraining
+Stage 3 -- so it should land before the next long FM run, not during one.
 
 ---
 
@@ -502,5 +549,7 @@ c62e995 docs: regenerate fig14 and decompose the Helios round-trip gap
 c83d8c1 docs: decompose the seedling round-trip loss; two more refuted causes
 ef5802d fix(packets): slot-0 rotation is the reference frame; force it to identity
 ff5beb4 fix(packets): emit leaflets as lateral, terminal, lateral
+c658416 docs: the packet path is lossless; regenerate fig14 after the leaflet-order fix
+2f1691b feat(packets): leaf size is one scalar per node; identify the terminal leaflet per node
 ```
 (Earlier the same day, see the previous doc's own commit log for the hybrid VAE / render-loss / canary-guard commits.)

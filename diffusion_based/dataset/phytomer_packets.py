@@ -596,7 +596,7 @@ def build_phytomer_packets(
     reference_rot: Optional[torch.Tensor] = None,
     phytomer_ids: Optional[torch.Tensor] = None,
     return_keys: bool = False,
-    terminal_leaflet_last: bool = False,
+    terminal_leaflet_last: Optional[bool] = None,
 ) -> Tuple[torch.Tensor, ...]:
     """Packs active organs into canonical 10-slot phytomer packets.
 
@@ -643,8 +643,12 @@ def build_phytomer_packets(
                  downstream code identifies the terminal per node
                  (`terminal_leaflet_is_slot2`) so both conventions decode
                  correctly. Switch on together with a PKT_VERSION bump and a
-                 VAE retrain.
+                 VAE retrain. None (default) reads PHYTOMER_TERMINAL_LAST=1
+                 from the environment, so a VAE experiment can flip the
+                 convention for every builder call in its process.
     """
+    if terminal_leaflet_last is None:
+        terminal_leaflet_last = os.environ.get("PHYTOMER_TERMINAL_LAST", "0") == "1"
     device = nodes_26d.device
     ot = nodes_26d[:, :FM_OT_END].argmax(dim=-1)
     if existence_mask is None:
