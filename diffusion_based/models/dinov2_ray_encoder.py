@@ -21,6 +21,7 @@ DINOv3 web weights are license-gated: download them manually and point
 SAT-493M checkpoint is resolved from the torch hub cache by default.
 """
 
+import math
 import os
 from dataclasses import dataclass
 from typing import Optional
@@ -114,23 +115,30 @@ class DINORayEncoder(nn.Module):
         else:
             self.proj = nn.Identity()
 
-        # 3D Ray Positional Embedding (PETR / DUSt3R style):
-        # ray direction v = [x_ndc, y_ndc, 1.0]^T normalized per patch.
-        self.ray_mlp = nn.Sequential(
-            nn.Linear(3, embed_dim),
-            nn.GELU(),
-            nn.Linear(embed_dim, embed_dim),
-        )
-
         coords = torch.linspace(-1.0, 1.0, grid)
         grid_y, grid_x = torch.meshgrid(coords, coords, indexing="ij")
         grid_z = torch.ones_like(grid_x)
         rays = torch.stack([grid_x, grid_y, grid_z], dim=-1)  # (grid, grid, 3)
         rays = rays / torch.norm(rays, dim=-1, keepdim=True)
-        self.register_buffer("canonical_rays", rays.view(1, self.num_patches, 3))
+        rays_flat = rays.view(1, self.num_patches, 3)
+        self.register_buffer("canonical_rays", rays_flat)
+
+        # 3D Ray Positional Embedding (Sinusoidal Fourier Features, NeRF / Transformer style):
+        # Maps 3D unit ray directions deterministically into embed_dim using multi-frequency sine/cosine bands.
+        # 100% deterministic, 0 random weights, 0 trainable parameters, perfectly continuous 3D coordinate frame.
+        num_freqs = embed_dim // 6
+        freq_bands = (2.0 ** torch.linspace(0.0, num_freqs - 1, num_freqs)) * math.pi
+        args = rays_flat.unsqueeze(-1) * freq_bands.view(1, 1, 1, num_freqs)
+        sin_feats = torch.sin(args)
+        cos_feats = torch.cos(args)
+        sinusoidal_ray_embed = torch.cat([sin_feats, cos_feats], dim=-1).flatten(start_dim=-2)
+        if sinusoidal_ray_embed.shape[-1] < embed_dim:
+            pad = embed_dim - sinusoidal_ray_embed.shape[-1]
+            sinusoidal_ray_embed = F.pad(sinusoidal_ray_embed, (0, pad))
+        self.register_buffer("canonical_ray_embed", sinusoidal_ray_embed.view(1, self.num_patches, embed_dim))
 
         if freeze_backbone:
-            for p in self.backbone.parameters():
+            for p in self.parameters():
                 p.requires_grad = False
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -158,7 +166,7 @@ class DINORayEncoder(nn.Module):
                 f"Backbone '{self.backbone_name}' produced {patch_tokens.shape[1]} patch tokens "
                 f"at input {self.input_size}, expected {self.num_patches}.")
 
-        patch_tokens = patch_tokens + self.ray_mlp(self.canonical_rays.clone().to(patch_tokens.dtype))
+        patch_tokens = patch_tokens + self.canonical_ray_embed.to(dtype=patch_tokens.dtype)
         return torch.cat([cls_token, patch_tokens], dim=1)
 
 

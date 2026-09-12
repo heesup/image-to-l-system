@@ -172,7 +172,7 @@ class TestHierarchicalFlowMatching(unittest.TestCase):
         self.assertIn("anchor_pos_loss", metrics)
         self.assertIn("anchor_exist_loss", metrics)
         self.assertIn("dense_depth_loss", metrics)
-        self.assertIn("cos_color_loss", metrics)
+        self.assertIn("silhouette_dice_loss", metrics)
         self.assertIn("cls_acc", metrics)
 
     def test_role_partitioned_matcher(self):
