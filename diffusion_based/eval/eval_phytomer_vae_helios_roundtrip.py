@@ -50,7 +50,7 @@ from diffusion_based.eval.eval_13d_xml_organ_masks import (
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 DEFAULT_VAE_CHECKPOINT = os.path.join(
-    REPO_ROOT, "diffusion_based/checkpoints/phytomer_vae_v6/phytomer_vae_64d_best.pt")
+    REPO_ROOT, "diffusion_based/checkpoints/phytomer_vae_v7/phytomer_vae_64d_best.pt")
 
 
 def build_ik_only_xml(part_13d: torch.Tensor) -> str:

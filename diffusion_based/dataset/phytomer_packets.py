@@ -84,7 +84,14 @@ FM_SCALE_END = FM_SCALE_START + 3  # 25
 #
 # ASSEMBLY_TYPE: base == center (zeroed), petiole-curve point (computed), or
 # peduncle-curve tip (computed) — ALL deterministic; nothing is VAE-learned.
-DETERMINISTIC_ORGAN_TYPES = {1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12}  # stem, petiole, peduncle, buds, flowers, fruit
+# stem, petiole, LEAFLET, peduncle, buds, flowers, fruit.
+# ORGAN_LEAF (5) belongs here: leaflet bases are reconstructed from the petiole
+# curve below, and assemble_packets gates that reconstruction on membership in
+# this set. Dropping 5 (regression found 2026-09-11) made the leaflet branch
+# dead code, so every VAE-decoded leaflet stayed at its decoded base of zero —
+# i.e. collapsed onto the phytomer centre instead of sitting out along the
+# petiole (measured: 100% of a 1.3-5.9 cm offset lost, DAP 10-90).
+DETERMINISTIC_ORGAN_TYPES = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
 # Leaflet attach arc-fractions along the petiole curve (XML-phytomer verified:
 # slot 2/3 = 0.800, slot 4 = 0.991-1.000, error <= 0.005).
 LEAFLET_ATTACH_FRAC = {2: 0.8, 3: 0.8, 4: 1.0}

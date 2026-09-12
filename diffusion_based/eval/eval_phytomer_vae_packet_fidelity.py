@@ -38,7 +38,7 @@ from diffusion_based.eval.eval_13d_xml_organ_masks import TEST_PLANTS
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 DEFAULT_VAE_CHECKPOINT = os.path.join(
-    REPO_ROOT, "diffusion_based/checkpoints/phytomer_vae_v6/phytomer_vae_64d_best.pt")
+    REPO_ROOT, "diffusion_based/checkpoints/phytomer_vae_v7/phytomer_vae_64d_best.pt")
 SLOT_NAMES = ["Internode", "Petiole", "Leaflet2", "Leaflet3", "Leaflet4",
               "Peduncle", "Repro6", "Repro7", "Repro8", "Repro9"]
 

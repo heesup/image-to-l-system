@@ -105,16 +105,20 @@ class PhytomerVAE(nn.Module):
         # genuinely different rotations/scales, and reproducing that per-organ
         # variation from the latent is exactly what these layers exist for.
         self.organ_cls = nn.Linear(hidden_dim, slots_per_phytomer * num_classes)
-        # Rotation gets an extra layer: measured 2026-09-11, a single Linear here
-        # leaves petiole rotation at ~23 deg error because the shared backbone
-        # bottlenecks the 60 rotation dims. Petiole error matters most — leaflet
-        # bases are integrated along the petiole curve, so its rotation error
-        # propagates straight into organ positions.
+        # Rotation reads z directly instead of the shared backbone output.
+        # Measured 2026-09-11 on DAP 10/50/90: taking the backbone's h costs
+        # petiole rotation accuracy badly (23 deg from a 1-layer head, 37-60 deg
+        # from a 2-layer one) because the shared trunk discards rotation detail
+        # that no downstream depth can recover. Reading z recovers ~15 deg.
+        # Petiole is the one that matters: leaflet bases are integrated along
+        # its curve, so its error propagates straight into organ positions.
         self.organ_rots = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(latent_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.SiLU(),
-            nn.Linear(hidden_dim, slots_per_phytomer * 6),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.SiLU(),
+            nn.Linear(hidden_dim // 2, slots_per_phytomer * 6),
         )
         self.organ_scales = nn.Linear(hidden_dim, slots_per_phytomer * 3)
         self.organ_curvs = nn.Linear(hidden_dim, slots_per_phytomer * 1)
@@ -169,7 +173,7 @@ class PhytomerVAE(nn.Module):
         h = self.decoder_backbone(z)
         pred_cls_logits = self.organ_cls(h).reshape(P, S, self.num_classes)   # (P, 10, 13)
         pred_base = torch.zeros(P, S, 3, device=z.device, dtype=z.dtype)       # (P, 10, 3) zeroed
-        pred_rot = self.organ_rots(h).reshape(P, S, 6)                           # (P, 10, 6)
+        pred_rot = self.organ_rots(z).reshape(P, S, 6)                           # (P, 10, 6)
         pred_scale = F.softplus(self.organ_scales(h)).reshape(P, S, 3) + 1e-4    # (P, 10, 3)
         pred_curv = self.organ_curvs(h).reshape(P, S, 1)                         # (P, 10, 1)
 
