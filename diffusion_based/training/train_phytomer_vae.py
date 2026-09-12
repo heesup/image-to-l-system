@@ -189,9 +189,6 @@ def main():
                              "(stem/petiole/peduncle); full Frobenius elsewhere.")
     parser.add_argument("--ortho-reg-weight", type=float, default=0.0,
                         help="Orthonormality penalty on raw 6D outputs.")
-    parser.add_argument("--rot-branch", action="store_true",
-                        help="Route rotation through the dedicated branch "
-                             "(separate pathway from z, not the shared backbone).")
     parser.add_argument("--hungarian-roles", action="store_true",
                         help="Resolve multi-GT role ambiguity by optimal bipartite matching "
                              "instead of fixed canonical order. REQUIRES warm-start "
@@ -257,7 +254,7 @@ def main():
         for bp, br in train_loader:
             bp, br = bp.to(device), br.to(device)
             optimizer.zero_grad(set_to_none=True)
-            out = model(bp, br, use_rot_branch=args.rot_branch)
+            out = model(bp, br)
             losses = model.compute_loss(
                 out, bp, br, beta_kl=args.beta_kl, rot_weight=args.rot_weight,
                 symmetry_aware_rot=args.symmetry_aware_rot,
@@ -279,7 +276,7 @@ def main():
             for i in range(0, val_pack.shape[0], args.batch_size):
                 vp = val_pack[i:i + args.batch_size].to(device)
                 vr = val_pres[i:i + args.batch_size].to(device)
-                out = model(vp, vr, use_rot_branch=args.rot_branch)
+                out = model(vp, vr)
                 vl = model.compute_loss(out, vp, vr, beta_kl=args.beta_kl)
                 v_recon += float(vl["recon_loss"])
                 v_acc += float(vl["cls_acc"])

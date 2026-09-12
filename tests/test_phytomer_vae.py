@@ -47,20 +47,6 @@ class TestPhytomerVAE(unittest.TestCase):
                 self.assertTrue(torch.isfinite(losses[k]).all())
             losses["loss"].backward()
             for name, p in vae.named_parameters():
-                if name.startswith("rot_branch") or name.startswith("head_rot_dedicated"):
-                    continue  # only active under use_rot_branch=True (tested below)
-                self.assertIsNotNone(p.grad, f"missing grad: {name}")
-                self.assertTrue(torch.isfinite(p.grad).all(), f"nonfinite grad: {name}")
-
-    def test_rot_branch_gradients(self):
-        """Dedicated rotation branch receives gradients when enabled."""
-        vae = PhytomerVAE(latent_dim=32)
-        packets, presence = _synthetic_packet_bag(10)
-        out = vae(packets, presence, use_rot_branch=True)
-        self.assertEqual(out["rot"].shape, (10, NUM_SLOTS, 6))
-        vae.compute_loss(out, packets, presence)["loss"].backward()
-        for name, p in vae.named_parameters():
-            if name.startswith("rot_branch") or name.startswith("head_rot_dedicated"):
                 self.assertIsNotNone(p.grad, f"missing grad: {name}")
                 self.assertTrue(torch.isfinite(p.grad).all(), f"nonfinite grad: {name}")
 
@@ -119,8 +105,6 @@ class TestPhytomerVAE(unittest.TestCase):
         self.assertTrue(torch.isfinite(losses["loss"]))
         losses["loss"].backward()
         for name, p in vae.named_parameters():
-            if name.startswith("rot_branch") or name.startswith("head_rot_dedicated"):
-                continue  # only active under use_rot_branch=True
             self.assertIsNotNone(p.grad, f"missing grad: {name}")
 
     def test_eval_mode_deterministic(self):

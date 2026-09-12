@@ -62,7 +62,7 @@ echo "Render gate: fast warmup bypass (epochs 1-3) -> active at epoch ${RENDER_G
 echo "Eval cadence: every ${EVAL_EVERY:-25} epochs OR every ${EVAL_MIN_INTERVAL_MINUTES:-30} min (time fallback)"
 echo "Render fraction: ${RENDER_FRACTION:-0.167} of batch per step (batch-relative; 2-scale pyramid 1x/2x — profiling 2026-09-09: render was 70% of step time)"
 echo "Flow granularity: ${FLOW_GRANULARITY:-phytomer} (hybrid decoupled: pure 64D VAE latent flow + Stage 2 3D scaffold)"
-echo "Phytomer VAE: ${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_v4/phytomer_vae_64d_best.pt}"
+echo "Phytomer VAE: ${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_v3/phytomer_vae_64d_best.pt}"
 echo "Pkt cache dir: ${PKT_CACHE_DIR:-dataset/cache/cowpea_curv26_pkt} (missing samples fall back to on-the-fly)"
 echo "Backbone: ${BACKBONE}${FREEZE_ARGS:+ (frozen)} | Output: ${OUTPUT_DIR} | Epochs: ${EPOCHS}"
 echo "Train subset: ${MAX_TRAIN_SAMPLES:-0} (0 = full dataset)"
@@ -104,7 +104,7 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     ${FREEZE_ARGS} \
     ${DETECT_ANOMALY_ARGS} \
     --phytomer_latent_dim "${PHYTOMER_LATENT_DIM:-64}" \
-    --phytomer_vae_checkpoint "${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_v4/phytomer_vae_64d_best.pt}" \
+    --phytomer_vae_checkpoint "${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_v3/phytomer_vae_64d_best.pt}" \
     --pkt_cache_dir "${PKT_CACHE_DIR:-dataset/cache/cowpea_curv26_pkt}" \
     --max_anchors 512 \
     --slots_per_anchor "${SLOTS_PER_ANCHOR:-10}" \

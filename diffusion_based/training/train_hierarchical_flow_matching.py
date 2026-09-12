@@ -486,7 +486,7 @@ def forward_backward_step(
         total_cls_slots = 0
         with torch.no_grad():
             clean_lat = clean_z1
-            vae_out = phytomer_vae.decode(clean_lat.reshape(-1, D), use_rot_branch=True)
+            vae_out = phytomer_vae.decode(clean_lat.reshape(-1, D))
             pred_cls_all = vae_out["cls_logits"].argmax(-1).reshape(B, K_eff, M)  # (B, K, M)
             for b, anc_src, tgt_cls_b, pres_b in cls_acc_data:
                 pred_cls_m = pred_cls_all[b, anc_src]

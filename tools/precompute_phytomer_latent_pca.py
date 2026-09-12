@@ -5,7 +5,7 @@ Two modes:
 1. Full build (default): builds canonical 10-slot phytomer packets from the
    cache dataset using EXACT XML phytomer membership (cache field
    `phytomer_ids`), encodes them with the frozen accepted PhytomerVAE
-   (phytomer_vae_xml, use_rot_branch=True).
+   (phytomer_vae_xml).
 
 2. Fast path (--from-pkt-cache): reuses packets + frozen-VAE latents already
    stored in the pkt cache (dataset/cache/cowpea_curv26_pkt/, produced by

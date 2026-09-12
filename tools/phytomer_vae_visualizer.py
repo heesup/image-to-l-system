@@ -10,7 +10,7 @@ centers, packets, dap, meta.json).
 Usage (workspace root):
     .../bin/python tools/phytomer_vae_visualizer.py \
         --cache dataset/cache/phytomer_gui_cache \
-        --ckpt diffusion_based/checkpoints/phytomer_vae_v2/phytomer_vae_64d_best.pt \
+        --ckpt diffusion_based/checkpoints/phytomer_vae_v4/phytomer_vae_64d_best.pt \
         --server-name 0.0.0.0 --server-port 7860
 """
 
@@ -58,7 +58,7 @@ ORGAN_NAMES = {
     9: "flower_closed", 10: "flower_open", 11: "fruit", 12: "bud_aborted",
 }
 
-SLOT_ROLES = ["stem", "petiole", "leaflet1", "leaflet2", "leaflet3",
+SLOT_ROLES = ["petiole", "leaflet1", "leaflet2", "leaflet3",
               "peduncle", "repro1", "repro2", "repro3", "repro4"]
 
 PCA2D_SIZE = 700  # px, matplotlib image side
@@ -141,7 +141,7 @@ class PhytomerVisualizer:
         (ids (P,) int64, names list[str] indexable by id).
         """
         labels = self.packets[:, :, :FM_OT_END].argmax(-1)  # (P, 8)
-        cat_of = {3: "internode", 4: "petiole", 5: "leaf", 6: "peduncle",
+        cat_of = {4: "petiole", 5: "leaf", 6: "peduncle",
                   9: "flower", 10: "flower", 11: "fruit"}
         combos = []
         for i in range(self.n):
@@ -334,7 +334,7 @@ class PhytomerVisualizer:
         """
         zt = torch.from_numpy(z.astype(np.float32)).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            out = self.model.decode(zt, use_rot_branch=True)
+            out = self.model.decode(zt)
         rel = out["recon_packets"][0].cpu()
         # v3: decode output has NORMALIZED scales — restore absolute with the
         # GT s_a (real packet) or the mean s_a (slider latents).
@@ -549,8 +549,7 @@ def build_app(viz: PhytomerVisualizer):
     with gr.Blocks(theme=gr.themes.Base(primary_hue="green"), title="PhytomerVAE-64 Visualizer") as demo:
         gr.Markdown(
             f"# PhytomerVAE-64 Latent Visualizer\n"
-            f"**{viz.n:,} packets** · PCA evr {meta['pca_evr'][0]*100:.1f}/{meta['pca_evr'][1]*100:.1f}/{meta['pca_evr'][2]*100:.1f}% · "
-            f"decode `use_rot_branch=True`"
+            f"**{viz.n:,} packets** · PCA evr {meta['pca_evr'][0]*100:.1f}/{meta['pca_evr'][1]*100:.1f}/{meta['pca_evr'][2]*100:.1f}%"
         )
         with gr.Row():
             # ---------------- left: PCA cloud ----------------
@@ -665,7 +664,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cache", type=str, default="dataset/cache/phytomer_gui_cache")
     parser.add_argument("--ckpt", type=str,
-                        default="diffusion_based/checkpoints/phytomer_vae_v2/phytomer_vae_64d_best.pt")
+                        default="diffusion_based/checkpoints/phytomer_vae_v4/phytomer_vae_64d_best.pt")
     parser.add_argument("--server-name", type=str, default="0.0.0.0")
     parser.add_argument("--server-port", type=int, default=7860)
     parser.add_argument("--device", type=str, default="cuda:0")

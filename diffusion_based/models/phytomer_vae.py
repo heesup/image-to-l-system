@@ -100,23 +100,24 @@ class PhytomerVAE(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.SiLU(),
         )
-        self.head_cls = nn.Linear(hidden_dim, slots_per_phytomer * num_classes)
-        self.head_rot = nn.Linear(hidden_dim, slots_per_phytomer * 6)
-        self.head_scale = nn.Linear(hidden_dim, slots_per_phytomer * 3)
-        self.head_curv = nn.Linear(hidden_dim, slots_per_phytomer * 1)
-
-        # Dedicated rotation branch (opt-in via decode(use_rot_branch=True)):
-        # rotation detail was squeezed by the shared backbone bottleneck (Exp B
-        # diagnosis: error spread evenly across roles, 128D latent didn't help).
-        # Gives the 48 rotation dims their own pathway from z.
-        self.rot_branch = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim),
+        # One output layer per quantity. Each emits values for ALL slots_per_phytomer
+        # organs at once, hence the plural: the 3 leaflets of one phytomer have
+        # genuinely different rotations/scales, and reproducing that per-organ
+        # variation from the latent is exactly what these layers exist for.
+        self.organ_cls = nn.Linear(hidden_dim, slots_per_phytomer * num_classes)
+        # Rotation gets an extra layer: measured 2026-09-11, a single Linear here
+        # leaves petiole rotation at ~23 deg error because the shared backbone
+        # bottlenecks the 60 rotation dims. Petiole error matters most — leaflet
+        # bases are integrated along the petiole curve, so its rotation error
+        # propagates straight into organ positions.
+        self.organ_rots = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.SiLU(),
+            nn.Linear(hidden_dim, slots_per_phytomer * 6),
         )
-        self.head_rot_dedicated = nn.Linear(hidden_dim // 2, slots_per_phytomer * 6)
+        self.organ_scales = nn.Linear(hidden_dim, slots_per_phytomer * 3)
+        self.organ_curvs = nn.Linear(hidden_dim, slots_per_phytomer * 1)
 
     def pack_input(self, packets: torch.Tensor, presence: torch.Tensor) -> torch.Tensor:
         """Flattens (P, 10, 26) + (P, 10) presence -> (P, 240) encoder input.
@@ -154,7 +155,7 @@ class PhytomerVAE(nn.Module):
             return mu + eps * std
         return mu
 
-    def decode(self, z: torch.Tensor, use_rot_branch: bool = False) -> Dict[str, torch.Tensor]:
+    def decode(self, z: torch.Tensor) -> Dict[str, torch.Tensor]:
         """Decodes (P, D) latents into (P, 10, 26) FM packets.
 
         Base columns are ZERO: with EXACT XML phytomer clustering every slot's
@@ -162,21 +163,15 @@ class PhytomerVAE(nn.Module):
         0.8/1.0 x the petiole curve), so the caller's assemble_packets()
         reconstructs them. Only flower/fruit bases (rare) are VAE-learned and
         passed through by assemble_packets.
-
-        use_rot_branch=True routes rotation through the dedicated branch
-        (see __init__) instead of the shared backbone head.
         """
         P = z.shape[0]
         S = self.slots_per_phytomer
         h = self.decoder_backbone(z)
-        pred_cls_logits = self.head_cls(h).reshape(P, S, self.num_classes)     # (P, 10, 13)
+        pred_cls_logits = self.organ_cls(h).reshape(P, S, self.num_classes)   # (P, 10, 13)
         pred_base = torch.zeros(P, S, 3, device=z.device, dtype=z.dtype)       # (P, 10, 3) zeroed
-        if use_rot_branch:
-            pred_rot = self.head_rot_dedicated(self.rot_branch(z)).reshape(P, S, 6)  # (P, 10, 6)
-        else:
-            pred_rot = self.head_rot(h).reshape(P, S, 6)                       # (P, 10, 6)
-        pred_scale = F.softplus(self.head_scale(h)).reshape(P, S, 3) + 1e-4    # (P, 10, 3)
-        pred_curv = self.head_curv(h).reshape(P, S, 1)                         # (P, 10, 1)
+        pred_rot = self.organ_rots(h).reshape(P, S, 6)                           # (P, 10, 6)
+        pred_scale = F.softplus(self.organ_scales(h)).reshape(P, S, 3) + 1e-4    # (P, 10, 3)
+        pred_curv = self.organ_curvs(h).reshape(P, S, 1)                         # (P, 10, 1)
 
         pred_probs = F.softmax(pred_cls_logits, dim=-1)
         pred_26d = torch.cat([pred_probs, pred_base, pred_rot, pred_scale, pred_curv], dim=-1)
@@ -191,12 +186,11 @@ class PhytomerVAE(nn.Module):
 
     def forward(
         self, packets: torch.Tensor, presence: torch.Tensor,
-        use_rot_branch: bool = False,
     ) -> Dict[str, torch.Tensor]:
         x = self.pack_input(packets, presence)
         mu, logvar = self.encode(x)
         z = self.reparameterize(mu, logvar)
-        out = self.decode(z, use_rot_branch=use_rot_branch)
+        out = self.decode(z)
         out["mu"] = mu
         out["logvar"] = logvar
         out["z"] = z

@@ -45,8 +45,7 @@ ${PYTHON_BIN} diffusion_based/training/train_phytomer_vae.py \
     --max-files "${MAX_FILES:-4000}" \
     --seed "${SEED:-0}" \
     --packet-cache "/tmp/opencode/phytomer_packets_${MAX_FILES:-4000}_v2.pt" \
-    --checkpoint-dir "${CHECKPOINT_DIR:-diffusion_based/checkpoints/phytomer_vae}" \
-    --rot-branch \
+    --checkpoint-dir "${CHECKPOINT_DIR:-diffusion_based/checkpoints/phytomer_vae_v6}" \
     --pkt-cache-dir "${PKT_CACHE_DIR:-}" \
     --pkt-workers "${PKT_WORKERS:-28}" \
     --device cuda:0
