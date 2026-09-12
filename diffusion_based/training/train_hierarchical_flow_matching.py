@@ -1322,18 +1322,38 @@ def train_one_epoch(
         # upstream, not a normal event to silently absorb.
         GRAD_ELEM_CANARY = 1e15
         step_canary_hits = 0
-        for p in model.parameters():
+        canary_named = []
+        for name, p in model.named_parameters():
             if p.grad is not None:
                 over = p.grad.abs() > GRAD_ELEM_CANARY
                 if bool(over.any()):
-                    step_canary_hits += int(over.sum().item())
+                    n_over = int(over.sum().item())
+                    step_canary_hits += n_over
+                    # Name the origin. By the time grad_norm goes NaN every
+                    # parameter downstream is NaN and the Recovery dump cannot
+                    # localise anything, but the FIRST canary step carries only
+                    # a handful of elements and points straight at the leak.
+                    if len(canary_named) < 8:
+                        finite = p.grad[torch.isfinite(p.grad)].abs()
+                        canary_named.append(
+                            f"{name} (over:{n_over}/{p.grad.numel()}, shape:{list(p.shape)}, "
+                            f"max_finite:{float(finite.max()) if finite.numel() else 0.0:.3e}, "
+                            f"nan:{int(torch.isnan(p.grad).sum())})")
                     p.grad.clamp_(-GRAD_ELEM_CANARY, GRAD_ELEM_CANARY)
         if step_canary_hits > 0:
+            first_canary = canary_elem_hits == 0
             canary_elem_hits += step_canary_hits
             if rank == 0:
                 print(f"  [Canary] Step {batch_idx+1}: {step_canary_hits} grad elements exceeded "
                       f"{GRAD_ELEM_CANARY:.0e} before clip_grad_norm_ -- should not happen if the "
                       f"known Stage2/Stage3 leaks stay fixed; investigate rather than trust the clamp.")
+                # Only the first burst is dumped: later steps are flooded with
+                # NaN from everything downstream and add noise, not information.
+                if first_canary:
+                    print(f"  [Canary] FIRST occurrence, {len(canary_named)} of the affected "
+                          f"parameters (this is the localisation, read it):")
+                    for cn in canary_named:
+                        print(f"    => {cn}")
 
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         if torch.isnan(grad_norm) or torch.isinf(grad_norm):
