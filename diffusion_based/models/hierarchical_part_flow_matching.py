@@ -57,6 +57,10 @@ PHYTOMER_MARGIN = 1.10
 PHYTOMER_MARGIN_FLAT = 6.0
 PHYTOMER_MARGIN_MIN = 1.05
 
+# Ceiling on the Stage-2 phytomer scale head, in FM units (x SCALE_SCALE = 50),
+# so 25.0 = 50 cm. Ground-truth petiole length tops out near 4.0 FM units.
+SCALE_CEIL = 25.0
+
 
 def safe_normalize(v: torch.Tensor, eps: float = 1e-3) -> torch.Tensor:
     """Safely normalizes vectors along the last dimension with bounded gradient.
@@ -511,7 +515,17 @@ class CoarseSkeletalTransformer(nn.Module):
         e2 = safe_normalize(u2, eps=1e-3)
         phytomer_rot = torch.cat([e1, e2], dim=-1)
 
-        phytomer_scale = (F.softplus(self.scale_head(phytomer_features)) + 1e-4).clamp(max=2.0)  # (B, K, 3)
+        # Soft ceiling, not clamp(max=2.0). That clamp capped s_a at 4 cm while
+        # the target (the petiole scale row, x SCALE_SCALE=50) averages 6.23 cm:
+        # measured 2026-09-11, 88.6% of ground-truth phytomers sat above the
+        # ceiling (83.5% at DAP 50, 98.5% at DAP 90). clamp has zero gradient
+        # past its limit, so the head could not learn its way out, and since
+        # denormalize_packet_scales multiplies every slot by s_a, that shrank
+        # whole mature phytomers. SCALE_CEIL = 25.0 is 50 cm, well above the
+        # observed maximum, and tanh keeps it saturating smoothly rather than
+        # killing the gradient.
+        phytomer_scale = SCALE_CEIL * torch.tanh(
+            (F.softplus(self.scale_head(phytomer_features)) + 1e-4) / SCALE_CEIL)  # (B, K, 3)
 
         # Option B Gradient Isolation Barrier for Differentiable Rendering:
         # Render loss (depth & dice) directly trains pos_head, rot_head, and scale_head weights
@@ -530,7 +544,8 @@ class CoarseSkeletalTransformer(nn.Module):
         e2_r = safe_normalize(u2_r, eps=1e-3)
         phytomer_rot_render = torch.cat([e1_r, e2_r], dim=-1)
 
-        phytomer_scale_render = (F.softplus(self.scale_head(feat_render)) + 1e-4).clamp(max=2.0)
+        phytomer_scale_render = SCALE_CEIL * torch.tanh(
+            (F.softplus(self.scale_head(feat_render)) + 1e-4) / SCALE_CEIL)
 
         # Re-slice the soft margin prior to the active width (computed once, full width)
         macro_out = {
