@@ -117,6 +117,25 @@ A stronger reframing of (b)/(c), proposed mid-session: instead of Stage 2 predic
 
 **Revised experiment scope for §6's cheap measurement**: in addition to the plain ordinal+distance-only recovery number, also test whether an uncertainty-*proxy*-weighted directional cost beats the fixed-weight one on GT data -- e.g., weight the direction term by local node density (nearest-neighbor spacing) as a stand-in for "how ambiguous is this node's assignment," since a real learned concentration doesn't exist without training. A clear win from adaptive weighting over fixed weighting would be a strong signal to invest in the full distributional-head design rather than either simpler alternative.
 
+### 6.2 Measurement result (2026-09-11, `/tmp/topology_measure.py`, GT positions/rotations, 8 plants/DAP)
+
+`chain_phytomers` parent-recovery accuracy, all four configurations sharing the same GT `is_base` gate (so these numbers are internally comparable to each other but **not** directly comparable to the "40-52% distance alone" figure in this module's own docstring above -- that number did not have GT `is_base` fed in, this measurement always does):
+
+| Config | DAP10 | DAP50 | DAP90 |
+|---|---:|---:|---:|
+| A: dist + direction + ordinal (current default) | 100.0% | 95.4% | 98.9% |
+| **B: dist + ordinal, NO direction** | **97.5%** | **94.5%** | **97.7%** |
+| C: dist + direction, NO ordinal | 100.0% | 94.7% | 98.1% |
+| D: dist only, neither cue | 97.5% | 89.7% | 93.6% |
+
+**Reading**: dropping the rotation-based directional cue entirely (B vs A) costs at most 2.5 points, and less than 1 point at DAP50 -- the ordinal signal (this session's earlier addition) already carries almost all of what direction was contributing to topology recovery. Direction and ordinal are also largely redundant with *each other* (C is nearly as good as A): either one, combined with distance, gets most of the way there.
+
+The density-weighted variant (approximating adaptive/uncertainty weighting by rescaling the global `dir_weight` from local nearest-neighbor spacing) reproduced config A's numbers almost exactly -- this is expected and **not informative**: it is still one global scalar per plant, not a real per-node learned confidence, so it cannot be read as evidence for or against §6.1's distributional-head proposal. A real test of that idea needs an actual trained concentration/variance output, not a GT-derived proxy.
+
+**Reading against the decision rule in §6**: config B clears the "≥95% and close to the 100% combined number" bar at DAP10 and DAP90 (97.5%/97.7%) and is within 1 point of the combined number at DAP50 (94.5% vs 95.4%) -- **this supports proceeding with (b): shrinking Stage 2's rotation head to a 1-DOF roll**, deriving the 2-DOF direction from resolved topology + positions instead. §6.1's PDF-based reframing remains the more principled longer-term direction but is not needed to justify this specific, smaller step, and its actual benefit is still unmeasured pending a real trained uncertainty output.
+
+**Caveats**: n=8 plants/DAP (small); GT `is_base` was fed to every leg (isolates the direction/ordinal question but does not reproduce the original zero-side-information baseline); this measures topology recovery on **ground-truth** positions/rotations only, not on a trained model's actual (noisier) predictions, so it establishes an upper bound / feasibility signal, not a guarantee that shrinking the rotation head will not cost accuracy once real prediction noise is in the loop.
+
 ---
 
 ## 7. Commit log (this continuation)
