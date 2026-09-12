@@ -90,6 +90,18 @@ A pure per-shoot offset leaves topology **completely untouched even at 3.0 steps
 - `phytomer_ord_mae` -- absolute error in steps. Useful context, but do not gate on it.
 - `phytomer_ord_step_mae` -- `|(pred_ord[node] - pred_ord[parent]) - 1|` over nodes whose parent was also matched this step, reusing the `gt_render_parent_idx` map the render path already builds. **This is the one topology depends on.** Its no-information value is exactly **1.0** (a constant ordinal makes every difference 0), so anything below 1.0 means the head has started to carry ordering, and it should be driven toward 0.
 
+### 1.8 Throughput: budget the render loss before launching, and do not trust the batch auto-tuner
+
+The first real (non-smoke) hierarchical FM run, job `38239988`, had to be cancelled after four epochs. It was not broken -- 0 recovery skips, 0 canary hits through the render gate, loss 102.9 -> 48.8, self-consistency IoU 6.5% -> 20.0% -- it was simply **unable to finish anything**. Two causes, both worth checking before any future launch.
+
+**1. The render cost per epoch is fixed by `render_fraction`, not by batch size.** Total rendered samples per epoch is `dataset_size * render_fraction`, independent of how the batch is shaped. At the default `render_fraction = 1/6` over 100k samples that is ~16,700 renders per epoch; measured on 4x RTX 6000 Ada at ~1.9 s per rendered sample (forward + backward), that is **~2.4 hours per epoch**. With `--save_every 25` the job would not have written its first checkpoint for 60 hours, inside a 24-hour limit. Do the arithmetic first: `dataset_size * render_fraction * 1.9s / n_gpus` is the per-epoch floor.
+
+The step timing makes the split obvious -- warmup epochs ran at `fwd/bwd 1.33s`, and the first render epoch jumped to `fwd/bwd 84.31s` with `render 25.54` and `backward 56.50`. Note also that the two pyramid levels are **zoom factors, not resolutions** (a 1.2 m window and a 0.6 m window at the same pixel count, see `render_multiscale_pyramid`), so they cost about the same and dropping one is a real loss of signal -- absolute metric scale from the wide level, organ detail from the zoomed one -- rather than free savings. `render_fraction` and `render_grad_start_epoch` are the honest levers.
+
+**2. `--batch_size auto` picked 256 per GPU (global 1024).** It probes model and activation memory, which the render block barely touches, so it settled at 256 while actual VRAM sat at 57.6% of 47.4 GB -- and a global batch of 1024 leaves only 100 optimizer steps per epoch on 100k samples, at an `lr` of 3e-4 that was tuned for the documented 48-per-GPU (global 192) configuration. Pass `FORCE_BATCH_SIZE=48` unless there is a reason not to.
+
+**What replaced it**: job `38240070`, `FORCE_BATCH_SIZE=48` (520 steps/epoch), `RENDER_FRACTION=0.05`, `RENDER_GRAD_START_EPOCH=40`, `SAVE_EVERY=10`, output `checkpoints/hierarchical_fm_derived_rot_v2/`. The reasoning behind deferring the gate to epoch 40: in the cancelled run, self-consistency IoU had already reached 18.3% at epoch 3 with the render loss still off, and only moved to 20.0% once it came on -- so the early gains come from the scaffold and latent losses, and the expensive photometric signal is better spent refining a model that is already roughly right.
+
 ---
 
 ## 2. Proposed next step A: move roll + scale prediction from Stage 2 to Stage 3
