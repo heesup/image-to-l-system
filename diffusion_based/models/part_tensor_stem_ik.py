@@ -188,7 +188,7 @@ def refine_stem_to_part_tensor(
     builder = HeliosPlantGeometryBuilder()
 
     def run_fk(a):
-        return builder.extract_part_tensor(PlantOrganArray(a.clone()), return_node_poses=True)[1]
+        return builder.extract_part_tensor(PlantOrganArray(a.clone()), return_node_poses=True, stem_only=True)[1]
 
     # Processing order: shoots by id (the emitter numbers a parent before its
     # children), nodes by index within the shoot. Each node is corrected with

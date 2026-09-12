@@ -710,10 +710,14 @@ class HeliosPlantGeometryBuilder:
         existence_threshold: float = 0.5,
         gravitropic_curvature: Optional[float] = None,
         return_node_poses: bool = False,
+        stem_only: bool = False,
     ):
         """
         Runs forward kinematics directly on the typed (N, 40) per-organ layout.
 
+        stem_only: skip the leaf, bud, peduncle and flower/pod rows (the stem
+            solver only needs internode and petiole poses); the returned part
+            tensor then has no rows for those organs.
         return_node_poses: also return a dict of per-40D-row FK results --
             "base"/"tip"/"axis" (N, 3) for internode rows, "petiole_axes"
             (N, 2, 3) and "has_petiole" (N, 2) keyed by the internode row --
@@ -1103,7 +1107,7 @@ class HeliosPlantGeometryBuilder:
                         rows.append(torch.zeros(NUM_FEATURES_PART, device=device))
 
                     # Emit leaf rows: scale = (l_scale, 0.0, 0.0)
-                    for lf_i, (lf_pet, lf_idx, lf_row_i) in enumerate(leaves):
+                    for lf_i, (lf_pet, lf_idx, lf_row_i) in enumerate([] if stem_only else leaves):
                         l_scale = t[lf_row_i, T_COL_SCALE] * node_exist
                         l_pitch_raw = t[lf_row_i, T_COL_PITCH] * deg2rad
                         l_yaw = t[lf_row_i, T_COL_YAW] * deg2rad
@@ -1175,7 +1179,7 @@ class HeliosPlantGeometryBuilder:
                         node_has_petiole[inode_i, 1] = 1.0
 
                 # --- Peduncle / Flowers / Pods ---
-                bud_i = pdata['bud']
+                bud_i = None if stem_only else pdata['bud']
                 if bud_i is not None:
                     bud_state = int(t_cpu[bud_i, T_COL_BUD_STATE])
                     fruit_scale = float(t_cpu[bud_i, T_COL_FRUIT_SCALE])
@@ -1199,10 +1203,10 @@ class HeliosPlantGeometryBuilder:
                     else:
                         rows.append(torch.zeros(NUM_FEATURES_PART, device=device))
 
-                flowers = sorted(pdata['flowers'], key=lambda f: f[0])
+                flowers = [] if stem_only else sorted(pdata['flowers'], key=lambda f: f[0])
                 num_flowers = len(flowers)
                 is_active_flower = bud_state in [2, 3, 4]
-                ped_i = pdata['peduncle']
+                ped_i = None if stem_only else pdata['peduncle']
                 has_ped = ped_i is not None
                 is_active = is_active_flower and float(node_exist.item()) > existence_threshold
 
