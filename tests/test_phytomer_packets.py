@@ -12,7 +12,10 @@ from diffusion_based.dataset.phytomer_packets import (
     cluster_organs,
     decode_packet,
     emit_slot_order,
+    assemble_packets,
+    LEAFLET_TERMINAL_RATIO,
 )
+from diffusion_based.dataset.part_array_dataset import FM_SCALE_START
 from diffusion_based.models.plant_organ_array import P_COL_ORGAN_TYPE
 from diffusion_based.dataset.part_array_dataset import (
     FM_OT_END,
@@ -217,11 +220,61 @@ class TestEmitSlotOrder(unittest.TestCase):
         present = torch.nonzero(keep, as_tuple=True)[0]
         self.assertEqual(present[order].tolist(), [0, 1, 2, 4, 3, 6, 5, 7, 8])
 
+    def test_terminal_in_slot2_is_still_emitted_in_the_middle(self):
+        # A drooping petiole puts the terminal (largest) leaflet in slot 2.
+        pkt, keep = self._packet({0: 3, 1: 4, 2: 5, 3: 5, 4: 5})
+        pkt[2, 10], pkt[3, 10], pkt[4, 10] = 1.0, 0.9, 0.9
+        order = emit_slot_order(pkt, keep)
+        present = torch.nonzero(keep, as_tuple=True)[0]
+        self.assertEqual(present[order].tolist(), [0, 1, 3, 2, 4])
+
     def test_missing_terminal_keeps_laterals_in_order(self):
         pkt, keep = self._packet({0: 3, 1: 4, 2: 5, 3: 5})
         order = emit_slot_order(pkt, keep)
         present = torch.nonzero(keep, as_tuple=True)[0]
         self.assertEqual(present[order].tolist(), [0, 1, 2, 3])
+
+
+class TestLeafletScaleRule(unittest.TestCase):
+    """Leaf size is one scalar per trifoliate node: laterals equal, terminal 10/9."""
+
+    @staticmethod
+    def _packet(types, scales):
+        pkt = torch.zeros(1, 10, FM_NODE_DIM)
+        for slot, t in types.items():
+            pkt[0, slot, t] = 1.0
+            pkt[0, slot, 16:22] = torch.tensor([1, 0, 0, 0, 1, 0], dtype=torch.float32)
+        for slot, sc in scales.items():
+            pkt[0, slot, FM_SCALE_START] = sc
+        refs = torch.tensor([[1, 0, 0, 0, 1, 0]], dtype=torch.float32)
+        return pkt, refs
+
+    def test_ratio_reimposed_from_mean(self):
+        pkt, refs = self._packet({0: 3, 1: 4, 2: 5, 3: 5, 4: 5}, {1: 0.5, 2: 0.9, 3: 1.1, 4: 1.0})
+        out = assemble_packets(pkt, refs)
+        s = (0.9 + 1.1 + 1.0 / LEAFLET_TERMINAL_RATIO) / 3.0
+        self.assertAlmostEqual(float(out[0, 2, FM_SCALE_START]), s, places=6)
+        self.assertAlmostEqual(float(out[0, 3, FM_SCALE_START]), s, places=6)
+        self.assertAlmostEqual(float(out[0, 4, FM_SCALE_START]), s * LEAFLET_TERMINAL_RATIO, places=6)
+        self.assertAlmostEqual(float(out[0, 1, FM_SCALE_START]), 0.5, places=6)
+
+    def test_exact_gt_packet_is_unchanged(self):
+        pkt, refs = self._packet({0: 3, 1: 4, 2: 5, 3: 5, 4: 5}, {2: 0.9, 3: 0.9, 4: 0.9 * LEAFLET_TERMINAL_RATIO})
+        out = assemble_packets(pkt, refs)
+        self.assertTrue(torch.allclose(out[0, 2:5, FM_SCALE_START], pkt[0, 2:5, FM_SCALE_START], atol=1e-6))
+
+    def test_terminal_in_slot2_gets_the_ratio(self):
+        pkt, refs = self._packet({0: 3, 1: 4, 2: 5, 3: 5, 4: 5}, {2: 1.0, 3: 0.85, 4: 0.95})
+        out = assemble_packets(pkt, refs)
+        s = (0.85 + 0.95 + 1.0 / LEAFLET_TERMINAL_RATIO) / 3.0
+        self.assertAlmostEqual(float(out[0, 2, FM_SCALE_START]), s * LEAFLET_TERMINAL_RATIO, places=6)
+        self.assertAlmostEqual(float(out[0, 3, FM_SCALE_START]), s, places=6)
+        self.assertAlmostEqual(float(out[0, 4, FM_SCALE_START]), s, places=6)
+
+    def test_unifoliate_node_keeps_its_single_value(self):
+        pkt, refs = self._packet({0: 3, 1: 4, 2: 5}, {2: 0.7, 3: 0.3, 4: 0.2})
+        out = assemble_packets(pkt, refs)
+        self.assertAlmostEqual(float(out[0, 2, FM_SCALE_START]), 0.7, places=6)
 
 
 if __name__ == "__main__":

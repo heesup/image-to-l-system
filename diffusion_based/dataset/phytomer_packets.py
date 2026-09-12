@@ -60,6 +60,7 @@ from diffusion_based.dataset.part_array_dataset import (
 )
 from diffusion_based.models.plant_organ_array import (
     P_COL_ORGAN_TYPE,
+    P_COL_SCALE_X,
     ORGAN_ROOT_META,
     ORGAN_SHOOT_META,
 )
@@ -102,6 +103,34 @@ DETERMINISTIC_ORGAN_TYPES = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
 # Leaflet attach arc-fractions along the petiole curve (XML-phytomer verified:
 # slot 2/3 = 0.800, slot 4 = 0.991-1.000, error <= 0.005).
 LEAFLET_ATTACH_FRAC = {2: 0.8, 3: 0.8, 4: 1.0}
+# Leaflet SIZE is one scalar per node: on 4,214 trifoliate nodes from 80
+# cowpea_curv26 plants (2026-09-12) the two laterals are exactly equal and the
+# terminal leaflet is exactly 10/9 of a lateral (std 0.0 on both ratios). The
+# VAE decodes the three as independent values (~8% error each, v8), and the
+# XML converter reads ONLY this column from a leaflet row (yaw/pitch/roll are
+# fixed by leaflet index; the row's rotation is ignored), so assembly re-imposes
+# the ratio from the mean of the three decoded values. Exact on GT packets.
+#
+# WHICH slot holds the terminal leaflet is not fixed: `_canonical_order_key`
+# fills slots 2-4 bottom-to-top, the two laterals share a height (0.8 of the
+# petiole), and the terminal sits at the tip -- above them on a rising petiole
+# (slot 4, 98 of 142 trifoliate nodes at DAP 50) but BELOW them when the
+# petiole droops (slot 2, the other 44). Slot 3 is never the terminal. So the
+# terminal is identified per node as the larger of slots 2 and 4, which is
+# exact on GT and is the VAE's own best guess on decoded packets; the
+# principled fix (terminal always in slot 4) needs a packet-cache rebuild and
+# a VAE retrain, and is noted for v9.
+LEAFLET_TERMINAL_RATIO = 10.0 / 9.0
+_LEAF_TYPE = 5
+
+
+def terminal_leaflet_is_slot2(scale_len: torch.Tensor, ot: torch.Tensor) -> torch.Tensor:
+    """(P,) bool: node is trifoliate AND its terminal leaflet sits in slot 2.
+
+    scale_len: (P, 10) the length/scale column; ot: (P, 10) organ type per slot.
+    """
+    tri = (ot[:, 2] == _LEAF_TYPE) & (ot[:, 3] == _LEAF_TYPE) & (ot[:, 4] == _LEAF_TYPE)
+    return tri & (scale_len[:, 2] > scale_len[:, 4])
 # Repro (flower/fruit) attach at the CURVED PEDUNCLE TIP (arc-fraction 1.0).
 REPRO_ATTACH_FRAC = 1.0
 # Only these ride the peduncle out to its tip. Buds (7, 8, 12) stay at the
@@ -260,6 +289,8 @@ def assemble_packets(
       terminal leaflet (slot 4)    = 1.0 x the CURVED petiole centerline (tip).
       flowers/fruit (slots 6-9)    = 1.0 x the CURVED PEDUNCLE centerline (tip)
         (2026-09-10 verified: 100% within 5cm, mean 1.1cm, p90 2.6cm).
+      leaflet scales (slots 2-4)   = (s, s, 10/9 s), s = mean of the decoded
+        three after undoing the terminal ratio (LEAFLET_TERMINAL_RATIO).
     All bases are deterministic — nothing is VAE-learned (v2).
 
     Base positions are world-frame vectors relative to the cluster center (the
@@ -276,6 +307,25 @@ def assemble_packets(
     det = torch.zeros_like(ot, dtype=torch.bool)
     for t in DETERMINISTIC_ORGAN_TYPES:
         det |= ot == t
+    # Leaflet scales: one scalar per trifoliate node (see LEAFLET_TERMINAL_RATIO).
+    # Applied only where all three leaflet slots decode as leaflets; a
+    # unifoliate node keeps its single decoded value. Built out-of-place so the
+    # differentiable render path sees no in-place write on a grad tensor.
+    tri = (ot[:, 2] == _LEAF_TYPE) & (ot[:, 3] == _LEAF_TYPE) & (ot[:, 4] == _LEAF_TYPE)
+    sc = out[:, :, FM_SCALE_START].clone()  # (P, 10) length column
+    term2 = terminal_leaflet_is_slot2(sc, ot)
+    if bool(tri.any()):
+        r = LEAFLET_TERMINAL_RATIO
+        t = torch.where(term2, sc[:, 2], sc[:, 4])          # decoded terminal
+        l_end = torch.where(term2, sc[:, 4], sc[:, 2])      # decoded lateral in the other end slot
+        s_lat = (sc[:, 3] + l_end + t / r) / 3.0
+        sc2 = torch.where(tri, torch.where(term2, s_lat * r, s_lat), sc[:, 2])
+        sc3 = torch.where(tri, s_lat, sc[:, 3])
+        sc4 = torch.where(tri, torch.where(term2, s_lat, s_lat * r), sc[:, 4])
+        sc = torch.stack([sc[:, 0], sc[:, 1], sc2, sc3, sc4] + [sc[:, k] for k in range(5, NUM_SLOTS)], dim=1)
+        out = torch.cat(
+            [out[..., :FM_SCALE_START], sc.unsqueeze(-1), out[..., FM_SCALE_START + 1:]], dim=-1
+        )
     # Fresh tensor (NOT a view of out): inplace writes below must not bump the
     # autograd version of out's slices (AsStridedBackward0 conflict).
     base = out[:, :, FM_BASE_START:FM_BASE_END].clone()
@@ -373,7 +423,10 @@ def assemble_packets(
         if pet_len < 1e-4:
             continue
         curve = _petiole_curve_points(R_pet, pet_len, pet_curv)
-        for s, frac in LEAFLET_ATTACH_FRAC.items():
+        fracs = LEAFLET_ATTACH_FRAC
+        if bool(term2[p]):
+            fracs = {2: LEAFLET_ATTACH_FRAC[4], 3: LEAFLET_ATTACH_FRAC[3], 4: LEAFLET_ATTACH_FRAC[2]}
+        for s, frac in fracs.items():
             if bool(det[p, s]):
                 idx_f = frac * (len(curve) - 1)
                 i0 = int(idx_f)
@@ -527,6 +580,14 @@ def _canonical_order_key(nodes_26d: torch.Tensor, indices: torch.Tensor) -> torc
     return torch.argsort(z * 10.0 + az / (2.0 * _math.pi), stable=True)
 
 
+def _leaflet_order_key(nodes_26d: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+    """Leaflet order by size (laterals, equal, then the 10/9 terminal), azimuth as tie-break."""
+    import math as _math
+    sc = nodes_26d[indices, FM_SCALE_START]
+    az = torch.atan2(nodes_26d[indices, FM_BASE_START + 1], nodes_26d[indices, FM_BASE_START])
+    return torch.argsort(sc * 1000.0 + az / (2.0 * _math.pi), stable=True)
+
+
 def build_phytomer_packets(
     nodes_26d: torch.Tensor,
     existence_mask: Optional[torch.Tensor] = None,
@@ -535,6 +596,7 @@ def build_phytomer_packets(
     reference_rot: Optional[torch.Tensor] = None,
     phytomer_ids: Optional[torch.Tensor] = None,
     return_keys: bool = False,
+    terminal_leaflet_last: bool = False,
 ) -> Tuple[torch.Tensor, ...]:
     """Packs active organs into canonical 10-slot phytomer packets.
 
@@ -573,6 +635,15 @@ def build_phytomer_packets(
                  in the wrong shoot out of 201 relocates a whole branch and
                  costs ~50 points of rendered IoU. (-1, -1) when phytomer_ids
                  was not supplied.
+        terminal_leaflet_last: if True, leaflets fill slots 2-4 by SIZE (laterals
+                 first, ordered by azimuth; the 10/9-sized terminal last) so the
+                 terminal leaflet is always slot 4. The v6 packet cache and the
+                 v8 VAE were built bottom-to-top, where a drooping petiole puts
+                 the terminal in slot 2 (31% of trifoliate nodes at DAP 50);
+                 downstream code identifies the terminal per node
+                 (`terminal_leaflet_is_slot2`) so both conventions decode
+                 correctly. Switch on together with a PKT_VERSION bump and a
+                 VAE retrain.
     """
     device = nodes_26d.device
     ot = nodes_26d[:, :FM_OT_END].argmax(dim=-1)
@@ -680,8 +751,12 @@ def build_phytomer_packets(
             in_role = members[member_roles == r]
             if len(in_role) == 0:
                 continue
-            # Canonical within-role order (bottom -> top, then azimuth)
-            order = _canonical_order_key(nodes_26d, in_role)
+            # Canonical within-role order (bottom -> top, then azimuth);
+            # leaflets optionally by size so the terminal is always slot 4.
+            if r == 2 and terminal_leaflet_last:
+                order = _leaflet_order_key(nodes_26d, in_role)
+            else:
+                order = _canonical_order_key(nodes_26d, in_role)
             in_role = in_role[order]
             lo, hi = ROLE_SLOT_RANGES[r]
             n_take = min(len(in_role), hi - lo)
@@ -804,24 +879,33 @@ _PEDUNCLE_TYPE = 6
 # yaw from the order in which its leaflet rows are encountered -- child index
 # 0 -> +10 deg (one lateral), 1 -> 0 deg (terminal), 2 -> -10 deg (the other
 # lateral) -- and reads only the SCALE from the row itself; the leaflet's own
-# rotation is ignored. The packet keeps the terminal leaflet in slot 4
-# (LEAFLET_ATTACH_FRAC: slots 2-3 attach at 0.8 of the petiole, slot 4 at the
-# tip), so emitting slots in numeric order (2, 3, 4) handed the terminal
-# leaflet's scale to a lateral and vice versa: an ~11% size swap on two of the
-# three leaflets of every trifoliate phytomer. Measured on DAP 50 (2026-09-12):
-# it was the whole packet-path loss, 92.0% -> 94.1% FG IoU once emitted as
-# lateral, terminal, lateral.
-_LEAFLET_EMIT_RANK = {2: 2, 4: 3, 3: 4}
+# rotation is ignored. Emitting slots in numeric order (2, 3, 4) handed the
+# terminal leaflet's scale to a lateral and vice versa: an ~11% size swap on
+# two of the three leaflets of every trifoliate phytomer. Measured on DAP 50
+# (2026-09-12): it was the whole packet-path loss, 92.0% -> 94.1% FG IoU once
+# emitted as lateral, terminal, lateral. The terminal is identified per node
+# (see `terminal_leaflet_is_slot2`): slot 4 on a rising petiole, slot 2 on a
+# drooping one.
+
+
+def _leaflet_emit_rank(packet_14d: torch.Tensor, keep: torch.Tensor) -> dict:
+    """Rank of slots 2-4 within the emit order: (lateral, terminal, lateral)."""
+    types = packet_14d[:, P_COL_ORGAN_TYPE].long()
+    tri = all(bool(keep[k]) and int(types[k]) == _LEAF_TYPE for k in (2, 3, 4))
+    if tri and float(packet_14d[2, P_COL_SCALE_X]) > float(packet_14d[4, P_COL_SCALE_X]):
+        return {3: 2, 2: 3, 4: 4}   # terminal in slot 2
+    return {2: 2, 4: 3, 3: 4}       # terminal in slot 4
 
 
 def emit_slot_order(packet_14d: torch.Tensor, keep: torch.Tensor) -> torch.Tensor:
     """Order one packet's present slots the way the XML converter expects.
 
-    Leaflets go out as (lateral, terminal, lateral) = slots (2, 4, 3); see
-    `_LEAFLET_EMIT_RANK` for why.
+    Leaflets go out as (lateral, terminal, lateral); see `_leaflet_emit_rank`
+    for why and how the terminal is identified.
     """
     types = packet_14d[:, P_COL_ORGAN_TYPE].long()
     present = torch.nonzero(keep, as_tuple=True)[0]
+    leaflet_rank = _leaflet_emit_rank(packet_14d, keep)
 
     def rank(slot: int) -> tuple:
         t = int(types[slot])
@@ -833,7 +917,7 @@ def emit_slot_order(packet_14d: torch.Tensor, keep: torch.Tensor) -> torch.Tenso
             group = 3          # flowers, pods, fruit follow the peduncle
         else:
             group = 0          # internode, petiole, then leaflets as L, T, R
-        return (group, _LEAFLET_EMIT_RANK.get(slot, slot))
+        return (group, leaflet_rank.get(slot, slot))
 
     order = sorted(range(present.numel()), key=lambda i: rank(int(present[i])))
     return torch.tensor(order, dtype=torch.long)
