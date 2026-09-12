@@ -2,7 +2,7 @@
 
 - **Author**: Antigravity Pair Programming
 - **Date**: 2026-09-11
-- **Status**: P0 Fixes Committed & Verified | P1 Root-Cause Diagnosed | 10-Slot Contract Restored | Smoke Training Pending Slot
+- **Status**: P0 Fixes Verified (local smoke, pre-§7.9 code) | P1 Root-Cause Diagnosed | 10-Slot Contract Restored | **NEW P0: PhytomerVAE rotation architecture simplified to single `head_rot` path (§7.9) — ALL existing checkpoints (v2/v3/v4/xml) now fail to load, PhytomerVAE MUST be retrained from scratch before hierarchical FM training can resume** | **NEW: shoot-topology (SHOOT_META) loss identified as the dominant cause of Helios-roundtrip collapse, unrelated to the VAE — needs its own design fix (§7.8)** | Main job 38238371 cancelled (would have crashed on VAE load)
 - **Supersedes**: [`20260911_differentiable_render_gradient_isolation_and_backbone_freeze.md`](20260911_differentiable_render_gradient_isolation_and_backbone_freeze.md) (Option A/B context)
 
 ---
@@ -175,7 +175,134 @@ v4(9슬롯, internode 제외)로의 전환이 작업 트리에 있었으나 **�
 
 ---
 
-## 7. 커밋 이력 (이 세션)
+## 7. NEW (같은 날, 재시작 검증 중 발견): PhytomerVAE + Helios 전체 체인 라운드트립 — 심각한 재구성 붕괴
+
+### 7.1 배경
+
+§5에서 10슬롯 계약을 복원한 뒤, 실제 학습 재개(§6.2) 전에 **"Helios GT → XML → 14D → 10슬롯 패킷 → PhytomerVAE encode/decode → 14D → XML → Helios raytrace"** 전체 체인을 실측하는 스크립트가 하나도 없다는 것을 확인했다. 기존 체크들은 전부 이 체인의 일부만 커버함:
+
+| 스크립트 | 커버 범위 | VAE 포함? | 실제 Helios raytrace? |
+|---|---|:---:|:---:|
+| `eval_13d_xml_organ_masks.py` | XML→14D→XML→Helios | ❌ | ✅ |
+| `benchmark_organ_vae_roundtrip.py` | 구 OrganLatentVAE 라운드트립 | ✅(구버전) | ❌ (PyTorch 렌더러만) |
+| `tools/phytomer_vae_visualizer.py` | PhytomerVAE 라운드트립 | ✅ | ❌ (PyTorch 렌더러만) |
+
+신규 스크립트 `diffusion_based/eval/eval_phytomer_vae_helios_roundtrip.py`를 작성해 이 공백을 메움: DAP 10/50/90 XML → `PlantOrganArray.to_part_tensor()` → `encode_fm` → `build_phytomer_packets` (XML `phytomer_ids`로 정확한 마디 그룹핑) → `PhytomerVAE.encode/decode` (v3, `mu` 결정론적) → `denormalize_packet_scales(s_a)` → `assemble_packets` (결정론적 base 재구성) → `decode_packets` → `decode_fm` → `assemble_part_tensor_to_xml` → 실제 Helios C++ raytrace. "IK-only"(VAE 없이 14D→XML만) 라운드트립과 나란히 비교해 VAE 자체의 순수 기여도를 분리.
+
+### 7.2 결과 (fig14_phytomer_vae_helios_roundtrip.png)
+
+| Stage | IK-only FG IoU | **VAE-RT FG IoU** | IK-only mIoU | **VAE-RT mIoU** | IK PSNR | **VAE PSNR** |
+|---|---:|---:|---:|---:|---:|---:|
+| DAP 10 | 95.7% | **24.0%** | 48.3% | **6.1%** | 38.90dB | **21.69dB** |
+| DAP 50 | 94.1% | **7.8%** | 36.0% | **2.4%** | 26.12dB | **6.62dB** |
+| DAP 90 | 87.4% | **10.5%** | 21.7% | **1.5%** | 21.43dB | **9.07dB** |
+
+(위 표는 `use_rot_branch=False`, 즉 공유 `head_rot`로 회전을 디코딩한 결과. `use_rot_branch=True`로 돌리면 다소 덜 나쁨 — DAP10 mIoU 17.3%, DAP50 6.4%, DAP90 3.8% — 하지만 **두 설정 모두 IK-only 대비 3~8배 악화**. 처음엔 v3가 `--rot-branch` 없이 학습됐을 것이라 추정해 `use_rot_branch=False`를 기본값으로 잘못 채택했었으나, §7.4의 패킷 레벨 측정으로 이 추정이 **틀렸음이 실측으로 확인됨** — `use_rot_branch=True`가 정답이고 지금은 두 스크립트 모두 기본값을 True로 수정함.)
+
+### 7.3 시각적 관찰 — 핵심 단서
+
+`fig14`를 보면 GT/IK-only는 조밀한 부시(bush) 형태를 유지하지만, **VAE 라운드트립 결과는 하나의 길게 늘어진 덩굴(vine)처럼 풀어져** 원래의 조밀한 위상(topology)과 전혀 다른 모양이 된다. 잎(Leaf) 개수/타입 분류 자체는 크게 틀리지 않은 것으로 보이나(조직 수 76/82, 982/995, 1417/1427로 GT에 근접), 공간 배치가 완전히 흐트러짐.
+
+### 7.4 근본 원인 확정 (사용자 제안으로 실측 — Helios/XML 없이 26D 패킷 레벨만 비교)
+
+사용자 제안: "VAE가 Phytomer를 잘 복원한다면, 26D 라운드트립 오차를 먼저 재서 IK-only와 같은 입력을 만드는지 확인하자" — 정확한 지적. XML/Helios를 아예 거치지 않고 **`build_phytomer_packets`가 만든 GT 패킷(절대 아님, reference-relative 프레임)을 VAE로 encode/decode한 결과와 슬롯 단위로 직접 비교**하는 신규 스크립트 `diffusion_based/eval/eval_phytomer_vae_packet_fidelity.py`를 작성.
+
+**결과 — `use_rot_branch=False`(공유 head, 기존 잘못된 기본값)**:
+
+| Role | 회전 오차(°) mean/p50 | 비고 |
+|---|---:|---|
+| Stem | 139° / 154° | reference 슬롯이라 GT는 거의 identity인데도 이 정도 오차 → **사실상 랜덤 회전** |
+| Petiole | 141° / 139° | 랜덤 수준 |
+| Leaflets | 130° / 134° | 랜덤 수준 |
+| Repro | 172° / 173° | 거의 180°(반대 방향) |
+
+클래스 정확도는 100%, 스케일 오차도 2~24%로 정상 범위인데 **회전만 완전히 깨져 있음** — VAE 재구성이 전반적으로 나쁜 게 아니라 회전 헤드 하나가 사실상 작동하지 않는 것.
+
+**같은 측정을 `use_rot_branch=True`로 재실행**:
+
+| Role | 회전 오차(°) mean/p50 | 개선 |
+|---|---:|---|
+| Stem | 0.8° / 0.7° | 거의 완벽 |
+| Petiole | 15~16° / 14° | 실제 학습된 수준의 오차 |
+| Leaflets | 14~16° / 12~15° | 동일 |
+| Repro | 1.4~13.8° (DAP90은 p50 2.2°, p90 40°— 긴 꼬리) | 대부분 양호, 일부 아웃라이어 |
+
+**확정 결론**: v3 체크포인트는 **전용 회전 분기(`rot_branch`/`head_rot_dedicated`)로 학습되었고, 공유 헤드(`head_rot`)는 사실상 미학습 상태**다 (§8.2에서 "LayerNorm 가중치가 초기값 근처"라는 간접 증거로 반대로 추론했던 것은 **틀린 추론**이었음 — 직접 측정이 간접 추론보다 우선함을 보여주는 사례). `assemble_packets`의 `_petiole_curve_points` 커브 적분이 잎자루/화병 방향을 그대로 쓰기 때문에, 130~170°급 회전 오차가 있으면 리프/생식기관이 완전히 엉뚱한 방향으로 뻗어나가는 것은 당연한 결과(§7.3의 "덩굴" 아티팩트를 정량적으로 설명).
+
+`use_rot_branch=True`로도 여전히 Petiole/Leaflet 13~16°, Repro 긴 꼬리(p90 40°) 정도의 **실질적인 잔여 오차**가 남아있고, 이 오차가 `assemble_packets` 이후 base 위치 오차로 나타남 (Leaflet 1.3~6cm, DAP90 Repro는 peduncle 체인을 한 번 더 거쳐 mean 25cm/p50 33cm/p90 51cm까지 증폭). 그리고 이 결과가 다시 `part_tensor_to_40d.py`의 **기존에 알려진 IK 피치 버그(§4)** 를 거쳐 XML/Helios까지 가면서 **두 개의 독립적인 오차가 곱셈적으로 겹쳐** §7.2의 심각한 최종 저하(IK-only 대비 3~8배)로 이어짐.
+
+**다음 세션 우선순위**: (1) `--rot-branch` 없이 학습되는 공유 head를 학습 코드에서 아예 제거하거나 fallback 경로에서 빼서 향후 실수 방지, (2) Petiole/Leaflet 13~16° 잔여 오차 및 Repro 긴 꼬리의 원인 조사 (Hungarian 정렬 안 켜짐? `rot_weight` 부족? 등), (3) 이 잔여 오차만으로 IK-only 대비 얼마나 저하되는지 별도 측정 (IK 피치 버그와 분리).
+
+### 7.5 관련 파일
+
+- 신규: `diffusion_based/eval/eval_phytomer_vae_helios_roundtrip.py` (기본값 `use_rot_branch=True`로 수정됨)
+- 신규: `diffusion_based/eval/eval_phytomer_vae_packet_fidelity.py` (26D 패킷 레벨 fidelity, Helios 불필요, 빠름)
+- 결과: `docs/results/assets/fig14_phytomer_vae_helios_roundtrip.png`
+
+### 7.7 [P0급, 실제 학습 코드에서도 동일 버그 발견 — 수정 완료]
+
+§7.4에서 밝힌 "공유 head_rot는 사실상 미학습"이 **내 진단 스크립트만의 문제가 아니라 실제 학습/추론 코드 자체의 버그**였음을 확인:
+
+```
+grep -rn "phytomer_vae.decode(\|vae.decode(" diffusion_based/
+```
+결과, `use_rot_branch=True`를 빼먹은 채 `phytomer_vae.decode(...)`를 호출하는 곳이 **학습 핫패스 두 군데**에 있었음:
+
+| 파일:라인 | 용도 | 영향 |
+|---|---|---|
+| `hierarchical_part_flow_matching.py:1392` | 모델 forward()가 `res["part_14d"]`(실제 지오메트리)를 만드는 곳 — 학습 중 렌더 손실과 self-consistency eval 시각화 둘 다 이 결과를 씀 | **모든 organ 회전이 깨진 공유 head로 나옴** |
+| `train_hierarchical_flow_matching.py:702` | 렌더 손실용 메시를 만드는 블록 | 위와 동일 |
+
+즉 `--flow_granularity phytomer`(기본값, 현재 학습이 쓰는 모드)에서는 **렌더 게이트가 켜진 이후(Epoch 4+) 모든 스텝에서 회전이 사실상 랜덤인 메시를 가지고 렌더 손실을 역전파하고 있었다.** 이는 §2.3에서 조사했던 "OOD latent → 비정상 mesh → 1/w² 그래디언트 폭발" 체인과도 연결 가능성이 있음(랜덤 회전 자체가 organ이 서로 뚫고 지나가거나 카메라 근접 평면을 관통하는 비정상 메시를 만들기 쉬움) — 완전히 별개의 원인이라기보다 **동일 증상의 또 다른 기여 요인일 수 있음, 다음 세션에서 재확인 권장**.
+
+**수정**: 두 호출 모두 `use_rot_branch=True` 추가. `tests/test_hierarchical_flow_matching.py` + `tests/test_phytomer_vae.py` 14개 전부 통과 확인. 이번 세션에 로컬로 돌린 스모크 테스트(§6, `fm_smoke_local_manual.log`)는 **이 수정 전 코드로 실행됐으므로 무효** — Recovery 스킵 0건이라는 안정성 결론 자체는 유효하지만(그래디언트 클램프 검증 목적은 달성), 지오메트리 품질은 이 수정 후 다시 확인 필요. (이 수정은 §7.9에서 서술하는 아키텍처 단순화로 다시 한번 대체됨 — `use_rot_branch` 자체가 코드에서 사라짐.)
+
+### 7.8 [더 큰 발견] "덩굴" 붕괴의 진짜 주범은 회전 오차가 아니라 SHOOT_META(가지 경계) 소실
+
+사용자 제안으로 26D 패킷 레벨 fidelity를 측정하다가 회전 오차를 찾았지만(§7.4), 그 회전 오차만으로 §7.2의 심각한 저하(IK-only 대비 FG IoU 3~8배 악화)를 설명하기엔 부족해 보여 추가 검증을 진행:
+
+**결정적 실험**: VAE를 아예 거치지 않고 **100% GT 14D 텐서에서 `ORGAN_SHOOT_META`/`ORGAN_ROOT_META` 메타 행만 제거**하고 그대로 `assemble_part_tensor_to_xml` → Helios 렌더:
+
+| Stage | 원본 IK-only (메타 행 있음) | 메타 행만 제거 (그 외 100% GT) |
+|---|---:|---:|
+| DAP 10 | 95.7% | **53.5%** |
+| DAP 50 | 94.1% | **16.5%** |
+
+이 수치가 §7.2의 전체 VAE 라운드트립 결과(24~53% / 8~20%)와 거의 일치 — **즉 저하의 대부분은 VAE 회전 오차가 아니라 가지(shoot) 경계 정보 소실 때문**.
+
+**원인**: 이 식물들은 DAP10에도 이미 4개, DAP50/90에는 11개의 별도 shoot(가지)를 가짐 (XML `T_COL_SHOOT_ID` 실측 확인). `PartTensorTo40DConverter.convert()`는 `ORGAN_SHOOT_META` 행을 순서대로 만나면서 "여기서 새 가지가 시작된다 + 부모 줄기의 어느 위치·각도에 붙는지"를 판단하는데, `build_phytomer_packets()`는 설계상 이 메타 행을 패킷에서 **항상 제외**한다(실제 장기만 담음). VAE 재구성 파이프라인이 packet → 조립 → flat array로 되돌아갈 때 SHOOT_META를 다시 넣어주지 않으므로, 변환기가 모든 가지를 하나로 이어붙여 **11개 가지가 한 줄로 늘어진 "덩굴"**이 됨. 가지 수가 많을수록(DAP90>DAP50>DAP10) 피해가 커지는 패턴과 정확히 일치.
+
+**중요한 구분**: 이 문제는 미분 가능 렌더러(학습 손실)에는 영향 없음 — `HeliosPlantGeometryBuilder.build_mesh_from_part_tensor`는 각 organ의 절대 pos/rot/scale만으로 메시를 만들고 가지 위상은 필요 없음. **오직 "최종적으로 유효한 Helios XML을 만들어 물리 라이트레이싱 검증에 넣는" 단계에서만 문제가 됨.**
+
+**더 근본적인 공백**: 현재 3-stage 생성 모델(`hierarchical_part_flow_matching.py`) 코드 전체에서 `shoot` 관련 예측이 전혀 없음 — 512개 앵커가 "하나의 shoot 축을 따라" 나열된다고만 설계되어 있어(모델 주석 원문), **애초에 여러 가지(분지)를 표현할 방법이 없음**. `phytomer_id`를 14D/26D에 추가하는 것만으로는 부족한데, `SHOOT_META` 행은 단순 ID가 아니라 "부모 줄기의 어느 지점에 어떤 각도로 붙는지"의 실제 기하 정보이기 때문. 진짜 해결은 모델이 각 앵커에 대해 (a) 새 가지 시작 여부, (b) 부모 가지/부착 지점을 예측하도록 확장하는 것 — **다음 세션 최우선 설계 논의 사항으로 남김.**
+
+관련 스크립트: `/tmp/shoot_meta_test/test.py` (임시, 저장 안 됨 — 재현 필요시 §7.8 절차대로 재작성).
+
+### 7.9 [사용자 결정] 회전 헤드 아키텍처 단순화 — rot_branch/head_rot_dedicated 완전 제거
+
+§7.4/§7.7에서 `head_rot`(공유)와 `head_rot_dedicated`(전용 분기) 두 경로가 혼란과 실수(§7.2, §7.7에서 두 번이나 잘못된 쪽을 기본값으로 씀)를 유발한다는 게 드러나자, **사용자가 명시적으로 결정**: 플래그 없는 단일 경로로 정리하고, **`head_rot`(공유)만 남기고 `rot_branch`/`head_rot_dedicated`는 완전히 삭제**.
+
+**적용 범위** (전체 `use_rot_branch`/`rot_branch`/`head_rot_dedicated` 참조 grep 후 전부 수정):
+- `diffusion_based/models/phytomer_vae.py`: `rot_branch`/`head_rot_dedicated` 서브모듈 삭제, `decode()`/`forward()`에서 `use_rot_branch` 파라미터 삭제 (`head_rot` 단일 경로만 남음)
+- `diffusion_based/training/train_phytomer_vae.py`: `--rot-branch` CLI 플래그 삭제
+- `diffusion_based/training/train_hierarchical_flow_matching.py` (2곳), `diffusion_based/models/hierarchical_part_flow_matching.py` (1곳): `use_rot_branch=True` 인자 삭제 (더 이상 존재하지 않는 파라미터)
+- `tools/phytomer_vae_visualizer.py`, `tools/precompute_phytomer_latent_pca.py`: 관련 인자/주석 제거
+- `tests/test_phytomer_vae.py`: `test_rot_branch_gradients` 테스트 삭제, gradient 체크에서 rot_branch 스킵 가드 제거
+- 신규 진단 스크립트 2개(`eval_phytomer_vae_helios_roundtrip.py`, `eval_phytomer_vae_packet_fidelity.py`)도 플래그 제거
+- 전체 테스트 20개 통과 확인 (`test_hierarchical_flow_matching.py` + `test_phytomer_vae.py` + `test_phytomer_packets.py`)
+
+**⚠️ 중요한 파급 효과 — 기존 체크포인트 전부 호환 불가**:
+```
+PhytomerVAE().load_state_dict(v3_checkpoint)
+→ Unexpected key(s): "rot_branch.0.weight", ..., "head_rot_dedicated.weight", "head_rot_dedicated.bias"
+```
+`phytomer_vae_v2/v3/v4/xml` 체크포인트 전부 `rot_branch.*`/`head_rot_dedicated.*` 키를 가지고 있어 **strict 로드가 즉시 에러남** (의도적으로 방치 — silent partial load보다 명확한 에러가 낫다고 판단). **§7.4에서 확인했듯 v3의 실제로 학습된 회전 정보는 `head_rot_dedicated` 안에 있었고 `head_rot`(이제 유일하게 남은 경로)은 미학습 상태였으므로, 아키텍처만 단순해졌을 뿐 회전 품질은 원점(랜덤 수준)으로 돌아갔다 — PhytomerVAE는 처음부터 재학습 필요.**
+
+**후속 조치**: 큐에 대기 중이던 메인 잡 `38238371`(4-GPU, `phytomer_vae_v3` 참조)은 시작 즉시 이 에러로 크래시할 것이 확실하므로 **취소함** (아직 시작 전이라 낭비된 컴퓨트 없음). **다음 세션 최우선 순위**: `sbatch slurm_scripts/train_phytomer_vae.sh`로 PhytomerVAE부터 처음부터 재학습 → 완료 후 `PHYTOMER_VAE_CHECKPOINT`를 새 체크포인트로 갱신하여 `train_hierarchical_flow_matching.sh` 재제출. §7.8의 shoot 위상 문제는 PhytomerVAE 재학습과 무관하게 별도로 설계 검토 필요.
+
+---
+
+## 8. 커밋 이력 (이 세션)
 
 ```
 75928d9 feat(phytomer): restore v2/v3 10-slot packet contract (internode slot 0 + repro x4)
