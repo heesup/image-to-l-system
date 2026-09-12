@@ -59,6 +59,23 @@ So the *hard* part of roll is one phase per shoot, which only the image can supp
 
 **If roll is still at ~0.88 after the scaffold losses have otherwise converged**, do not conclude roll is unlearnable. Check the *raw* `roll_head` output norm before `safe_normalize` first: a collapse to near-zero norm confirms the averaging failure above. The fix that follows from the measurement is to stop predicting K independent rolls -- predict one phase per shoot plus a parity term driven by the predicted ordinal -- rather than to reweight the loss.
 
+### 1.7 The ordinal head gates everything downstream, and how accurate it has to be
+
+Since the roll-head reduction, the ordinal is no longer just a tidying signal: `chain_phytomers` resolves topology from **position + ordinal alone**, and that chain is what produces the internode geometry, the derived forward axis, and (as of §1.5) a shoot base's successor. If the ordinal is wrong, all three are wrong together.
+
+Measured (20 plants, DAP 10/30/50/90, GT positions throughout so the ordinal cue is the only variable; gaussian noise in ordinal steps, parent recovery vs the GT parent):
+
+| noise sigma | 0 | 0.25 | 0.5 | 1.0 | 1.5 | 2.0 | 2.6 | 4.0 |
+|---|---|---|---|---|---|---|---|---|
+| DAP 10 | 100.0 | 97.6 | 78.9 | 54.2 | 55.3 | 49.2 | 46.6 | 39.7 |
+| DAP 30 | 96.8 | 96.8 | 89.0 | 73.3 | 64.5 | 57.4 | 53.2 | 45.0 |
+| DAP 50 | 96.3 | 95.9 | 91.2 | 76.8 | 68.5 | 60.8 | 55.3 | 45.4 |
+| DAP 90 | 96.1 | 95.5 | 92.9 | 84.6 | 78.6 | 70.2 | 59.8 | 49.3 |
+
+**The cliff sits between 0.25 and 1.0.** Up to a quarter of a step the chain is untouched; by one full step a third of DAP 10's parents are already wrong, and DAP 10 is the fragile case because its nodes sit 0.47 cm apart. So the ordinal head needs an MAE **below ~0.5 steps, ideally ~0.25** -- a much tighter requirement than "the loss is going down" suggests.
+
+**Observability fix made while measuring this**: `loss_phytomer_order` is the sum of *two unrelated terms*, the smooth_l1 on the ordinal and the BCE on the is-base logits, so the single logged "Ord:" number cannot tell you which one is failing or what the error is in steps. A `phytomer_ord_mae` metric (mean absolute ordinal error, in steps, directly comparable to the table above) is now reported alongside it in the step line, the epoch line and wandb. Read that, not the combined loss, when judging whether topology can be trusted.
+
 ---
 
 ## 2. Proposed next step A: move roll + scale prediction from Stage 2 to Stage 3
