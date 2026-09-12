@@ -369,11 +369,40 @@ the entire branch. Consequences:
    segment is a 3 cm tube a few degrees off -- minor. It is Helios's FK that
    amplifies it.
 
+**DAP 10's 17 points, decomposed** (the packet path with a perfect VAE: 78.9% vs
+IK-only 95.7%). Organ positions are within 0.14 cm of GT and the count matches, so
+this was chased through the XML and Helios itself:
+- `--focus-plant` **framing**: the eval zooms each render to its own bounding box,
+  so any growth difference re-frames the plant. With a fixed camera instead the
+  same XMLs give IK 95.8% / identity **83.4%** -- framing was ~4.5 of the 17 points,
+  and it means the eval is not a pure geometry measure. (At a fixed 5 m camera a
+  seedling is ~820 pixels, so that variant is too coarse to adopt as-is.)
+- `plant_age` (0.0001 in the emitted XML vs 11): **no effect**, tested twice,
+  including with Helios's post-aging organ counts captured.
+- The 12 dormant `<peduncle>` blocks the IK XML carries (from the GT part tensor's
+  one `ORGAN_NONE` row per phytomer -- 163 at DAP 50, 131 at DAP 90) and the
+  emitted XML lacks: restoring them makes the XMLs structurally identical and
+  **changes nothing** -- Helios's growth is unaffected. Tried and reverted.
+- **What remains**: Helios instantiates exactly 5 fewer petiole primitives and 1
+  fewer leaf from the emitted XML than from the IK one, at every DAP (65/60 at DAP
+  10, 820/815 at DAP 50, 1005/1000 at DAP 90) -- one petiole (5 segments) plus its
+  leaf: the **cotyledon node's second petiole**. The packet has one petiole slot,
+  so `emit_part_tensor_with_shoot_meta` mirrors petiole 1 by 180 degrees about Z
+  and re-bases nothing, both cotyledon leaves land on petiole 1's tip (the
+  petioles are 0.0001 m long, so both tips coincide to 0.02 cm), the converter
+  assigns both leaves to petiole 1 by nearest tip, and the XML writer drops the
+  second. Emitting the mirror before the leaves and re-basing the opposing leaf
+  onto the mirror's tip gets both `<leaf>` blocks into the XML but Helios still
+  renders 37 leaves, not 38: the remaining textual difference is the mirror's
+  `petiole_pitch` (81.1 vs 70.4) and `petiole_curvature` (-88 vs -184), and
+  patching those to IK's values changes 0 pixels. So the second cotyledon is lost
+  somewhere between the 40D tensor and Helios's unifoliate phytomer, not in the
+  packet path -- next step is `assemble_part_tensor_to_xml`'s petiole/leaf nesting
+  for the unifoliate shoot. Seedling-only in practice (1 leaf of ~600 at DAP 90).
+
 Also noted, not chased: with exact scales in place of the VAE's, DAP 50 IoU
 *fell* 87.8 -> 85.0 (fewer foreground pixels), i.e. the VAE's slightly larger
-scales are compensating for something else in the export; and the emitted XML
-carries no `<peduncle>` blocks where the IK-only XML has 163 dormant ones (harmless
-at DAP 50; check at DAP 90).
+scales are compensating for something else in the export.
 
 ---
 
