@@ -225,19 +225,27 @@ def refine_stem_to_part_tensor(
             return
         c = chord / n
         t = fwd[i]
-        resid = t - c                                            # small-angle direction error
-        cols = []
-        for col in (T_COL_PITCH, T_COL_YAW):
-            trial = arr.clone(); trial[m, col] += 1.0
-            pz = run_fk(trial)
-            ch = pz["tip"][i] - pz["base"][i]
-            cols.append((ch / ch.norm().clamp(min=1e-9) - c))    # d(dir)/d(deg)
-        J = torch.stack(cols, dim=1)                             # (3, 2)
-        sol = torch.linalg.lstsq(J, resid.unsqueeze(1)).solution.flatten()
-        sol = sol.clamp(-max_step_deg, max_step_deg)
-        if torch.isfinite(sol).all():
-            arr[m, T_COL_PITCH] += float(sol[0])
-            arr[m, T_COL_YAW] += float(sol[1])
+        ang_err = math.degrees(math.acos(float((c * t).sum().clamp(-1, 1))))
+        if ang_err > 0.05:
+            resid = t - c                                        # small-angle direction error
+            cols = []
+            for col in (T_COL_PITCH, T_COL_YAW):
+                trial = arr.clone(); trial[m, col] += 1.0
+                pz = run_fk(trial)
+                ch = pz["tip"][i] - pz["base"][i]
+                cols.append((ch / ch.norm().clamp(min=1e-9) - c))    # d(dir)/d(deg)
+            J = torch.stack(cols, dim=1)                             # (3, 2)
+            # Skip a degenerate Jacobian (an angle the FK does not respond
+            # to here, e.g. yaw about a parent axis the child is parallel to)
+            # rather than let least squares ask for a huge step.
+            sv = torch.linalg.svdvals(J)
+            if float(sv.min()) > 2e-4:
+                sol = torch.linalg.lstsq(J, resid.unsqueeze(1)).solution.flatten()
+                cap = min(max_step_deg, 1.5 * ang_err)
+                sol = sol.clamp(-cap, cap)
+                if torch.isfinite(sol).all():
+                    arr[m, T_COL_PITCH] += float(sol[0])
+                    arr[m, T_COL_YAW] += float(sol[1])
         # The base internode's length is the one length the chain does not
         # fix (assemble_packets overrides chained lengths with the parent ->
         # node chord but a shoot base keeps its decoded length), so take it
