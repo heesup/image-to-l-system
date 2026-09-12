@@ -68,8 +68,37 @@ class TestPhytomerRoll(unittest.TestCase):
         fwd = derive_forward(pos, parent_idx)
         self.assertTrue(torch.allclose(fwd[1], torch.tensor([0.0, 0.0, 1.0]), atol=1e-6))
         self.assertTrue(torch.allclose(fwd[2], torch.tensor([0.0, 0.0, 1.0]), atol=1e-6))
-        # base row (-1 parent) gets the fallback (+Z default).
         self.assertTrue(torch.allclose(fwd[0], torch.tensor([0.0, 0.0, 1.0]), atol=1e-6))
+
+    def test_derive_forward_base_follows_successor_not_world_up(self):
+        """A base has no parent, so it must read its axis off its successor.
+        A lateral branch's first phytomer is a base too, and is rarely
+        vertical -- assuming +Z there was measured 50.8 deg off on average."""
+        s = 0.5 ** 0.5
+        pos = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 1.0], [2.0, 0.0, 2.0]])
+        parent_idx = torch.tensor([-1, 0, 1])
+        fwd = derive_forward(pos, parent_idx)
+        self.assertTrue(torch.allclose(fwd[0], torch.tensor([s, 0.0, s]), atol=1e-6))
+
+    def test_derive_forward_lone_node_falls_back_to_world_up(self):
+        """Neither a parent nor a successor (a single-phytomer shoot): the
+        world-+Z fallback is all that is left, and is right for a seedling."""
+        pos = torch.tensor([[0.3, -0.2, 0.7]])
+        fwd = derive_forward(pos, torch.tensor([-1]))
+        self.assertTrue(torch.allclose(fwd[0], torch.tensor([0.0, 0.0, 1.0]), atol=1e-6))
+
+    def test_derive_forward_base_prefers_shoot_continuation_over_lateral(self):
+        """At a base that is also a branch point, the successor must be the
+        node continuing the SAME shoot, not the lateral that also claims it."""
+        pos = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.1], [0.0, 0.0, 1.0]])
+        parent_idx = torch.tensor([-1, 0, 0])
+        shoot_id = torch.tensor([0, 1, 0])
+        phytomer_idx = torch.tensor([0, 0, 1])
+        fwd = derive_forward(pos, parent_idx, shoot_id, phytomer_idx)
+        self.assertTrue(torch.allclose(fwd[0], torch.tensor([0.0, 0.0, 1.0]), atol=1e-6))
+        # Without the shoot labels the lateral (lower index) wins instead.
+        fwd_no_shoot = derive_forward(pos, parent_idx)
+        self.assertFalse(torch.allclose(fwd_no_shoot[0], fwd[0], atol=1e-3))
 
     def test_chain_phytomers_accepts_no_rotation(self):
         """chain_phytomers(rot6d=None) must not crash and should still chain
