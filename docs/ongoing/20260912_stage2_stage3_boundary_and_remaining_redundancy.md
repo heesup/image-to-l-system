@@ -27,7 +27,7 @@
 | **Leaflets emitted as lateral, terminal, lateral — the packet path is now lossless (§2.4)** | `ff5beb4` |
 | **Leaf size is one scalar per node (1 : 1 : 10/9); terminal leaflet identified per node; opt-in terminal-last packet order for v9** | `2f1691b` |
 
-**The blocker is resolved.** The intermittent Stage 2 gradient explosion tracks the **learning rate**, not the architecture: every observed onset sat above ~1.6e-4 effective lr, and job `38240281` at `LR=1e-4` has now run **10 epochs clean** with 0 canary hits, through and well past the point where three of four runs at 3e-4 died. Eight architecture-level hypotheses were tested against minimal reproductions and refuted first; §1.9 records them so nobody pays for them twice.
+**The blocker is NOT resolved -- see §1.9.2 (2026-09-12 afternoon): it recurred at epoch 28 with lr below 1e-4.** The earlier reading, kept for the record: the intermittent Stage 2 gradient explosion tracks the **learning rate**, not the architecture: every observed onset sat above ~1.6e-4 effective lr, and job `38240281` at `LR=1e-4` has now run **10 epochs clean** with 0 canary hits, through and well past the point where three of four runs at 3e-4 died. Eight architecture-level hypotheses were tested against minimal reproductions and refuted first; §1.9 records them so nobody pays for them twice.
 
 **Quality on that run** (render loss still off, it enables at epoch 40): IoU 14.0% -> 25.9%, depth MAE 17.67 -> 13.74 cm, node RMSE 2.4 -> 2.0 cm, predicted phytomer count 52.2 against 54.4. Node RMSE is already inside the 2.5 cm target; IoU is far from the 50%+ target but the photometric signal has not been switched on yet. **Roll has started to learn** — 0.885 (the no-information value, §1.6) down to 0.8250 — which is why it was right not to restructure the roll head on the strength of a few flat epochs.
 
@@ -41,7 +41,7 @@
 
 **Helios round-trip (§2.4)**: **the packet path is now lossless.** With the VAE replaced by identity it renders at 95.8 / 94.2 / 87.9% FG IoU against IK-only 95.7 / 94.1 / 87.4% (it was 78.9 / 91.6 / 87.4 this morning). The whole loss was leaflet ordering: the XML converter assigns leaf yaw by encounter order (lateral, terminal, lateral) and reads only the scale from the row, `emit_slot_order` wrote slots in numeric order, and the terminal leaflet lives in slot 4 on a rising petiole but slot 2 on a drooping one -- so the terminal's scale landed on a lateral and vice versa, an 11% size swap on two of every three leaflets (`ff5beb4`, `2f1691b`). The seedling's 17 points were this, not the cotyledon. What remains is the VAE alone: the v8 round-trip is at 81.4 / 90.2 / 79.3% (from 70.3 / 87.8 / 76.2 at the start of the day), and the attribution says rotation and scale errors must both come down -- neither alone recovers it. A v9 VAE is training (§2.4, end). Routing the export through the branch-point parent rule is still 16 points *worse* -- a lateral's first internode axis is not the node-to-node segment.
 
-**Next**: when `38240323` writes its epoch-15 checkpoint, stop it and resume from there with `ae26ccb`'s depth target and step loss (plus the fixed inference), so the render-on progress is kept and the ordinal head relearns on top of it. Then §2.1's remaining pieces — Stage 3 consuming `(parent, self)` pairs with the parent held fixed, and noise injection on the fixed parent.
+**Next**: `38242849` (resumed from epoch 25 at `LR=5e-5`, §1.9.2) is the live run; watch the Stage 2 Scl/Ord/Ext losses for the epoch-27-style precursor, not just the canary. In parallel: pick a v9 VAE (§2.4, end), then §2.1's remaining pieces -- Stage 3 consuming `(parent, self)` pairs with the parent held fixed, and noise injection on the fixed parent -- and the gradient bisection in §1.9.2.
 
 ---
 
@@ -222,6 +222,33 @@ So the mechanism is **optimisation dynamics, and the fix is a schedule** -- not 
 **Two caveats on this result, both worth respecting.** `38240281` carries the query barrier from `684a9f1` as well as the low lr, and "1e-4 without the barrier" was never run -- so the barrier's necessity is unproven either way (it is known *insufficient* on its own: `38240158` exploded with it at 3e-4). Re-test removal when the redesign next touches that code. And the run predates the §2.1 redesign commits, so it measures the old target convention.
 2. If it survives, reproduce deterministically with `--seed`, then bisect inside the decoder by extending `_probe_grad` to each layer's input and output -- the amplification is somewhere in those four layers.
 3. Only then consider re-introducing bounded per-element clipping. Note that the previous session *removed* a blanket +-100 per-element pre-clamp specifically to stop it masking leaks, and this is plausibly the leak it was masking -- so re-adding it would hide a real defect and should be a deliberate, documented choice, not a reflex.
+
+### 1.9.2 It came back at 1e-4: the learning rate delays the explosion, it does not prevent it
+
+Job `38240479` (`LR=1e-4`, `SEED=1234`, resumed from epoch 15 with the depth
+ordinal and step loss, render on) ran clean for 12 more epochs and then went the
+same way as the 3e-4 runs, at an effective lr *below* 1e-4 (cosine decay, epoch
+28 of 500). The precursor is visible a full epoch earlier and is the thing to
+watch for: in epoch 27 the Stage 2 scale, ordinal and existence losses jumped
+mid-epoch (Scl 0.30 -> 2.94, Ord MAE 2.4 -> 11.0 at step 416, Ext 0.5 -> 1.6)
+and did not come back (epoch-27 means Scl 0.75, Ord MAE 4.6, Ext 1.0; eval IoU
+33.7 -> 27.7%). At epoch 28 step 210 the canary fired for the first time with
+NaN gradients on **every** `coarse_stage` parameter (queries, `ref_points`,
+`ref_pos_mlp`, all decoder layers), and every step after it was NaN too -- the
+recovery path skips those steps, but a run whose forward pass produces NaN on
+every batch is not going to recover, and its Stage 2 heads had already
+regressed. Cancelled at epoch 28 and resumed from the clean epoch-25 checkpoint
+as `38242849` with `LR=5e-5`, `SEED=1235` (a new seed so the same batch order
+does not replay), output `hierarchical_fm_depth_ord_lr5e-5`.
+
+So §1.9.1's conclusion needs narrowing: lowering the lr moved the onset from
+epoch 3-10 to epoch 27, which is consistent with "optimisation dynamics" but
+not with "the fix is a schedule". Something in Stage 2 drifts toward a
+singular configuration over tens of epochs, and a lower lr only slows the drift.
+The two leads that survive: the epoch-27 precursor (whatever grows there is the
+cause, and it is measurable before the NaN), and the untested query barrier
+(`684a9f1`). Bisecting with `FM_GRAD_PROBE=1` from the epoch-25 checkpoint at
+1e-4 with seed 1234 should reproduce it in about two epochs.
 
 ---
 
