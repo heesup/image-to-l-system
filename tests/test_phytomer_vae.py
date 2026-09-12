@@ -32,8 +32,16 @@ def _synthetic_packet_bag(n_packets: int = 32, seed: int = 0):
 
 
 class TestPhytomerVAE(unittest.TestCase):
+    def test_coarse_residual_split(self):
+        """Hybrid latent invariant: coarse_dim + slots*residual_dim == latent_dim."""
+        vae = PhytomerVAE(latent_dim=128, residual_dim=8)
+        self.assertEqual(vae.coarse_dim, 128 - NUM_SLOTS * 8)
+        self.assertEqual(vae.coarse_dim + NUM_SLOTS * vae.residual_dim, vae.latent_dim)
+        with self.assertRaises(ValueError):
+            PhytomerVAE(latent_dim=32, residual_dim=8)  # 32 < 10*8, no room left
+
     def test_io_shapes_and_gradients(self):
-        for latent_dim in (32, 64, 128):
+        for latent_dim in (88, 128, 208):  # coarse_dim = latent_dim - 10*8 = 8/48/128
             vae = PhytomerVAE(latent_dim=latent_dim)
             packets, presence = _synthetic_packet_bag(16)
             out = vae(packets, presence)
@@ -52,7 +60,7 @@ class TestPhytomerVAE(unittest.TestCase):
 
     def test_hungarian_roles_alignment(self):
         """Hungarian role matching: optimal assignment, canonical fallback, determinism."""
-        vae = PhytomerVAE(latent_dim=32)
+        vae = PhytomerVAE(latent_dim=88)
         packets, presence = _synthetic_packet_bag(10, seed=3)
         out = vae(packets, presence)
         # loss runs and stays finite with Hungarian alignment on
@@ -95,7 +103,7 @@ class TestPhytomerVAE(unittest.TestCase):
 
     def test_symmetry_aware_and_ortho_flags(self):
         """symmetry_aware_rot + ortho_reg produce finite losses and gradients."""
-        vae = PhytomerVAE(latent_dim=32)
+        vae = PhytomerVAE(latent_dim=88)
         packets, presence = _synthetic_packet_bag(10)
         out = vae(packets, presence)
         losses = vae.compute_loss(
@@ -117,13 +125,13 @@ class TestPhytomerVAE(unittest.TestCase):
 
     def test_save_load_roundtrip(self):
         import tempfile
-        vae = PhytomerVAE(latent_dim=64).eval()
+        vae = PhytomerVAE().eval()
         packets, presence = _synthetic_packet_bag(4)
         with torch.no_grad():
             z_before = vae(packets, presence)["z"]
         with tempfile.NamedTemporaryFile(suffix=".pt") as f:
             torch.save(vae.state_dict(), f.name)
-            vae2 = PhytomerVAE(latent_dim=64)
+            vae2 = PhytomerVAE()
             vae2.load_state_dict(torch.load(f.name, weights_only=True))
         vae2.eval()
         with torch.no_grad():

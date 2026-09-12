@@ -949,7 +949,7 @@ class PhytomerFlowMatchingDecoder(nn.Module):
         # Hybrid 3D-to-2D Phytomer Visual Projector (Point-Query sampling)
         self.phytomer_projector = PhytomerVisualProjector(embed_dim=embed_dim)
 
-        # Velocity head: predicts d/dt of the flow vector (64D in decoupled mode)
+        # Velocity head: predicts d/dt of the flow vector (node_flow_dim = 12 + latent_dim)
         self.velocity_head = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
             nn.GELU(),
@@ -983,7 +983,7 @@ class PhytomerFlowMatchingDecoder(nn.Module):
         phytomer_rot: Optional[torch.Tensor] = None,
         phytomer_scale: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Flow-matches a per-phytomer latent vector (64D in decoupled mode).
+        """Flow-matches a per-phytomer latent vector (12 + latent_dim-D).
 
         Args:
             noisy_flow: (B, K, node_flow_dim) interpolated x_t.
@@ -1050,7 +1050,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         coarse_layers: int = 4,
         fine_layers: int = 6,
         flow_granularity: str = "organ",
-        phytomer_latent_dim: int = 64,
+        phytomer_latent_dim: int = 128,
         backbone: str = "dinov2_vits14",
         freeze_backbone: bool = False,
         init_phytomer_count: float = 50.0,
@@ -1108,8 +1108,9 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         # 3. Stage 3: Fine Botanical Flow Matching Decoder conditioned on 3D Scaffold.
         #    flow_granularity:
         #      'organ'   - per-organ slots (8K x node_dim), pose as conditioning.
-        #      'phytomer'- per-phytomer 64D VAE latent flow vector (Hybrid Decoupled Architecture:
-        #                  pure standard Gaussian prior z_0 ~ N(0, I_64), pose/scale as conditioning).
+        #      'phytomer'- per-phytomer hybrid (coarse+residual) VAE latent flow vector
+        #                  (Hybrid Decoupled Architecture: pure standard Gaussian prior
+        #                  z_0 ~ N(0, I_D), pose/scale as conditioning).
         if flow_granularity == "phytomer":
             self.fine_stage = PhytomerFlowMatchingDecoder(
                 latent_dim=phytomer_latent_dim,
@@ -1314,7 +1315,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
 
         # 2. Construct Prior x_0.
         #    organ mode: standard Gaussian (B, K*8, 16) — exact legacy behavior.
-        #    phytomer mode: standard Gaussian (B, K, D) — pure 64D VAE latent flow (Hybrid Decoupled).
+        #    phytomer mode: standard Gaussian (B, K, D) — pure hybrid VAE latent flow (Hybrid Decoupled).
         M = self.slots_per_phytomer
         if self.flow_granularity == "phytomer":
             D = self.phytomer_latent_dim
@@ -1420,7 +1421,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         }
 
         if self.flow_granularity == "phytomer":
-            # Decoupled flow vector is pure 64D phytomer VAE latent
+            # Decoupled flow vector is pure hybrid phytomer VAE latent
             latent = x
             res["refined_phytomer_pos"] = phytomer_pos
             res["refined_phytomer_rot"] = phytomer_rot

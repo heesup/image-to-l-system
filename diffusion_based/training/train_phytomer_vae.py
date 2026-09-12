@@ -13,7 +13,7 @@ The pkt cache replaces the training loop's per-step packet build + VAE encode
 Usage (workspace root):
     /home/lion397/.conda/envs/digital-crops/bin/python \\
         diffusion_based/training/train_phytomer_vae.py \\
-        --latent-dim 64 --epochs 60 --max-files 4000 \\
+        --latent-dim 128 --epochs 60 --max-files 4000 \\
         --pkt-cache-dir dataset/cache/cowpea_curv26_pkt
 """
 
@@ -105,10 +105,10 @@ _PKT_VAE = None
 _PKT_OUT = ""
 
 
-def _pkt_init_worker(vae_ckpt: str, out_dir: str):
+def _pkt_init_worker(vae_ckpt: str, out_dir: str, latent_dim: int = 128, residual_dim: int = 8):
     global _PKT_VAE, _PKT_OUT
     _PKT_OUT = out_dir
-    _PKT_VAE = PhytomerVAE(latent_dim=64, hidden_dim=256)
+    _PKT_VAE = PhytomerVAE(latent_dim=latent_dim, residual_dim=residual_dim, hidden_dim=256)
     _PKT_VAE.load_state_dict(torch.load(vae_ckpt, map_location="cpu", weights_only=True))
     _PKT_VAE.eval()
 
@@ -144,6 +144,8 @@ def precompute_pkt_cache(
     out_dir: str,
     vae_ckpt: str,
     workers: int = 28,
+    latent_dim: int = 128,
+    residual_dim: int = 8,
 ) -> None:
     """Precomputes per-sample packet targets (packets/presence/centers/refs/
     latent) with the frozen VAE into a SEPARATE cache dir. Deterministic —
@@ -155,7 +157,7 @@ def precompute_pkt_cache(
     ok = skip = empty = err = 0
     with ProcessPoolExecutor(max_workers=workers,
                              initializer=_pkt_init_worker,
-                             initargs=(vae_ckpt, out_dir)) as ex:
+                             initargs=(vae_ckpt, out_dir, latent_dim, residual_dim)) as ex:
         futs = [ex.submit(_pkt_process_one, f) for f in files]
         for i, fut in enumerate(as_completed(futs)):
             prefix, status = fut.result()
@@ -176,7 +178,11 @@ def precompute_pkt_cache(
 def main():
     parser = argparse.ArgumentParser(description="Train PhytomerVAE on cache phytomer packets")
     parser.add_argument("--cache-dir", type=str, default="dataset/cache/cowpea_curv26")
-    parser.add_argument("--latent-dim", type=int, default=64)
+    parser.add_argument("--latent-dim", type=int, default=128,
+                        help="Total hybrid latent width = coarse_dim + slots_per_phytomer * "
+                             "residual_dim (default 48 + 10*8 = 128).")
+    parser.add_argument("--residual-dim", type=int, default=8,
+                        help="Per-slot rotation-residual width (see PhytomerVAE docstring).")
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--epochs", type=int, default=60)
     parser.add_argument("--batch-size", type=int, default=4096)
@@ -228,9 +234,11 @@ def main():
                               batch_size=args.batch_size, shuffle=True, drop_last=True)
     print(f"Train packets: {n_train:,}, val packets: {val_pack.shape[0]:,}")
 
-    model = PhytomerVAE(latent_dim=args.latent_dim, hidden_dim=args.hidden_dim).to(device)
+    model = PhytomerVAE(latent_dim=args.latent_dim, residual_dim=args.residual_dim,
+                         hidden_dim=args.hidden_dim).to(device)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"PhytomerVAE-{args.latent_dim}D: {n_params:,} params")
+    print(f"PhytomerVAE-{args.latent_dim}D (coarse {model.coarse_dim} + "
+          f"{model.slots_per_phytomer}x{args.residual_dim} residual): {n_params:,} params")
     if args.init_checkpoint:
         model.load_state_dict(torch.load(args.init_checkpoint, map_location=device, weights_only=True))
         print(f"Warm-started from {args.init_checkpoint}")
@@ -305,7 +313,8 @@ def main():
     if args.pkt_cache_dir:
         best_ckpt = os.path.join(args.checkpoint_dir, f"phytomer_vae_{args.latent_dim}d_best.pt")
         precompute_pkt_cache(args.cache_dir, args.pkt_cache_dir, best_ckpt,
-                             workers=args.pkt_workers)
+                             workers=args.pkt_workers,
+                             latent_dim=args.latent_dim, residual_dim=args.residual_dim)
 
 
 if __name__ == "__main__":

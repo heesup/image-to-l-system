@@ -1319,9 +1319,13 @@ def main():
     parser.add_argument("--organ_vae_checkpoint", type=str, default="diffusion_based/checkpoints/organ_vae/organ_latent_vae_best.pt", help="Path to pretrained OrganLatentVAE checkpoint")
     parser.add_argument("--flow_granularity", type=str, default="organ", choices=["organ", "phytomer"],
                         help="Stage-3 flow granularity: 'organ' = per-organ slots (8K x 16D, pose as conditioning); "
-                             "'phytomer' = per-phytomer 9+D vector [base(3) | rot(6) | latent(D)] refining the scaffold pose (bridge flow).")
-    parser.add_argument("--phytomer_latent_dim", type=int, default=64, help="PhytomerVAE latent dim (flow_granularity=phytomer)")
-    parser.add_argument("--phytomer_vae_checkpoint", type=str, default="diffusion_based/checkpoints/phytomer_vae_v2/phytomer_vae_64d_best.pt",
+                             "'phytomer' = per-phytomer 12+D vector [base(3) | rot(6) | scale(3) | latent(D)] refining the scaffold pose (bridge flow).")
+    parser.add_argument("--phytomer_latent_dim", type=int, default=128,
+                        help="PhytomerVAE total latent dim = coarse_dim + slots_per_phytomer*residual_dim "
+                             "(flow_granularity=phytomer). Must match the checkpoint.")
+    parser.add_argument("--phytomer_residual_dim", type=int, default=8,
+                        help="PhytomerVAE per-slot rotation-residual width. Must match the checkpoint.")
+    parser.add_argument("--phytomer_vae_checkpoint", type=str, default="diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt",
                         help="Path to frozen PhytomerVAE checkpoint (flow_granularity=phytomer)")
     parser.add_argument("--backbone", type=str, default="dinov2_vits14",
                         help="Image backbone: dinov2_vits14 | dinov2_vitb14 | dinov2_vitl14 | "
@@ -1481,7 +1485,8 @@ def main():
         if rank == 0:
             print(f"Loading frozen PhytomerVAE from {args.phytomer_vae_checkpoint}...")
         phytomer_vae = PhytomerVAE(
-            latent_dim=args.phytomer_latent_dim, hidden_dim=256).to(device)
+            latent_dim=args.phytomer_latent_dim, residual_dim=args.phytomer_residual_dim,
+            hidden_dim=256).to(device)
         phytomer_vae.load_state_dict(torch.load(
             args.phytomer_vae_checkpoint, map_location=device, weights_only=True))
         phytomer_vae.eval()

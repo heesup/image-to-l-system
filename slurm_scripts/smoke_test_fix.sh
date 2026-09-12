@@ -79,11 +79,12 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     --backbone "${BACKBONE}" \
     --matcher_type greedy \
     ${FREEZE_ARGS} \
-    --phytomer_latent_dim 64 \
-    --phytomer_vae_checkpoint diffusion_based/checkpoints/phytomer_vae_v4/phytomer_vae_64d_best.pt \
+    --phytomer_latent_dim 128 \
+    --phytomer_residual_dim 8 \
+    --phytomer_vae_checkpoint diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt \
     --pkt_cache_dir dataset/cache/cowpea_curv26_pkt \
     --max_phytomers 512 \
-    --slots_per_phytomer 9 \
+    --slots_per_phytomer 10 \
     --embed_dim 384 \
     --vit_layers 8 \
     --vit_heads 8 \

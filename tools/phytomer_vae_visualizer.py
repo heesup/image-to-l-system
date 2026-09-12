@@ -10,7 +10,7 @@ centers, packets, dap, meta.json).
 Usage (workspace root):
     .../bin/python tools/phytomer_vae_visualizer.py \
         --cache dataset/cache/phytomer_gui_cache \
-        --ckpt diffusion_based/checkpoints/phytomer_vae_v7/phytomer_vae_64d_best.pt \
+        --ckpt diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt \
         --server-name 0.0.0.0 --server-port 7860
 """
 
@@ -685,7 +685,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cache", type=str, default="dataset/cache/phytomer_gui_cache")
     parser.add_argument("--ckpt", type=str,
-                        default="diffusion_based/checkpoints/phytomer_vae_v7/phytomer_vae_64d_best.pt")
+                        default="diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt")
     parser.add_argument("--server-name", type=str, default="0.0.0.0")
     parser.add_argument("--server-port", type=int, default=7860)
     parser.add_argument("--device", type=str, default="cuda:0")

@@ -38,7 +38,7 @@ from diffusion_based.eval.eval_13d_xml_organ_masks import TEST_PLANTS
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 DEFAULT_VAE_CHECKPOINT = os.path.join(
-    REPO_ROOT, "diffusion_based/checkpoints/phytomer_vae_v7/phytomer_vae_64d_best.pt")
+    REPO_ROOT, "diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt")
 SLOT_NAMES = ["Internode", "Petiole", "Leaflet2", "Leaflet3", "Leaflet4",
               "Peduncle", "Repro6", "Repro7", "Repro8", "Repro9"]
 
@@ -62,7 +62,7 @@ def main():
     print(f"VAE checkpoint: {args.vae_checkpoint}")
     print("=" * 90)
 
-    vae = PhytomerVAE(latent_dim=64, hidden_dim=256).to(DEVICE)
+    vae = PhytomerVAE(latent_dim=128, hidden_dim=256).to(DEVICE)
     vae.load_state_dict(torch.load(args.vae_checkpoint, map_location=DEVICE, weights_only=True))
     vae.eval()
     for p in vae.parameters():

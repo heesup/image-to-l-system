@@ -68,13 +68,16 @@ from diffusion_based.models.phytomer_vae import PhytomerVAE
 
 PYRAMID_ZOOMS = [1.0, 2.0, 4.0, 8.0]
 DEFAULT_VAE_CHECKPOINT = os.path.join(
-    repo_root, "diffusion_based", "checkpoints", "phytomer_vae_v7", "phytomer_vae_64d_best.pt")
+    repo_root, "diffusion_based", "checkpoints", "phytomer_vae_v8", "phytomer_vae_128d_best.pt")
 
 # 1: 8-slot, 2: 10-slot absolute latent, 3: 10-slot + normalized-space latent,
 # 4: adds `keys` = the (shoot_id, phytomer_idx) each packet was grouped by, which
-#    supervises Stage 2's position-along-shoot head. Bumped so the v3 files the
-#    skip gate would otherwise keep get rebuilt.
-PKT_VERSION = 4
+#    supervises Stage 2's position-along-shoot head.
+# 5: PhytomerVAE switched to the hybrid coarse+residual latent (default 128D,
+#    coarse 48 + 10 slots x residual 8) — the stored `latent` field's width and
+#    internal meaning both changed, so files carrying an old 64D latent must be
+#    rebuilt rather than silently reused.
+PKT_VERSION = 5
 
 
 def parse_args():
@@ -103,6 +106,10 @@ def parse_args():
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--vae-checkpoint", type=str, default=DEFAULT_VAE_CHECKPOINT,
                         help="Frozen PhytomerVAE checkpoint for `latent` (empty string = skip latent)")
+    parser.add_argument("--vae-latent-dim", type=int, default=128,
+                        help="Must match the checkpoint's total latent width (coarse + slots*residual).")
+    parser.add_argument("--vae-residual-dim", type=int, default=8,
+                        help="Must match the checkpoint's per-slot rotation-residual width.")
     parser.add_argument("--file-list", type=str, default="",
                         help="pkt mode: text file of XML paths to process (one per line). "
                              "When set, --data-root discovery is skipped.")
@@ -169,12 +176,15 @@ def extract_phytomer_ids(arr: PlantOrganArray, num_organs: Optional[int] = None)
     return ids
 
 
-def load_vae(checkpoint: str, device: torch.device) -> Optional[PhytomerVAE]:
+def load_vae(
+    checkpoint: str, device: torch.device,
+    latent_dim: int = 128, residual_dim: int = 8,
+) -> Optional[PhytomerVAE]:
     if not checkpoint:
         return None
     if not os.path.exists(checkpoint):
         raise FileNotFoundError(f"VAE checkpoint not found: {checkpoint}")
-    vae = PhytomerVAE(latent_dim=64, hidden_dim=256).to(device)
+    vae = PhytomerVAE(latent_dim=latent_dim, residual_dim=residual_dim, hidden_dim=256).to(device)
     vae.load_state_dict(torch.load(checkpoint, map_location="cpu", weights_only=True))
     vae.eval()
     for p in vae.parameters():
@@ -288,6 +298,8 @@ def generate_cache(
     device_str: str,
     use_pyramid: bool,
     vae_checkpoint: str = "",
+    vae_latent_dim: int = 128,
+    vae_residual_dim: int = 8,
     force: bool = False,
     progress_every: int = 10,
     dap_min: Optional[float] = None,
@@ -311,7 +323,7 @@ def generate_cache(
         shard_slice = all_xml[lo:hi]
     print(f"[Cache worker {worker_id}/{num_workers}] {lo} -> {hi} ({hi - lo} samples) -> {output_dir}")
 
-    vae = load_vae(vae_checkpoint, device)
+    vae = load_vae(vae_checkpoint, device, vae_latent_dim, vae_residual_dim)
     print(f"VAE latent: {'ON (' + os.path.basename(vae_checkpoint) + ')' if vae else 'OFF (packets only)'}")
 
     renderer = HeliosPyTorchRenderer(image_size=image_size, device=device)
@@ -403,6 +415,8 @@ def generate_pkt(
     worker_id: int,
     device_str: str,
     vae_checkpoint: str = "",
+    vae_latent_dim: int = 128,
+    vae_residual_dim: int = 8,
     file_list: str = "",
     progress_every: int = 100,
     dap_min: Optional[float] = None,
@@ -421,7 +435,7 @@ def generate_pkt(
     if not xml_files:
         raise FileNotFoundError(f"No XML plant models for species '{species}' in {data_root}")
 
-    vae = load_vae(vae_checkpoint, device)
+    vae = load_vae(vae_checkpoint, device, vae_latent_dim, vae_residual_dim)
     if vae is None:
         print("WARNING: no --vae-checkpoint given; writing packets WITHOUT latent")
 
@@ -513,7 +527,9 @@ def main():
             num_workers=args.num_workers, worker_id=args.worker_id,
             image_size=args.image_size, max_slots=args.max_slots,
             device_str=args.device, use_pyramid=use_pyramid,
-            vae_checkpoint=args.vae_checkpoint, force=args.force,
+            vae_checkpoint=args.vae_checkpoint,
+            vae_latent_dim=args.vae_latent_dim, vae_residual_dim=args.vae_residual_dim,
+            force=args.force,
             progress_every=args.progress_every or 10,
             dap_min=args.dap_min, dap_max=args.dap_max,
         )
@@ -522,6 +538,7 @@ def main():
             species=args.species, data_root=args.data_root, output_dir=args.output_dir,
             num_workers=args.workers or args.num_workers, worker_id=args.worker_id,
             device_str=args.device, vae_checkpoint=args.vae_checkpoint,
+            vae_latent_dim=args.vae_latent_dim, vae_residual_dim=args.vae_residual_dim,
             file_list=args.file_list,
             progress_every=args.progress_every or 100,
             dap_min=args.dap_min, dap_max=args.dap_max,

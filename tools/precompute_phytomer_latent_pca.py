@@ -5,11 +5,11 @@ Two modes:
 1. Full build (default): builds canonical 10-slot phytomer packets from the
    cache dataset using EXACT XML phytomer membership (cache field
    `phytomer_ids`), encodes them with the frozen accepted PhytomerVAE
-   (phytomer_vae_v7).
+   (phytomer_vae_v8).
 
 2. Fast path (--from-pkt-cache): reuses packets + frozen-VAE latents already
    stored in the pkt cache (dataset/cache/cowpea_curv26_pkt/, produced by
-   generate_cache.py with --vae-checkpoint=phytomer_vae_v7). No packet
+   generate_cache.py with --vae-checkpoint=phytomer_vae_v8). No packet
    rebuild, no VAE encode; DAP labels are parsed from filenames
    (cowpea_dapDDD_...). The stored fp16 latents are cast to fp32.
 
@@ -29,7 +29,7 @@ Both save everything the visualizer needs:
 
 Usage (workspace root):
     .../bin/python tools/precompute_phytomer_latent_pca.py \
-        --ckpt diffusion_based/checkpoints/phytomer_vae_v7/phytomer_vae_64d_best.pt \
+        --ckpt diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt \
         --out dataset/cache/phytomer_gui_cache
 
     .../bin/python tools/precompute_phytomer_latent_pca.py --from-pkt-cache \
@@ -181,8 +181,8 @@ def _build_and_encode(args, device):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt", type=str,
-                        default="diffusion_based/checkpoints/phytomer_vae_v7/phytomer_vae_64d_best.pt")
-    parser.add_argument("--latent-dim", type=int, default=64)
+                        default="diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt")
+    parser.add_argument("--latent-dim", type=int, default=128)
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--out", type=str, default="dataset/cache/phytomer_gui_cache")
     parser.add_argument("--cache-dir", type=str, default="dataset/cache/cowpea_curv26")

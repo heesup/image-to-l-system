@@ -44,7 +44,7 @@ TIME_LIMIT="24:00:00"
 CPUS_PER_JOB=8
 MEM_PER_JOB="32G"
 EXCLUDE_NODES=""
-VAE_CKPT="${REPO_ROOT}/diffusion_based/checkpoints/phytomer_vae_xml/phytomer_vae_64d_best.pt"
+VAE_CKPT="${REPO_ROOT}/diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt"
 
 RUN_XML=true
 RUN_SHARDS=true

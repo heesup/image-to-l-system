@@ -34,13 +34,14 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.insert(0, REPO_ROOT)
 
 from diffusion_based.models.plant_organ_array import (
-    PlantOrganArray, ORGAN_NONE, P_COL_ORGAN_TYPE, ORGAN_ROOT_META, ORGAN_SHOOT_META)
+    PlantOrganArray, ORGAN_NONE, P_COL_ORGAN_TYPE)
 from diffusion_based.models.part_tensor_to_40d import assemble_part_tensor_to_xml
 from diffusion_based.models.phytomer_vae import PhytomerVAE
-from diffusion_based.dataset.part_array_dataset import encode_fm, decode_fm, FM_NODE_DIM
+from diffusion_based.dataset.part_array_dataset import encode_fm
 from diffusion_based.dataset.phytomer_packets import (
     build_phytomer_packets, decode_packets, assemble_packets,
     phytomer_scale, denormalize_packet_scales,
+    emit_part_tensor_with_shoot_meta, emit_slot_order,
 )
 from diffusion_based.dataset.phytomer_topology import chain_phytomers
 from diffusion_based.dataset.generate_cache import extract_phytomer_ids
@@ -52,7 +53,7 @@ from diffusion_based.eval.eval_13d_xml_organ_masks import (
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 DEFAULT_VAE_CHECKPOINT = os.path.join(
-    REPO_ROOT, "diffusion_based/checkpoints/phytomer_vae_v7/phytomer_vae_64d_best.pt")
+    REPO_ROOT, "diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt")
 
 
 def build_ik_only_xml(part_13d: torch.Tensor) -> str:
@@ -124,109 +125,12 @@ def build_vae_roundtrip_xml(arr: PlantOrganArray, vae: PhytomerVAE) -> Tuple[str
     return xml_str, int(existence.sum().item()), n_organs
 
 
-def emit_part_tensor_with_shoot_meta(
-    recon_abs: torch.Tensor,
-    presence: torch.Tensor,
-    centers: torch.Tensor,
-    refs: torch.Tensor,
-    shoot_id: torch.Tensor,
-    phytomer_idx: torch.Tensor,
-) -> torch.Tensor:
-    """Flattens packets into a 14D part tensor that carries shoot structure.
-
-    `PartTensorTo40DConverter` rebuilds shoots by scanning rows in order and
-    splitting on ORGAN_SHOOT_META. Packets exclude meta rows by construction, so
-    flattening them naively exports every branch chained into one shoot —
-    measured at 94.1% -> 16.5% foreground IoU on DAP 50 when those rows are the
-    only thing missing. Emitting one ROOT_META row, then per shoot a SHOOT_META
-    row followed by that shoot's phytomers in order, restores what the scanner
-    expects.
-    """
-    part_all = decode_fm(recon_abs)          # (P, 10, 14)
-    rows = []
-
-    root = torch.zeros(14, dtype=part_all.dtype)
-    root[P_COL_ORGAN_TYPE] = float(ORGAN_ROOT_META)
-    rows.append(root.unsqueeze(0))
-
-    for sid in sorted(set(shoot_id[shoot_id >= 0].tolist())):
-        members = torch.nonzero(shoot_id == sid, as_tuple=True)[0]
-        members = members[torch.argsort(phytomer_idx[members])]
-
-        meta = torch.zeros(14, dtype=part_all.dtype)
-        meta[P_COL_ORGAN_TYPE] = float(ORGAN_SHOOT_META)
-        base_node = members[0]
-        # The shoot starts where its first internode starts, not at that
-        # internode's node, since the node is the segment's TOP. Measured to
-        # make no difference to the rendered result — the converter treats
-        # SHOOT_META as a delimiter and re-derives attachment geometrically from
-        # the internode tips — but it is the position the row is supposed to
-        # carry.
-        meta[1:4] = part_all[base_node, 0, 1:4].cpu()
-        meta[4:10] = refs[base_node].cpu()
-        rows.append(meta.unsqueeze(0))
-
-        for m in members.tolist():
-            keep = presence[m]
-            if bool(keep.any()):
-                rows.append(part_all[m][keep][emit_slot_order(part_all[m], keep)].cpu())
-                # Cotyledon node (shoot 0, phytomer 0): cowpea germinates with a
-                # pair of OPPOSITE petioles, but a packet has only one petiole
-                # slot (slot 1), so the second is dropped during packet
-                # construction (measured: exactly 1 of the phytomer's petioles
-                # is lost, always at this node). Measured on 40 DAP1 plants
-                # (2026-09-11): the missing petiole's rotation is well
-                # approximated by a 180 deg turn of the kept one about the
-                # vertical (internode) axis -- up-axis angle between the two
-                # real petioles is 179.9995 +/- 0.003 deg and forward azimuth
-                # is 174.6 +/- 5.9 deg apart, at matching length/radius/base.
-                # A world Z-axis 180 deg rotation (diag(-1,-1,1) @ R) reproduces
-                # both at once and is exact in rot6d: negate the horizontal
-                # (x,y) components of both stored columns, keep the vertical
-                # (z) components. Elevation (droop) is independently random
-                # (~10 deg std) and not recoverable from one sample, so this
-                # is an approximation, not an exact reconstruction -- better
-                # than the alternative of leaving that petiole absent.
-                if sid == 0 and int(phytomer_idx[m]) == 0 and bool(keep[1]):
-                    mirror = part_all[m, 1].clone()
-                    mirror[4] *= -1.0   # x-column, x-component
-                    mirror[5] *= -1.0   # x-column, y-component
-                    mirror[7] *= -1.0   # y-column, x-component
-                    mirror[8] *= -1.0   # y-column, y-component
-                    rows.append(mirror.unsqueeze(0).cpu())
-
-    return torch.cat(rows, dim=0)
-
-
-# Ground-truth organ order inside a phytomer, read off the XML at DAP 90:
-#   internode -> petiole -> leaflets -> bud -> peduncle -> flowers/pods/fruit
-# Slot order alone puts the peduncle (slot 5) ahead of the buds (slots 6-9),
-# which the converter does not accept: re-sorting ground-truth rows into slot
-# order made Helios abort outright, and emitting in slot order cost ~35 points
-# of foreground IoU against otherwise identical organ values.
-_BUD_TYPES = {7, 8, 12}
-_PEDUNCLE_TYPE = 6
-
-
-def emit_slot_order(packet_14d: torch.Tensor, keep: torch.Tensor) -> torch.Tensor:
-    """Order one packet's present slots the way the XML converter expects."""
-    types = packet_14d[:, P_COL_ORGAN_TYPE].long()
-    present = torch.nonzero(keep, as_tuple=True)[0]
-
-    def rank(slot: int) -> tuple:
-        t = int(types[slot])
-        if t in _BUD_TYPES:
-            group = 1          # buds sit between the leaflets and the peduncle
-        elif t == _PEDUNCLE_TYPE:
-            group = 2
-        elif slot >= 6:
-            group = 3          # flowers, pods, fruit follow the peduncle
-        else:
-            group = 0          # internode, petiole, leaflets keep slot order
-        return (group, slot)
-
-    order = sorted(range(present.numel()), key=lambda i: rank(int(present[i])))
-    return torch.tensor(order, dtype=torch.long)
+# emit_part_tensor_with_shoot_meta / emit_slot_order moved to
+# diffusion_based/dataset/phytomer_packets.py (2026-09-11): flattening packets
+# into a shoot-structured 14D tensor, including the cotyledon-petiole mirror,
+# is core packet-reconstruction logic, not an eval-only concern — other
+# consumers (training-time render, future inference export) need it too. Both
+# names stay importable from here for existing callers.
 
 
 def main():
@@ -244,7 +148,7 @@ def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     os.makedirs(SCRATCH_DIR, exist_ok=True)
 
-    vae = PhytomerVAE(latent_dim=64, hidden_dim=256).to(DEVICE)
+    vae = PhytomerVAE(latent_dim=128, hidden_dim=256).to(DEVICE)
     vae.load_state_dict(torch.load(args.vae_checkpoint, map_location=DEVICE, weights_only=True))
     vae.eval()
     for p in vae.parameters():

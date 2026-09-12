@@ -45,15 +45,14 @@ from diffusion_based.dataset.part_array_dataset import encode_fm
 from diffusion_based.dataset.phytomer_packets import (
     build_phytomer_packets, assemble_packets, decode_packets,
     phytomer_scale, denormalize_packet_scales, rot6d_to_matrix,
-    FM_ROT_START, FM_ROT_END, FM_BASE_START, FM_BASE_END)
+    FM_ROT_START, FM_ROT_END, FM_BASE_START, FM_BASE_END,
+    emit_part_tensor_with_shoot_meta)
 from diffusion_based.dataset.phytomer_topology import chain_phytomers
 from diffusion_based.dataset.generate_cache import extract_phytomer_ids
-from diffusion_based.eval.eval_phytomer_vae_helios_roundtrip import (
-    emit_part_tensor_with_shoot_meta)
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 DEFAULT_CKPT = os.path.join(
-    REPO_ROOT, "diffusion_based/checkpoints/phytomer_vae_v7/phytomer_vae_64d_best.pt")
+    REPO_ROOT, "diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt")
 XML_DIR = os.path.join(REPO_ROOT, "dataset/helios_data/cowpea")
 _DAP_RE = re.compile(r"dap(\d+)")
 
@@ -140,7 +139,7 @@ def main():
                     help="also raytrace both arms and report mask IoU (slow)")
     args = ap.parse_args()
 
-    vae = PhytomerVAE(latent_dim=64, hidden_dim=256).to(DEVICE)
+    vae = PhytomerVAE(latent_dim=128, hidden_dim=256).to(DEVICE)
     vae.load_state_dict(torch.load(args.vae_checkpoint, map_location=DEVICE, weights_only=True))
     vae.eval()
     for p in vae.parameters():

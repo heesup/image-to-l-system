@@ -2,15 +2,34 @@
 Phytomer-level Variational Autoencoder (PhytomerVAE).
 
 Compresses one canonical 10-slot phytomer packet (10 x 26D FM organ rows +
-8-bit presence mask = 216D) into a compact spherical standard Gaussian
-latent z in R^D ~ N(0, I), D in {32, 64, 128} (default 64).
+10-bit presence mask = 240D) into a HYBRID latent z in R^D, D = coarse_dim +
+slots_per_phytomer x residual_dim (default 48 + 10x8 = 128):
+- z[:coarse_dim]  — one shared "coarse" channel for class/base/scale/curv
+  (the affine morphology that co-varies strongly across a phytomer's organs).
+- z[coarse_dim:]  — slots_per_phytomer independent "residual" channels
+  (residual_dim each), one per organ slot, dedicated to that organ's rotation.
 
-Rationale (validated 2026-09-09 on cowpea_curv26):
-- Organs within a phytomer co-vary strongly (petiole-vs-leaflet scale r=0.78,
-  stem-vs-leaflet r=0.52), so the effective DOF is far below 8x16=128.
+Rationale for splitting rotation out (measured 2026-09-08/09/11 on
+cowpea_curv26 across many ablations, see docs/ongoing/20260909_phytomer_latent_and_local_matching.md
+section 2): a single SHARED 64D or 128D latent floors rotation error around
+5-6 deg no matter how it is decoded — widening it 64D->128D changed nothing,
+and a FROZEN shared latent + a much wider decoder still floored at 5.74 deg.
+That rules out both encoder and decoder capacity as the bottleneck; what is
+left is ALLOCATION: organs within a phytomer share strong affine correlation
+(petiole-vs-leaflet scale r=0.78, stem-vs-leaflet r=0.52) but their rotations
+do not share a comparable common axis, so a shared latent's KL budget is spent
+on the strongly-correlated shape channels and starves rotation. Giving each
+organ slot its own small residual channel — encoded directly from that slot's
+own rot6d, decoded by a shared-weight per-slot head conditioned on
+[coarse | that slot's residual] — routes rotation around the shared bottleneck
+without losing the shape-sharing benefit or the token-count win described below.
+
+Other rationale (validated 2026-09-09 on cowpea_curv26):
 - One latent per phytomer turns Stage 3 flow matching from 8K tokens into K
   tokens (64x cheaper self-attention, 8x cheaper ODE) and collapses the
   matcher to a single phytomer-level Hungarian (no slot-level assignment).
+  The coarse+residual split keeps this: the residual channels are extra width
+  on the SAME per-phytomer token, not extra tokens.
 - Geometry is PHYTOMER-RELATIVE (organ base - cluster center): the phytomer/node
   position carries global placement, the latent models translation-invariant
   local morphology. decode_packet() re-anchors with the node position.
@@ -53,20 +72,33 @@ PACKET_IN_DIM = NUM_SLOTS * (SLOT_DIM - 3 + 1)  # 10 x (23 + 1) = 240
 
 
 class PhytomerVAE(nn.Module):
-    """Compact phytomer-level VAE: (10 x 26D + 10 presence) -> z in R^D -> 10 x 26D."""
+    """Hybrid phytomer-level VAE: (10 x 26D + 10 presence) -> z in R^D -> 10 x 26D.
+
+    z splits into a shared coarse channel (class/base/scale/curv) and one
+    residual channel per organ slot (rotation only) — see module docstring.
+    """
 
     def __init__(
         self,
         slots_per_phytomer: int = NUM_SLOTS,
         slot_dim: int = SLOT_DIM,
-        latent_dim: int = 64,
+        latent_dim: int = 128,
+        residual_dim: int = 8,
         hidden_dim: int = 256,
         num_classes: int = NUM_ORGAN_TYPES,
     ):
         super().__init__()
         self.slots_per_phytomer = slots_per_phytomer
         self.slot_dim = slot_dim
-        self.latent_dim = latent_dim
+        self.residual_dim = residual_dim
+        self.coarse_dim = latent_dim - slots_per_phytomer * residual_dim
+        if self.coarse_dim <= 0:
+            raise ValueError(
+                f"latent_dim={latent_dim} leaves no room for the coarse channel "
+                f"once {slots_per_phytomer} slots x residual_dim={residual_dim} "
+                f"={slots_per_phytomer * residual_dim} residual dims are removed; "
+                f"raise latent_dim or lower residual_dim.")
+        self.latent_dim = latent_dim  # = coarse_dim + slots_per_phytomer * residual_dim
         self.hidden_dim = hidden_dim
         self.num_classes = num_classes
         # Base columns are REMOVED before encoding: with EXACT XML phytomer
@@ -74,8 +106,16 @@ class PhytomerVAE(nn.Module):
         # bud = center, leaflets = 0.8/1.0 x the petiole curve, flowers/fruit =
         # curved peduncle tip). 10 x (23 + 1) = 240.
         self.in_dim = slots_per_phytomer * (slot_dim - 3 + 1)
+        # Width of one stripped slot's geometry block (23 = 26 - 3 base cols),
+        # and where rot6d sits inside it once base is removed (rot immediately
+        # follows base in the original 26D layout, so it slides back by exactly
+        # the base width — see encode()).
+        self._slot_geom_dim = slot_dim - 3
+        self._rot_off_in_slot = FM_ROT_START - (FM_BASE_END - FM_BASE_START)
+        self._rot_width = FM_ROT_END - FM_ROT_START
 
-        # Encoder: packet -> hidden -> (mu, logvar)
+        # Shared trunk: packet -> hidden. Both the coarse and residual heads
+        # read from this (residual also reads each slot's own raw rotation).
         self.encoder = nn.Sequential(
             nn.Linear(self.in_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -86,12 +126,30 @@ class PhytomerVAE(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.SiLU(),
         )
-        self.fc_mu = nn.Linear(hidden_dim, latent_dim)
-        self.fc_logvar = nn.Linear(hidden_dim, latent_dim)
+        # Coarse channel: shared morphology (class/base/scale/curv id est.
+        # everything except rotation). Organs co-vary strongly here
+        # (petiole-vs-leaflet scale r=0.78), so a shared bottleneck is the
+        # right fit and matches the old (pre-hybrid) single-latent design.
+        self.fc_mu = nn.Linear(hidden_dim, self.coarse_dim)
+        self.fc_logvar = nn.Linear(hidden_dim, self.coarse_dim)
 
-        # Decoder: latent -> hidden -> 8 slots x (13 cls logits + 13 geom)
+        # Residual channel: ONE small latent per slot, dedicated to that
+        # slot's rotation. Encoded from the shared trunk context PLUS that
+        # slot's own rot6d (not pooled away), so rotation detail the trunk
+        # would otherwise discard survives into the latent.
+        self.residual_encoder = nn.Sequential(
+            nn.Linear(hidden_dim + self._rot_width, hidden_dim // 2),
+            nn.LayerNorm(hidden_dim // 2),
+            nn.SiLU(),
+            nn.Linear(hidden_dim // 2, hidden_dim // 2),
+            nn.SiLU(),
+        )
+        self.fc_mu_residual = nn.Linear(hidden_dim // 2, residual_dim)
+        self.fc_logvar_residual = nn.Linear(hidden_dim // 2, residual_dim)
+
+        # Decoder: coarse latent -> hidden -> everything EXCEPT rotation.
         self.decoder_backbone = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim),
+            nn.Linear(self.coarse_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
@@ -102,26 +160,25 @@ class PhytomerVAE(nn.Module):
         )
         # One output layer per quantity. Each emits values for ALL slots_per_phytomer
         # organs at once, hence the plural: the 3 leaflets of one phytomer have
-        # genuinely different rotations/scales, and reproducing that per-organ
-        # variation from the latent is exactly what these layers exist for.
+        # genuinely different scales/curvatures, and reproducing that per-organ
+        # variation from the coarse latent is exactly what these layers exist for.
         self.organ_cls = nn.Linear(hidden_dim, slots_per_phytomer * num_classes)
-        # Rotation reads z directly instead of the shared backbone output.
-        # Measured 2026-09-11 on DAP 10/50/90: taking the backbone's h costs
-        # petiole rotation accuracy badly (23 deg from a 1-layer head, 37-60 deg
-        # from a 2-layer one) because the shared trunk discards rotation detail
-        # that no downstream depth can recover. Reading z recovers ~15 deg.
-        # Petiole is the one that matters: leaflet bases are integrated along
-        # its curve, so its error propagates straight into organ positions.
-        self.organ_rots = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.SiLU(),
-            nn.Linear(hidden_dim // 2, slots_per_phytomer * 6),
-        )
         self.organ_scales = nn.Linear(hidden_dim, slots_per_phytomer * 3)
         self.organ_curvs = nn.Linear(hidden_dim, slots_per_phytomer * 1)
+
+        # Rotation decoder: per-slot, conditioned on [coarse | that slot's
+        # residual]. Weights are SHARED across slots (applied via a 3D
+        # reshape) so parameter count does not grow with slots_per_phytomer;
+        # the coarse half of the input still lets rotation be informed by
+        # organ class/shape context without living in the same bottleneck.
+        self.organ_rot_decoder = nn.Sequential(
+            nn.Linear(self.coarse_dim + residual_dim, hidden_dim // 2),
+            nn.LayerNorm(hidden_dim // 2),
+            nn.SiLU(),
+            nn.Linear(hidden_dim // 2, hidden_dim // 2),
+            nn.SiLU(),
+            nn.Linear(hidden_dim // 2, 6),
+        )
 
     def pack_input(self, packets: torch.Tensor, presence: torch.Tensor) -> torch.Tensor:
         """Flattens (P, 10, 26) + (P, 10) presence -> (P, 240) encoder input.
@@ -145,10 +202,32 @@ class PhytomerVAE(nn.Module):
         return torch.cat([stripped.reshape(P, -1), presence.float().reshape(P, -1)], dim=-1)
 
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Encodes (P, 192) packets to latent distribution parameters."""
-        h = self.encoder(x)
-        mu = self.fc_mu(h)
-        logvar = self.fc_logvar(h).clamp(-10.0, 10.0)
+        """Encodes (P, in_dim) packets to (mu, logvar), each (P, latent_dim).
+
+        Layout: [:coarse_dim] is the shared coarse channel; the remaining
+        slots_per_phytomer x residual_dim is one residual_dim block per slot,
+        concatenated in slot order (slot s at
+        [coarse_dim + s*residual_dim : coarse_dim + (s+1)*residual_dim]).
+        """
+        S = self.slots_per_phytomer
+        P = x.shape[0]
+        h = self.encoder(x)  # (P, hidden)
+        mu_c = self.fc_mu(h)
+        logvar_c = self.fc_logvar(h).clamp(-10.0, 10.0)
+
+        # Recover each slot's own rot6d from the base-stripped input (base was
+        # removed by pack_input, so rot6d slides back by the base width — see
+        # __init__ for _rot_off_in_slot/_slot_geom_dim).
+        geom = x[:, :S * self._slot_geom_dim].reshape(P, S, self._slot_geom_dim)
+        slot_rot = geom[:, :, self._rot_off_in_slot:self._rot_off_in_slot + self._rot_width]
+
+        h_exp = h.unsqueeze(1).expand(P, S, self.hidden_dim)
+        hr = self.residual_encoder(torch.cat([h_exp, slot_rot], dim=-1))  # (P, S, hidden//2)
+        mu_r = self.fc_mu_residual(hr).reshape(P, S * self.residual_dim)
+        logvar_r = self.fc_logvar_residual(hr).clamp(-10.0, 10.0).reshape(P, S * self.residual_dim)
+
+        mu = torch.cat([mu_c, mu_r], dim=-1)
+        logvar = torch.cat([logvar_c, logvar_r], dim=-1)
         return mu, logvar
 
     def reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
@@ -160,7 +239,11 @@ class PhytomerVAE(nn.Module):
         return mu
 
     def decode(self, z: torch.Tensor) -> Dict[str, torch.Tensor]:
-        """Decodes (P, D) latents into (P, 10, 26) FM packets.
+        """Decodes (P, D) hybrid latents into (P, 10, 26) FM packets.
+
+        z[:coarse_dim] drives class/base/scale/curv (shared, all slots at
+        once); z[coarse_dim + s*residual_dim : ...] drives slot s's rotation
+        only, via a per-slot head shared across slots (see __init__).
 
         Base columns are ZERO: with EXACT XML phytomer clustering every slot's
         base is deterministic (stem/petiole/peduncle/bud = center, leaflets =
@@ -170,12 +253,17 @@ class PhytomerVAE(nn.Module):
         """
         P = z.shape[0]
         S = self.slots_per_phytomer
-        h = self.decoder_backbone(z)
+        z_c = z[:, :self.coarse_dim]
+        z_r = z[:, self.coarse_dim:].reshape(P, S, self.residual_dim)
+
+        h = self.decoder_backbone(z_c)
         pred_cls_logits = self.organ_cls(h).reshape(P, S, self.num_classes)   # (P, 10, 13)
         pred_base = torch.zeros(P, S, 3, device=z.device, dtype=z.dtype)       # (P, 10, 3) zeroed
-        pred_rot = self.organ_rots(z).reshape(P, S, 6)                           # (P, 10, 6)
         pred_scale = F.softplus(self.organ_scales(h)).reshape(P, S, 3) + 1e-4    # (P, 10, 3)
         pred_curv = self.organ_curvs(h).reshape(P, S, 1)                         # (P, 10, 1)
+
+        z_c_exp = z_c.unsqueeze(1).expand(P, S, self.coarse_dim)
+        pred_rot = self.organ_rot_decoder(torch.cat([z_c_exp, z_r], dim=-1))     # (P, 10, 6)
 
         pred_probs = F.softmax(pred_cls_logits, dim=-1)
         pred_26d = torch.cat([pred_probs, pred_base, pred_rot, pred_scale, pred_curv], dim=-1)

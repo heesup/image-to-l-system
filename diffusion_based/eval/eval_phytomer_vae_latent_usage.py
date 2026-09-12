@@ -34,7 +34,7 @@ from diffusion_based.dataset.phytomer_packets import (
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 DEFAULT_CKPT = os.path.join(
-    REPO_ROOT, "diffusion_based/checkpoints/phytomer_vae_v7/phytomer_vae_64d_best.pt")
+    REPO_ROOT, "diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt")
 DEFAULT_PKT_DIR = os.path.join(REPO_ROOT, "dataset/cache/cowpea_curv26_pkt")
 
 
@@ -74,7 +74,7 @@ def main():
                     help="skip writing latent_usage.json next to the checkpoint")
     args = ap.parse_args()
 
-    vae = PhytomerVAE(latent_dim=64, hidden_dim=256).to(DEVICE)
+    vae = PhytomerVAE(latent_dim=128, hidden_dim=256).to(DEVICE)
     vae.load_state_dict(torch.load(args.vae_checkpoint, map_location=DEVICE, weights_only=True))
     vae.eval()
     for p in vae.parameters():

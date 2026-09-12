@@ -22,7 +22,7 @@ PYTHON_BIN="/home/lion397/.conda/envs/digital-crops/bin/python"
 
 DATA_DIR="dataset/helios_data/cowpea"
 OUT_DIR="dataset/cache/cowpea_curv26_pkt"
-VAE_CKPT="diffusion_based/checkpoints/phytomer_vae_xml/phytomer_vae_64d_best.pt"
+VAE_CKPT="diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt"
 TOOL="diffusion_based/dataset/generate_cache.py"
 
 NUM_JOBS=40
