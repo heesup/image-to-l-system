@@ -199,6 +199,40 @@ This also fits the one run that survived longest at batch 256 (global 1024, job 
 
 **Not yet resolved before starting**: check precisely how `pred_slot_exist_logits` is supervised at TRAINING time (not just inference) -- does `forward_backward_step` also do a final/t=1-style evaluation for it, or does it supervise the exist logits from whatever `x_t` the main training forward pass used (a specific, possibly non-1.0 `t` per sample)? Whichever answer applies determines whether roll/scale (if moved to Stage 3) can follow the exact same training-time supervision path or need a different one. Read this from `forward_backward_step` directly before implementing -- do not assume from the inference-time (`sample_ode`) pattern alone.
 
+### 2.1 ADOPTED: Stage 3 refines a child against a fixed parent
+
+Agreed with Heesup, 2026-09-12, after a round of proposal and measurement. This supersedes §2's plumbing (though §2's reasoning about why roll and scale belong in Stage 3 still holds and is subsumed here).
+
+**The shape of it.** Stage 2 keeps predicting each node **once**, as now. Stage 3 consumes **(parent, self) pairs**, holds the parent **fixed**, and predicts the child's position, roll, scale and 128D shape against that fixed backdrop. An earlier variant had Stage 2 predict a parent *and* a child per node; that was dropped because each physical node would then be predicted twice -- once as somebody's child and once as somebody's parent -- which reintroduces exactly the redundancy the roll-head reduction and the internode work have been removing, and lets the two copies disagree.
+
+**"Direction" must mean roll only.** If Stage 3 predicted the child's position *and* its direction, those two are redundant: direction is `normalize(child - parent)`. The free degree of freedom is the 1-DOF roll and nothing else, so Stage 3 predicts **position + roll + scale + shape**. (§1.6's measurement makes this a good fit: the GT roll increment between consecutive phytomers has a circular mean of -179.9 deg, so relative-to-parent roll is the easy quantity to learn.)
+
+**How (parent, self) is paired -- no new matching is needed.** The training loop already computes it, at `train_hierarchical_flow_matching.py` around the `gt_render_parent_idx` / `has_render_parent` construction. The link is **derived transitively**, not solved: the existing bipartite matcher pairs predicted node `i` with GT row `r(i)`; GT topology gives `r(i)`'s parent row `p`; if `p` was also matched, to predicted node `j`, then `parent(i) = j`. Because the parent link is GT topology composed with the matching that already exists, this adds **no second assignment problem** and so none of the Exp E assignment-flicker risk that §4.1 warns about. At inference there is no GT, so the parent comes from `chain_phytomers(pos, ordinal, is_base)` -- already running inside `reconstruct_phytomer_rot`.
+
+**Every node has a parent one internode below it.** Heesup's correction, and the measurement that settles it. A node is the TOP of its internode, so the main stem's first node sits one internode *above* the origin rather than at it. Measured (24 plants):
+
+| DAP | main-stem 1st node to origin | lateral 1st node to origin | median internode | lateral 1st to nearest node below |
+|---|---|---|---|---|
+| 10 | 1.5 cm | 1.9 cm | 0.3 cm | 0.6 cm |
+| 30 | 3.0 cm | 10.0 cm | 1.0 cm | 1.2 cm |
+| 50 | 3.0 cm | 16.4 cm | 1.8 cm | 2.9 cm |
+| 90 | **3.0 cm** | 16.5 cm | **2.9 cm** | **3.1 cm** |
+
+At DAP 90 the main stem's first node sits 3.0 cm from the origin against a 2.9 cm median internode -- one internode, as predicted. A lateral's first node is far from the origin (16.5 cm) but 3.1 cm from the nearest node below it on another shoot -- also one internode, from its branch point. So the rule is uniform:
+
+> **A node's parent is one internode below it**: the **origin** (a virtual node carrying no phytomer) for the main stem's first node, the **branch-point node on the parent shoot** for a lateral's first node, and the previous node in the same shoot for everything else.
+
+This is worth adopting for three separate reasons. It takes parent coverage from **86.2% to 100%** (measured: 13.8% of GT phytomers are first-of-shoot and find no parent under the current same-shoot, ordinal-1 lookup). It **deletes `derive_forward`'s world-+Z fallback structurally**, including the successor-direction patch added in §1.5 -- the main stem's first node derives its axis from `self - origin` and a lateral's from `self - branch point`, both real geometric parents rather than a guess. And it closes the gap on exactly the 13.8% that §1.5 measured as 50.8 deg mis-oriented under the +Z assumption.
+
+**Implementation note**: the `keys` field is `(shoot_id, phytomer_idx)` only and does **not** record which node a lateral branches from, so the branch link has to come from somewhere. Prefer deriving it geometrically -- nearest GT node below, on another shoot, gated by the `MAX_EDGE_FACTOR = 3.0` x median-spacing rule `chain_phytomers` already uses -- over regenerating the 100k-file packet cache for a new field. The measurement above validates that lookup: the correct parent really is at one-internode distance. Deriving it also has the side benefit that training and inference then resolve the branch link by the same rule.
+
+**Noise injection on the fixed parent (adopted).** Holding the parent at GT during training is the asymmetric design §4.1 sanctions, but it creates the train/inference gap §4.1 warns about, over chains of tens to hundreds of phytomers. Mitigate with noise -- and note that the dominant inference error is **which node was picked**, not where it is, so the noise needs two components:
+
+- **position jitter**, at Stage 2's node RMSE, ~2 cm;
+- **parent substitution**, at `chain_phytomers`' parent-recovery failure rate: 0-4% when the ordinal is good (96-100% recovery), but 48-60% when the ordinal carries no information.
+
+**Calibrate to the achievable rate, not the current one.** The ordinal head currently sits at the no-information value (`ord_step_mae` ~1.0, §1.7), so using today's measured failure rate would train against a wrong parent roughly half the time and the supervision would be close to worthless. Start at **5% substitution plus 1-2 cm jitter** -- the operating point chaining reaches when the ordinal works -- and re-calibrate from `ord_step_mae` once it actually falls below 1.0.
+
 ---
 
 ## 3. Proposed next step B: the internode redundancy that's STILL open at the packet level
