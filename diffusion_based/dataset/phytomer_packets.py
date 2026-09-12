@@ -297,6 +297,21 @@ def assemble_packets(
     # decoded-length fallback below.
     stem = det[:, 0]
     if bool(stem.any()):
+        # Slot 0's rotation is the phytomer reference frame itself, so relative
+        # to `reference_rots` it is IDENTITY by construction: measured 0.0000 deg
+        # from identity on every stem at DAP 10/50/90. The VAE still emits
+        # 0.4-0.6 deg of noise on it, and for a shoot's FIRST internode that
+        # noise is not harmless -- it is the direction Helios's shoot-base IK
+        # reads, so it rotates the whole lateral branch (measured 2026-09-12:
+        # replacing it with the exact value recovers +2.2 FG IoU at DAP 50 and
+        # +3.7 at DAP 90). Chained internodes are overwritten with the parent
+        # gap below regardless, so this only ever binds on shoot-first rows.
+        # Fresh tensor via cat, never inplace: see the note at the top.
+        eye6 = matrix_to_rot6d(torch.eye(3, device=out.device, dtype=out.dtype).unsqueeze(0))
+        slot0_rot = torch.where(stem.unsqueeze(-1), eye6.expand(P, 6),
+                                out[:, 0, FM_ROT_START:FM_ROT_END])
+        slot0 = torch.cat([out[:, 0, :FM_ROT_START], slot0_rot, out[:, 0, FM_ROT_END:]], dim=-1)
+        out = torch.cat([slot0.unsqueeze(1), out[:, 1:]], dim=1)
         R_stem = R_ref @ rot6d_to_matrix(out[:, 0, FM_ROT_START:FM_ROT_END])
         stem_len = out[:, 0, FM_SCALE_START] / SCALE_SCALE  # metres
         stem_base = -stem_len.unsqueeze(-1) * R_stem[:, :, 1] * base_scale
