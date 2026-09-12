@@ -23,6 +23,8 @@
 | `--resume` flag restored (its parser line had been lost; launcher passed it by default) | `c192f5f` |
 | **Inference drew internodes from the decoded length, over ALL slots incl. non-existent ones** — fixed | `abce662` |
 | **Ordinal = depth from the root; parent-step loss** | `ae26ccb` |
+| **Packet slot-0 rotation forced to identity (it is the reference frame)** | `ef5802d` |
+| **Leaflets emitted as lateral, terminal, lateral — the packet path is now lossless (§2.4)** | `ff5beb4` |
 
 **The blocker is resolved.** The intermittent Stage 2 gradient explosion tracks the **learning rate**, not the architecture: every observed onset sat above ~1.6e-4 effective lr, and job `38240281` at `LR=1e-4` has now run **10 epochs clean** with 0 canary hits, through and well past the point where three of four runs at 3e-4 died. Eight architecture-level hypotheses were tested against minimal reproductions and refuted first; §1.9 records them so nobody pays for them twice.
 
@@ -36,7 +38,7 @@
 
 **Two inference bugs found by looking at the epoch-11 panel rather than the numbers** (§2.3). A 2 cm seedling with 0.6 cm node RMSE rendered at IoU 0.0% because metre-long stems shot across the frame. Fixed in `abce662`; the ordinal follow-up is `ae26ccb`.
 
-**Helios round-trip (§2.4)**: regenerated fig14 shows the VAE-v8 round-trip at 70.3 / 87.8 / 76.2% FG IoU against IK-only 95.7 / 94.1 / 87.4% (the old figure's 52.8 / 20.4 / 24.7% was stale). The packet path alone is lossless at DAP 90 and loses 17 points at DAP 10 (cotyledon handling, first suspect); the VAE loses 4-11 points through Helios's angle-based FK. Routing it through the new branch-point parent rule makes it 16 points *worse* -- a lateral's first internode axis is not the node-to-node segment.
+**Helios round-trip (§2.4)**: **the packet path is now lossless.** With the VAE replaced by identity it renders at 95.1 / 93.8 / 88.0% FG IoU against IK-only 95.7 / 94.1 / 87.4% (it was 78.9 / 91.6 / 87.4). The whole loss was one ordering bug: `emit_slot_order` wrote a node's leaflets as (lateral, lateral, terminal) while the XML converter assigns leaf yaw by encounter order (lateral, terminal, lateral) and reads only the scale from the row, so the terminal leaflet's scale landed on a lateral and vice versa -- an 11% size swap on two of every three leaflets (`ff5beb4`). The seedling's 17 points were this, not the cotyledon. What remains is the VAE alone: the v8 round-trip is at 83.0 / 89.9 / 79.2% (from 70.3 / 87.8 / 76.2 at the start of the day; `ef5802d` forcing slot-0's rotation to identity gave the middle step). Routing the export through the branch-point parent rule is still 16 points *worse* -- a lateral's first internode axis is not the node-to-node segment.
 
 **Next**: when `38240323` writes its epoch-15 checkpoint, stop it and resume from there with `ae26ccb`'s depth target and step loss (plus the fixed inference), so the render-on progress is kept and the ordinal head relearns on top of it. Then §2.1's remaining pieces — Stage 3 consuming `(parent, self)` pairs with the parent held fixed, and noise injection on the fixed parent.
 
@@ -311,39 +313,62 @@ A gap gate was then tried -- distrust a chained stem longer than ~6x the decoded
 
 Heesup's requirement (2026-09-12, "very important"): the VAE round-trip
 (14D -> packet -> VAE -> 14D -> XML -> Helios) must reproduce the IK-only
-reconstruction (14D -> XML -> Helios, no VAE). `fig14_phytomer_vae_helios_roundtrip.png`
-showed 52.8 / 20.4 / 24.7% FG IoU against 95.7 / 94.1 / 87.4% -- but that figure
-(now in `docs/results/assets/_unreferenced/`) predates the 2026-09-11 emit-order and
-shoot-partition fixes. **Regenerated with the current code and the v8 VAE
-(`docs/results/assets/fig14_phytomer_vae_helios_roundtrip.png`):**
+reconstruction (14D -> XML -> Helios, no VAE). The figure is
+`docs/results/assets/fig14_phytomer_vae_helios_roundtrip.png`; the old copy in
+`docs/results/assets/_unreferenced/` (52.8 / 20.4 / 24.7%) predates the 2026-09-11
+emit-order and shoot-partition fixes. FG IoU against the Helios GT render, same
+three plants throughout:
 
-| DAP | IK-only | packet path only (VAE = identity) | VAE-v8 round-trip | old figure |
-|---|---|---|---|---|
-| 10 | 95.7% | **78.9%** | 70.3% | 52.8% |
-| 50 | 94.1% | 91.6% | 87.8% | 20.4% |
-| 90 | 87.4% | **87.4%** | 76.2% | 24.7% |
+| DAP | IK-only | packet path only (VAE = identity) | VAE-v8 round-trip |
+|---|---|---|---|
+| 10 | 95.7% | 78.9 -> **95.1%** | 70.3 -> 70.5 -> **83.0%** |
+| 50 | 94.1% | 91.6 -> **93.8%** | 87.8 -> 90.0 -> **89.9%** |
+| 90 | 87.4% | 87.4 -> **88.0%** | 76.2 -> 79.9 -> **79.2%** |
 
-The middle column is the decisive one: it runs the same post-decode path with the
-VAE replaced by identity (`strip_base(normalize(packets))`), so it isolates the
-deterministic packet representation from the VAE. At the 14D tensor level both are
-nearly exact -- identity within 0.01-0.25 cm of GT per organ, VAE-v8 within
-0.05-0.69 cm mean, scales within 1%, counts matching -- so nothing here is a
-position bug. Helios never sees those positions: `PartTensorTo40DConverter` solves
-angles from organ direction vectors and Helios rebuilds the plant by forward
-kinematics, so small rotation errors are integrated along chains and branches.
+The middle column runs the same post-decode path with the VAE replaced by identity
+(`strip_base(normalize(packets))`), so it isolates the deterministic packet
+representation from the VAE. The arrows are the two fixes of the afternoon, in order:
 
-**Two different problems, by stage:**
-- **DAP 10: the packet path itself loses 17 points** (95.7 -> 78.9) with a perfect
-  VAE. Leaf IoU 79%. The seedling is where the cotyledon node's synthesized second
-  petiole (`emit_part_tensor_with_shoot_meta`'s 180-degree mirror) is a large share of
-  the silhouette; that is the first suspect. Deterministic, so fully recoverable.
-- **DAP 90: the packet path is lossless** (87.4 = 87.4) and the VAE alone loses 11
-  points. Per-slot rotation error at DAP 50 is internode 0.38 deg, petiole 3.0,
-  leaflets 2.5 (p90 3.6-4.3), and leaves are the silhouette: leaf IoU 93.3 -> 86.9.
-  Replacing all VAE rotations with exact ones recovers only 87.8 -> 90.4 at DAP 50,
-  so at DAP 90 the many flowers/fruit riding peduncle tips presumably amplify it.
-  This is VAE capacity (§3's v9), or export robustness to small rotation errors.
-- DAP 50 splits 2.5 (packet path) + 3.8 (VAE, of which rotations 2.6).
+**`ef5802d` -- slot 0's rotation is the reference frame.** A packet's slot-0
+(internode) rotation is stored relative to `refs`, which *is* that internode's
+rotation, so its target is exactly the identity; the VAE was decoding a small
+non-identity there and Helios's shoot-base IK rotated whole shoots by it. Forcing
+identity in `assemble_packets` gave +2.2 / +2.2 / +3.7 on the VAE path and nothing
+on the identity path (which was already exact there).
+
+**`ff5beb4` -- leaflets go out as (lateral, terminal, lateral).** Found by refusing
+the "small rotation errors integrate through FK" story for the identity column,
+where the 14D rows are exact to 1e-4 in every column. Rendering the plain
+encode->decode tensor (no `assemble_packets`, no chain override) gave the same
+92.0% at DAP 50 as the full identity path, which cleared assembly and the parent
+override; a per-phytomer numeric diff of the IK XML against the emitted XML then
+showed exactly one systematic difference: `leaf_scale`, on 326 of 491 leaves, by
++/-11%. `PartTensorTo40DConverter` gives a trifoliate leaf its yaw from the order
+in which its leaflet rows are encountered (child index 0 -> +10 deg, 1 -> 0 deg
+terminal, 2 -> -10 deg) and reads **only the scale** from the row -- the leaflet's
+own rotation is ignored -- while the packet keeps the terminal leaflet in slot 4
+(`LEAFLET_ATTACH_FRAC`, tip). Emitting slots in numeric order handed the terminal
+leaflet's scale to a lateral and the lateral's to the terminal. Patching only
+`leaf_scale` in the emitted XML back to the IK values gave 94.3% (IK-only 94.1);
+the code fix gives 95.1 / 93.8 / 88.0. The seedling's 17-point loss was this too:
+the cotyledon second-petiole story below was real but worth well under a point.
+
+**What Helios actually reads from a packet**, established along the way, and the
+reason rotation-error tables for leaflets are irrelevant to this figure: internode
+rotation only for a shoot's first node (chained nodes take the parent->node
+segment); petiole rotation, length and curvature; leaflet **scale** only; peduncle
+rotation and curvature; flower/fruit scale. A VAE that spends capacity on leaflet
+rotations is spending it on something the export discards.
+
+**Refuted this round** (recorded so nobody pays for them twice):
+- "Slot-0 lengths come back at 0.2x" -- a nearest-base matching artifact between
+  packets and GT internodes; matched by tip, 0 of 164 differ.
+- The chain override (`parent_pos`) as the DAP 50 cause: identity without it
+  renders 92.0 vs 91.6 with it (pre-fix numbers), i.e. 0.4 points, and the
+  override is required at inference anyway.
+- `assemble_packets`: the encode->decode-only tensor renders identically.
+- `plant_age` (0.0001 vs 51) and the 143 dormant `<peduncle>` blocks at DAP 50:
+  0.0 change, as at DAP 10.
 
 **A negative result that corrects §2.2 and the `e902487` commit message.** Routing the
 round-trip through `gt_parent_links` (laterals get their branch-point parent, root
@@ -369,40 +394,33 @@ the entire branch. Consequences:
    segment is a 3 cm tube a few degrees off -- minor. It is Helios's FK that
    amplifies it.
 
-**DAP 10's 17 points, decomposed** (the packet path with a perfect VAE: 78.9% vs
-IK-only 95.7%). Organ positions are within 0.14 cm of GT and the count matches, so
-this was chased through the XML and Helios itself:
+**The seedling's residual (95.1 vs 95.7)**, chased before the leaflet fix when it
+looked like 17 points, and still true at its real size:
 - `--focus-plant` **framing**: the eval zooms each render to its own bounding box,
-  so any growth difference re-frames the plant. With a fixed camera instead the
-  same XMLs give IK 95.8% / identity **83.4%** -- framing was ~4.5 of the 17 points,
-  and it means the eval is not a pure geometry measure. (At a fixed 5 m camera a
-  seedling is ~820 pixels, so that variant is too coarse to adopt as-is.)
-- `plant_age` (0.0001 in the emitted XML vs 11): **no effect**, tested twice,
-  including with Helios's post-aging organ counts captured.
-- The 12 dormant `<peduncle>` blocks the IK XML carries (from the GT part tensor's
-  one `ORGAN_NONE` row per phytomer -- 163 at DAP 50, 131 at DAP 90) and the
-  emitted XML lacks: restoring them makes the XMLs structurally identical and
-  **changes nothing** -- Helios's growth is unaffected. Tried and reverted.
-- **What remains**: Helios instantiates exactly 5 fewer petiole primitives and 1
-  fewer leaf from the emitted XML than from the IK one, at every DAP (65/60 at DAP
-  10, 820/815 at DAP 50, 1005/1000 at DAP 90) -- one petiole (5 segments) plus its
-  leaf: the **cotyledon node's second petiole**. The packet has one petiole slot,
-  so `emit_part_tensor_with_shoot_meta` mirrors petiole 1 by 180 degrees about Z
-  and re-bases nothing, both cotyledon leaves land on petiole 1's tip (the
-  petioles are 0.0001 m long, so both tips coincide to 0.02 cm), the converter
-  assigns both leaves to petiole 1 by nearest tip, and the XML writer drops the
-  second. Emitting the mirror before the leaves and re-basing the opposing leaf
-  onto the mirror's tip gets both `<leaf>` blocks into the XML but Helios still
-  renders 37 leaves, not 38: the remaining textual difference is the mirror's
-  `petiole_pitch` (81.1 vs 70.4) and `petiole_curvature` (-88 vs -184), and
-  patching those to IK's values changes 0 pixels. So the second cotyledon is lost
-  somewhere between the 40D tensor and Helios's unifoliate phytomer, not in the
-  packet path -- next step is `assemble_part_tensor_to_xml`'s petiole/leaf nesting
-  for the unifoliate shoot. Seedling-only in practice (1 leaf of ~600 at DAP 90).
+  so any growth difference re-frames the plant; with a fixed camera the pre-fix
+  XMLs gave IK 95.8% / identity 83.4% against 95.7 / 78.9. The eval is not a pure
+  geometry measure. (At a fixed 5 m camera a seedling is ~820 pixels, so that
+  variant is too coarse to adopt as-is.)
+- The **cotyledon node's second petiole**: Helios instantiates 5 fewer petiole
+  primitives and 1 fewer leaf from the emitted XML at every DAP. The packet has one
+  petiole slot, so `emit_part_tensor_with_shoot_meta` mirrors petiole 1 by 180
+  degrees about Z; both cotyledon leaves then land on petiole 1's tip (the petioles
+  are 0.0001 m long), the converter assigns both to petiole 1, and the XML writer
+  drops the second. Emitting the mirror before the leaves and re-basing the
+  opposing leaf gets both `<leaf>` blocks into the XML, but Helios still renders
+  37 leaves, not 38, and patching the mirror's `petiole_pitch`/`petiole_curvature`
+  to IK's values changes 0 pixels. Lost between the 40D tensor and Helios's
+  unifoliate phytomer; seedling-only in practice (1 leaf of ~600 at DAP 90).
 
-Also noted, not chased: with exact scales in place of the VAE's, DAP 50 IoU
-*fell* 87.8 -> 85.0 (fewer foreground pixels), i.e. the VAE's slightly larger
-scales are compensating for something else in the export.
+**What is left is the VAE**: 12.7 / 4.2 / 8.8 points. The earlier attribution (DAP
+90, pre-fix: exact rotations +5.9 of which slot 0 +3.7 and the petiole +2.3; exact
+scale+curvature +2.9; exact leaflet scales alone 76.2 -> 80.2; everything exact
+83.9) was measured with the leaflet order wrong, so it is being re-measured with
+the fix in place and will replace this paragraph. The per-slot VAE-v8 rotation
+error at DAP 90 (present slots, mean / p90 degrees): internode 0.56 / 0.90,
+petiole 2.93 / 4.10, leaflets 2.4 / 3.9, peduncle 5.04 / 7.42, flowers/fruit
+2.3-2.6 / 3.6-4.1. Given what Helios reads (above), the petiole and peduncle
+numbers are the ones that matter; the leaflet numbers do not.
 
 ---
 
@@ -480,5 +498,9 @@ e902487 feat(topology): every node gets a real parent; delete the +Z fallback
 c192f5f fix(train): restore the --resume flag whose parser line had been lost
 abce662 fix(inference): draw internodes from the chain, over live nodes only
 ae26ccb feat(topology): ordinal is depth from the root; supervise the parent step
+c62e995 docs: regenerate fig14 and decompose the Helios round-trip gap
+c83d8c1 docs: decompose the seedling round-trip loss; two more refuted causes
+ef5802d fix(packets): slot-0 rotation is the reference frame; force it to identity
+ff5beb4 fix(packets): emit leaflets as lateral, terminal, lateral
 ```
 (Earlier the same day, see the previous doc's own commit log for the hybrid VAE / render-loss / canary-guard commits.)
