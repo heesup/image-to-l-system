@@ -72,9 +72,23 @@ Measured (20 plants, DAP 10/30/50/90, GT positions throughout so the ordinal cue
 | DAP 50 | 96.3 | 95.9 | 91.2 | 76.8 | 68.5 | 60.8 | 55.3 | 45.4 |
 | DAP 90 | 96.1 | 95.5 | 92.9 | 84.6 | 78.6 | 70.2 | 59.8 | 49.3 |
 
-**The cliff sits between 0.25 and 1.0.** Up to a quarter of a step the chain is untouched; by one full step a third of DAP 10's parents are already wrong, and DAP 10 is the fragile case because its nodes sit 0.47 cm apart. So the ordinal head needs an MAE **below ~0.5 steps, ideally ~0.25** -- a much tighter requirement than "the loss is going down" suggests.
+That table looks alarming, but **it is the worst case, and the absolute MAE is the wrong thing to measure.** `chain_phytomers` only ever reads `(o_child - o_parent)` and compares it against 1, so any error *shared* along a shoot cancels there. Repeating the sweep with three error structures scaled to the same absolute MAE (15 plants, DAP 10/50/90):
 
-**Observability fix made while measuring this**: `loss_phytomer_order` is the sum of *two unrelated terms*, the smooth_l1 on the ordinal and the BCE on the is-base logits, so the single logged "Ord:" number cannot tell you which one is failing or what the error is in steps. A `phytomer_ord_mae` metric (mean absolute ordinal error, in steps, directly comparable to the table above) is now reported alongside it in the step line, the epoch line and wandb. Read that, not the combined loss, when judging whether topology can be trusted.
+| structure | MAE 0.5 | 1.0 | 2.0 | 3.0 |
+|---|---|---|---|---|
+| per-shoot offset (one constant per shoot) | 96.7-100.0 | 97.0-100.0 | 97.0-100.0 | **97.4-100.0** |
+| smooth drift along the shoot, DAP 50/90 | 96.3 | 94.6 | 92.4 | 90.3 |
+| smooth drift along the shoot, DAP 10 | 82.5 | 69.9 | 37.7 | 29.5 |
+| independent per node (the first table) | 72.2-92.4 | 54.2-80.5 | 43.7-63.6 | **43.7-52.1** |
+
+A pure per-shoot offset leaves topology **completely untouched even at 3.0 steps**; independent per-node error of the same size roughly halves parent recovery. DAP 10 remains the fragile case throughout (its nodes sit 0.47 cm apart), and it is the one stage where even smooth drift hurts.
+
+**So the requirement is local consistency, not small absolute error**, and the metric to watch is the error on the *difference* to the parent, not the ordinal itself.
+
+**Observability fix made while measuring this**: `loss_phytomer_order` sums two unrelated terms -- the smooth_l1 on the ordinal and the BCE on the is-base logits -- so the single logged "Ord:" number cannot say which is failing, nor what the error is in steps. Two diagnostics now sit beside it in the step line, the epoch line and wandb:
+
+- `phytomer_ord_mae` -- absolute error in steps. Useful context, but do not gate on it.
+- `phytomer_ord_step_mae` -- `|(pred_ord[node] - pred_ord[parent]) - 1|` over nodes whose parent was also matched this step, reusing the `gt_render_parent_idx` map the render path already builds. **This is the one topology depends on.** Its no-information value is exactly **1.0** (a constant ordinal makes every difference 0), so anything below 1.0 means the head has started to carry ordering, and it should be driven toward 0.
 
 ---
 
