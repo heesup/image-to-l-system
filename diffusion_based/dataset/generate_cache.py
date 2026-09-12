@@ -77,7 +77,13 @@ DEFAULT_VAE_CHECKPOINT = os.path.join(
 #    coarse 48 + 10 slots x residual 8) — the stored `latent` field's width and
 #    internal meaning both changed, so files carrying an old 64D latent must be
 #    rebuilt rather than silently reused.
-PKT_VERSION = 5
+# 6: `--mode pkt` (_XmlPktDataset) now stores `keys` = (shoot_id, phytomer_idx)
+#    per packet, same as `--mode cache`'s build_pkt_targets() always did. It was
+#    silently missing before, which meant loss_phytomer_order/loss_stem_dir
+#    stayed at exactly 0 for any training run reading from a --mode pkt cache
+#    (train_hierarchical_flow_matching.py gates both on `"keys" in pt`) --
+#    caught via a smoke test showing `Dir: 0.0000` on every step.
+PKT_VERSION = 6
 
 
 def parse_args():
@@ -390,8 +396,8 @@ class _XmlPktDataset(Dataset):
             nodes = encode_fm(part)
             existence = (part[:, P_COL_ORGAN_TYPE] > ORGAN_NONE).float()
             ids = extract_phytomer_ids(arr)
-            packets, presence, centers, refs = build_phytomer_packets(
-                nodes, existence_mask=existence, phytomer_ids=ids)
+            packets, presence, centers, refs, keys = build_phytomer_packets(
+                nodes, existence_mask=existence, phytomer_ids=ids, return_keys=True)
             if packets.shape[0] == 0:
                 return {"status": "empty", "prefix": prefix, "out_path": out_path}
             return {
@@ -402,6 +408,12 @@ class _XmlPktDataset(Dataset):
                 "presence": presence,
                 "centers": centers,
                 "refs": refs,
+                # (shoot_id, phytomer_idx) per packet -- without this,
+                # loss_phytomer_order/loss_stem_dir silently stay at 0 during
+                # training (train_hierarchical_flow_matching.py gates both on
+                # `"keys" in pt`). Missing here (unlike build_pkt_targets(),
+                # used by --mode cache) until 2026-09-11.
+                "keys": keys,
             }
         except Exception as e:
             return {"status": f"err:{e}", "prefix": prefix, "out_path": out_path}
@@ -483,6 +495,7 @@ def generate_pkt(
                     "presence": it["presence"],
                     "centers": it["centers"],
                     "refs": it["refs"],
+                    "keys": it["keys"],
                     "latent": lats[off:off + n].half(),
                     "pkt_version": PKT_VERSION,
                 }
@@ -495,6 +508,7 @@ def generate_pkt(
                     "presence": it["presence"],
                     "centers": it["centers"],
                     "refs": it["refs"],
+                    "keys": it["keys"],
                     "pkt_version": PKT_VERSION,
                 }, it["out_path"])
         for b in batch:
