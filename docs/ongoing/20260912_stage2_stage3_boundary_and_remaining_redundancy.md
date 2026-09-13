@@ -741,6 +741,24 @@ This does not forbid *asymmetric* designs (e.g., predicting a parent-relative di
 
 **Checkpoint lineage**: `diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt` is the accepted PhytomerVAE for the export/round-trip path (§2.4: 128D = 48 + 10x8, `--rot-weight 4`, 20,000 files, 120 epochs, trained on terminal-last packets -- `PHYTOMER_TERMINAL_LAST=1`, which the eval scripts set for any `_tl` checkpoint). `phytomer_vae_v8` remains what the FM checkpoints and the v6 packet cache were built on; switching the FM to v9 means `PKT_VERSION` 7, a cache regeneration with terminal-last packets, and a Stage 3 retrain. `dataset/cache/cowpea_curv26_pkt/` is at `pkt_version=6` (100,000/100,000, `keys` present). No real (non-smoke) hierarchical FM training has been launched yet. `diffusion_based/checkpoints/fm_smoke_test/hierarchical_fm_epoch_006.pt` is a disposable smoke-test artifact, not a real checkpoint to build on -- delete it before a real run occupies that directory, or point `--output_dir` elsewhere.
 
+**How to launch the v9 run when the GPU quota frees** (2026-09-13): the dataset's cache
+gate accepts `pkt_version >= 3`, so no code change is needed -- only the environment:
+
+```bash
+sbatch --export=ALL,SEED=1234,LR=1e-4,FORCE_BATCH_SIZE=48,RENDER_GRAD_START_EPOCH=11,RENDER_FRACTION=0.03,EPOCHS=500,\
+PKT_CACHE_DIR=dataset/cache/cowpea_curv26_pkt_v9,\
+PHYTOMER_VAE_CHECKPOINT=diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt,\
+PHYTOMER_TERMINAL_LAST=1,OUTPUT_DIR=diffusion_based/checkpoints/hierarchical_fm_v9,\
+INIT_CHECKPOINT=diffusion_based/checkpoints/hierarchical_fm_depth_ord/hierarchical_fm_epoch_025.pt,RESUME=1 \
+  slurm_scripts/train_hierarchical_flow_matching.sh
+```
+
+`INIT_CHECKPOINT`/`RESUME` warm-start Stage 1-2 from the v8 lineage's epoch 25 (the
+partial optimizer restore covers the new `node_parent_mlp`); Stage 3's latent space
+changes with the VAE, so its loss restarts high. Drop those two variables for a
+from-scratch run. Do this only once §1.9.2's burst has an answer, or accept that the
+run may need the same treatment at epoch ~27.
+
 **Recommendation on sequencing §2 vs §3 vs a real training run**: §2 and §3 both change what the FM/VAE checkpoints look like, so either should happen *before* committing to a long real training run, not after (avoid training for hours against an architecture you're about to change again). §3 is the smaller, more mechanical change (a VAE-only retrain, ~3.5 minutes on a TITAN RTX per the v8 precedent) and has no open design questions -- do it first. §2 has one open question (§2's "not yet resolved" paragraph) to settle before writing code. Only after both land does a real, non-smoke hierarchical FM training run make sense.
 
 ---
