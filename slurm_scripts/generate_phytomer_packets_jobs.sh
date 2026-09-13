@@ -35,9 +35,13 @@ TIME_LIMIT="06:00:00"
 WORKERS_PER_JOB=8
 DEVICE="cuda:0"
 SUBMIT=0
+PKT_VERSION_ARG=""
+TERMINAL_LAST_ARG=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --pkt-version) PKT_VERSION_ARG="--pkt-version $2"; shift 2 ;;
+        --terminal-last) TERMINAL_LAST_ARG="--terminal-leaflet-last"; shift ;;
         --num-jobs) NUM_JOBS="$2"; shift 2 ;;
         --data-dir) DATA_DIR="$2"; shift 2 ;;
         --out-dir) OUT_DIR="$2"; shift 2 ;;
@@ -81,6 +85,7 @@ echo "Partition:    ${PARTITION} (gres: ${GRES_PER_JOB:-none}, ${CPUS_PER_JOB} c
 echo "Device:       ${DEVICE} (workers: ${WORKERS_PER_JOB})"
 echo "Batch Log:    ${BATCH_LOG_DIR}"
 echo "Submit:       ${SUBMIT}"
+echo "Convention:   ${PKT_VERSION_ARG:-pkt_version default} ${TERMINAL_LAST_ARG:-bottom-to-top leaflets}"
 echo "============================================================"
 
 for ((job_idx=0; job_idx<NUM_JOBS; job_idx++)); do
@@ -126,7 +131,7 @@ ${PYTHON_BIN} ${TOOL} \
     --workers ${WORKERS_PER_JOB} \
     --batch-size 128 \
     --device ${DEVICE} \
-    --file-list ${LIST_FILE}
+    --file-list ${LIST_FILE} ${PKT_VERSION_ARG} ${TERMINAL_LAST_ARG}
 EOF
 
     chmod +x "$JOB_SCRIPT"

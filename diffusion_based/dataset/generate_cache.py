@@ -84,6 +84,11 @@ DEFAULT_VAE_CHECKPOINT = os.path.join(
 #    (train_hierarchical_flow_matching.py gates both on `"keys" in pt`) --
 #    caught via a smoke test showing `Dir: 0.0000` on every step.
 PKT_VERSION = 6
+# The version stamped into the files this process writes. --pkt-version raises it
+# for a cache built under a newer convention (7 = terminal-last leaflet packets
+# and a v9 VAE's latents) without changing what the training gate expects of the
+# existing cache until that constant is bumped too.
+_PKT_VERSION_OUT = PKT_VERSION
 
 
 def parse_args():
@@ -116,6 +121,10 @@ def parse_args():
                         help="Must match the checkpoint's total latent width (coarse + slots*residual).")
     parser.add_argument("--vae-residual-dim", type=int, default=8,
                         help="Must match the checkpoint's per-slot rotation-residual width.")
+    parser.add_argument("--pkt-version", type=int, default=PKT_VERSION,
+                        help="pkt mode: pkt_version stamped into the written files (7 = terminal-last packets + v9 VAE latents).")
+    parser.add_argument("--terminal-leaflet-last", action="store_true",
+                        help="pkt mode: build packets with the terminal leaflet always in slot 4 (sets PHYTOMER_TERMINAL_LAST=1 for this process; must match the VAE the latents come from).")
     parser.add_argument("--file-list", type=str, default="",
                         help="pkt mode: text file of XML paths to process (one per line). "
                              "When set, --data-root discovery is skipped.")
@@ -221,7 +230,8 @@ def build_pkt_targets(
         "keys": keys.cpu(),
         # v3: 10 slots, latent from scale-NORMALIZED VAE input, s_a carried by
         # the 76D flow state (petiole scale row, see phytomer_scale).
-        "pkt_version": PKT_VERSION,
+        "pkt_version": _PKT_VERSION_OUT,
+        "terminal_leaflet_last": os.environ.get("PHYTOMER_TERMINAL_LAST", "0") == "1",
     }
     if vae is not None:
         dev = device if device is not None else next(vae.parameters()).device
@@ -497,7 +507,8 @@ def generate_pkt(
                     "refs": it["refs"],
                     "keys": it["keys"],
                     "latent": lats[off:off + n].half(),
-                    "pkt_version": PKT_VERSION,
+                    "pkt_version": _PKT_VERSION_OUT,
+        "terminal_leaflet_last": os.environ.get("PHYTOMER_TERMINAL_LAST", "0") == "1",
                 }
                 off += n
                 torch.save(d, it["out_path"])
@@ -509,7 +520,8 @@ def generate_pkt(
                     "centers": it["centers"],
                     "refs": it["refs"],
                     "keys": it["keys"],
-                    "pkt_version": PKT_VERSION,
+                    "pkt_version": _PKT_VERSION_OUT,
+        "terminal_leaflet_last": os.environ.get("PHYTOMER_TERMINAL_LAST", "0") == "1",
                 }, it["out_path"])
         for b in batch:
             done += 1
@@ -533,7 +545,11 @@ def generate_pkt(
 
 
 def main():
+    global _PKT_VERSION_OUT
     args = parse_args()
+    _PKT_VERSION_OUT = int(args.pkt_version)
+    if args.terminal_leaflet_last:
+        os.environ["PHYTOMER_TERMINAL_LAST"] = "1"
     use_pyramid = (args.pyramid == "concat")
     if args.mode == "cache":
         generate_cache(

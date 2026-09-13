@@ -278,6 +278,17 @@ global step k is local steps 4k..4k+3). If the spikes land on the same samples,
 the fix is a per-sample guard (or excluding the samples); if not, the
 state-drift reading stands and the query barrier is next.
 
+*2026-09-13 morning*: the cluster replay (`38243735`, 4 GPUs, exact optimizer
+restore via `FM_PARENT_COND=0`) has not started -- the group's GPU quota
+(`QOSGrpGRES`, 8 GPUs) is held by Heesup's own `regen_shard` array from the
+Image2PlantArchitecture_v2 project (submitted 2026-09-12 12:46 and 16:22, still
+running), and the A100 partition is refused at submit time under the same
+group limit. The replay is therefore running locally on the single RTX 6000
+Ada (`slurm_scripts/logs/local_replay_full.log`): same epoch permutation
+(`DistributedSampler` seed 0 + epoch), batches of 48 that are quarter-slices
+of the cluster's 192, so cluster step k of epoch 27 is local steps 4k..4k+3;
+about 45 minutes per epoch with the GPU otherwise idle.
+
 ---
 
 ## 2. Proposed next step A: move roll + scale prediction from Stage 2 to Stage 3
