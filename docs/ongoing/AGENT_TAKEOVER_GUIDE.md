@@ -1,10 +1,58 @@
 # Agent Takeover & Engineering Handover Guide
 **Project: Image-to-L-System / 3D Inverse Procedural Plant Reconstruction**  
-**Last Updated:** 2026-09-11 PDT (Hybrid decoupling stable, gradient explosion fixed, Job 38236720 running successfully)  
+**Last Updated:** 2026-09-13 PDT (see §0 below; the sections after it are the 2026-09-11 state and are superseded where §0 says so)  
 **Primary Author/Agent:** Antigravity Autonomous Agent (Pair programming with Heesup Yun)  
 **Environment:** Linux, Python 3.10+, Mamba (`mamba activate digital-crops`), CUDA, PyTorch, `nvdiffrast`, Helios C++ OptiX Raytracer.  
 
 ---
+
+
+## 0-A. State as of 2026-09-13 (read this first; supersedes the older sections where they disagree)
+
+The full record is `docs/ongoing/20260912_stage2_stage3_boundary_and_remaining_redundancy.md`
+(§0 status, §1.9.2 the training blocker, §2.4-2.5 the round-trip, §5 reading order, §6 commit log).
+
+**Round-trip (the "very important" requirement): solved.** `docs/results/assets/fig14_phytomer_vae_helios_roundtrip.png`
+reads IK-only 95.7 / 99.5 / 96.7% and VAE round-trip **92.2 / 98.4 / 95.7%** FG IoU (DAP 10 / 50 / 90); on 2026-09-12
+morning it was 81.4 / 90.2 / 79.3. Three fixes, all landed and on by default:
+- leaflet emit order (the XML converter assigns leaf yaw by encounter order and reads only the scale; the terminal
+  leaflet is identified per node, `phytomer_packets.terminal_leaflet_is_slot2`), and leaf size is one scalar per node
+  (1 : 1 : 10/9) re-imposed in `assemble_packets`;
+- **stem inverse kinematics** in the export (`diffusion_based/models/part_tensor_stem_ik.py`, run by
+  `assemble_part_tensor_to_xml`; `PART_TENSOR_STEM_IK=0` gives the old analytical export). Helios rebuilds a shoot by FK
+  from per-node angles; the solver makes that FK land on the predicted nodes. This, not VAE fidelity, was the ceiling
+  (the identity export went 94.2 -> 99.6% at DAP 50);
+- a better VAE, `diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/` (128D = 48 + 10x8, `--rot-weight 4`, 20,000
+  files, terminal-last packets). The eval scripts default to it and set `PHYTOMER_TERMINAL_LAST=1` for any `_tl`
+  checkpoint. The *legacy* `_unreferenced/phytomer_9slot_roundtrip_comparison.png` is the old soft-rasterizer pipeline;
+  ignore it.
+
+**VAE / cache lineage.** `phytomer_vae_v8` + `dataset/cache/cowpea_curv26_pkt/` (pkt_version 6, bottom-to-top leaflet
+order) are what every FM checkpoint so far was trained on. `dataset/cache/cowpea_curv26_pkt_v9/` (pkt_version 7,
+terminal-last, latents from `v9_tl_rw4_20k`; generated 2026-09-13 with
+`generate_phytomer_packets_jobs.sh --pkt-version 7 --terminal-last`) is ready for the next FM run: bump `PKT_VERSION`
+to 7 in `generate_cache.py`, point `PKT_CACHE_DIR` and `PHYTOMER_VAE_CHECKPOINT` at v9, and export
+`PHYTOMER_TERMINAL_LAST=1` in that job. Do not mix: a v8 run must keep the v6 cache and the "0" convention.
+
+**Training: blocked on the Stage 2 gradient burst, which is NOT fixed.** It recurred at epoch 27-28 in two runs that
+differ in seed and learning rate (`38240479` at 1e-4, `38242849` at 5e-5, both resumed from the same lineage) at the
+same steps, and `DistributedSampler` is seeded by epoch only, so those runs saw the same batches. Refuted: weight decay,
+decoder token collapse (`FM_ACT_PROBE=1`), a 512-sample subset replay. Live: a full-dataset replay of epochs 26-28 from
+`hierarchical_fm_depth_ord/hierarchical_fm_epoch_025.pt` with `FM_SPIKE_DUMP=1` (names the samples on Stage 2 loss
+spikes and on the first canary) -- running locally (`slurm_scripts/logs/local_replay_full.log`, slow) and queued on the
+cluster as `38243735` behind the group's GPU quota. The lineage's checkpoints: epoch 15 in `hierarchical_fm_render_on/`,
+epochs 20 and 25 in `hierarchical_fm_depth_ord/`. Use `LR=1e-4`, `FORCE_BATCH_SIZE=48`, `RENDER_GRAD_START_EPOCH=11`,
+`RENDER_FRACTION=0.03` (and `SEED`).
+
+**Model changes since 2026-09-11 that the next run carries**: ordinal = depth from the root with a parent-step loss;
+`gt_parent_links` one-parent rule (origin for the root, branch point for laterals); inference draws internodes from the
+chain over live slots and forces slot-0 rotation to identity; Stage 3 now takes its **(parent, self) pair** with the
+parent held fixed (GT parent + noise in training: `--parent_jitter_cm 1.5`, `--parent_substitution 0.05`; chain parent
+at inference; module `node_parent_mlp`, zero-initialised). `FM_PARENT_COND=0` builds the model without that module for an
+exact resume of an older checkpoint; otherwise older checkpoints resume with a name-aligned partial optimizer restore.
+
+**Debug switches**: `FM_GRAD_PROBE=1` (per-layer gradient amplification), `FM_ACT_PROBE=1` (decoder LayerNorm input
+std), `FM_SPIKE_DUMP=1` (sample names on Stage 2 spikes), `FM_ASSEMBLY_PROBE=1` (assembly dump).
 
 ## 0. Quick State Check (Run This First)
 
