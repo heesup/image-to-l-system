@@ -289,6 +289,21 @@ Ada (`slurm_scripts/logs/local_replay_full.log`): same epoch permutation
 of the cluster's 192, so cluster step k of epoch 27 is local steps 4k..4k+3;
 about 45 minutes per epoch with the GPU otherwise idle.
 
+*2026-09-13 12:00, result*: the local full-dataset replay went through epochs 26
+and 27 with **no canary and no large Stage 2 spike** (epoch 27: Scl 0.28, Ord MAE
+2.17, Ext 0.46 -- healthier than the cluster's epoch 27), on the same epoch
+permutation with exact optimizer state. So the burst is not a property of the
+samples alone. What the replay did *not* do, and both cluster runs did, is the
+per-epoch self-consistency evaluation (`sample_ode` + the fixed-set render
+between epochs; the replay ran with `EVAL_EVERY=1000`). The 512-sample subset
+replay also skipped it. The replay is therefore running again with
+`EVAL_EVERY=1 EVAL_MIN_INTERVAL_MINUTES=30 EVAL_SAMPLES_PER_BUCKET=2`
+(`slurm_scripts/logs/local_replay_eval.log`). The other difference left is
+4-rank DDP itself (192-sample global batches, gradient all-reduce), which only
+the queued cluster replay can test. If the eval reproduces it, look at what
+`evaluate_self_consistency` / `sample_ode` leave behind: train/eval mode,
+in-place writes to buffers or parameters, autocast state, RNG.
+
 ---
 
 ## 2. Proposed next step A: move roll + scale prediction from Stage 2 to Stage 3
