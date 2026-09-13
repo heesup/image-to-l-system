@@ -106,6 +106,8 @@ def forward_backward_step(
     color_loss_weight: float = 0.2,
     silhouette_loss_weight: float = 2.0,
     render_fraction: float = 1.0 / 6.0,
+    parent_jitter_m: float = 0.015,
+    parent_substitution: float = 0.05,
     capacity_schedule: Optional[Dict[str, float]] = None,
     flow_granularity: str = "organ",
     phytomer_vae: Optional[nn.Module] = None,
@@ -436,6 +438,13 @@ def forward_backward_step(
         # already-computed GT match keeps this stable at every epoch.
         gt_render_parent_idx = torch.full((B, K_eff), -1, dtype=torch.long, device=device)
         has_render_parent = torch.zeros(B, K_eff, dtype=torch.bool, device=device)
+        # Stage 3's fixed parent (§2.1): the GT parent POSITION of each matched
+        # node -- the origin for the plant root -- not the parent's predicted
+        # position, so Stage 3 refines each child against a backdrop that does
+        # not move with the prediction. Noise is added below (jitter at Stage 2's
+        # node error, substitution at the chain's parent-recovery failure rate).
+        gt_parent_pos_train = torch.zeros(B, K_eff, 3, device=device)
+        gt_parent_has_train = torch.zeros(B, K_eff, dtype=torch.bool, device=device)
         cls_acc_data = []
         for b in range(B):
             m_b = matches[b]
@@ -496,6 +505,8 @@ def forward_backward_step(
                 resolved = d.norm(dim=-1) > 1e-6
                 gt_forward_target[b, node_src] = F.normalize(d, dim=-1)
                 forward_mask[b, node_src] = resolved
+                gt_parent_pos_train[b, node_src] = par_pos.float()
+                gt_parent_has_train[b, node_src] = resolved
                 # "Base" now means the single plant root -- the one node whose
                 # parent is the origin rather than another node -- not every
                 # shoot's first node. That also makes the head's job far easier:
@@ -539,6 +550,25 @@ def forward_backward_step(
         # Decoupled Flow Matching: standard normal Gaussian prior z_0 ~ N(0, I_D)
         z_0 = torch.randn(B, K_eff, D, device=device)
         z_t = scheduler.sample_xt(z_0, tgt_z1_phyto, t)
+        # Noise on the fixed parent (§2.1): position jitter at Stage 2's node
+        # error, and substitution -- a random other matched node's GT position
+        # stands in for the parent -- at the rate the chain picks the wrong
+        # parent once the ordinal works (5%; re-calibrate from ord_step_mae).
+        parent_pos_in = gt_parent_pos_train.clone()
+        if parent_jitter_m > 0:
+            parent_pos_in = parent_pos_in + torch.randn_like(parent_pos_in) * parent_jitter_m
+        if parent_substitution > 0:
+            matched_any = gt_parent_has_train
+            for b in range(B):
+                cand = torch.nonzero(matched_any[b]).flatten()
+                if cand.numel() < 2:
+                    continue
+                swap = cand[torch.rand(cand.numel(), device=device) < parent_substitution]
+                if swap.numel() == 0:
+                    continue
+                donors = cand[torch.randint(0, cand.numel(), (swap.numel(),), device=device)]
+                parent_pos_in[b, swap] = gt_phytomer_pos_target[b, donors].float()
+        parent_pos_in = torch.where(gt_parent_has_train.unsqueeze(-1), parent_pos_in, torch.zeros_like(parent_pos_in))
         # Re-run the model forward with the true x_t.
         t0 = time.time()
         with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
@@ -548,6 +578,8 @@ def forward_backward_step(
                 images=images,
                 daps=daps,
                 image_tokens=image_tokens,
+                phytomer_parent_pos=parent_pos_in,
+                phytomer_has_parent=gt_parent_has_train,
             )
         prof["fwd2"] = time.time() - t0
         pred_velocity = outputs["pred_velocity"].float()          # (B, K, D)
@@ -1069,6 +1101,8 @@ def probe_optimal_batch_size(
     color_loss_weight: float = 0.2,
     silhouette_loss_weight: float = 2.0,
     render_fraction: float = 1.0 / 6.0,
+    parent_jitter_m: float = 0.015,
+    parent_substitution: float = 0.05,
     flow_granularity: str = "organ",
     phytomer_vae: Optional[nn.Module] = None,
     phy_count_weight: float = 2.0,
@@ -1128,6 +1162,8 @@ def probe_optimal_batch_size(
         color_loss_weight=color_loss_weight,
         silhouette_loss_weight=silhouette_loss_weight,
         render_fraction=render_fraction,
+        parent_jitter_m=parent_jitter_m,
+        parent_substitution=parent_substitution,
         flow_granularity=flow_granularity,
         phytomer_vae=phytomer_vae,
         phy_count_weight=phy_count_weight,
@@ -1246,6 +1282,8 @@ def train_one_epoch(
     color_loss_weight: float = 0.2,
     silhouette_loss_weight: float = 2.0,
     render_fraction: float = 1.0 / 6.0,
+    parent_jitter_m: float = 0.015,
+    parent_substitution: float = 0.05,
     capacity_warmup_epochs: int = 0,
     capacity_full_epochs: int = 0,
     flow_granularity: str = "organ",
@@ -1311,6 +1349,8 @@ def train_one_epoch(
             color_loss_weight=color_loss_weight,
             silhouette_loss_weight=silhouette_loss_weight,
             render_fraction=render_fraction,
+            parent_jitter_m=parent_jitter_m,
+            parent_substitution=parent_substitution,
             flow_granularity=flow_granularity,
             phytomer_vae=phytomer_vae,
             phy_count_weight=phy_count_weight,
@@ -1491,6 +1531,39 @@ def train_one_epoch(
     }
 
 
+
+def _partial_optimizer_restore(optimizer, saved_state, new_param_markers=()):
+    """Copies per-parameter optimizer state from `saved_state` (an optimizer
+    state_dict of the same model minus some newly added modules) onto
+    `optimizer`, aligning the two flattened parameter lists in order and
+    skipping the current parameters whose name contains one of
+    `new_param_markers`. Returns the number of parameters restored."""
+    cur_params = [p for g in optimizer.param_groups for p in g["params"]]
+    cur_names = []
+    # parameter order in the groups follows model.named_parameters() within each
+    # group; recover names by identity against the model the caller built
+    id2name = getattr(optimizer, "_param_id_to_name", None)
+    if id2name is None:
+        return 0
+    cur_names = [id2name.get(id(p), "") for p in cur_params]
+    old_params = [k for g in saved_state["param_groups"] for k in g["params"]]
+    keep = [k for k, n in enumerate(cur_names) if not any(m in n for m in new_param_markers)]
+    if len(keep) != len(old_params):
+        return 0
+    n_ok = 0
+    for old_idx, cur_idx in zip(old_params, keep):
+        st = saved_state["state"].get(old_idx)
+        if st is None:
+            continue
+        p = cur_params[cur_idx]
+        ok = all((not torch.is_tensor(v)) or v.shape == p.shape or v.dim() == 0 for v in st.values())
+        if not ok:
+            continue
+        optimizer.state[p] = {k: (v.clone().to(p.device) if torch.is_tensor(v) else v) for k, v in st.items()}
+        n_ok += 1
+    return n_ok
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train Hierarchical Matryoshka Botanical Flow Matching")
     parser.add_argument("--data_dir", type=str, default="dataset/helios_data/cowpea")
@@ -1540,6 +1613,10 @@ def main():
     parser.add_argument("--depth_weight", type=float, default=0.5, help="Weight for in-loop differentiable dense depth loss")
     parser.add_argument("--color_weight", type=float, default=0.2, help="Weight for in-loop differentiable cosine color loss")
     parser.add_argument("--silhouette_weight", type=float, default=2.0, help="Weight for in-loop differentiable silhouette Dice loss")
+    parser.add_argument("--parent_jitter_cm", type=float, default=1.5,
+                        help="Stage 3 (parent, self) conditioning: Gaussian jitter (cm) on the GT-fixed parent position during training (§2.1; ~Stage 2's node RMSE)")
+    parser.add_argument("--parent_substitution", type=float, default=0.05,
+                        help="Stage 3 (parent, self) conditioning: fraction of nodes whose fixed parent is replaced by another matched node's GT position (the chain's parent-recovery failure rate once the ordinal works)")
     parser.add_argument("--render_fraction", type=float, default=1.0 / 6.0, help="Fraction of the batch rendered differentiably per step (batch-relative: n_render = round(B * fraction), clamped [1, B]). 1/6 restores the per-sample photometric visit rate of the 2026-09-07 runs; 1.0 renders the full batch (requires small batch — check VRAM).")
     parser.add_argument("--save_every", type=int, default=25)
     parser.add_argument("--eval_every", type=int, default=25, help="Validation image generation interval in epochs (default: 25)")
@@ -1761,6 +1838,7 @@ def main():
         param_groups.append({"params": backbone_params, "lr": args.lr * args.backbone_lr_ratio})
     param_groups.append({"params": other_params, "lr": args.lr})
     optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)
+    optimizer._param_id_to_name = {id(p): n for n, p in model.named_parameters()}
 
     # Optional Warm-Start Initialization or Full State Resume
     start_epoch = 1
@@ -1780,8 +1858,20 @@ def main():
                     if rank == 0:
                         print("Optimizer state successfully restored from checkpoint.")
                 except Exception as e:
+                    # A checkpoint from before a module was added (e.g. Stage 3's
+                    # node_parent_mlp, 2026-09-12) has fewer parameters. Restore
+                    # the moments of every parameter it does have, by walking
+                    # both parameter lists in order and skipping the new ones;
+                    # only the new parameters start with fresh moments.
+                    n_ok = _partial_optimizer_restore(optimizer, ckpt["optimizer_state_dict"],
+                                                      new_param_markers=("node_parent_mlp",))
                     if rank == 0:
-                        print(f"Warning: could not restore optimizer state: {e}")
+                        print(f"Warning: full optimizer restore failed ({e}); partial restore covered {n_ok} parameters.")
+            # CosineAnnealingLR with last_epoch set needs initial_lr on every group;
+            # a checkpointed optimizer carries it, a fresh or partially restored one
+            # does not.
+            for group in optimizer.param_groups:
+                group.setdefault("initial_lr", group["lr"])
             if rank == 0:
                 print(f"Resuming training loop from epoch {start_epoch} of {args.epochs}")
 
@@ -1849,6 +1939,8 @@ def main():
             color_loss_weight=args.color_weight,
             silhouette_loss_weight=args.silhouette_weight,
             render_fraction=args.render_fraction,
+            parent_jitter_m=args.parent_jitter_cm / 100.0,
+            parent_substitution=args.parent_substitution,
             flow_granularity=args.flow_granularity,
             phytomer_vae=phytomer_vae,
             phy_count_weight=args.phy_count_weight,
@@ -1963,6 +2055,8 @@ def main():
             color_loss_weight=args.color_weight,
             silhouette_loss_weight=args.silhouette_weight,
             render_fraction=args.render_fraction,
+            parent_jitter_m=args.parent_jitter_cm / 100.0,
+            parent_substitution=args.parent_substitution,
             capacity_warmup_epochs=args.capacity_warmup_epochs,
             capacity_full_epochs=args.capacity_full_epochs,
             flow_granularity=args.flow_granularity,

@@ -341,11 +341,30 @@ This is worth adopting for three separate reasons. It takes parent coverage from
 - `derive_forward`'s fallback chain is **deleted**. This also removes the successor patch from §1.5 made earlier the same day: that took the 13.8% of nodes it covered from 50.8 deg of error to 14.5, but the residual was real curvature, and a true branch-point parent removes the error rather than shrinking it. A genuinely degenerate row now returns zeros instead of claiming vertical.
 - Checked end to end with the render loss on from epoch 1: no recovery skips, no canary hits.
 
+- **Stage 3 now sees its (parent, self) pair, with the parent held fixed** (late
+  2026-09-12). `PhytomerFlowMatchingDecoder` gains `node_parent_mlp`, fed
+  `[parent - self (metres), has_parent]` (`parent_relative()` in the model
+  module); its output layer starts at zero, so every existing checkpoint loads
+  and behaves exactly as before until trained. During training the parent is
+  the **GT parent position** of the node's matched GT phytomer (the origin for
+  the plant root), taken from the same `gt_parent_links` pass that builds the
+  forward-axis target -- so it does not move with the prediction -- and it is
+  attached to the second (grad) forward, after matching. At inference
+  `sample_ode` runs `reconstruct_phytomer_rot` once before the ODE loop and
+  feeds the chain's parent. **Noise on the fixed parent** is in: Gaussian jitter
+  (`--parent_jitter_cm`, default 1.5) and substitution by another matched
+  node's GT position (`--parent_substitution`, default 0.05), the §2.1 starting
+  point. Smoke-tested end to end on a 24-sample local run.
+
 **Not yet done.**
 
-1. **Stage 3 consuming `(parent, self)` pairs with the parent held fixed.** The pairing itself already exists as `gt_render_parent_idx` / `has_render_parent`; what is missing is Stage 3 actually taking the parent as input and predicting the child's position, roll, scale and shape against it.
-2. **Noise injection on the fixed parent** (§2.1: 5% substitution plus 1-2 cm jitter to start, re-calibrated from `ord_step_mae` once it falls below 1.0).
-3. **Dropping `roll_head`/`scale_head` from Stage 2** (§2's original plumbing), which only makes sense once Stage 3 predicts them.
+1. **Stage 3 predicting the child's position, roll and scale against the fixed
+   parent** (today it still predicts only the 128D shape latent; the parent is
+   conditioning). Then drop `roll_head`/`scale_head` from Stage 2 (§2's
+   original plumbing).
+2. Validating the conditioning on a real run -- blocked on §1.9.2 (the Stage 2
+   burst at epoch 27; the instrumented cluster replay `38243730` is queued).
+3. Re-calibrating the noise from `ord_step_mae` once it falls below 1.0.
 4. Worth considering while doing (1): with `is_base` reduced to the plant root, `chain_phytomers` may not need the `is_base` gate at all -- the lowest node has no candidate below it and so becomes parentless on its own.
 
 ### 2.3 What the epoch-11 panel showed, and the two inference bugs behind it

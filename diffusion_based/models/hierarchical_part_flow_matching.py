@@ -154,6 +154,32 @@ def _make_layer_probe(label: str):
     return _hook
 
 
+def parent_relative(pos: torch.Tensor, parent_pos: torch.Tensor,
+                    has_parent: Optional[torch.Tensor]) -> torch.Tensor:
+    """(B, K, 4) [parent - self, has_parent] for Stage 3's (parent, self) conditioning.
+
+    parent_pos may carry NaN where a node has no parent (reconstruct_phytomer_rot's
+    convention); those rows become [0, 0, 0, 0]. K may differ between pos and
+    parent_pos (the phytomer bank slice vs the GT-padded width): the parent
+    tensors are sliced or zero-padded to pos's K.
+    """
+    B, K, _ = pos.shape
+    pp = parent_pos.to(pos.dtype)
+    if has_parent is None:
+        has = torch.isfinite(pp).all(dim=-1)
+    else:
+        has = has_parent.bool()
+    if pp.shape[1] != K:
+        if pp.shape[1] > K:
+            pp, has = pp[:, :K], has[:, :K]
+        else:
+            pad = K - pp.shape[1]
+            pp = F.pad(pp, (0, 0, 0, pad)); has = F.pad(has, (0, pad))
+    rel = torch.nan_to_num(pp, nan=0.0) - pos
+    rel = torch.where(has.unsqueeze(-1), rel, torch.zeros_like(rel))
+    return torch.cat([rel, has.to(pos.dtype).unsqueeze(-1)], dim=-1)
+
+
 def safe_normalize(v: torch.Tensor, eps: float = 1e-3) -> torch.Tensor:
     """Safely normalizes vectors along the last dimension with bounded gradient.
     Detaching the denominator norm prevents collinear/zero division where d/dv(v/||v||)
@@ -1154,6 +1180,24 @@ class PhytomerFlowMatchingDecoder(nn.Module):
             nn.GELU(),
             nn.Linear(embed_dim, embed_dim),
         )
+        # (parent, self) conditioning (2026-09-12 redesign, docs/ongoing/20260912_* §2.1):
+        # the node's parent -- held FIXED at GT during training, with noise, and
+        # taken from the resolved chain at inference -- enters as
+        # [parent - self (3, metres), has_parent (1)]. The output layer starts at
+        # zero so checkpoints trained without it are unchanged until trained.
+        # FM_PARENT_COND=0 builds the model WITHOUT this module (identical
+        # parameter set to checkpoints from before 2026-09-12 evening), which an
+        # exact resume -- optimizer moments included -- of such a checkpoint needs.
+        if os.environ.get("FM_PARENT_COND", "1") == "1":
+            self.node_parent_mlp = nn.Sequential(
+                nn.Linear(4, embed_dim),
+                nn.GELU(),
+                nn.Linear(embed_dim, embed_dim),
+            )
+            nn.init.zeros_(self.node_parent_mlp[2].weight)
+            nn.init.zeros_(self.node_parent_mlp[2].bias)
+        else:
+            self.node_parent_mlp = None
 
         # Hybrid 3D-to-2D Phytomer Visual Projector (Point-Query sampling)
         self.phytomer_projector = PhytomerVisualProjector(embed_dim=embed_dim)
@@ -1191,6 +1235,7 @@ class PhytomerFlowMatchingDecoder(nn.Module):
         phytomer_pos: Optional[torch.Tensor] = None,
         phytomer_roll: Optional[torch.Tensor] = None,
         phytomer_scale: Optional[torch.Tensor] = None,
+        phytomer_parent_rel: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """Flow-matches a per-phytomer latent vector (node_flow_dim-D, pure
         VAE latent in the currently wired Hybrid Decoupled configuration --
@@ -1205,6 +1250,7 @@ class PhytomerFlowMatchingDecoder(nn.Module):
             phytomer_pos: Optional (B, K, 3) Stage-2 scaffold base positions.
             phytomer_roll: Optional (B, K, 2) Stage-2 scaffold (cos, sin) roll.
             phytomer_scale: Optional (B, K, 3) Stage-2 scaffold scales.
+            phytomer_parent_rel: Optional (B, K, 4) [parent - self (metres), has_parent].
         Returns:
             'pred_velocity': (B, K, node_flow_dim) velocity field.
             'pred_slot_exist_logits': (B, K, M) per-slot existence logits.
@@ -1226,6 +1272,8 @@ class PhytomerFlowMatchingDecoder(nn.Module):
             queries = queries + self.node_roll_mlp(phytomer_roll)
         if phytomer_scale is not None:
             queries = queries + self.node_scale_mlp(phytomer_scale)
+        if phytomer_parent_rel is not None and self.node_parent_mlp is not None:
+            queries = queries + self.node_parent_mlp(phytomer_parent_rel)
 
         # Global decoder cross-attention to image tokens + phytomer memory
         memory = torch.cat([image_tokens, phytomer_features], dim=1)
@@ -1363,6 +1411,8 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         num_phytomers: Optional[torch.Tensor] = None,
         capacity_mode: str = "given",
         image_tokens: Optional[torch.Tensor] = None,
+        phytomer_parent_pos: Optional[torch.Tensor] = None,
+        phytomer_has_parent: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """Unified joint forward pass across 3 cascaded stages.
 
@@ -1378,6 +1428,10 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                                via compute_matryoshka_slice. Teacher-forcing training path.
                 'pred_phyto' - Stage 2 slices from the predicted phytomer count (two-pass).
                                Inference / self-conditioning path.
+            phytomer_parent_pos / phytomer_has_parent: Optional (B, K, 3) / (B, K) the
+                fixed parent position of each predicted node (GT parent with noise
+                during training; the resolved chain's parent at inference) and
+                whether it has one. Stage 3 sees [parent - self, has_parent].
         """
         # 1. Vision perception: 3D-aware multi-scale tokens.
         # The caller may pass precomputed tokens (probe reuse: the training loop
@@ -1434,6 +1488,9 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                 phytomer_pos=phytomer_pos.detach() if phytomer_pos is not None else None,
                 phytomer_roll=phytomer_roll.detach() if phytomer_roll is not None else None,
                 phytomer_scale=phytomer_scale.detach() if phytomer_scale is not None else None,
+                phytomer_parent_rel=parent_relative(
+                    phytomer_pos.detach(), phytomer_parent_pos, phytomer_has_parent)
+                if (phytomer_pos is not None and phytomer_parent_pos is not None) else None,
             )
             pred_velocity = fine_out["pred_velocity"]
         else:
@@ -1550,6 +1607,13 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         )
         if self.flow_granularity == "phytomer":
             forward_kwargs["phytomer_scale"] = phytomer_scale
+            # (parent, self) conditioning at inference: the parent is the
+            # resolved chain's, over the live slots only -- the same call that
+            # derives the node rotation after the ODE, run once up front.
+            _, chain_parent_pos = reconstruct_phytomer_rot(
+                phytomer_pos, phytomer_roll, phytomer_ordinal, phytomer_base_logits,
+                exist=phytomer_existence)
+            forward_kwargs["phytomer_parent_rel"] = parent_relative(phytomer_pos, chain_parent_pos, None)
         for step in range(num_steps):
             t_curr = step * dt
             t_next = (step + 1) * dt
