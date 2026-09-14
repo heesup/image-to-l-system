@@ -255,6 +255,33 @@ def canonical_sort_nodes(
     return sorted_nodes, sorted_mask
 
 
+def attach_parent_links(pkt: Dict[str, torch.Tensor]) -> None:
+    """Adds the ground-truth parent links (`parent_pos` (P,3), `parent_idx` (P,),
+    `depth` (P,)) to a packet dict, in place, from its packets/centers/keys.
+
+    Done here, in the DataLoader worker on the CPU, rather than per sample on
+    the GPU inside the training step: that per-sample target loop was the
+    largest section of a step at batch 48 (0.10 s of 0.35 s) and grew linearly
+    with the batch (0.53 s at 256). The links are deterministic given the
+    cached packets (gt_parent_links with the decoded slot-0 internode base),
+    so nothing changes but where they are computed."""
+    if not isinstance(pkt, dict) or "keys" not in pkt or "parent_pos" in pkt:
+        return
+    from diffusion_based.dataset.phytomer_packets import (   # local: phytomer_packets imports this module
+        decode_packets, FM_BASE_START, FM_BASE_END)
+    from diffusion_based.dataset.phytomer_topology import gt_parent_links
+    packets = pkt["packets"].float()
+    if packets.shape[0] == 0:
+        return
+    centers = pkt["centers"].float()
+    refs = pkt["refs"].float()
+    ibase = decode_packets(packets, centers, pkt["presence"], refs)[:, 0, FM_BASE_START:FM_BASE_END] / BASE_SCALE
+    parent_pos, parent_idx, depth = gt_parent_links(centers, pkt["keys"], internode_base=ibase)
+    pkt["parent_pos"] = parent_pos
+    pkt["parent_idx"] = parent_idx
+    pkt["depth"] = depth
+
+
 class PartArrayDataset(Dataset):
     """Loads Helios XML -> part tensor + rendered image."""
 
@@ -399,6 +426,8 @@ class PartArrayDataset(Dataset):
                                 # through to the on-the-fly fallback below.
                                 if isinstance(_pkt, dict) and _pkt.get("pkt_version", 0) >= 3:
                                     data["pkt"] = _pkt
+                        if isinstance(data.get("pkt"), dict):
+                            attach_parent_links(data["pkt"])
                         return data
                 except Exception:
                     pass

@@ -224,23 +224,25 @@ def forward_backward_step(
         # next to the backbone and the renderer.
         pkt_batch = batch.get("pkt", None)
         phyto_targets = []
+        _fast = []   # (entry, packets, presence) of the cached samples: one VAE encode for all of them below
         for b in range(B):
             pb = pkt_batch[b] if pkt_batch is not None else None
             if pb is not None:
                 packets_b = pb["packets"].to(device, dtype=torch.float32)
                 presence_b = pb["presence"].to(device)
-                with torch.no_grad():
-                    lat_b = phytomer_vae.encode(
-                        phytomer_vae.pack_input(packets_b, presence_b))[0].float()
                 entry = {
                     "packets": packets_b,
                     "presence": presence_b.to(dtype=torch.float32),
                     "centers": pb["centers"].to(device, dtype=torch.float32),
                     "refs": pb["refs"].to(device, dtype=torch.float32),
-                    "latent": lat_b,
                 }
                 if "keys" in pb:
                     entry["keys"] = pb["keys"].to(device)
+                if "parent_pos" in pb:   # attached by the loader worker (part_array_dataset.attach_parent_links)
+                    entry["parent_pos"] = pb["parent_pos"].to(device, dtype=torch.float32)
+                    entry["parent_idx"] = pb["parent_idx"].to(device)
+                    entry["depth"] = pb["depth"].to(device)
+                _fast.append((entry, packets_b, presence_b))
                 phyto_targets.append(entry)
                 continue
             # Per-sample: build canonical packets from the GT nodes, then encode
@@ -273,6 +275,15 @@ def forward_backward_step(
                 "refs": refs.to(device),
                 "latent": lat,  # (P, D)
             })
+        if _fast:
+            # One encode for every cached sample in the batch (the packets are
+            # independent rows), instead of one small launch per sample.
+            with torch.no_grad():
+                lat_all = phytomer_vae.encode(phytomer_vae.pack_input(
+                    torch.cat([pk for _, pk, _ in _fast], dim=0),
+                    torch.cat([pr for _, _, pr in _fast], dim=0)))[0].float()
+            for (entry, pk, _), lat_b in zip(_fast, lat_all.split([pk.shape[0] for _, pk, _ in _fast], dim=0)):
+                entry["latent"] = lat_b
         # The matcher will provide phytomer_tgt_pos per matched phytomer; we build
         # the full (B, K, 9+D) target after matching (below).
     prof["packet_build"] = time.time() - t0
@@ -459,6 +470,7 @@ def forward_backward_step(
         gt_parent_pos_train = torch.zeros(B, K_eff, 3, device=device)
         gt_parent_has_train = torch.zeros(B, K_eff, dtype=torch.bool, device=device)
         cls_acc_data = []
+        _sync_cuda(); _t_tgt = time.time()
         for b in range(B):
             m_b = matches[b]
             node_src = m_b["phytomer_src_idx"]
@@ -506,11 +518,14 @@ def forward_backward_step(
                 # decoded world base names the parent node directly (0.2-0.9 cm
                 # off, vs 1-3 cm to any other node); the nearest-node-below
                 # fallback got a third of the laterals wrong on dataset plants.
-                _ctr = pt["centers"].to(device, dtype=torch.float32)
-                _ibase = decode_packets(pt["packets"].to(device, dtype=torch.float32), _ctr,
-                                        pt["presence"].to(device), pt["refs"].to(device, dtype=torch.float32)
-                                        )[:, 0, FM_BASE_START:FM_BASE_END] / BASE_SCALE
-                par_pos_all, par_row_all, depth_all = gt_parent_links(_ctr, pt["keys"].to(device), internode_base=_ibase)
+                if "parent_pos" in pt:   # precomputed in the loader worker (attach_parent_links)
+                    par_pos_all, par_row_all, depth_all = pt["parent_pos"], pt["parent_idx"], pt["depth"]
+                else:
+                    _ctr = pt["centers"].to(device, dtype=torch.float32)
+                    _ibase = decode_packets(pt["packets"].to(device, dtype=torch.float32), _ctr,
+                                            pt["presence"].to(device), pt["refs"].to(device, dtype=torch.float32)
+                                            )[:, 0, FM_BASE_START:FM_BASE_END] / BASE_SCALE
+                    par_pos_all, par_row_all, depth_all = gt_parent_links(_ctr, pt["keys"].to(device), internode_base=_ibase)
                 par_pos = par_pos_all[pkt_idx]
                 par_row = par_row_all[pkt_idx]
                 # The ordinal the head learns is DEPTH FROM THE ROOT, not the
@@ -567,6 +582,7 @@ def forward_backward_step(
             pres = pt["presence"][pkt_idx]
             cls_acc_data.append((b, node_src, tgt_cls, pres))
 
+        _sync_cuda(); prof["tgt_loop"] = time.time() - _t_tgt; _t_tgt = time.time()
         # Decoupled Flow Matching: standard normal Gaussian prior z_0 ~ N(0, I_D)
         z_0 = torch.randn(B, K_eff, D, device=device)
         z_t = scheduler.sample_xt(z_0, tgt_z1_phyto, t)
@@ -589,6 +605,7 @@ def forward_backward_step(
                 donors = cand[torch.randint(0, cand.numel(), (swap.numel(),), device=device)]
                 parent_pos_in[b, swap] = gt_phytomer_pos_target[b, donors].float()
         parent_pos_in = torch.where(gt_parent_has_train.unsqueeze(-1), parent_pos_in, torch.zeros_like(parent_pos_in))
+        _sync_cuda(); prof["par_noise"] = time.time() - _t_tgt
         # Re-run the model forward with the true x_t.
         t0 = time.time()
         with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
@@ -977,6 +994,7 @@ def forward_backward_step(
 
             if flow_granularity == "phytomer" and n_render > 0:
                 _sync_cuda(); prof["r_vae_asm"] = time.time() - _t_sub
+            render_meshes = []
             for b_idx in range(n_render):
                 _sync_cuda(); _t_sub = time.time()
                 real_b = render_indices[b_idx].item()
@@ -1010,47 +1028,38 @@ def forward_backward_step(
                 )
                 _sync_cuda(); prof["r_mesh"] = prof.get("r_mesh", 0.0) + time.time() - _t_sub; _t_sub = time.time()
 
-                pred_pyramid = renderer.render_multiscale_pyramid(
-                    mesh_dict,
-                    scales=pyramid_scales,
-                    azimuth_deg=0.0,
-                    elevation_deg=90.0,
-                    camera_height=5.0,
-                    include_depth=True,
-                    differentiable=True,
-                    image_size=128,
-                    reference_window_size=1.2,
-                )
+                render_meshes.append(mesh_dict)
 
+            # All rendered plants in ONE nvdiffrast pass per pyramid level
+            # (HeliosPyTorchRenderer.render_batched, range mode), and the
+            # per-plant depth / dice losses vectorised over them. Same numbers
+            # as the per-plant loop this replaced (tests/test_render_batched.py):
+            # each plant keeps its own camera and its own masked mean.
+            _sync_cuda(); _t_sub = time.time()
+            gt_depth_all = images[render_indices]                                   # (n_render, C, H, W)
+            for k, s_ in enumerate(pyramid_scales):
+                pred = renderer.render_batched(
+                    render_meshes, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0,
+                    differentiable=True, image_size=128, zoom_factor=float(s_),
+                    reference_window_size=1.2)                                       # (n_render, 4, H, W)
                 _sync_cuda(); prof["r_raster"] = prof.get("r_raster", 0.0) + time.time() - _t_sub; _t_sub = time.time()
-                sample_loss_depth = torch.tensor(0.0, device=device)
-                sample_loss_dice = torch.tensor(0.0, device=device)
-
-                for k, s in enumerate(pyramid_scales):
-                    gt_depth = images[real_b, 4 * k + 3]
-
-                    pred_rgbd_s = pred_pyramid[float(s)]
-                    pred_depth_s = pred_rgbd_s[3]
-
-                    # 1. Masked Canopy CHM Depth Loss
-                    canopy_mask = (gt_depth > 0.005) | (pred_depth_s > 0.005)
-                    if canopy_mask.sum() > 0:
-                        loss_d_s = F.smooth_l1_loss(pred_depth_s[canopy_mask], gt_depth[canopy_mask], beta=0.02)
-                    else:
-                        loss_d_s = F.smooth_l1_loss(pred_depth_s, gt_depth, beta=0.02)
-                    sample_loss_depth = sample_loss_depth + loss_d_s
-
-                    # 2. Top-View Silhouette Soft Dice Loss
-                    pred_mask_soft = torch.sigmoid((pred_depth_s - 0.005) * 100.0)
-                    gt_mask = (gt_depth > 0.005).float()
-                    intersection = (pred_mask_soft * gt_mask).sum()
-                    denominator = pred_mask_soft.sum() + gt_mask.sum()
-                    loss_dice_s = 1.0 - (2.0 * intersection + 1e-4) / (denominator + 1e-4)
-                    sample_loss_dice = sample_loss_dice + loss_dice_s
-
-                loss_depth_acc = loss_depth_acc + (sample_loss_depth / num_scales)
-                loss_dice_acc = loss_dice_acc + (sample_loss_dice / num_scales)
-                _sync_cuda(); prof["r_loss"] = prof.get("r_loss", 0.0) + time.time() - _t_sub
+                gt_depth = gt_depth_all[:, 4 * k + 3]                                # (n_render, H, W)
+                pred_depth = pred[:, 3]
+                # 1. Masked Canopy CHM Depth Loss (per plant: mean over its canopy
+                #    pixels, the plain mean where it has none)
+                canopy = (gt_depth > 0.005) | (pred_depth > 0.005)
+                l1 = F.smooth_l1_loss(pred_depth, gt_depth, beta=0.02, reduction="none")
+                cnt = canopy.sum(dim=(1, 2))
+                loss_d = torch.where(cnt > 0, (l1 * canopy).sum(dim=(1, 2)) / cnt.clamp(min=1), l1.mean(dim=(1, 2)))
+                # 2. Top-View Silhouette Soft Dice Loss (per plant)
+                pred_mask_soft = torch.sigmoid((pred_depth - 0.005) * 100.0)
+                gt_mask = (gt_depth > 0.005).float()
+                inter = (pred_mask_soft * gt_mask).sum(dim=(1, 2))
+                denom = pred_mask_soft.sum(dim=(1, 2)) + gt_mask.sum(dim=(1, 2))
+                loss_dice_s = 1.0 - (2.0 * inter + 1e-4) / (denom + 1e-4)
+                loss_depth_acc = loss_depth_acc + loss_d.sum() / num_scales
+                loss_dice_acc = loss_dice_acc + loss_dice_s.sum() / num_scales
+                _sync_cuda(); prof["r_loss"] = prof.get("r_loss", 0.0) + time.time() - _t_sub; _t_sub = time.time()
 
             loss_depth = torch.clamp(loss_depth_acc / max(n_render, 1), max=10.0)
             loss_dice = torch.clamp(loss_dice_acc / max(n_render, 1), max=5.0)
@@ -1084,10 +1093,12 @@ def forward_backward_step(
     prof["other"] = max(0.0, (time.time() - _t_fbs) - sum(
         prof.get(k, 0.0) for k in
         ("packet_build", "fwd1", "fwd2", "matcher", "render", "backward", "probe")))
+    _t_tail = time.time()
 
     cls_denom = total_cls_slots if flow_granularity == "phytomer" else norm_m
     cls_accuracy = (correct_cls / cls_denom) if cls_denom > 0 else 0.0
 
+    _sync_cuda(); prof["tail"] = time.time() - _t_tail
     return {
         "loss": loss.item(),
         "phytomer_pos_loss": loss_phytomer_pos.item(),
@@ -1537,7 +1548,8 @@ def train_one_epoch(
                 f"fwd/bwd {t_step1-t_step0:.2f}s opt {t_step2-t_step1:.2f}s | "
                 f"pkt {p.get('packet_build',0):.2f} fwd1 {p.get('fwd1',0):.2f} fwd2 {p.get('fwd2',0):.2f} "
                 f"match {p.get('matcher',0):.2f} render {p.get('render',0):.2f} "
-                f"backward {p.get('backward',0):.2f} probe {p.get('probe',0):.2f} other {p.get('other',0):.2f}"
+                f"backward {p.get('backward',0):.2f} probe {p.get('probe',0):.2f} other {p.get('other',0):.2f} "
+                f"[tgt_loop {p.get('tgt_loop',0):.2f} par_noise {p.get('par_noise',0):.2f} tail {p.get('tail',0):.2f}]"
                 + (f" | render: topo {p.get('r_topo',0):.2f} vae+asm {p.get('r_vae_asm',0):.2f} decode {p.get('r_decode',0):.2f} "
                    f"mesh {p.get('r_mesh',0):.2f} raster {p.get('r_raster',0):.2f} loss {p.get('r_loss',0):.2f}" if 'r_mesh' in p else ""),
                 flush=True,

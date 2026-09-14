@@ -479,6 +479,107 @@ class HeliosPyTorchRenderer(nn.Module):
 
         return rgb_buffer.permute(2, 0, 1).flip(1)  # match Helios row-0 = bottom
 
+    def render_batched(
+        self,
+        meshes: List[Dict[str, torch.Tensor]],
+        azimuth_deg: float = 0.0,
+        elevation_deg: float = 90.0,
+        camera_height: float = 5.0,
+        background: str = "ground",
+        light_dir: Optional[torch.Tensor] = None,
+        differentiable: bool = True,
+        image_size: Optional[int] = None,
+        zoom_factor: float = 1.0,
+        reference_window_size: Optional[float] = 1.2,
+    ) -> torch.Tensor:
+        """RGB-D of N plants in ONE nvdiffrast pass (range mode): (N, 4, H, W).
+
+        Equivalent to calling `forward(mesh_i, ..., focus_plant=False,
+        include_depth=True)` once per plant -- each plant keeps its own camera
+        (the fixed ground window of `reference_window_size / zoom_factor`
+        centred on that plant) -- but the vertices of all plants are
+        concatenated and rasterised, interpolated and antialiased together,
+        so the per-call overhead (and the per-plant Python loop in the
+        training render block) is paid once per pyramid level instead of once
+        per plant. Empty meshes render as background.
+        """
+        H = W = image_size if image_size is not None else self.image_size
+        device = next((m['vertices'].device for m in meshes if m['vertices'].shape[0] > 0), torch.device("cuda"))
+        if light_dir is None:
+            light_dir = torch.tensor([0.3, -0.4, 0.86], device=device)
+        light_dir = light_dir / torch.linalg.norm(light_dir)
+        if background == "ground":
+            bg_rgb = self.COLOR_GROUND.to(device=device, dtype=torch.float32).view(1, 1, 1, 3)
+        elif background == "white":
+            bg_rgb = torch.ones((1, 1, 1, 3), device=device, dtype=torch.float32)
+        else:
+            bg_rgb = torch.zeros((1, 1, 1, 3), device=device, dtype=torch.float32)
+        bg = torch.cat([bg_rgb, torch.zeros((1, 1, 1, 1), device=device, dtype=torch.float32)], dim=-1)  # (1,1,1,4)
+
+        glctx = self._get_nvdiffrast_context(device)
+        if not (_HAS_NVDIFFRAST and glctx is not None):
+            return torch.stack([self.forward(m, azimuth_deg=azimuth_deg, elevation_deg=elevation_deg,
+                                             camera_height=camera_height, background=background, light_dir=light_dir,
+                                             differentiable=differentiable, focus_plant=False, include_depth=True,
+                                             image_size=image_size, zoom_factor=zoom_factor,
+                                             reference_window_size=reference_window_size) for m in meshes], dim=0)
+
+        clip_list, face_list, attr_list, ranges = [], [], [], []
+        v_off = 0
+        with torch.amp.autocast('cuda', enabled=False):
+            for m in meshes:
+                verts, faces = m['vertices'], m['faces']
+                if verts.shape[0] == 0 or faces.shape[0] == 0:
+                    ranges.append((0, 0))   # an empty range rasterises to nothing -> background
+                    continue
+                view_mat, proj_mat, _ = compute_focus_plant_camera(
+                    verts, m.get('organ_types', None), azimuth_deg, elevation_deg, camera_height,
+                    aspect_ratio=1.0, focus_plant=False, zoom_factor=zoom_factor,
+                    reference_window_size=reference_window_size)
+                mvp = (proj_mat @ view_mat).float()
+                v_hom = torch.cat([verts.float(), torch.ones((verts.shape[0], 1), device=device, dtype=torch.float32)], dim=-1)
+                v_clip = v_hom @ mvp.T
+                w_chan = v_clip[..., 3:4]
+                w_safe = torch.where(w_chan.abs() < 1e-4, 1e-4 * torch.where(w_chan < 0.0, -1.0, 1.0), w_chan)
+                v_clip = torch.cat([v_clip[..., :3], w_safe], dim=-1)
+                diffuse = torch.abs((m['normals'] * light_dir.unsqueeze(0)).sum(dim=-1)).clamp(min=0.0)
+                shaded = (m['colors'] * (0.45 + 0.55 * diffuse.unsqueeze(-1))).clamp(0.0, 1.0)
+                chm = torch.clamp(verts[:, 2:3].float(), min=0.0)
+                opac = m.get('opacities', None)
+                if opac is None:
+                    opac = torch.ones((verts.shape[0], 1), device=device, dtype=torch.float32)
+                else:
+                    opac = opac.to(device=device, dtype=torch.float32).clamp(0.0, 1.0)
+                    if opac.ndim == 1:
+                        opac = opac.unsqueeze(-1)
+                clip_list.append(v_clip)
+                face_list.append(faces.to(torch.int32) + v_off)
+                attr_list.append(torch.cat([shaded.float(), chm, opac], dim=-1))
+                ranges.append((sum(f.shape[0] for f in face_list[:-1]), faces.shape[0]))
+                v_off += verts.shape[0]
+            if not clip_list:
+                return bg.view(1, 4, 1, 1).expand(len(meshes), 4, H, W).clone()
+            v_clip_all = torch.cat(clip_list, dim=0).contiguous()                      # (V_total, 4)
+            faces_all = torch.cat(face_list, dim=0).contiguous()                       # (F_total, 3)
+            attrs_all = torch.cat(attr_list, dim=0).contiguous()                       # (V_total, 5)
+            ranges_t = torch.tensor(ranges, dtype=torch.int32)                         # (N, 2), CPU
+            rast_out, _ = dr.rasterize(glctx, v_clip_all, faces_all, resolution=(H, W), ranges=ranges_t, grad_db=False)
+            rast_out = torch.nan_to_num(rast_out, nan=0.0, posinf=0.0, neginf=0.0)     # (N, H, W, 4)
+            mask = rast_out[..., 3:4] > 0
+            interp_out, _ = dr.interpolate(attrs_all, rast_out, faces_all)              # (N, H, W, 5)
+            interp_out = torch.nan_to_num(interp_out, nan=0.0, posinf=0.0, neginf=0.0)
+            rgb_rast, depth_rast, alpha_rast = interp_out[..., :3], interp_out[..., 3:4], interp_out[..., 4:5]
+            rgbd_comp = torch.cat([alpha_rast * rgb_rast + (1.0 - alpha_rast) * bg_rgb,
+                                   alpha_rast * depth_rast], dim=-1)
+            rgbd_out = torch.where(mask, rgbd_comp, bg)
+            rgbd_out = torch.nan_to_num(rgbd_out, nan=0.0, posinf=0.0, neginf=0.0)
+            if differentiable:
+                if v_clip_all.requires_grad:
+                    v_clip_all.register_hook(lambda g: torch.nan_to_num(g.clamp(-10.0, 10.0), nan=0.0))
+                rgbd_out = dr.antialias(rgbd_out, rast_out, v_clip_all, faces_all)
+                rgbd_out = torch.nan_to_num(rgbd_out, nan=0.0, posinf=0.0, neginf=0.0)
+            return rgbd_out.permute(0, 3, 1, 2).flip(2).contiguous()                    # (N, 4, H, W); row 0 = bottom
+
     def render_multiscale_pyramid(
         self,
         mesh_dict: Dict[str, torch.Tensor],
