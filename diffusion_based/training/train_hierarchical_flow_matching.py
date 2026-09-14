@@ -1136,6 +1136,19 @@ def forward_backward_step(
     if torch.isnan(loss) or torch.isinf(loss):
         return None
 
+    if os.environ.get("FM_RENDER_GRAD_PROBE") == "1" and renderer is not None and bool(locals().get("render_grad_on", False)):
+        # Does the render loss ALONE reach Stage 3? d(depth + dice)/d(velocity head)
+        # -- geometry rows (first 8) and latent rows -- and Stage 2's pos head.
+        vh = raw_model.fine_stage.velocity_head[-1].weight
+        ph = next(raw_model.coarse_stage.pos_head.parameters())
+        gs = torch.autograd.grad(depth_loss_weight * loss_depth + silhouette_loss_weight * loss_dice,
+                                 [vh, ph], retain_graph=True, allow_unused=True)
+        g_vh, g_ph = gs
+        geom_n = float(g_vh[:STAGE3_GEOM_DIM].norm()) if g_vh is not None else 0.0
+        lat_n = float(g_vh[STAGE3_GEOM_DIM:].norm()) if (g_vh is not None and g_vh.shape[0] > STAGE3_GEOM_DIM) else 0.0
+        print(f"  [RenderGradProbe] render loss -> Stage 3 velocity head: geometry rows |g|={geom_n:.3e}, latent rows |g|={lat_n:.3e}; "
+              f"-> Stage 2 pos_head |g|={float(g_ph.norm()) if g_ph is not None else 0.0:.3e}", flush=True)
+
     _sync_cuda()
     t_bwd = time.time()
     prof["loss_mix"] = t_bwd - (_t_fbs + sum(prof.get(k, 0.0) for k in ("head", "packet_build", "fwd1", "tgt_lists", "matcher", "mid", "tgt_loop", "par_noise", "fwd2", "render", "probe")))
