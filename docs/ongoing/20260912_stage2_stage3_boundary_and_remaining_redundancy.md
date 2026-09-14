@@ -27,7 +27,7 @@
 | **Leaflets emitted as lateral, terminal, lateral — the packet path is now lossless (§2.4)** | `ff5beb4` |
 | **Leaf size is one scalar per node (1 : 1 : 10/9); terminal leaflet identified per node; opt-in terminal-last packet order for v9** | `2f1691b` |
 | **Stem inverse kinematics in the export: Helios's FK now follows the predicted nodes (§2.5)** | `d3731d3`, `7d92840`, `5827327` |
-| **Dataset-plant round-trip (§2.6): chaining follows drooping shoots; branch points from the internode base (66 -> 98% of laterals, training targets included); leaf orientation inverse in the export; fig12 redrawn with GT 45-degree views** | 2026-09-14 |
+| **Dataset-plant round-trip (§2.6): chaining follows drooping shoots; branch points from the internode base (66 -> 98% of laterals, training targets included); leaf orientation inverse in the export; fig12 redrawn with GT 45-degree views** | `0472284` |
 
 **The blocker is RESOLVED (2026-09-14, §1.9.2 end): the coarse decoder had no final LayerNorm, so its raw residual stream fed the bf16 phytomer self-attention; a final norm gives 0/8 burst steps on the frozen burst state against 8/8. The rest of this paragraph is the earlier reading.** The earlier reading, kept for the record: the intermittent Stage 2 gradient explosion tracks the **learning rate**, not the architecture: every observed onset sat above ~1.6e-4 effective lr, and job `38240281` at `LR=1e-4` has now run **10 epochs clean** with 0 canary hits, through and well past the point where three of four runs at 3e-4 died. Eight architecture-level hypotheses were tested against minimal reproductions and refuted first; §1.9 records them so nobody pays for them twice.
 
@@ -988,5 +988,6 @@ bd04b9c docs: v9 VAE candidates; the Helios round-trip is bounded by the export'
 d3731d3 feat(export): stem inverse kinematics so Helios's FK follows the predicted nodes
 7d92840 feat(stem-ik): solve each shoot's base pitch/yaw and base-internode length
 5827327 fix(stem-ik): guard the shoot-base solve against degenerate Jacobians and oversized steps
+0472284 fix(export,topology): the round-trip on dataset plants -- drooping shoots chain, branch points from the internode base, leaf orientation inverse (2026-09-14)
 ```
 (Earlier the same day, see the previous doc's own commit log for the hybrid VAE / render-loss / canary-guard commits.)
