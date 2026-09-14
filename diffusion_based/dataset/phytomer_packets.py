@@ -170,6 +170,53 @@ def _petiole_curve_points(
     return torch.stack(pts)
 
 
+def _curve_points_batched(
+    R_world: torch.Tensor,
+    length: torch.Tensor,
+    curv_deg_m: torch.Tensor,
+    n_seg: int = 6,
+) -> torch.Tensor:
+    """`_petiole_curve_points` for N organs at once: (N, 3, 3), (N,), (N,) ->
+    (N, n_seg+1, 3). Same arithmetic step for step (gravitropic bend about
+    cross(axis, z), Rodrigues, renormalise), so it is bit-for-bit the loop's
+    result up to float rounding; it exists because assembling a render batch
+    ran this per phytomer in Python (~0.55 s forward + ~1 s backward for
+    1,000 phytomers, 85% of a training step, measured 2026-09-14)."""
+    N = R_world.shape[0]
+    dev, dt = R_world.device, R_world.dtype
+    z_axis = torch.tensor([0.0, 0.0, 1.0], device=dev, dtype=dt).expand(N, 3)
+    x_axis = torch.tensor([1.0, 0.0, 0.0], device=dev, dtype=dt).expand(N, 3)
+    dr = (length / n_seg).unsqueeze(-1)                                  # (N, 1)
+    theta = torch.deg2rad(curv_deg_m).unsqueeze(-1) * dr                 # (N, 1)
+    cos_t, sin_t = torch.cos(theta), torch.sin(theta)
+    cur_axis = R_world[:, :, 1]
+    pts = [torch.zeros(N, 3, device=dev, dtype=dt)]
+    for _ in range(n_seg):
+        h = torch.linalg.cross(cur_axis, z_axis, dim=-1)
+        hn = h.norm(dim=-1, keepdim=True)
+        h_u = torch.where(hn > 1e-4, h / (hn + 1e-8), x_axis)
+        kcv = torch.linalg.cross(h_u, cur_axis, dim=-1)
+        kdv = (h_u * cur_axis).sum(-1, keepdim=True)
+        rot_v = cur_axis * cos_t + kcv * sin_t + h_u * kdv * (1 - cos_t)
+        rot_v = rot_v / (rot_v.norm(dim=-1, keepdim=True) + 1e-8)
+        pts.append(pts[-1] + rot_v * dr)
+        cur_axis = rot_v
+    return torch.stack(pts, dim=1)
+
+
+def _point_on_curve(curve: torch.Tensor, frac: torch.Tensor) -> torch.Tensor:
+    """Linear interpolation at arc fraction `frac` (N,) on curves (N, K, 3),
+    matching the loop's `idx_f = frac * (K-1); i0 = int(idx_f)` rule."""
+    K = curve.shape[1]
+    idx_f = frac * (K - 1)
+    i0 = idx_f.floor().clamp(0, K - 1)
+    t = (idx_f - i0).unsqueeze(-1)
+    i1 = (i0 + 1).clamp(max=K - 1)
+    c0 = torch.gather(curve, 1, i0.long().view(-1, 1, 1).expand(-1, 1, 3)).squeeze(1)
+    c1 = torch.gather(curve, 1, i1.long().view(-1, 1, 1).expand(-1, 1, 3)).squeeze(1)
+    return c0 * (1 - t) + c1 * t
+
+
 def phytomer_scale(packets: torch.Tensor) -> torch.Tensor:
     """Phytomer-level scale s_a per packet: the PETIOLE (slot 1) scale row
     [length, radius, unused] in raw FM units (x SCALE_SCALE).
@@ -413,49 +460,39 @@ def assemble_packets(
             torch.where(stem.unsqueeze(-1), stem_base, base[:, 0]).unsqueeze(1),
             base[:, 1:],
         ], dim=1)
-    # Leaflet bases: arc-fraction point on the CURVED petiole centerline.
-    for p in range(P):
-        if not bool(det[p, 1]):
-            continue
-        R_pet = R_ref[p] @ rot6d_to_matrix(out[p, 1, FM_ROT_START:FM_ROT_END])
-        pet_len = out[p, 1, FM_SCALE_START] / SCALE_SCALE  # metres
-        pet_curv = out[p, 1, FM_CURV] / CURV_SCALE  # deg/m
-        if pet_len < 1e-4:
-            continue
-        curve = _petiole_curve_points(R_pet, pet_len, pet_curv)
-        fracs = LEAFLET_ATTACH_FRAC
-        if bool(term2[p]):
-            fracs = {2: LEAFLET_ATTACH_FRAC[4], 3: LEAFLET_ATTACH_FRAC[3], 4: LEAFLET_ATTACH_FRAC[2]}
-        for s, frac in fracs.items():
-            if bool(det[p, s]):
-                idx_f = frac * (len(curve) - 1)
-                i0 = int(idx_f)
-                t = idx_f - i0
-                i1 = min(i0 + 1, len(curve) - 1)
-                cpt = curve[i0] * (1 - t) + curve[i1] * t
-                base[p, s] = cpt * base_scale
-        # Flower/fruit bases: arc-fraction point on the CURVED PEDUNCLE
-        # centerline (same gravitropic bend convention as the petiole).
-        if bool(det[p, 5]):
-            R_ped = R_ref[p] @ rot6d_to_matrix(out[p, 5, FM_ROT_START:FM_ROT_END])
-            ped_len = out[p, 5, FM_SCALE_START] / SCALE_SCALE  # metres
-            ped_curv = out[p, 5, FM_CURV] / CURV_SCALE  # deg/m
-            if ped_len >= 1e-4:
-                pcurve = _petiole_curve_points(R_ped, ped_len, ped_curv)
-                idx_f = REPRO_ATTACH_FRAC * (len(pcurve) - 1)
-                i0 = int(idx_f)
-                t = idx_f - i0
-                i1 = min(i0 + 1, len(pcurve) - 1)
-                cpt = pcurve[i0] * (1 - t) + pcurve[i1] * t
-                # Only flowers and fruit ride the peduncle out to its tip. Buds
-                # sit at the centre (see the assembly rules above), and moving
-                # them with everything else in slots 6-9 put every active bud
-                # that shares a phytomer with a peduncle a whole peduncle away —
-                # measured 11.5 cm mean, 32.9 cm max at DAP 90, while every
-                # other organ type was inside 2 cm.
-                for s in range(6, NUM_SLOTS):
-                    if bool(det[p, s]) and int(ot[p, s]) in REPRO_TIP_ORGAN_TYPES:
-                        base[p, s] = cpt * base_scale
+    # Leaflet bases: arc-fraction point on the CURVED petiole centerline, and
+    # flower/fruit bases on the CURVED PEDUNCLE centerline -- for every
+    # phytomer at once (see _curve_points_batched for why).
+    cols = list(base.unbind(dim=1))                                   # 10 x (P, 3)
+    pet_len = out[:, 1, FM_SCALE_START] / SCALE_SCALE                 # metres
+    pet_ok = det[:, 1] & (pet_len >= 1e-4)
+    if bool(pet_ok.any()):
+        R_pet = R_ref @ rot6d_to_matrix(out[:, 1, FM_ROT_START:FM_ROT_END])
+        curve = _curve_points_batched(R_pet, pet_len, out[:, 1, FM_CURV] / CURV_SCALE)
+        # Terminal leaflet in slot 2 (drooping petiole) swaps the slot-2/4 fractions.
+        swapped = {2: LEAFLET_ATTACH_FRAC[4], 3: LEAFLET_ATTACH_FRAC[3], 4: LEAFLET_ATTACH_FRAC[2]}
+        for slot in (2, 3, 4):
+            frac = torch.where(term2, torch.full_like(pet_len, swapped[slot]),
+                               torch.full_like(pet_len, LEAFLET_ATTACH_FRAC[slot]))
+            cpt = _point_on_curve(curve, frac) * base_scale
+            use = (pet_ok & det[:, slot]).unsqueeze(-1)
+            cols[slot] = torch.where(use, cpt, cols[slot])
+    ped_len = out[:, 5, FM_SCALE_START] / SCALE_SCALE
+    ped_ok = det[:, 5] & (ped_len >= 1e-4)
+    if bool(ped_ok.any()):
+        R_ped = R_ref @ rot6d_to_matrix(out[:, 5, FM_ROT_START:FM_ROT_END])
+        pcurve = _curve_points_batched(R_ped, ped_len, out[:, 5, FM_CURV] / CURV_SCALE)
+        cpt = _point_on_curve(pcurve, torch.full_like(ped_len, REPRO_ATTACH_FRAC)) * base_scale
+        # Only flowers and fruit ride the peduncle out to its tip. Buds sit at
+        # the centre (see the assembly rules above); moving them with everything
+        # else in slots 6-9 put every active bud that shares a phytomer with a
+        # peduncle a whole peduncle away (11.5 cm mean, 32.9 cm max at DAP 90).
+        tip_types = torch.tensor(sorted(REPRO_TIP_ORGAN_TYPES), device=out.device)
+        for slot in range(6, NUM_SLOTS):
+            is_tip = torch.isin(ot[:, slot], tip_types)
+            use = (ped_ok & det[:, slot] & is_tip).unsqueeze(-1)
+            cols[slot] = torch.where(use, cpt, cols[slot])
+    base = torch.stack(cols, dim=1)
     return torch.cat(
         [out[..., :FM_BASE_START], base, out[..., FM_BASE_END:]], dim=-1
     )

@@ -928,6 +928,7 @@ def forward_backward_step(
                 # block pairs nodes through the GT-derived, matched-only map
                 # (gt_render_parent_idx) built above, which is stable from
                 # epoch 1 where self-predicted topology is not.
+                _sync_cuda(); _t_sub = time.time()
                 rot_all, _ = reconstruct_phytomer_rot(
                     pos_all.detach(), roll_all,
                     pred_ord[render_indices].detach(), pred_base_logits[render_indices].detach(),
@@ -941,6 +942,7 @@ def forward_backward_step(
                     if scl_all.requires_grad:
                         scl_all.register_hook(lambda g: torch.nan_to_num(g.clamp(-2.0, 2.0), nan=0.0))
 
+                _sync_cuda(); prof["r_topo"] = time.time() - _t_sub; _t_sub = time.time()
                 out_vae_all = phytomer_vae.decode(lat_all.reshape(-1, D))
                 recon_abs_all = denormalize_packet_scales(
                     out_vae_all["recon_packets"], scl_all.reshape(-1, 3)
@@ -973,7 +975,10 @@ def forward_backward_step(
                 )
                 cls_logits_all = out_vae_all["cls_logits"].reshape(n_render, -1, M, 13)
 
+            if flow_granularity == "phytomer" and n_render > 0:
+                _sync_cuda(); prof["r_vae_asm"] = time.time() - _t_sub
             for b_idx in range(n_render):
+                _sync_cuda(); _t_sub = time.time()
                 real_b = render_indices[b_idx].item()
                 if flow_granularity == "phytomer":
                     flat_abs = abs_packets_all[b_idx].reshape(-1, 26)
@@ -998,10 +1003,12 @@ def forward_backward_step(
                 _palette = getattr(raw_model, "color_palette", None)
                 if _palette is not None:
                     _palette = _palette.detach()
+                _sync_cuda(); prof["r_decode"] = prof.get("r_decode", 0.0) + time.time() - _t_sub; _t_sub = time.time()
                 mesh_dict = renderer.geo_builder.build_mesh_from_part_tensor(
                     part_14d, existence=exist_b, organ_probs=probs, device=device,
                     color_palette=_palette,
                 )
+                _sync_cuda(); prof["r_mesh"] = prof.get("r_mesh", 0.0) + time.time() - _t_sub; _t_sub = time.time()
 
                 pred_pyramid = renderer.render_multiscale_pyramid(
                     mesh_dict,
@@ -1015,6 +1022,7 @@ def forward_backward_step(
                     reference_window_size=1.2,
                 )
 
+                _sync_cuda(); prof["r_raster"] = prof.get("r_raster", 0.0) + time.time() - _t_sub; _t_sub = time.time()
                 sample_loss_depth = torch.tensor(0.0, device=device)
                 sample_loss_dice = torch.tensor(0.0, device=device)
 
@@ -1042,6 +1050,7 @@ def forward_backward_step(
 
                 loss_depth_acc = loss_depth_acc + (sample_loss_depth / num_scales)
                 loss_dice_acc = loss_dice_acc + (sample_loss_dice / num_scales)
+                _sync_cuda(); prof["r_loss"] = prof.get("r_loss", 0.0) + time.time() - _t_sub
 
             loss_depth = torch.clamp(loss_depth_acc / max(n_render, 1), max=10.0)
             loss_dice = torch.clamp(loss_dice_acc / max(n_render, 1), max=5.0)
@@ -1528,7 +1537,9 @@ def train_one_epoch(
                 f"fwd/bwd {t_step1-t_step0:.2f}s opt {t_step2-t_step1:.2f}s | "
                 f"pkt {p.get('packet_build',0):.2f} fwd1 {p.get('fwd1',0):.2f} fwd2 {p.get('fwd2',0):.2f} "
                 f"match {p.get('matcher',0):.2f} render {p.get('render',0):.2f} "
-                f"backward {p.get('backward',0):.2f} probe {p.get('probe',0):.2f} other {p.get('other',0):.2f}",
+                f"backward {p.get('backward',0):.2f} probe {p.get('probe',0):.2f} other {p.get('other',0):.2f}"
+                + (f" | render: topo {p.get('r_topo',0):.2f} vae+asm {p.get('r_vae_asm',0):.2f} decode {p.get('r_decode',0):.2f} "
+                   f"mesh {p.get('r_mesh',0):.2f} raster {p.get('r_raster',0):.2f} loss {p.get('r_loss',0):.2f}" if 'r_mesh' in p else ""),
                 flush=True,
             )
 
