@@ -12,7 +12,9 @@
 
 # Defaults below are the CURRENT recipe (v9 lineage, 2026-09-14): PhytomerVAE
 # v9_tl_rw4_20k + terminal-last packet cache _pkt_v9, lr 1e-4, batch 48/GPU,
-# render loss from epoch 11 on 3% of the batch, a checkpoint every 5 epochs and
+# render loss from epoch 11 on 1/6 of the batch (3% was a throughput compromise
+# from when one rendered plant cost 0.65 s; batched, 8 plants cost ~0.1 s), a
+# checkpoint every 5 epochs and
 # an eval every epoch (30-min floor). Every knob is an env override, e.g.
 #   sbatch slurm_scripts/train_hierarchical_flow_matching.sh                       # plain: this recipe, 2 GPUs, geminigrp
 #   sbatch --partition=low --account=publicgrp --gres=gpu:a100:4 --time=7-00:00:00 \
@@ -120,7 +122,7 @@ echo "Per-GPU VRAM: ${VRAM_MB} MiB | Batch Mode: ${BATCH_ARG} (Target VRAM: ${TA
 echo "Phytomer Capacity: 512 phytomers x ${SLOTS_PER_PHYTOMER:-10} slots/phytomer"
 echo "Render gate: fast warmup bypass (epochs 1-3) -> active at epoch ${RENDER_GRAD_START_EPOCH:-11}"
 echo "Eval cadence: every ${EVAL_EVERY:-1} epochs OR every ${EVAL_MIN_INTERVAL_MINUTES:-30} min (time fallback)"
-echo "Render fraction: ${RENDER_FRACTION:-0.03} of batch per step (batch-relative; 2-scale pyramid 1x/2x — profiling 2026-09-09: render was 70% of step time)"
+echo "Render fraction: ${RENDER_FRACTION:-0.167} of batch per step (batch-relative; 2-scale pyramid 1x/2x — profiling 2026-09-09: render was 70% of step time)"
 echo "Flow granularity: ${FLOW_GRANULARITY:-phytomer} (hybrid decoupled: 128D VAE latent flow + Stage 2 3D scaffold)"
 echo "Phytomer VAE: ${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt}"
 echo "Pkt cache dir: ${PKT_CACHE_DIR:-dataset/cache/cowpea_curv26_pkt_v9} (missing samples fall back to on-the-fly) | PHYTOMER_TERMINAL_LAST=${PHYTOMER_TERMINAL_LAST}"
@@ -194,7 +196,7 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     --depth_weight 0.5 \
     --color_weight 0.0 \
     --silhouette_weight 1.0 \
-    --render_fraction "${RENDER_FRACTION:-0.03}" \
+    --render_fraction "${RENDER_FRACTION:-0.167}" \
     --render_grad_start_epoch "${RENDER_GRAD_START_EPOCH:-11}" \
     --scale_weight "${SCALE_WEIGHT:-1.0}" \
     --save_every "${SAVE_EVERY}" \

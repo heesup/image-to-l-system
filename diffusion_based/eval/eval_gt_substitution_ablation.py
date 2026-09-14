@@ -1,0 +1,213 @@
+"""GT-substitution ablation: which predicted quantity costs the silhouette?
+
+On the run's fixed eval set, every predicted node is matched to a ground-truth
+phytomer (the training matcher), and the plant is re-rendered with ONE quantity
+of the matched nodes replaced by its ground truth:
+
+    P        everything predicted (the self-consistency panel's plant)
+    pos      node position <- GT centre            (chain + rotation recomputed)
+    topo     ordinal / base <- GT depth            (chain recomputed, positions predicted)
+    rot      node rotation <- GT reference rotation
+    scale    node scale <- GT petiole scale row
+    latent   packet latent <- VAE encode of the GT packet
+    prune    unmatched predicted nodes removed     (spurious nodes only)
+    ALL      pos + topo + rot + scale + latent <- GT (existence predicted)
+
+against the GT render (same renderer, same camera). The gap P -> ALL is what the
+model's per-node predictions cost; ALL -> 100% is what the node SET costs
+(missing / spurious nodes). Decides where modelling capacity should go
+(design doc §2.1: geometry into Stage 3, or render gradients into the latent).
+"""
+import argparse
+import glob
+import json
+import os
+import sys
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+sys.path.insert(0, REPO_ROOT)
+
+from diffusion_based.dataset.part_array_dataset import (
+    PartArrayDataset, attach_parent_links, decode_fm, BASE_SCALE, FM_OT_END, FM_BASE_START, FM_BASE_END)
+from diffusion_based.dataset.phytomer_packets import assemble_packets, denormalize_packet_scales, phytomer_scale
+from diffusion_based.models.hierarchical_part_flow_matching import (
+    HierarchicalPartFlowMatchingModel, reconstruct_phytomer_rot, apply_ref_for_flow)
+from diffusion_based.models.phytomer_vae import PhytomerVAE
+from diffusion_based.models.organ_latent_vae import OrganLatentVAE
+from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from diffusion_based.models.plant_organ_array import NUM_ORGAN_TYPES
+from diffusion_based.training.hierarchical_hungarian_matcher import HierarchicalBotanicalMatcher
+from diffusion_based.eval.eval_hierarchical_self_consistency import decode_predictions_to_part_tensor
+
+EMPTY_IDX = 0
+
+
+def render_depth(renderer, parts, zoom, device, size=256):
+    if parts.shape[0] == 0:
+        return torch.zeros(size, size, device=device)
+    mesh = renderer.geo_builder.build_mesh_from_part_tensor(parts, device=device)
+    if mesh["vertices"].shape[0] == 0:
+        return torch.zeros(size, size, device=device)
+    rgbd = renderer.forward(mesh, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, background="ground",
+                            focus_plant=False, include_depth=True, image_size=size, zoom_factor=zoom,
+                            reference_window_size=1.2)
+    return rgbd[3].clamp(min=0.0)
+
+
+def score(pred_depth, gt_depth):
+    pm, gm = pred_depth > 0.005, gt_depth > 0.005
+    inter, union = (pm & gm).sum().item(), (pm | gm).sum().item()
+    canopy = pm | gm
+    mae = float((pred_depth - gt_depth).abs()[canopy].mean()) if canopy.any() else 0.0
+    return inter / max(union, 1), mae
+
+
+def plant_from_nodes(phytomer_vae, pos, rot, scale, latent, exist, parent_pos, M):
+    """The training render block's decode: latent -> packets -> assembled 14D parts (K nodes, hard gates)."""
+    K = pos.shape[0]
+    out = phytomer_vae.decode(latent)
+    recon = denormalize_packet_scales(out["recon_packets"], scale)
+    pk = assemble_packets(recon, rot, parent_pos=parent_pos, centers=pos)
+    abs_pk = apply_ref_for_flow(pk.reshape(1, K, M, 26), pos.unsqueeze(0), rot.unsqueeze(0))[0]   # (K, M, 26)
+    cls = out["cls_logits"].reshape(K, M, 13).argmax(-1)
+    keep = (cls > 0) & (exist > 0.5).unsqueeze(-1)
+    return decode_fm(abs_pk.reshape(-1, 26)[keep.reshape(-1)])
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--checkpoint", default="")
+    ap.add_argument("--eval_set", default="")
+    ap.add_argument("--out_dir", default="")
+    ap.add_argument("--num_steps", type=int, default=20)
+    a = ap.parse_args()
+    dev = torch.device("cuda:0")
+    ckpt_path = a.checkpoint or sorted(glob.glob("diffusion_based/checkpoints/hierarchical_fm_v9/hierarchical_fm_epoch_*.pt"))[-1]
+    ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    args = ck["args"] if isinstance(ck["args"], dict) else vars(ck["args"])
+    print(f"checkpoint {ckpt_path} (epoch {ck.get('epoch')})")
+    model = HierarchicalPartFlowMatchingModel(
+        max_phytomers=args["max_phytomers"], slots_per_phytomer=args["slots_per_phytomer"], node_dim=args["node_dim"],
+        num_classes=NUM_ORGAN_TYPES, image_size=128, patch_size=8, embed_dim=args["embed_dim"], vit_layers=args["vit_layers"],
+        vit_heads=args["vit_heads"], coarse_layers=args["coarse_layers"], fine_layers=args["fine_layers"],
+        flow_granularity=args["flow_granularity"], phytomer_latent_dim=args["phytomer_latent_dim"], backbone=args["backbone"],
+        freeze_backbone=True, init_phytomer_count=args.get("init_phytomer_count", 50.0)).to(dev)
+    missing, unexpected = model.load_state_dict(ck["model_state_dict"], strict=False)
+    if missing or unexpected:
+        print("  state dict: missing", missing[:5], "unexpected", unexpected[:5])
+    model.eval()
+    M = args["slots_per_phytomer"]
+    pvae = PhytomerVAE(latent_dim=args["phytomer_latent_dim"], residual_dim=args.get("phytomer_residual_dim", 8), hidden_dim=256).to(dev).eval()
+    pvae.load_state_dict(torch.load(args["phytomer_vae_checkpoint"], map_location=dev, weights_only=True))
+    ovae = None
+    ov_path = args.get("organ_vae_checkpoint", "diffusion_based/checkpoints/organ_vae/organ_latent_vae_best.pt")
+    if ov_path and os.path.exists(ov_path):
+        ovae = OrganLatentVAE(latent_dim=args["node_dim"], hidden_dim=256).to(dev).eval()
+        ovae.load_state_dict(torch.load(ov_path, map_location=dev, weights_only=False).get("model_state_dict", torch.load(ov_path, map_location=dev, weights_only=False)))
+    renderer = HeliosPyTorchRenderer(image_size=256).to(dev)
+    matcher = HierarchicalBotanicalMatcher(matcher_type="greedy", slots_per_phytomer=M)
+    ds = PartArrayDataset(data_root=args["data_dir"], max_nodes=args["max_phytomers"] * M, cache_dir=args["cache_dir"],
+                          pkt_cache_dir=args.get("pkt_cache_dir") or None, species="cowpea", image_size=128)
+    es_path = a.eval_set or os.path.join(os.path.dirname(ckpt_path), "eval_set.json")
+    idxs = json.load(open(es_path))["indices"]
+    out_dir = a.out_dir or os.path.dirname(ckpt_path)
+    os.makedirs(out_dir, exist_ok=True)
+
+    variants = ["P", "pos", "topo", "rot", "scale", "latent", "prune",
+                "pos+topo", "pos+rot", "pos+scale", "pos+latent",
+                "ALL-pos", "ALL-topo", "ALL-rot", "ALL-scale", "ALL-latent", "ALL"]
+    FULL = {"pos", "topo", "rot", "scale", "latent"}
+
+    def subset(v):
+        if v == "P": return set()
+        if v == "ALL": return set(FULL)
+        if v.startswith("ALL-"): return FULL - {v[4:]}
+        return set(v.split("+"))
+    rows = []
+    for i in idxs:
+        it = ds[i]
+        images = it["image"].unsqueeze(0).to(dev)
+        dap = int(it["dap"].item()) if "dap" in it else 0
+        zoom = 8.0 if dap <= 15 else 1.0
+        nodes = it["nodes"].to(dev); exist_gt = it["existence_mask"].to(dev)
+        pkt = it.get("pkt")
+        if pkt is None:
+            print(f"  sample {i}: no packet cache, skipped"); continue
+        attach_parent_links(pkt)
+        g_pos = pkt["centers"].to(dev).float(); g_refs = pkt["refs"].to(dev).float()
+        g_packets = pkt["packets"].to(dev).float(); g_pres = pkt["presence"].to(dev)
+        g_scale = phytomer_scale(g_packets); g_depth = pkt["depth"].to(dev).float()
+        with torch.no_grad():
+            g_lat = pvae.encode(pvae.pack_input(g_packets, g_pres))[0].float()
+            # GT reference render
+            gt_types = nodes[:, :FM_OT_END].argmax(-1)
+            gt_parts = decode_predictions_to_part_tensor(nodes[:, FM_BASE_START:], gt_types, exist_gt, device=dev)
+            gt_depth_img = render_depth(renderer, gt_parts, zoom, dev)
+            # prediction
+            so = model.sample_ode(images=images, daps=None, num_steps=a.num_steps, vae=ovae, phytomer_vae=pvae)
+            K = so["phytomer_pos"].shape[1]
+            image_tokens = model.image_encoder(images)
+            clue = model.probe_pred_dap(image_tokens)
+            co = model.coarse_stage(image_tokens, active_k=K, pred_dap=clue)
+            p_pos = so["phytomer_pos"][0].float(); p_exist = so["phytomer_existence"][0].float()
+            p_roll = co["phytomer_roll"][0].float(); p_ord = co["phytomer_ordinal"][0].float(); p_base = co["phytomer_base_logits"][0].float()
+            p_scale = (so.get("phytomer_scale") if so.get("phytomer_scale") is not None else co.get("phytomer_scale"))[0].float()
+            p_lat = so["pred_latent"][0].float()
+            # match predicted nodes to GT phytomers (as training does), then to GT packets by centre
+            labels = nodes[:, :FM_OT_END].argmax(-1); positions = nodes[:, FM_BASE_START:FM_BASE_END] / BASE_SCALE
+            valid = (exist_gt > 0.5) & (labels > 0)
+            m = matcher(pred_phytomer_pos=p_pos.unsqueeze(0), pred_phytomer_logits=torch.logit(p_exist.clamp(1e-4, 1 - 1e-4)).view(1, K, 1),
+                        pred_fine_geom=torch.zeros(1, K * M, 16, device=dev), pred_fine_logits=torch.zeros(1, K * M, 13, device=dev),
+                        tgt_geoms=[torch.zeros(0, 16, device=dev)], tgt_labels=[labels], tgt_positions=None,
+                        per_sample_max_phytomers=torch.tensor([K], device=dev), skip_fine=True,
+                        tgt_labels_padded=labels.unsqueeze(0), tgt_positions_padded=positions.unsqueeze(0), tgt_valid=valid.unsqueeze(0))[0]
+            src = m["phytomer_src_idx"]; tgt_pos = m["phytomer_tgt_pos"]
+            j = torch.cdist(tgt_pos, g_pos).argmin(dim=1) if src.numel() > 0 else torch.zeros(0, dtype=torch.long, device=dev)
+            matched = torch.zeros(K, dtype=torch.bool, device=dev); matched[src] = True
+
+            def build(sub):
+                pos, roll, ordn, base, scale, lat, ex = p_pos.clone(), p_roll.clone(), p_ord.clone(), p_base.clone(), p_scale.clone(), p_lat.clone(), p_exist.clone()
+                if "pos" in sub: pos[src] = g_pos[j]
+                if "topo" in sub: ordn[src] = g_depth[j]; base[src] = torch.where(g_depth[j] == 0, 8.0, -8.0)
+                if "scale" in sub: scale[src] = g_scale[j]
+                if "latent" in sub: lat[src] = g_lat[j]
+                if "prune" in sub: ex = torch.where(matched, ex, torch.zeros_like(ex))
+                rot, par = reconstruct_phytomer_rot(pos.unsqueeze(0), roll.unsqueeze(0), ordn.unsqueeze(0), base.unsqueeze(0), exist=(ex > 0.5).float().unsqueeze(0))
+                rot, par = rot[0].float(), par[0].float()
+                if "rot" in sub: rot[src] = g_refs[j]
+                return plant_from_nodes(pvae, pos, rot, scale, lat, ex, par, M)
+
+            row = {"index": i, "dap": dap, "K": K, "n_active": int((p_exist > 0.5).sum()), "n_gt": int(g_pos.shape[0]), "n_matched": int(src.numel())}
+            for v in variants:
+                sub = subset(v)
+                parts = build(sub)
+                iou, mae = score(render_depth(renderer, parts, zoom, dev), gt_depth_img)
+                row[v] = iou; row[v + "_mae"] = mae
+            rows.append(row)
+            print(f"  DAP {dap:>3} K {K:>3} active {row['n_active']:>3} gt {row['n_gt']:>3} matched {row['n_matched']:>3} | " +
+                  " ".join(f"{v} {row[v]*100:5.1f}" for v in ("P", "pos", "ALL")), flush=True)
+
+    print("\n=== mean silhouette IoU (%) / depth MAE (cm) over", len(rows), "samples")
+    print(f"{'variant':<11}{'IoU':>7}{'MAE':>7}   {'young<=15':>10}{'mid':>7}{'old>60':>8}")
+    summary = {}
+    for v in variants:
+        ious = np.array([r[v] for r in rows]); maes = np.array([r[v + "_mae"] for r in rows]); daps = np.array([r["dap"] for r in rows])
+        yb, mb, ob = daps <= 15, (daps > 15) & (daps <= 60), daps > 60
+        summary[v] = {"iou": float(ious.mean()), "mae_cm": float(maes.mean() * 100),
+                      "iou_young": float(ious[yb].mean()) if yb.any() else None, "iou_mid": float(ious[mb].mean()) if mb.any() else None,
+                      "iou_old": float(ious[ob].mean()) if ob.any() else None}
+        f = lambda x: f"{x*100:6.1f}" if x is not None else "   n/a"
+        print(f"{v:<11}{ious.mean()*100:7.1f}{maes.mean()*100:7.2f}   {f(summary[v]['iou_young']):>10}{f(summary[v]['iou_mid']):>7}{f(summary[v]['iou_old']):>8}")
+    print(f"node set: predicted active / GT / matched = {np.mean([r['n_active'] for r in rows]):.1f} / {np.mean([r['n_gt'] for r in rows]):.1f} / {np.mean([r['n_matched'] for r in rows]):.1f}")
+    tag = f"epoch{int(ck.get('epoch', 0)):03d}"
+    with open(os.path.join(out_dir, f"gt_substitution_{tag}.json"), "w") as f:
+        json.dump({"checkpoint": ckpt_path, "summary": summary, "rows": rows}, f, indent=2)
+    print("saved", os.path.join(out_dir, f"gt_substitution_{tag}.json"))
+
+
+if __name__ == "__main__":
+    main()
