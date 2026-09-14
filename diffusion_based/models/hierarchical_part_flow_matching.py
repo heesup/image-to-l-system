@@ -66,7 +66,7 @@ PHYTOMER_MARGIN_MIN = 1.05
 SCALE_CEIL = 25.0
 
 
-_GRAD_PROBE = os.environ.get("FM_GRAD_PROBE", "0") == "1"
+_GRAD_PROBE = os.environ.get("FM_GRAD_PROBE", "0") in ("1", "2")
 # FM_ACT_PROBE=1: forward probe on Stage 2's decoder LayerNorm inputs. A pre-LN
 # block's backward carries a 1/std factor per token through each LayerNorm, so
 # a token whose 384 features have collapsed to near-constant amplifies whatever
@@ -99,7 +99,9 @@ _PROBE_THRESHOLD = 1e9
 _probe_seen: set = set()
 
 
-def _probe_grad(t: torch.Tensor, label: str) -> None:
+def _probe_grad(t, label: str) -> None:
+    if t is None:
+        return
     """Report the first backward pass in which `t` carries a gradient past
     _PROBE_THRESHOLD. Used to find which consumer of a shared tensor is the
     source of a gradient explosion, since the parameter-level canary in the
@@ -589,7 +591,15 @@ class CoarseSkeletalTransformer(nn.Module):
             batch_first=True,
             norm_first=True,
         )
-        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
+        # A pre-LN (norm_first) decoder leaves its output as the raw residual
+        # stream, which in the Stage 2 burst state (2026-09-14 dissection)
+        # reached magnitude ~1e3 and was fed as query/key/value into the bf16
+        # phytomer self-attention below, where the backward amplified the
+        # incoming gradient ~6000x on every batch. Pre-LN transformers close
+        # with a final LayerNorm for exactly this reason; FM_DECODER_FINAL_NORM=0
+        # rebuilds the old architecture for checkpoints that predate it.
+        _final_norm = nn.LayerNorm(embed_dim) if os.environ.get("FM_DECODER_FINAL_NORM", "1") == "1" else None
+        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers, norm=_final_norm)
         if _ACT_PROBE:
             for _i, _layer in enumerate(self.decoder.layers):
                 for _nm in ("norm1", "norm2", "norm3"):
@@ -608,10 +618,11 @@ class CoarseSkeletalTransformer(nn.Module):
             # exceeds 1e12 (with the max |activation| it produced in the
             # matching forward), so a burst can be pinned to an op, not a layer.
             self._probe_act = {}
+            _thr = float(os.environ.get("FM_OP_PROBE_THRESHOLD", "1e12"))
             for _name, _mod in self.named_modules():
-                if len(list(_mod.children())) == 0 and _name:
+                if _name and not isinstance(_mod, (nn.Sequential, nn.ModuleList, nn.TransformerDecoder)):
                     _mod.register_forward_hook(_make_act_recorder(self._probe_act, _name))
-                    _mod.register_full_backward_hook(_make_op_probe(self._probe_act, _name))
+                    _mod.register_full_backward_hook(_make_op_probe(self._probe_act, _name, _thr))
 
         # Stage 1: Macro Biological Head
         self.macro_head = MacroBiologicalHead(embed_dim=embed_dim,
@@ -789,7 +800,11 @@ class CoarseSkeletalTransformer(nn.Module):
             q.register_hook(lambda g: torch.nan_to_num(g.clamp(-5.0, 5.0), nan=0.0))
 
         # Cross-attend with 3D-aware image tokens
-        phytomer_features = self.decoder(q, image_tokens)
+        if os.environ.get("FM_DECODER_FP32", "0") == "1":
+            with torch.autocast(device_type="cuda", enabled=False):
+                phytomer_features = self.decoder(q.float(), image_tokens.float()).to(q.dtype)
+        else:
+            phytomer_features = self.decoder(q, image_tokens)
 
         # Edge-biased phytomer self-attention (soft graph prior): distance-based
         # attention bias so spatially adjacent phytomers (kinematic chain) share
@@ -800,12 +815,29 @@ class CoarseSkeletalTransformer(nn.Module):
         ref_k = self.ref_points[:K]  # (K, 3)
         dist_k = torch.cdist(ref_k, ref_k)  # (K, K)
         edge_bias = -dist_k / self.edge_bias_temp  # (K, K)
-        attn_out, _ = self.phytomer_self_attn(
-            phytomer_features, phytomer_features, phytomer_features,
-            attn_mask=edge_bias,
-            need_weights=False,
-        )
-        phytomer_features = self.phytomer_norm(phytomer_features + attn_out)
+        # FM_SELFATTN_FP32 (default on since 2026-09-14): this block runs outside
+        # autocast in float32. Measured on the frozen burst state: bf16 here
+        # amplified the gradient entering the decoder from ~3e8 to ~2e12 on
+        # every batch (8/8 steps tripped the canary); in fp32 0-2 of 8 did.
+        # FM_NO_EDGE_BIAS=1 is a diagnostic only (dropping the mask made it worse).
+        if os.environ.get("FM_NO_EDGE_BIAS", "0") == "1":
+            edge_bias = None
+        if os.environ.get("FM_SELFATTN_FP32", "1") == "1":
+            with torch.autocast(device_type="cuda", enabled=False):
+                _f32 = phytomer_features.float()
+                attn_out, _ = self.phytomer_self_attn(
+                    _f32, _f32, _f32,
+                    attn_mask=edge_bias.float() if edge_bias is not None else None,
+                    need_weights=False,
+                )
+                phytomer_features = self.phytomer_norm(_f32 + attn_out).to(phytomer_features.dtype)
+        else:
+            attn_out, _ = self.phytomer_self_attn(
+                phytomer_features, phytomer_features, phytomer_features,
+                attn_mask=edge_bias,
+                need_weights=False,
+            )
+            phytomer_features = self.phytomer_norm(phytomer_features + attn_out)
 
         # Stage 2 Heads: predict coordinate offset from 3D reference points (physically bounded to +/- 0.5m)
         delta_pos = torch.tanh(self.pos_head(phytomer_features)) * 0.5

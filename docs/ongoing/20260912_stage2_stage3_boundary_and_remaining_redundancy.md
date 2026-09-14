@@ -330,7 +330,34 @@ eval, and no single corrupted update is needed. The same run is being left in
 that state so its epoch-10 checkpoint captures it (`hierarchical_fm_v9_local/
 hierarchical_fm_epoch_010.pt`, weights identical to step 2061 of epoch 7);
 `FM_GRAD_PROBE=2` (new: a per-op backward probe with the forward activation
-magnitudes) on one step from that checkpoint is the dissection. *22:00*: the group quota is now also queued behind two more of
+magnitudes) on one step from that checkpoint is the dissection.
+
+**Dissected (2026-09-14 01:30).** One step from the frozen checkpoint with the
+per-op probe: the gradient is already **~2e12 when it enters the decoder's
+output** (from the head/loss side), and the four decoder layers multiply it by
+a further ~3000 (each FFN's `linear1` 9-12x, `linear2` 4-5x). Every hooked
+consumer downstream of the decoder -- the heads, `phytomer_norm` -- stays below
+1e9. The unhooked consumer in between is the edge-biased **phytomer
+self-attention**, which takes the raw decoder output as query, key and value.
+That output is a pre-LN residual stream with no final norm, and in this state
+it reaches magnitude ~1e3 (`norm1` input at layer 3: 974; `norm3`: 1236), so a
+bf16 attention over it is ill-conditioned. Ablations on the frozen state, 8
+steps each: baseline 8/8 steps burst; decoder in fp32 8/8 (no help); edge bias
+removed 8/8 and worse (6e16); **self-attention block in fp32: 2/8, then 0/8**
+(the residual bursts are stochastic -- dropout -- and when they happen they
+start as NaN on `ref_points`); **final LayerNorm on the decoder + fp32
+self-attention: 0/8, no NaN**, and the Stage 2 losses on that step are normal
+again. Both are now on by default (`FM_DECODER_FINAL_NORM=0` /
+`FM_SELFATTN_FP32=0` rebuild the old behaviour); the final norm adds a module,
+so older checkpoints resume with the partial optimizer restore (now driven by
+the checkpoint's own parameter names). Why it drifts there: the residual
+stream's magnitude grows over training (query norms were already rising
+0.44 -> 0.52 over epochs 15-25 in the v8 lineage), so the bf16 attention on it
+degrades gradually until one ordinary step crosses the threshold -- which is
+why a lower learning rate only delayed it and why no batch order, eval or DDP
+setting was the trigger. The v9 run was restarted from scratch with the fixes
+(`slurm_scripts/logs/local_v9_run2.log`, `hierarchical_fm_v9_local2/`); the
+queued `low`-partition jobs pick the same defaults up when they start. *22:00*: the group quota is now also queued behind two more of
 Heesup's `regen_shard` arrays (60+ tasks each, plus `regen_synth`/`regen_mopup`
 with dependencies), so neither cluster job has a start time. The v9 run was
 therefore also started **locally on the single RTX 6000 Ada** (from scratch,

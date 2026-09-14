@@ -1540,12 +1540,13 @@ def train_one_epoch(
 
 
 
-def _partial_optimizer_restore(optimizer, saved_state, new_param_markers=()):
+def _partial_optimizer_restore(optimizer, saved_state, old_param_names=None, new_param_markers=()):
     """Copies per-parameter optimizer state from `saved_state` (an optimizer
     state_dict of the same model minus some newly added modules) onto
     `optimizer`, aligning the two flattened parameter lists in order and
-    skipping the current parameters whose name contains one of
-    `new_param_markers`. Returns the number of parameters restored."""
+    skipping the current parameters that the checkpoint did not have -- those
+    whose name is not in `old_param_names` (the checkpoint's model_state_dict
+    keys) or contains one of `new_param_markers`. Returns the number restored."""
     cur_params = [p for g in optimizer.param_groups for p in g["params"]]
     cur_names = []
     # parameter order in the groups follows model.named_parameters() within each
@@ -1555,7 +1556,13 @@ def _partial_optimizer_restore(optimizer, saved_state, new_param_markers=()):
         return 0
     cur_names = [id2name.get(id(p), "") for p in cur_params]
     old_params = [k for g in saved_state["param_groups"] for k in g["params"]]
-    keep = [k for k, n in enumerate(cur_names) if not any(m in n for m in new_param_markers)]
+    def _is_new(n):
+        if any(m in n for m in new_param_markers):
+            return True
+        if old_param_names is not None:
+            return n not in old_param_names and n.replace("module.", "", 1) not in old_param_names
+        return False
+    keep = [k for k, n in enumerate(cur_names) if not _is_new(n)]
     if len(keep) != len(old_params):
         return 0
     n_ok = 0
@@ -1872,7 +1879,7 @@ def main():
                     # both parameter lists in order and skipping the new ones;
                     # only the new parameters start with fresh moments.
                     n_ok = _partial_optimizer_restore(optimizer, ckpt["optimizer_state_dict"],
-                                                      new_param_markers=("node_parent_mlp",))
+                                                      old_param_names=set(ckpt.get("model_state_dict", {}).keys()))
                     if rank == 0:
                         print(f"Warning: full optimizer restore failed ({e}); partial restore covered {n_ok} parameters.")
             # CosineAnnealingLR with last_epoch set needs initial_lr on every group;
