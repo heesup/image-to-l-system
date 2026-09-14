@@ -698,6 +698,7 @@ def assemble_part_tensor_to_xml(
     xml_filepath: Optional[str] = None,
     stem_ik: Optional[bool] = None,
     stem_ik_stats: Optional[dict] = None,
+    leaf_ik: Optional[bool] = None,
     **kwargs,
 ) -> str:
     """Direct functional helper to serialize a 14D part tensor into Helios XML via analytical IK.
@@ -708,6 +709,11 @@ def assemble_part_tensor_to_xml(
         analytical pass alone is not enough). None reads PART_TENSOR_STEM_IK
         from the environment (default on: "1"); pass False or set it to "0" to get the plain analytical
         analytical export.
+    leaf_ik: then run `part_tensor_leaf_ik`, which solves each leaf's
+        pitch/yaw/roll so the FK reproduces its 14D rotation (the converter
+        writes species-default constants, 10-18 deg off on dataset plants).
+        None reads PART_TENSOR_LEAF_IK (default "1"). Its statistics are
+        merged into stem_ik_stats when that dict is given.
     """
     conv = PartTensorTo40DConverter()
     arr_40d = conv.convert(part_tensor, plant_id=plant_id)
@@ -716,6 +722,11 @@ def assemble_part_tensor_to_xml(
     if stem_ik:
         from diffusion_based.models.part_tensor_stem_ik import refine_stem_to_part_tensor
         arr_40d = refine_stem_to_part_tensor(arr_40d, part_tensor, stats=stem_ik_stats)
+    if leaf_ik is None:
+        leaf_ik = os.environ.get("PART_TENSOR_LEAF_IK", "1") == "1"
+    if leaf_ik:
+        from diffusion_based.models.part_tensor_leaf_ik import refine_leaf_orientation
+        arr_40d = refine_leaf_orientation(arr_40d, part_tensor, stats=stem_ik_stats)
     xml_str = PlantOrganArray(arr_40d).to_xml_string()
     if xml_filepath is not None:
         os.makedirs(os.path.dirname(os.path.abspath(xml_filepath)), exist_ok=True)

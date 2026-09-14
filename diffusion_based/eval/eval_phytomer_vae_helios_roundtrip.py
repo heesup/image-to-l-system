@@ -37,13 +37,13 @@ from diffusion_based.models.plant_organ_array import (
     PlantOrganArray, ORGAN_NONE, P_COL_ORGAN_TYPE)
 from diffusion_based.models.part_tensor_to_40d import assemble_part_tensor_to_xml
 from diffusion_based.models.phytomer_vae import PhytomerVAE
-from diffusion_based.dataset.part_array_dataset import encode_fm
+from diffusion_based.dataset.part_array_dataset import encode_fm, BASE_SCALE
 from diffusion_based.dataset.phytomer_packets import (
     build_phytomer_packets, decode_packets, assemble_packets,
     phytomer_scale, denormalize_packet_scales,
-    emit_part_tensor_with_shoot_meta, emit_slot_order,
+    emit_part_tensor_with_shoot_meta, emit_slot_order, FM_BASE_START, FM_BASE_END,
 )
-from diffusion_based.dataset.phytomer_topology import chain_phytomers
+from diffusion_based.dataset.phytomer_topology import chain_phytomers, gt_parent_links
 from diffusion_based.dataset.generate_cache import extract_phytomer_ids
 
 from diffusion_based.eval.eval_13d_xml_organ_masks import (
@@ -101,12 +101,18 @@ def build_vae_roundtrip_xml(arr: PlantOrganArray, vae: PhytomerVAE) -> Tuple[str
     # Stage 2 predicts the position along the shoot; here it is stubbed with
     # ground truth, the same way the phytomer pose and scale are. Geometry alone
     # puts one phytomer in the wrong shoot and that costs ~50 points of IoU.
+    # Stage 2's order head predicts depth from the root (gt_parent_links), and
+    # that is the ordinal chain_phytomers scores against; the per-shoot index in
+    # pkt_keys is the old convention and marks every lateral's first node as a
+    # base, which cut 11 of 12 branch points on a DAP 75 dataset plant.
+    ibase = decode_packets(packets, centers, presence.bool(), refs)[:, 0, FM_BASE_START:FM_BASE_END] / BASE_SCALE
+    _, _, depth = gt_parent_links(centers, pkt_keys.to(centers.device), internode_base=ibase)
     parent_idx, shoot_id, phytomer_idx = chain_phytomers(
-        centers, refs,
-        ordinal=pkt_keys[:, 1].to(centers.device).float(),
-        is_base=(pkt_keys[:, 1] == 0).to(centers.device).float())
+        centers, refs, ordinal=depth.float(), is_base=(depth == 0).float(), root_own_shoot=True)
+    # A shoot's first internode starts at its own decoded base, not at the
+    # branch node's centre (0.2-0.9 cm apart on dataset plants).
     parent_pos = torch.where(
-        (parent_idx >= 0).unsqueeze(-1),
+        ((parent_idx >= 0) & (phytomer_idx != 0)).unsqueeze(-1),
         centers[parent_idx.clamp(min=0)],
         torch.full_like(centers, float("nan")))
 

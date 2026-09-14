@@ -33,6 +33,7 @@ from diffusion_based.dataset.part_array_dataset import (
     EMPTY_IDX,
     FM_OT_END,
     FM_BASE_START,
+    FM_BASE_END,
     FM_SCALE_START,
     GEOM_NODE_DIM,
     NUM_ORGAN_TYPES,
@@ -489,8 +490,15 @@ def forward_backward_step(
                 # first node parentless: 13.8% of phytomers, and since a lateral's
                 # first node is rarely vertical, the axis they fell back on was
                 # 50.8 deg off on average.
-                par_pos_all, par_row_all, depth_all = gt_parent_links(
-                    pt["centers"].to(device, dtype=torch.float32), pt["keys"].to(device))
+                # A lateral's first internode starts AT its branch point, so its
+                # decoded world base names the parent node directly (0.2-0.9 cm
+                # off, vs 1-3 cm to any other node); the nearest-node-below
+                # fallback got a third of the laterals wrong on dataset plants.
+                _ctr = pt["centers"].to(device, dtype=torch.float32)
+                _ibase = decode_packets(pt["packets"].to(device, dtype=torch.float32), _ctr,
+                                        pt["presence"].to(device), pt["refs"].to(device, dtype=torch.float32)
+                                        )[:, 0, FM_BASE_START:FM_BASE_END] / BASE_SCALE
+                par_pos_all, par_row_all, depth_all = gt_parent_links(_ctr, pt["keys"].to(device), internode_base=_ibase)
                 par_pos = par_pos_all[pkt_idx]
                 par_row = par_row_all[pkt_idx]
                 # The ordinal the head learns is DEPTH FROM THE ROOT, not the

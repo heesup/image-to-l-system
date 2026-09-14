@@ -1,6 +1,6 @@
 # Agent Takeover & Engineering Handover Guide
 **Project: Image-to-L-System / 3D Inverse Procedural Plant Reconstruction**  
-**Last Updated:** 2026-09-13 PDT (see §0 below; the sections after it are the 2026-09-11 state and are superseded where §0 says so)  
+**Last Updated:** 2026-09-14 PDT (see §0 below; the sections after it are the 2026-09-11 state and are superseded where §0 says so)  
 **Primary Author/Agent:** Antigravity Autonomous Agent (Pair programming with Heesup Yun)  
 **Environment:** Linux, Python 3.10+, Mamba (`mamba activate digital-crops`), CUDA, PyTorch, `nvdiffrast`, Helios C++ OptiX Raytracer.  
 
@@ -13,8 +13,8 @@ The full record is `docs/ongoing/20260912_stage2_stage3_boundary_and_remaining_r
 (§0 status, §1.9.2 the training blocker, §2.4-2.5 the round-trip, §5 reading order, §6 commit log).
 
 **Round-trip (the "very important" requirement): solved.** `docs/results/assets/fig14_phytomer_vae_helios_roundtrip.png`
-reads IK-only 95.7 / 99.5 / 96.7% and VAE round-trip **92.2 / 98.4 / 95.7%** FG IoU (DAP 10 / 50 / 90); on 2026-09-12
-morning it was 81.4 / 90.2 / 79.3. Three fixes, all landed and on by default:
+reads IK-only 99.9 / 99.6 / 97.7% and VAE round-trip **93.7 / 98.3 / 95.8%** FG IoU (DAP 10 / 50 / 90; regenerated
+2026-09-14 with the leaf inverse, previously 95.7 / 99.5 / 96.7 and 92.2 / 98.4 / 95.7); on 2026-09-12 morning it was 81.4 / 90.2 / 79.3. Three fixes, all landed and on by default:
 - leaflet emit order (the XML converter assigns leaf yaw by encounter order and reads only the scale; the terminal
   leaflet is identified per node, `phytomer_packets.terminal_leaflet_is_slot2`), and leaf size is one scalar per node
   (1 : 1 : 10/9) re-imposed in `assemble_packets`;
@@ -26,6 +26,16 @@ morning it was 81.4 / 90.2 / 79.3. Three fixes, all landed and on by default:
   files, terminal-last packets). The eval scripts default to it and set `PHYTOMER_TERMINAL_LAST=1` for any `_tl`
   checkpoint. The *legacy* `_unreferenced/phytomer_9slot_roundtrip_comparison.png` is the old soft-rasterizer pipeline;
   ignore it.
+
+**Dataset plants (2026-09-14, design doc §2.6).** fig14 above is measured on the exact_gt trio, which is generated with
+the converter's own default angles; on dataset plants (DAP 15/40/75 in the regenerated
+`docs/results/assets/fig12_phytomer_10slot_helios_roundtrip.png`, script `diffusion_based/eval/eval_phytomer_10slot_assembly_views.py`)
+the export alone read 81.8 / 92.2 / 54.6% and the VAE added nothing. Fixed, all on by default: `chain_phytomers` no longer
+requires a parent below its child (drooping laterals were cut; cycles are now broken at their most expensive edge, and
+`root_own_shoot=True` keeps the cotyledon node as shoot 0); `gt_parent_links(..., internode_base=)` resolves a lateral's
+branch point from the decoded slot-0 base (66 -> 98% of laterals right -- the training call site passes it, so every
+earlier run trained on wrong parent/depth targets for a third of the laterals); and `part_tensor_leaf_ik.py` inverts the
+FK's leaf rotation per leaf (`PART_TENSOR_LEAF_IK=0` disables). Packet path on those plants: **98.3 / 98.2 / 95.6%**, VAE round-trip **95.1 / 96.8 / 95.6%**.
 
 **VAE / cache lineage.** `phytomer_vae_v8` + `dataset/cache/cowpea_curv26_pkt/` (pkt_version 6, bottom-to-top leaflet
 order) are what every FM checkpoint so far was trained on. `dataset/cache/cowpea_curv26_pkt_v9/` (pkt_version 7,
@@ -354,7 +364,7 @@ sbatch slurm_scripts/train_hierarchical_flow_matching.sh
         ├── 20260910_current_architecture.md      ← full math derivation of 4-stage pipeline
         └── assets/
             ├── fig10_helios_per_organ_mask_comparison.png  ← [NEW 2026-09-11] Per-organ IoU diagnosis (DAP 10/50/90)
-            └── fig12_phytomer_10slot_helios_roundtrip.png  ← [NEW 2026-09-11] 10-slot ordered assembly roundtrip panel
+            └── fig12_phytomer_10slot_helios_roundtrip.png  ← [2026-09-14] dataset plants DAP 15/40/75: GT + 10-slot assembly (nadir, 45°), Helios round-trips
 ```
 
 ---
@@ -411,4 +421,4 @@ sbatch slurm_scripts/train_hierarchical_flow_matching.sh
 | [`docs/results/20260908_epoch050_skeleton_geometry_and_chamfer_bias_analysis.md`](../results/20260908_epoch050_skeleton_geometry_and_chamfer_bias_analysis.md) | 2026-09-08 | Root cause analysis of Epoch 50 skeleton geometry vs AncPos loss |
 | [`docs/results/20260910_gradient_explosion_debug_and_architecture_comparison.md`](../results/20260910_gradient_explosion_debug_and_architecture_comparison.md) | 2026-09-10 | **[KEY]** Gradient explosion diagnosis: Float32 overflow + z0 detach bug + deadlock mechanism |
 | `docs/results/assets/fig10_helios_per_organ_mask_comparison.png` | **2026-09-11** | **[NEW]** Per-organ COCO mask IoU + Depth PSNR roundtrip: Leaf ✅, Internode/Petiole ❌ |
-| `docs/results/assets/fig12_phytomer_10slot_helios_roundtrip.png` | **2026-09-11** | **[NEW]** 10-slot ordered assembly visual roundtrip panel (DAP 15/40/75) |
+| `docs/results/assets/fig12_phytomer_10slot_helios_roundtrip.png` | **2026-09-14** | Dataset plants DAP 15/40/75: GT mesh and 10-slot assembly under the same nadir and 45° cameras, Helios round-trip via packets and via the VAE (`eval_phytomer_10slot_assembly_views.py`) |

@@ -27,6 +27,7 @@
 | **Leaflets emitted as lateral, terminal, lateral — the packet path is now lossless (§2.4)** | `ff5beb4` |
 | **Leaf size is one scalar per node (1 : 1 : 10/9); terminal leaflet identified per node; opt-in terminal-last packet order for v9** | `2f1691b` |
 | **Stem inverse kinematics in the export: Helios's FK now follows the predicted nodes (§2.5)** | `d3731d3`, `7d92840`, `5827327` |
+| **Dataset-plant round-trip (§2.6): chaining follows drooping shoots; branch points from the internode base (66 -> 98% of laterals, training targets included); leaf orientation inverse in the export; fig12 redrawn with GT 45-degree views** | 2026-09-14 |
 
 **The blocker is RESOLVED (2026-09-14, §1.9.2 end): the coarse decoder had no final LayerNorm, so its raw residual stream fed the bf16 phytomer self-attention; a final norm gives 0/8 burst steps on the frozen burst state against 8/8. The rest of this paragraph is the earlier reading.** The earlier reading, kept for the record: the intermittent Stage 2 gradient explosion tracks the **learning rate**, not the architecture: every observed onset sat above ~1.6e-4 effective lr, and job `38240281` at `LR=1e-4` has now run **10 epochs clean** with 0 canary hits, through and well past the point where three of four runs at 3e-4 died. Eight architecture-level hypotheses were tested against minimal reproductions and refuted first; §1.9 records them so nobody pays for them twice.
 
@@ -40,7 +41,9 @@
 
 **Two inference bugs found by looking at the epoch-11 panel rather than the numbers** (§2.3). A 2 cm seedling with 0.6 cm node RMSE rendered at IoU 0.0% because metre-long stems shot across the frame. Fixed in `abce662`; the ordinal follow-up is `ae26ccb`.
 
-**Helios round-trip (§2.4, §2.5): solved.** `docs/results/assets/fig14_phytomer_vae_helios_roundtrip.png` (v9_tl_rw4_20k VAE, stem IK on both export columns) reads IK-only 95.7 / 99.5 / 96.7% and VAE round-trip **92.2 / 98.4 / 95.7%** FG IoU, against 81.4 / 90.2 / 79.3 this morning (v8, analytical export). Three things were wrong and all are fixed: the packet path lost the leaflet order (`ff5beb4`, `2f1691b`); the analytical 14D -> XML export was the real ceiling for every VAE, because Helios rebuilds a shoot by forward kinematics from per-node angles the converter derived from petiole azimuths and a decoded curvature, so a 1-3 degree error at one node moved every node above it -- `part_tensor_stem_ik` (§2.5) solves those parameters so the same FK lands on the predicted nodes and lifts even the identity export above the old IK-only number; and the seedling's young nodes were a small minority of the VAE's training packets, so their leaflet scale was 4.4% off -- training the same recipe on 20,000 files instead of 8,000 brings that to 1.0% and DAP 10 from 83.2 to 92.2. `phytomer_vae_v9_tl_rw4_20k` is the accepted VAE for the export path; the eval scripts default to it. It is NOT yet the FM training VAE -- that needs the packet cache regenerated with terminal-last packets and its latents (PKT_VERSION 7) and a Stage 3 retrain, see §5.
+**Helios round-trip (§2.4, §2.5): solved.** `docs/results/assets/fig14_phytomer_vae_helios_roundtrip.png` (v9_tl_rw4_20k VAE, stem IK + leaf IK on both export columns; regenerated 2026-09-14) reads IK-only 99.9 / 99.6 / 97.7% and VAE round-trip **93.7 / 98.3 / 95.8%** FG IoU (mean organ IoU, which the thin organs dominate, 93.4 / 91.2 / 54.1 IK-only against 48.3 / 89.9 / 46.5 before the leaf inverse); on 2026-09-12 evening it was 95.7 / 99.5 / 96.7 and 92.2 / 98.4 / 95.7, against 81.4 / 90.2 / 79.3 this morning (v8, analytical export). Three things were wrong and all are fixed: the packet path lost the leaflet order (`ff5beb4`, `2f1691b`); the analytical 14D -> XML export was the real ceiling for every VAE, because Helios rebuilds a shoot by forward kinematics from per-node angles the converter derived from petiole azimuths and a decoded curvature, so a 1-3 degree error at one node moved every node above it -- `part_tensor_stem_ik` (§2.5) solves those parameters so the same FK lands on the predicted nodes and lifts even the identity export above the old IK-only number; and the seedling's young nodes were a small minority of the VAE's training packets, so their leaflet scale was 4.4% off -- training the same recipe on 20,000 files instead of 8,000 brings that to 1.0% and DAP 10 from 83.2 to 92.2. `phytomer_vae_v9_tl_rw4_20k` is the accepted VAE for the export path; the eval scripts default to it. It is NOT yet the FM training VAE -- that needs the packet cache regenerated with terminal-last packets and its latents (PKT_VERSION 7) and a Stage 3 retrain, see §5.
+
+**Dataset plants (2026-09-14, §2.6): the round-trip above was only ever measured on the exact_gt trio, which is generated with the converter's own default angles.** On dataset plants (DAP 15 / 40 / 75, curvature, perturbed phyllotaxy and leaf angles, drooping laterals) the export alone read 81.8 / 92.2 / 54.6% and the VAE added nothing. Three fixes -- chaining that no longer requires a parent below its child, branch points from the decoded internode base (this also corrects a third of the lateral parent targets used in training), and a closed-form leaf orientation inverse in the export -- bring the packet path to **98.3 / 98.2 / 95.6%** and the VAE round-trip to **95.1 / 96.8 / 95.6%** on those plants (fig12, regenerated: GT and assembly under the same nadir and 45-degree cameras next to both Helios round-trips).
 
 **Next**: `38242849` (resumed from epoch 25 at `LR=5e-5`, §1.9.2) is the live run; watch the Stage 2 Scl/Ord/Ext losses for the epoch-27-style precursor, not just the canary. In parallel: pick a v9 VAE (§2.4, end), then §2.1's remaining pieces -- Stage 3 consuming `(parent, self)` pairs with the parent held fixed, and noise injection on the fixed parent -- and the gradient bisection in §1.9.2.
 
@@ -790,6 +793,87 @@ case *worse* on that seedling (0.13 -> 0.24 cm) -- the finite-difference
 Jacobian is degenerate when the child axis is parallel to the parent's --
 which is why the base step skips small singular values and caps its step at
 1.5x the angular error.
+
+---
+
+### 2.6 Dataset plants: the round-trip had only ever been measured on the exact_gt trio (2026-09-14)
+
+Trigger: Heesup asked what `docs/results/assets/fig12_phytomer_10slot_helios_roundtrip.png`
+was, why its Helios column looked bad, and whether the seedling's 45-degree view
+was right (there was no ground-truth 45-degree view to compare it with). That
+panel dated from 2026-09-11 13:01, drawn by an uncommitted script, and its
+Helios column predated the shoot-partition fix and the stem IK. It is now drawn
+by `diffusion_based/eval/eval_phytomer_10slot_assembly_views.py` on **dataset**
+plants (`cowpea_dap015/040/075_seed00_..._plant_0000.xml`): GT mesh and 10-slot
+assembly under the same two cameras (nadir and 45 degrees, bounds from the GT
+mesh), then the Helios round-trip through the packet path alone and through the
+VAE. The old panel is kept as
+`docs/results/assets/_unreferenced/fig12_phytomer_10slot_helios_roundtrip_20260911.png`.
+
+The assembly is exact (RGB MAE 0.0002-0.003 against the GT mesh, both views), so
+the 45-degree view is simply what the plant looks like. The Helios round-trip
+was not: **81.8 / 92.2 / 54.6%** FG IoU through the packet path (VAE = identity)
+and 82.6 / 91.9 / 56.1% through the VAE, against 95.7 / 99.5 / 96.7% for the
+exact_gt trio. The VAE adds nothing; the deterministic export was the ceiling,
+and fig14 never saw it because the exact_gt plants are generated with the
+species-default angles the converter hard-codes, zero internode curvature and
+180-degree phyllotaxy. Dataset plants have curvature, perturbed phyllotaxy and
+yaw, perturbed leaf angles, and laterals that droop 1-3 mm per node.
+
+Three causes, all fixed and on by default (42 tests pass across the touched
+suites):
+
+1. **`chain_phytomers` required a parent to sit below its child.** That made
+   cycles impossible but cut every drooping lateral: on the DAP 75 plant the 12
+   GT shoots came out as 17, one shoot was exported 73 cm from where it belongs,
+   and 8 of 99 same-shoot links were lost. Now every node points at its
+   cheapest candidate and cycles are cut at their most expensive edge (a tie
+   keeps the edge whose parent is lower, which is where the shoot base is).
+   Same-shoot links: 1988/1988 over 30 dataset plants. The walk that turns
+   parent pointers into shoots also breaks a depth tie at a branch point by
+   direction (depth cannot tell the continuation from a lateral's first node)
+   and, with `root_own_shoot=True`, keeps the root node as its own shoot --
+   cowpea's cotyledon node is alone on the unifoliate shoot 0, and both the
+   emitter and the converter key on it (a DAP 15 export fell to 57.4% when the
+   main stem was chained through it).
+2. **`gt_parent_links` resolved a lateral's branch point as the nearest node
+   BELOW it on another shoot**, wrong for a third of the laterals on dataset
+   plants (66.2% right over 272 laterals / 30 plants; 58% at DAP 60+) -- so the
+   parent-conditioning targets, the depth ordinal and the step loss were wrong
+   for those shoots in every run so far. A lateral's first internode starts at
+   its branch point (0.2-0.9 cm from the parent node's centre, against 1-3 cm
+   to any other node), and the cache stores absolute packets, so the decoded
+   slot-0 base names the parent directly: `gt_parent_links(..., internode_base=)`
+   gets 97.8%. The training call site passes it (`decode_packets` on the cached
+   packets, one call per sample).
+3. **The converter's leaf angles are constants** (pitch 2.54, roll -15, yaw
+   +10/0/-10 by leaflet index): the species defaults, exact on exact_gt plants,
+   10-18 degrees off (mean) on dataset plants under the FK. New
+   `diffusion_based/models/part_tensor_leaf_ik.py`, run by
+   `assemble_part_tensor_to_xml` after the stem IK (`PART_TENSOR_LEAF_IK=0`
+   disables): the FK now reports each leaf's frame (azimuth from the petiole
+   tip, asin/acos of the petiole and internode tip elevations, roll sign, kind),
+   and the inverse is closed-form -- a lateral leaflet has three free angles and
+   is matched exactly (0.00 degrees), the terminal leaflet one (pitch), a single
+   leaf two (pitch, roll). `tests/test_part_tensor_leaf_ik.py`.
+
+Two smaller things on the way. The stem IK now also reports and converges on
+the petiole axes (`petiole_err_*` in its stats; it stops when both tips and
+petioles are in tolerance or both stall), and the eval stubs use the depth
+ordinal with the decoded internode base, keeping a shoot's first internode at
+its own decoded base rather than the branch node's centre (drawing it from the
+centre left a 0.35 cm floor under the stem IK on every shoot). A base-roll step
+for first-node petiole azimuths was tried and reverted: it moves the chord
+faster than the pitch/yaw re-fit follows, and the DAP 15 export fell to 60%.
+
+Result on the same three dataset plants (packet path, VAE = identity): **98.3 /
+98.2 / 95.6%**, with tip error 0.01-0.03 cm, petiole axes 0.8-1.1 degrees mean,
+leaf rotations 0.3-0.5 degrees mean; through the VAE **95.1 / 96.8 / 95.6%**, so
+the VAE now costs 0-3 points on real plants where it used to be invisible behind
+the export. What remains: terminal leaflets
+(1.0-1.6 degrees mean, they have one free angle) and the first-node petioles
+whose azimuth only the base roll can set (max 9 degrees); 2.2% of laterals still
+resolve to the wrong branch point.
 
 ---
 

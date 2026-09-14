@@ -131,3 +131,55 @@ class TestGtParentLinks(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBranchPointFromInternodeBase(unittest.TestCase):
+    """A lateral's first internode starts at its branch point, so the decoded
+    internode base names the parent node directly, wherever it sits."""
+
+    def _drooping_lateral(self):
+        # Main stem of 4 nodes 3 cm apart; a lateral branching from node 2
+        # whose first node sits BELOW the branch point (drooping shoot).
+        centers = torch.tensor([[0.0, 0.0, 0.03], [0.0, 0.0, 0.06], [0.0, 0.0, 0.09], [0.0, 0.0, 0.12],
+                                [0.025, 0.0, 0.085], [0.05, 0.0, 0.08]])
+        keys = torch.tensor([[0, 0], [0, 1], [0, 2], [0, 3], [1, 0], [1, 1]])
+        base = centers.clone()
+        base[1:4] = centers[0:3]
+        base[4] = centers[2] + torch.tensor([0.003, 0.0, 0.0])   # starts at node 2, a few mm out
+        base[5] = centers[4]
+        return centers, keys, base
+
+    def test_nearest_below_picks_the_wrong_node_for_a_drooping_lateral(self):
+        centers, keys, _ = self._drooping_lateral()
+        _, idx, _ = gt_parent_links(centers, keys)
+        self.assertNotEqual(int(idx[4]), 2, "the fallback cannot see a branch point above the first node")
+
+    def test_internode_base_names_the_true_branch_point(self):
+        centers, keys, base = self._drooping_lateral()
+        pos, idx, depth = gt_parent_links(centers, keys, internode_base=base)
+        self.assertEqual(int(idx[4]), 2)
+        self.assertTrue(torch.allclose(pos[4], centers[2]))
+        self.assertEqual(depth.tolist(), [0, 1, 2, 3, 3, 4])
+
+
+class TestChainPhytomersDroopingShoot(unittest.TestCase):
+    """chain_phytomers must follow a shoot that descends: until 2026-09-14 a
+    parent had to sit below its child, which cut every drooping lateral."""
+
+    def test_descending_shoot_is_one_chain(self):
+        from diffusion_based.dataset.phytomer_topology import chain_phytomers
+        pos = torch.tensor([[0.0, 0.0, 0.10], [0.03, 0.0, 0.098], [0.06, 0.0, 0.095], [0.09, 0.0, 0.091]])
+        ordinal = torch.tensor([3.0, 4.0, 5.0, 6.0])
+        parent, shoot, phy = chain_phytomers(pos, ordinal=ordinal)
+        self.assertEqual(parent.tolist(), [-1, 0, 1, 2])
+        self.assertEqual(shoot.tolist(), [0, 0, 0, 0])
+        self.assertEqual(phy.tolist(), [0, 1, 2, 3])
+
+    def test_mutual_nearest_pair_is_cut_at_the_upper_node(self):
+        """Two nodes that are each other's nearest neighbour form a 2-cycle;
+        the edge whose parent is HIGHER is the one to cut."""
+        from diffusion_based.dataset.phytomer_topology import chain_phytomers
+        pos = torch.tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.01]])
+        parent, shoot, phy = chain_phytomers(pos)
+        self.assertEqual(parent.tolist(), [-1, 0])
+        self.assertEqual(phy.tolist(), [0, 1])

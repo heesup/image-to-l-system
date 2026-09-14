@@ -70,6 +70,7 @@ def gt_parent_links(
     centers: torch.Tensor,
     keys: torch.Tensor,
     max_internode_factor: float = MAX_INTERNODE_FACTOR,
+    internode_base: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Ground-truth parent of every phytomer, under one rule with no exceptions.
 
@@ -100,6 +101,16 @@ def gt_parent_links(
         keys: (P, 2) int64 (shoot_id, phytomer_idx), from the packet cache.
         max_internode_factor: branch-point lookup gate, in multiples of this
             plant's own median internode (see MAX_INTERNODE_FACTOR).
+        internode_base: optional (P, 3) world position of each node's internode
+            BASE (packet slot 0's base column; the cache stores absolute
+            packets). A lateral's first internode starts AT its branch point
+            (0.2-0.9 cm off, against 1-3 cm to any other node), so with it the
+            branch point is the node nearest that base on another shoot,
+            wherever it sits. Without it the lookup falls back to the nearest
+            node BELOW the first node, which is wrong for a third of the
+            laterals on dataset plants (66.2% right over 272 laterals, 30
+            plants: cowpea laterals droop, so the branch point is often level
+            with or above the lateral's first node).
 
     Returns:
         parent_pos: (P, 3) parent position. The origin for the main stem's first
@@ -156,9 +167,13 @@ def gt_parent_links(
     # different shoot. Fully vectorised -- the earlier per-shoot Python loop cost
     # 4 ms per call from its .item() syncs, which at 48 samples per step was +64%
     # of step time.
-    dist = torch.cdist(centers, centers)
-    below = centers[:, 2].unsqueeze(1) > centers[:, 2].unsqueeze(0)
-    cand = below & (shoot.unsqueeze(1) != shoot.unsqueeze(0))
+    if internode_base is not None:
+        dist = torch.cdist(internode_base.to(centers.dtype), centers)
+        cand = shoot.unsqueeze(1) != shoot.unsqueeze(0)
+    else:
+        dist = torch.cdist(centers, centers)
+        below = centers[:, 2].unsqueeze(1) > centers[:, 2].unsqueeze(0)
+        cand = below & (shoot.unsqueeze(1) != shoot.unsqueeze(0))
     d_lat = dist.masked_fill(~cand, float("inf"))
     best = d_lat.argmin(dim=1)
     best_d = d_lat.gather(1, best.unsqueeze(1)).squeeze(1)
@@ -200,6 +215,7 @@ def chain_phytomers(
     ordinal: Optional[torch.Tensor] = None,
     ord_weight: float = ORD_WEIGHT,
     is_base: Optional[torch.Tensor] = None,
+    root_own_shoot: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Links phytomer nodes into shoots.
 
@@ -222,6 +238,15 @@ def chain_phytomers(
             directional term almost as well as rotation did (measured).
         is_base: optional (P,) bool/float, predicted shoot bases. Nodes flagged
             here are allowed to have no parent regardless of the edge gate.
+        root_own_shoot: every child of a parentless node starts a new shoot,
+            so the root node is a shoot of its own. Cowpea's first phytomer is
+            the cotyledon node, alone on the unifoliate shoot 0, and both the
+            emitter (cotyledon twin petiole) and the XML converter key on
+            shoot 0 / index 0 -- under the depth-from-root ordinal the root
+            has a parent-less single child that would otherwise continue
+            shoot 0 through the whole main stem (measured: a DAP 15 export
+            fell from 95.8% to 57.4% IoU). Off by default because the older
+            per-shoot convention flags every shoot's first node as a base.
 
     Returns:
         parent_idx: (P,) int64, index of each node's parent, -1 for shoot bases.
@@ -250,12 +275,6 @@ def chain_phytomers(
 
     delta = p.unsqueeze(1) - p.unsqueeze(0)         # (N, N, 3) child - candidate
     dist = delta.norm(dim=-1)
-    # A node's parent must sit below it: rank by height so the parent is always
-    # earlier in the order. This is what guarantees a forest with no cycles.
-    order = torch.argsort(p[:, 2])
-    rank = torch.empty(N, dtype=torch.long, device=device)
-    rank[order] = torch.arange(N, device=device)
-    higher = rank.unsqueeze(1) <= rank.unsqueeze(0)  # candidate not below child
 
     cost = dist
     if use_dir:
@@ -266,7 +285,6 @@ def chain_phytomers(
         o = ordinal.reshape(-1)[idx]
         step = o.unsqueeze(1) - o.unsqueeze(0)          # child - candidate
         cost = cost + ord_weight * (step - 1.0).abs()
-    cost = cost.masked_fill(higher, float("inf"))
     cost.fill_diagonal_(float("inf"))
 
     best_cost, best = cost.min(dim=1)
@@ -277,6 +295,34 @@ def chain_phytomers(
     if is_base is not None:
         has_parent = has_parent & ~(is_base.reshape(-1)[idx] > 0.5)
     local_parent = torch.where(has_parent, best, torch.full_like(best, -1))
+
+    # Every node points at its cheapest candidate, so the pointer graph is a
+    # forest plus, possibly, cycles (the top two nodes of a shoot are each
+    # other's nearest neighbour). Cut each cycle at its most expensive edge;
+    # at a tie keep the edge whose parent is lower, which is where the shoot
+    # base is. Until 2026-09-14 a parent was simply required to sit BELOW its
+    # child, which made cycles impossible but also cut every drooping lateral
+    # (dataset cowpea shoots at DAP 40-75 fall 1-3 mm per node): 8 of 99
+    # same-shoot links lost on one DAP 75 plant, and a 73 cm export error.
+    cut_cost = best_cost + 1e-6 * (p[best.clamp(min=0), 2] - p[:, 2])
+    state = torch.zeros(N, dtype=torch.long)                 # 0 new, 1 on path, 2 done
+    parent_list = local_parent.tolist()
+    for start in range(N):
+        if state[start] != 0:
+            continue
+        path = []
+        node = start
+        while node >= 0 and state[node] == 0:
+            state[node] = 1
+            path.append(node)
+            node = parent_list[node]
+        if node >= 0 and state[node] == 1:                  # closed a cycle
+            cyc = path[path.index(node):]
+            worst = max(cyc, key=lambda k: float(cut_cost[k]))
+            parent_list[worst] = -1
+        for k in path:
+            state[k] = 2
+    local_parent = torch.tensor(parent_list, dtype=torch.long, device=device)
 
     # Walk each chain from its base so shoot ids and ordinals are consistent.
     children: list[list[int]] = [[] for _ in range(N)]
@@ -302,12 +348,29 @@ def chain_phytomers(
             # how a lateral branch becomes a separate shoot. With ordinals the
             # successor is simply the one a step further along; otherwise fall
             # back to the straightest child.
-            if len(kids) == 1:
+            if root_own_shoot and int(local_parent[node]) < 0:
+                cont = -1                                 # the root keeps to itself
+            elif len(kids) == 1:
                 cont = kids[0]
             elif ordinal is not None:
                 o = ordinal.reshape(-1)[idx]
                 want = o[node] + 1.0
-                cont = kids[int(torch.stack([(o[k] - want).abs() for k in kids]).argmin())]
+                gap = torch.stack([(o[k] - want).abs() for k in kids])
+                tied = [k for k, g in zip(kids, gap.tolist()) if g <= float(gap.min()) + 0.5]
+                if len(tied) == 1:
+                    cont = tied[0]
+                elif fwd is not None:
+                    # Depth cannot separate the continuation from a lateral's
+                    # first node (both are one step up): the straighter one
+                    # continues the shoot.
+                    ax = fwd[node]
+                    cos_k = torch.stack([
+                        torch.nn.functional.cosine_similarity(
+                            (p[k] - p[node]).unsqueeze(0), ax.unsqueeze(0), dim=-1)[0]
+                        for k in tied])
+                    cont = tied[int(cos_k.argmax())]
+                else:
+                    cont = tied[int(dist[node][torch.tensor(tied)].argmin())]
             elif fwd is not None:
                 ax = fwd[node]
                 cos_k = torch.stack([

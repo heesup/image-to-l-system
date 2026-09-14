@@ -720,7 +720,8 @@ class HeliosPlantGeometryBuilder:
             tensor then has no rows for those organs.
         return_node_poses: also return a dict of per-40D-row FK results --
             "base"/"tip"/"axis" (N, 3) for internode rows, "petiole_axes"
-            (N, 2, 3) and "has_petiole" (N, 2) keyed by the internode row --
+            (N, 2, 3) and "has_petiole" (N, 2) keyed by the internode row,
+            "leaf_frame" (N, 4) and "leaf_kind" (N,) keyed by the leaf row --
             which the stem inverse kinematics (part_tensor_stem_ik) iterates
             against.
         Collects the world-space pose of every organ:
@@ -846,6 +847,13 @@ class HeliosPlantGeometryBuilder:
         node_internode_axes = torch.zeros((N, 3), dtype=torch.float32, device=device)
         node_petiole_axes = torch.zeros((N, 2, 3), dtype=torch.float32, device=device)
         node_has_petiole = torch.zeros((N, 2), dtype=torch.float32, device=device)
+        # Per LEAF row, the frame the leaf's own pitch/yaw/roll are applied in
+        # (see the R_leaf composition below): azimuth_rot, asin(petiole tip z),
+        # acos(internode tip z), roll sign; and the leaf's kind (0 single leaf,
+        # 1 lateral leaflet, 2 terminal leaflet). part_tensor_leaf_ik inverts
+        # the composition with these, so it never has to re-derive the petiole.
+        node_leaf_frame = torch.zeros((N, 4), dtype=torch.float32, device=device)
+        node_leaf_kind = torch.full((N,), -1, dtype=torch.long, device=device)
 
         def compute_shoot_base(sid, first_pidx):
             sm_i = shoot_meta.get(sid)
@@ -1137,6 +1145,13 @@ class HeliosPlantGeometryBuilder:
                             pitch_rot = pitch_rot + asin_pz
                         yaw_rot = l_yaw if ind_from_tip != 0 else torch.tensor(0.0, device=device)
                         azimuth_rot = -torch.atan2(pet_tip_axis[1], pet_tip_axis[0] + 1e-8) + compound_rotation
+                        if return_node_poses:
+                            node_leaf_frame[lf_row_i, 0] = float(azimuth_rot)
+                            node_leaf_frame[lf_row_i, 1] = float(asin_pz)
+                            node_leaf_frame[lf_row_i, 2] = float(torch.acos(torch.clamp(inode_tip_axis[2], -1.0, 1.0)))
+                            node_leaf_frame[lf_row_i, 3] = (0.0 if num_leaves == 1 or ind_from_tip == 0
+                                                            else compound_rotation / abs(compound_rotation))
+                            node_leaf_kind[lf_row_i] = 0 if num_leaves == 1 else (2 if ind_from_tip == 0 else 1)
 
                         R_leaf = (
                             rotr_z(azimuth_rot, device) @
@@ -1364,6 +1379,7 @@ class HeliosPlantGeometryBuilder:
             return out, {
                 "base": node_base_positions, "tip": node_tip_positions, "axis": node_internode_axes,
                 "petiole_axes": node_petiole_axes, "has_petiole": node_has_petiole,
+                "leaf_frame": node_leaf_frame, "leaf_kind": node_leaf_kind,
             }
         return out
 

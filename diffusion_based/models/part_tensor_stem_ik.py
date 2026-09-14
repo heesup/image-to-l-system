@@ -112,6 +112,7 @@ def refine_stem_to_part_tensor(
     part_14d: torch.Tensor,
     n_iter: int = 8,
     tol_m: float = 5e-4,
+    tol_petiole_deg: float = 0.5,
     petiole_correction: bool = True,
     max_step_deg: float = 30.0,
     parallel_guard_deg: float = 10.0,
@@ -127,7 +128,8 @@ def refine_stem_to_part_tensor(
             as part_14d.
         part_14d: (N, 14) canonical part tensor the 40D was converted from.
         n_iter: fixed-point iterations (each one FK pass).
-        tol_m: stop when every internode tip is within this distance (metres).
+        tol_m: stop when every internode tip is within this distance (metres)
+            and every petiole axis within tol_petiole_deg of its 14D direction.
         petiole_correction: also correct petiole pitch and the node's
             phyllotactic angle from the realized vs target petiole directions.
         stats: optional dict receiving the max/mean internode tip error before
@@ -284,24 +286,39 @@ def refine_stem_to_part_tensor(
                 d_az = max(-max_step_deg, min(max_step_deg, d_az))
                 arr[i, T_COL_PHYLLOTACTIC_ANGLE] = (float(arr[i, T_COL_PHYLLOTACTIC_ANGLE]) + d_az) % 360.0
 
+    def petiole_err_deg(poses) -> torch.Tensor:
+        out = []
+        for j in pet_ok.tolist():
+            i, slot = int(pet_node[j]), int(pet_slot[j])
+            if float(poses["has_petiole"][i, slot]) < 0.5:
+                continue
+            out.append(math.degrees(math.acos(float((poses["petiole_axes"][i, slot] * fwd[j]).sum().clamp(-1, 1)))))
+        return torch.tensor(out) if out else torch.zeros(1)
+
     err_before = None
-    prev_max = None
+    pet_before = None
+    prev_score = None
     used = 0
     for it in range(n_iter):
         poses = run_fk(arr)
         err = (poses["tip"][inode_idx] - tip_target[inode_idx]).norm(dim=-1)
+        pet = petiole_err_deg(poses) if petiole_correction else torch.zeros(1)
         if err_before is None:
-            err_before = err.clone()
+            err_before, pet_before = err.clone(), pet.clone()
         if verbose:
-            print(f"  [StemIK] sweep {it}: tip error mean {err.mean()*100:.3f} cm max {err.max()*100:.3f} cm")
+            print(f"  [StemIK] sweep {it}: tip error mean {err.mean()*100:.3f} cm max {err.max()*100:.3f} cm | "
+                  f"petiole axis error mean {pet.mean():.2f} max {pet.max():.2f} deg")
         used = it
-        cur_max = float(err.max())
-        # One sweep reaches the fixed point on every plant measured so far; a
-        # further sweep only pays for itself while it still moves the residual
-        # (the shoot-base internodes, which Helios never perturbs, set a floor).
-        if cur_max < tol_m or (prev_max is not None and cur_max > 0.9 * prev_max):
+        # One sweep reaches the tip fixed point on every plant measured so far
+        # and the petiole axes follow a sweep or two later; a further sweep
+        # only pays for itself while it still moves one of the residuals (the
+        # shoot-base internodes, which Helios never perturbs, set a floor).
+        cur = (float(err.max()), float(pet.max()))
+        if cur[0] < tol_m and cur[1] < tol_petiole_deg:
             break
-        prev_max = cur_max
+        if prev_score is not None and cur[0] > 0.9 * prev_score[0] and cur[1] > 0.9 * prev_score[1]:
+            break
+        prev_score = cur
         for i in order:
             if base_correction and rank[i] == 0:
                 base_step(i, poses)
@@ -312,9 +329,12 @@ def refine_stem_to_part_tensor(
     if stats is not None:
         _, poses = builder.extract_part_tensor(PlantOrganArray(arr.clone()), return_node_poses=True)
         err_after = (poses["tip"][inode_idx] - tip_target[inode_idx]).norm(dim=-1)
+        pet_after = petiole_err_deg(poses) if petiole_correction else torch.zeros(1)
         stats.update({
             "tip_err_before_mean_m": float(err_before.mean()), "tip_err_before_max_m": float(err_before.max()),
             "tip_err_after_mean_m": float(err_after.mean()), "tip_err_after_max_m": float(err_after.max()),
+            "petiole_err_before_mean_deg": float(pet_before.mean()), "petiole_err_before_max_deg": float(pet_before.max()),
+            "petiole_err_after_mean_deg": float(pet_after.mean()), "petiole_err_after_max_deg": float(pet_after.max()),
             "iterations": used + 1,
         })
     return arr
