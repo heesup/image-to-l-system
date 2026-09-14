@@ -117,6 +117,25 @@ Two commits, `main` == `origin/main`:
   (no newer checkpoint existed: `hierarchical_fm_v9/` held only `eval_set.json`), output `hierarchical_fm_v9/`. The loader
   changes are committed. Batch 48 stays the recipe until an intermediate batch is measured deliberately.
 
+### 0-B.4 Step time root-caused: the packet assembly loop, not the renderer (2026-09-14 ~12:20, Claude Code, `f3c5366`)
+
+Synchronized per-section timers (`_sync_cuda` is unconditional) on a 1-GPU smoke at batch 48, resumed from epoch 15:
+
+| | render ON, old code | render OFF | render ON, vectorized assembly |
+|---|---|---|---|
+| step (fwd/bwd) | 1.8-2.1 s | 0.11-0.31 s | **0.19-0.39 s** |
+| render block | 0.6 s (of which `assemble_packets` region 0.55 s; mesh 0.01, raster 0.00) | - | 0.05 s |
+| backward | 1.1 s | 0.02-0.04 s | 0.05 s |
+
+Standalone: mesh build 5-11 ms, rasterize 2 ms, render backward 10-21 ms per sample (DAP 15/40/75). So the render
+path was never the cost; `assemble_packets` ran a Python loop per phytomer (~1,000 per render batch) building the
+curved-petiole leaflet and peduncle attachment points, and its autograd graph of tiny ops made the backward worse.
+Now `_curve_points_batched` / `_point_on_curve` do it for all phytomers at once (`tests/test_assemble_packets_batched.py`
+pins values and gradients to the loop). This also answers the batch-size question: batch 256 was slow because the loop
+scaled with the number of rendered phytomers; with the loop gone a larger batch may pay — re-measure before deciding.
+nvdiffrast 0.4 supports range-mode batching (one `rasterize` over concatenated meshes) if rendering ever becomes the
+cost; it is not today. Job **`38253029`** runs the vectorized code from the epoch-15 checkpoint (batch 48, `NUM_WORKERS=8`).
+
 ### 0-B.3 Working-tree hygiene
 
 - Anything not in `git status` clean + the two files named in 0-B.2 is either untracked run artifacts
