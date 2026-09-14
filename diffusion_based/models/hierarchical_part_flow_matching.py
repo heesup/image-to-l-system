@@ -1851,8 +1851,9 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         }
 
         if self.flow_granularity == "phytomer":
-            # Decoupled flow vector is pure hybrid phytomer VAE latent
-            latent = x
+            # The VAE latent block of the flow state (the whole state without
+            # stage3_geometry; its last D dims with it -- see split_flow_state).
+            latent = pred_latent
             res["refined_phytomer_pos"] = phytomer_pos
             res["refined_phytomer_rot"] = phytomer_rot
             res["refined_phytomer_scale"] = phytomer_scale
