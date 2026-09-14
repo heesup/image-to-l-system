@@ -121,6 +121,19 @@ fig14(exact_gt)도 다시 그렸다: IK-only 95.7 / 99.5 / 96.7 → **99.9 / 99.
 
 렌더 비율(배치의 3%)은 그대로다. 샘플당 비용이 여전히 배치에 무관하게 일정해서 배치를 키워도 epoch 시간은 줄지 않는다. 남은 것은 `chain_phytomers`의 노드별 파이썬 walk, greedy matcher, 타깃 루프의 나머지다. **`38253401`**이 이 코드로 `hierarchical_fm_v9/hierarchical_fm_epoch_020.pt`에서 이어 달린다 (`38253029`는 epoch 16~21을 ~9분/epoch로 마치고 취소; IoU 31.9 → 33.4%).
 
+### 6.2 chain_phytomers와 matcher 벡터화 (14:40, `25c2251`)
+
+`chain_phytomers`의 cycle 절단과 shoot walk를 pointer jumping(log N 회의 parent doubling)으로 바꿨다. cycle은 가장 비싼 edge에서 자르되 키를 float64로 계산한다 (1e-6 높이 tie-break가 3 cm 거리 옆에서는 float32 해상도 아래라 mutual-nearest 쌍이 정확히 동률이었다). continuation child는 ordinal gap → 방향/거리 순으로 `scatter_reduce`로 고르고, chain 시작·위치·shoot 번호도 doubling으로 구한다. 루프 구현은 `vectorized=False`로 남겨 테스트가 대조한다 (랜덤 점군의 모든 cue 조합 + GT 식물). N=512에서 34 ms → 2 ms.
+
+matcher의 phytomer 단계는 pad된 배치 위에서 한 번에 돈다 (`_forward_phytomer_batched`): 클러스터를 먼저 압축한 뒤 (B, K, C_max) cost로 greedy 루프 한 번, host sync 한 번. 학습 step은 샘플별 타깃 리스트(boolean index sync 3회/샘플)를 만들지 않고 pad된 GT를 그대로 넘긴다. 단독 측정 42 → 22 ms (B=48), 166 → 56 ms (B=256). 처음 시도한 버전은 (B, 1400, 1400) cdist와 (B, K, 1400) cost 때문에 오히려 느렸고(256 배치에서 2 GB), 압축을 먼저 하도록 고쳤다.
+
+| batch | step | fwd+bwd GPU | 남은 샘플별 항목 |
+|---|---|---|---|
+| 48 | **0.15~0.24 s** | ~0.1 s | 타깃 루프 0.02~0.05, head(배치 전송) 0.01~0.03 |
+| 256 | **0.9~1.5 s** | ~0.6 s | 타깃 루프 0.17~0.28, head 0.10~0.17 |
+
+샘플당 비용은 여전히 배치에 거의 무관(3~5 ms vs 3.5~6 ms)해서 batch 48을 유지한다. **`38253656`**이 이 코드로 `hierarchical_fm_v9/hierarchical_fm_epoch_025.pt`에서 이어 달린다 (`38253401`: epoch 22~25, ~7분/epoch, IoU 32.6~35.5%).
+
 ## 5. 변경 파일
 
 | 파일 | 변경 |
@@ -135,3 +148,4 @@ fig14(exact_gt)도 다시 그렸다: IK-only 95.7 / 99.5 / 96.7 → **99.9 / 99.
 | `tests/test_part_tensor_leaf_ik.py` (신규), `tests/test_phytomer_topology.py` | 42 tests pass across the touched suites |
 | `diffusion_based/dataset/phytomer_packets.py`, `tests/test_assemble_packets_batched.py` (신규) | §6: 조립 벡터화 (`f3c5366`) |
 | `part_array_dataset.py` (`attach_parent_links`), `helios_pytorch_renderer.py` (`render_batched`), `train_hierarchical_flow_matching.py`, `tests/test_render_batched.py`, `tests/test_render_loss_vectorized.py` | §6.1: 샘플별 루프 제거 (`a1a82bc`) |
+| `phytomer_topology.py` (`_resolve_forest`), `hierarchical_hungarian_matcher.py` (`_forward_phytomer_batched`), `tests/test_chain_vectorized.py`, `tests/test_matcher_batched.py` | §6.2: chain·matcher 벡터화 (`25c2251`) |

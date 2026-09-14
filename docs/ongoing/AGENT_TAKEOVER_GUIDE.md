@@ -151,6 +151,23 @@ target loop, and the model backward. **Per-sample cost is flat in batch, so batc
 fraction (3% of the batch) is unchanged throughout. Job **`38253401`** runs this code, `AUTO_RESUME` from
 `hierarchical_fm_v9/hierarchical_fm_epoch_020.pt` (its predecessor `38253029` did epochs 16-21 at ~9 min/epoch).
 
+### 0-B.6 chain_phytomers and the matcher vectorized (2026-09-14 ~14:40, `25c2251`)
+
+`chain_phytomers` resolves the forest with pointer jumping (`_resolve_forest`: cycles by parent doubling, cut at the
+most expensive edge with a float64 key -- the 1e-6 height tie-break was below float32 resolution and mutual-nearest
+pairs tied exactly; continuation child by ordinal gap then direction/distance via `scatter_reduce`; starts, positions
+and shoot ids by doubling). The loops stay behind `vectorized=False` for `tests/test_chain_vectorized.py`. 34 ms → 2 ms
+per plant at N=512. The matcher's phytomer-level pass (`_forward_phytomer_batched`) works on the padded batch --
+clusters compacted before any K-sized tensor, one greedy loop, one host sync -- and takes the padded GT directly
+(`tgt_labels_padded` / `tgt_positions_padded` / `tgt_valid`), so the step no longer builds per-sample target lists
+(three boolean-index syncs each). `tests/test_matcher_batched.py`. 42 → 22 ms at B=48, 166 → 56 ms at B=256.
+
+Step (1 GPU): **batch 48: 0.15-0.24 s; batch 256: 0.9-1.5 s.** What is left per sample: the GT target loop
+(`tgt_loop`, 0.02-0.05 / 0.17-0.28 s) and the batch-to-device head (0.01-0.03 / 0.10-0.17 s); the residual next to
+`backward` is the forward passes' own GPU time (the fwd1/fwd2 timers are not synchronized). Per-sample cost is still
+roughly flat in batch (3-5 ms at 48, 3.5-6 ms at 256), so batch 48 remains the recipe. Job **`38253656`** runs this
+code, `AUTO_RESUME` from `hierarchical_fm_v9/hierarchical_fm_epoch_025.pt`.
+
 ### 0-B.3 Working-tree hygiene
 
 - Anything not in `git status` clean + the two files named in 0-B.2 is either untracked run artifacts
