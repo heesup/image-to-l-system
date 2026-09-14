@@ -91,6 +91,17 @@ if [ -n "${SEED}" ]; then
     EXTRA_ARGS="${EXTRA_ARGS} --seed ${SEED}"
     echo "Seeded run: ${SEED} (init + shuffling reproducible; needed to iterate on intermittent failures)"
 fi
+# AUTO_RESUME=1: on a (re)start pick up the newest checkpoint in OUTPUT_DIR, so a
+# preempted/requeued job on a preemptible partition (e.g. `low`) continues
+# instead of restarting; falls back to INIT_CHECKPOINT (or scratch) when none.
+if [ "${AUTO_RESUME:-0}" = "1" ]; then
+    LATEST_CKPT=$(ls -t "${OUTPUT_DIR}"/hierarchical_fm_epoch_*.pt 2>/dev/null | head -1)
+    if [ -n "${LATEST_CKPT}" ]; then
+        INIT_CHECKPOINT="${LATEST_CKPT}"
+        RESUME=1
+        echo "AUTO_RESUME: continuing from ${INIT_CHECKPOINT}"
+    fi
+fi
 if [ -n "${INIT_CHECKPOINT}" ] && [ -f "${INIT_CHECKPOINT}" ]; then
     EXTRA_ARGS="--init_checkpoint ${INIT_CHECKPOINT}"
     if [ "${RESUME:-1}" = "1" ]; then
