@@ -105,6 +105,11 @@ class HierarchicalBotanicalMatcher(nn.Module):
         # matches while killing absurd >10cm swaps. None = disabled (exact legacy parity).
         self.phytomer_locality_radius = phytomer_locality_radius
         self.phytomer_locality_weight = phytomer_locality_weight
+        # Phytomer-level matching over the padded batch in one pass (no per-sample
+        # loop, no per-sample host sync) -- see _forward_phytomer_batched. The
+        # per-sample path is kept for the fine (organ) matching and for
+        # tests/test_matcher_batched.py.
+        self.batched = True
         # Canonical role -> slot ranges (constants; SLOT_ROLE_MAPPING layout).
         # Precomputed once so the fine-matching loop never rebuilds them.
         # Role keys: 0=Stem, 1=Petiole, 2=Leaflets, 3=Peduncle, 4=Reproductive
@@ -128,6 +133,147 @@ class HierarchicalBotanicalMatcher(nn.Module):
             4: (7, 13),     # labels 7..12 -> Reproductive
         }
 
+
+    @torch.no_grad()
+    def _forward_phytomer_batched(
+        self,
+        pred_phytomer_pos: torch.Tensor,
+        pred_phytomer_logits: torch.Tensor,
+        tgt_labels: List[torch.Tensor],
+        tgt_positions: List[torch.Tensor],
+        soft_margin_weights: Optional[torch.Tensor],
+        per_sample_max_phytomers: Optional[torch.Tensor],
+        tgt_labels_padded: Optional[torch.Tensor] = None,
+        tgt_positions_padded: Optional[torch.Tensor] = None,
+        tgt_valid: Optional[torch.Tensor] = None,
+    ) -> List[Dict[str, torch.Tensor]]:
+        """Phytomer-level matching (skip_fine) for the whole batch at once.
+
+        Same clusters, costs and greedy assignment as the per-sample pass
+        (petioles are the cluster centres, plus internodes farther than 4 cm
+        from every petiole; internodes alone when a plant has no petiole; the
+        first max(1, M_i // M) organs when it has neither; the capacity clamp
+        keeps the cap nearest to any predicted node), computed on the batch
+        padded to its largest plant. The only per-sample work left is
+        slicing the results out (2026-09-14: the per-sample pass was 0.09-0.24 s
+        of a 1.1-1.8 s step at batch 256).
+        """
+        B, K, _ = pred_phytomer_pos.shape
+        M = self.slots_per_phytomer
+        device = pred_phytomer_pos.device
+        empty = torch.empty(0, dtype=torch.int64, device=device)
+        empties = [{"phytomer_src_idx": empty, "phytomer_tgt_idx": empty,
+                    "phytomer_tgt_pos": torch.empty((0, 3), device=device),
+                    "fine_src_idx": empty, "fine_tgt_idx": empty,
+                    "num_gt_phytomers": 0, "gt_node_centers": torch.empty((0, 3), device=device)} for _ in range(B)]
+        if tgt_positions_padded is not None:
+            # Padded GT straight from the batch: compact the valid rows to the
+            # largest plant (one sync) instead of one boolean-index sync per sample.
+            v = tgt_valid.bool()
+            n_v = v.sum(dim=1)
+            Mmax = int(n_v.max().item())
+            if Mmax == 0:
+                return empties
+            ordv = torch.argsort((~v).long(), dim=1, stable=True)[:, :Mmax]
+            gt_pos = tgt_positions_padded.to(device, dtype=torch.float32).gather(1, ordv.unsqueeze(-1).expand(-1, -1, 3))
+            labels = tgt_labels_padded.to(device).long().gather(1, ordv)
+            labels = labels.masked_fill(torch.arange(Mmax, device=device).unsqueeze(0) >= n_v.unsqueeze(1), -1)
+        else:
+            counts = [int(t.shape[0]) for t in tgt_labels]
+            Mmax = max(counts) if counts else 0
+            if Mmax == 0:
+                return empties
+            gt_pos = torch.zeros((B, Mmax, 3), device=device)
+            labels = torch.full((B, Mmax), -1, dtype=torch.long, device=device)
+            for b in range(B):                              # cheap copies, no syncs
+                if counts[b] > 0:
+                    gt_pos[b, :counts[b]] = tgt_positions[b].to(device)
+                    labels[b, :counts[b]] = tgt_labels[b].to(device)
+        valid = labels >= 0
+        is_pet = labels == 4
+        is_ino = labels == 3
+        has_pet = is_pet.any(dim=1)
+        has_ino = is_ino.any(dim=1)
+        ar = torch.arange(Mmax, device=device).unsqueeze(0)
+        # internodes farther than 4 cm from every petiole of their plant: distances to
+        # the COMPACTED petioles only (B, Mmax, P_max), never the full (B, Mmax, Mmax)
+        n_pet = is_pet.sum(dim=1)
+        P_max = int(n_pet.max().item()) if bool(has_pet.any()) else 0
+        if P_max > 0:
+            pet_order = torch.argsort((~is_pet).long(), dim=1, stable=True)[:, :P_max]
+            pet_pos = gt_pos.gather(1, pet_order.unsqueeze(-1).expand(-1, -1, 3))
+            d_to_pet = torch.cdist(gt_pos, pet_pos)                                         # (B, Mmax, P_max)
+            d_to_pet = d_to_pet.masked_fill((torch.arange(P_max, device=device).unsqueeze(0) >= n_pet.unsqueeze(1)).unsqueeze(1), float("inf"))
+            standalone = is_ino & (d_to_pet.min(dim=2).values > 0.04)
+        else:
+            standalone = torch.zeros_like(is_ino)
+        n_valid = valid.sum(dim=1)
+        n_fallback = torch.clamp(torch.clamp(n_valid // M, min=1), max=K)
+        fallback = valid & (ar < n_fallback.unsqueeze(1))
+        cluster = torch.where(has_pet.unsqueeze(1), is_pet | standalone,
+                              torch.where(has_ino.unsqueeze(1), is_ino, fallback))
+        # compact the candidate clusters (index order) before anything that scales with K
+        n0 = cluster.sum(dim=1)
+        C0 = max(int(n0.max().item()), 1)                                              # one sync
+        order0 = torch.argsort((~cluster).long(), dim=1, stable=True)[:, :C0]
+        pos0 = gt_pos.gather(1, order0.unsqueeze(-1).expand(-1, -1, 3))                 # (B, C0, 3)
+        keep = torch.arange(C0, device=device).unsqueeze(0) < n0.unsqueeze(1)          # (B, C0)
+        if per_sample_max_phytomers is not None:
+            cap = per_sample_max_phytomers.to(device).long()
+            d_c2p = torch.cdist(pos0, pred_phytomer_pos).min(dim=2).values               # (B, C0)
+            d_c2p = d_c2p.masked_fill(~keep, float("inf"))
+            rank = torch.argsort(torch.argsort(d_c2p, dim=1), dim=1)
+            keep = keep & (rank < cap.unsqueeze(1))
+        n_clusters = keep.sum(dim=1)                                                    # (B,)
+        n_steps = int(n_clusters.max().item())                                          # one sync
+        C = max(n_steps, 1)
+        order1 = torch.argsort((~keep).long(), dim=1, stable=True)[:, :C]
+        centers_sorted = pos0.gather(1, order1.unsqueeze(-1).expand(-1, -1, 3))         # (B, C, 3)
+        col_valid = torch.arange(C, device=device).unsqueeze(0) < n_clusters.unsqueeze(1)
+
+        cost_pos = torch.cdist(pred_phytomer_pos, centers_sorted, p=1)                  # (B, K, C)
+        p_exist = torch.sigmoid(pred_phytomer_logits).squeeze(-1)                       # (B, K)
+        if soft_margin_weights is not None:
+            p_exist = p_exist * soft_margin_weights
+        cost = self.cost_phytomer_pos * cost_pos + self.cost_phytomer_exist * (-p_exist).unsqueeze(-1)
+        if self.phytomer_locality_radius is not None:
+            over = F.relu(cost_pos - float(self.phytomer_locality_radius))
+            cost = cost + float(self.phytomer_locality_weight) * over * over
+        cost = torch.nan_to_num(cost, nan=1e5, posinf=1e5, neginf=-1e5)
+        INF = 1e9
+        cost = cost.masked_fill(~col_valid.unsqueeze(1), INF).contiguous()
+
+        matched_src = torch.zeros((B, C), dtype=torch.int64, device=device)
+        tgt_comp = torch.zeros((B, C), dtype=torch.int64, device=device)
+        b_idx = torch.arange(B, device=device)
+        for step in range(n_steps):
+            min_idx = torch.argmin(cost.view(B, -1), dim=1)
+            k_idx = min_idx // C
+            n_idx = min_idx % C
+            matched_src[:, step] = k_idx
+            tgt_comp[:, step] = n_idx
+            cost[b_idx, k_idx, :] = INF
+            cost[b_idx, :, n_idx] = INF
+        n_cl = n_clusters.tolist()                                           # one sync
+
+        out: List[Dict[str, torch.Tensor]] = []
+        for b in range(B):
+            n_b = n_cl[b]
+            centers_b = centers_sorted[b, :n_b]
+            if n_b == 0:
+                out.append({"phytomer_src_idx": empty, "phytomer_tgt_idx": empty,
+                            "phytomer_tgt_pos": torch.empty((0, 3), device=device),
+                            "fine_src_idx": empty, "fine_tgt_idx": empty,
+                            "num_gt_phytomers": 0, "gt_node_centers": centers_b})
+                continue
+            src_b = matched_src[b, :n_b]
+            tgt_b = tgt_comp[b, :n_b]
+            out.append({"phytomer_src_idx": src_b, "phytomer_tgt_idx": tgt_b,
+                        "phytomer_tgt_pos": centers_b[tgt_b],
+                        "fine_src_idx": empty, "fine_tgt_idx": empty,
+                        "num_gt_phytomers": n_b, "gt_node_centers": centers_b})
+        return out
+
     @torch.no_grad()
     def forward(
         self,
@@ -141,6 +287,9 @@ class HierarchicalBotanicalMatcher(nn.Module):
         soft_margin_weights: Optional[torch.Tensor] = None,  # Optional (B, K) soft tapering existence prior
         per_sample_max_phytomers: Optional[torch.Tensor] = None,  # Optional (B,) capacity-clamped GT cluster cap
         skip_fine: bool = False,             # phytomer mode: phytomer-level matching only
+        tgt_labels_padded: Optional[torch.Tensor] = None,     # (B, N) int64, with tgt_valid: the padded GT instead of the lists
+        tgt_positions_padded: Optional[torch.Tensor] = None,  # (B, N, 3)
+        tgt_valid: Optional[torch.Tensor] = None,             # (B, N) bool
     ) -> List[Dict[str, torch.Tensor]]:
         """
         Performs hierarchical bipartite matching for each batch item.
@@ -159,6 +308,13 @@ class HierarchicalBotanicalMatcher(nn.Module):
         M = self.slots_per_phytomer
         N_fine = pred_fine_geom.shape[1]
         device = pred_phytomer_pos.device
+
+        if skip_fine and self.matcher_type == "greedy" and self.batched and (
+                tgt_positions is not None or tgt_positions_padded is not None):
+            return self._forward_phytomer_batched(
+                pred_phytomer_pos, pred_phytomer_logits, tgt_labels, tgt_positions,
+                soft_margin_weights, per_sample_max_phytomers,
+                tgt_labels_padded, tgt_positions_padded, tgt_valid)
 
         # Pass 1: Build cluster centers and cost matrices for all batch items (100% on GPU)
         sample_costs: List[torch.Tensor] = []

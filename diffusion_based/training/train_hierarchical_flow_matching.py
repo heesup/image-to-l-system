@@ -207,6 +207,7 @@ def forward_backward_step(
     # The GT phytomer pose comes from the matcher's cluster centers (position)
     # and the packet reference rotation (Option 1: phytomer frame).
     # ------------------------------------------------------------------
+    _sync_cuda(); prof["head"] = time.time() - _t_fbs
     t0 = time.time()
     phyto_targets = None
     if flow_granularity == "phytomer":
@@ -384,14 +385,26 @@ def forward_backward_step(
     clean_z1 = z_t + (1.0 - t_b) * pred_velocity
 
     # Prepare GT targets for hierarchical matching
+    _sync_cuda(); _t_lists = time.time()
     tgt_geoms_list = []
     tgt_labels_list = []
     tgt_positions_list = []
-    for b in range(B):
-        act_b = act_mask_sub[b]
-        tgt_geoms_list.append(tgt_z1[b, act_b])
-        tgt_labels_list.append(type_labels_sub[b, act_b])
-        tgt_positions_list.append(nodes_sub[b, act_b, FM_BASE_START : FM_BASE_START + 3] / BASE_SCALE)
+    padded_targets = {}
+    if flow_granularity == "phytomer" and getattr(matcher, "batched", False):
+        # Phytomer-level matching reads only labels and positions: hand the
+        # matcher the padded batch and let it compact once, instead of three
+        # boolean-index syncs per sample here (0.2-0.3 s of a 1.4 s step at 256).
+        padded_targets = dict(
+            tgt_labels_padded=type_labels_sub,
+            tgt_positions_padded=nodes_sub[:, :, FM_BASE_START:FM_BASE_START + 3] / BASE_SCALE,
+            tgt_valid=act_mask_sub)
+    else:
+        for b in range(B):
+            act_b = act_mask_sub[b]
+            tgt_geoms_list.append(tgt_z1[b, act_b])
+            tgt_labels_list.append(type_labels_sub[b, act_b])
+            tgt_positions_list.append(nodes_sub[b, act_b, FM_BASE_START : FM_BASE_START + 3] / BASE_SCALE)
+    _sync_cuda(); prof["tgt_lists"] = time.time() - _t_lists
 
     # Hierarchical Bipartite Matching in 16D Latent Space with Soft Margin Modulation
     t0 = time.time()
@@ -402,12 +415,14 @@ def forward_backward_step(
         pred_fine_logits=pred_fine_exist_logits,
         tgt_geoms=tgt_geoms_list,
         tgt_labels=tgt_labels_list,
-        tgt_positions=tgt_positions_list,
+        tgt_positions=tgt_positions_list if not padded_targets else None,
         soft_margin_weights=soft_margin_weights,
         per_sample_max_phytomers=per_sample_cap,
         skip_fine=(flow_granularity == "phytomer"),
+        **padded_targets,
     )
     prof["matcher"] = time.time() - t0
+    _sync_cuda(); _t_mid = time.time()
 
     # Extract GT phytomer counts from matcher clusters
     gt_phy_counts = torch.tensor(
@@ -470,7 +485,7 @@ def forward_backward_step(
         gt_parent_pos_train = torch.zeros(B, K_eff, 3, device=device)
         gt_parent_has_train = torch.zeros(B, K_eff, dtype=torch.bool, device=device)
         cls_acc_data = []
-        _sync_cuda(); _t_tgt = time.time()
+        _sync_cuda(); prof["mid"] = time.time() - _t_mid; _t_tgt = time.time()
         for b in range(B):
             m_b = matches[b]
             node_src = m_b["phytomer_src_idx"]
@@ -649,6 +664,7 @@ def forward_backward_step(
         clean_z1 = clean_z1.clamp(-6.0, 6.0)
         # Velocity target: v = z_1 - z_0 in standard Gaussian space.
         tgt_velocity = tgt_z1_phyto - z_0
+        _sync_cuda(); _t_lm = time.time()
         total_matched_nodes = matched_phytomer_mask.sum().item()
         norm_nodes = max(total_matched_nodes, 1)
         norm_m = norm_nodes
@@ -660,10 +676,17 @@ def forward_backward_step(
             clean_lat = clean_z1
             vae_out = phytomer_vae.decode(clean_lat.reshape(-1, D))
             pred_cls_all = vae_out["cls_logits"].argmax(-1).reshape(B, K_eff, M)  # (B, K, M)
+            # Accumulate on the device and sync once: two .item() per sample here
+            # were 0.2-0.3 s of a 1.4 s step at batch 256 (2026-09-14).
+            _correct = torch.zeros((), device=device)
+            _total = torch.zeros((), device=device)
             for b, node_src, tgt_cls_b, pres_b in cls_acc_data:
                 pred_cls_m = pred_cls_all[b, node_src]
-                correct_cls += ((pred_cls_m == tgt_cls_b).float() * pres_b.float()).sum().item()
-                total_cls_slots += int(pres_b.sum().item())
+                _correct = _correct + ((pred_cls_m == tgt_cls_b).float() * pres_b.float()).sum()
+                _total = _total + pres_b.sum()
+            correct_cls = float(_correct.item())
+            total_cls_slots = int(_total.item())
+        _sync_cuda(); prof["lm_vae_cls"] = time.time() - _t_lm; _t_lm = time.time()
 
         # 1. Fine Velocity MSE on matched phytomers (Vectorized 1-shot in 64D VAE space)
         if total_matched_nodes > 0:
@@ -902,6 +925,8 @@ def forward_backward_step(
     loss_depth = torch.tensor(0.0, device=device)
     loss_dice = torch.tensor(0.0, device=device)
 
+    if flow_granularity == "phytomer":
+        _sync_cuda(); prof["lm_losses"] = time.time() - _t_lm
     if renderer is not None and (depth_loss_weight > 0.0 or silhouette_loss_weight > 0.0):
         f = max(0.0, min(1.0, float(render_fraction)))
         n_render = max(1, min(B, int(round(B * f)))) if f > 0.0 else 0
@@ -1087,12 +1112,13 @@ def forward_backward_step(
 
     _sync_cuda()
     t_bwd = time.time()
+    prof["loss_mix"] = t_bwd - (_t_fbs + sum(prof.get(k, 0.0) for k in ("head", "packet_build", "fwd1", "tgt_lists", "matcher", "mid", "tgt_loop", "par_noise", "fwd2", "render", "probe")))
     loss.backward()
     _sync_cuda()
     prof["backward"] = time.time() - t_bwd
     prof["other"] = max(0.0, (time.time() - _t_fbs) - sum(
         prof.get(k, 0.0) for k in
-        ("packet_build", "fwd1", "fwd2", "matcher", "render", "backward", "probe")))
+        ("packet_build", "fwd1", "fwd2", "matcher", "render", "backward", "probe", "tgt_lists")))
     _t_tail = time.time()
 
     cls_denom = total_cls_slots if flow_granularity == "phytomer" else norm_m
@@ -1547,9 +1573,9 @@ def train_one_epoch(
                 f"[S4 Render] {render_str} | "
                 f"fwd/bwd {t_step1-t_step0:.2f}s opt {t_step2-t_step1:.2f}s | "
                 f"pkt {p.get('packet_build',0):.2f} fwd1 {p.get('fwd1',0):.2f} fwd2 {p.get('fwd2',0):.2f} "
-                f"match {p.get('matcher',0):.2f} render {p.get('render',0):.2f} "
+                f"lists {p.get('tgt_lists',0):.2f} match {p.get('matcher',0):.2f} render {p.get('render',0):.2f} "
                 f"backward {p.get('backward',0):.2f} probe {p.get('probe',0):.2f} other {p.get('other',0):.2f} "
-                f"[tgt_loop {p.get('tgt_loop',0):.2f} par_noise {p.get('par_noise',0):.2f} tail {p.get('tail',0):.2f}]"
+                f"[head {p.get('head',0):.2f} mid {p.get('mid',0):.2f} tgt_loop {p.get('tgt_loop',0):.2f} par_noise {p.get('par_noise',0):.2f} loss_mix {p.get('loss_mix',0):.2f} (vae+cls {p.get('lm_vae_cls',0):.2f} losses {p.get('lm_losses',0):.2f}) tail {p.get('tail',0):.2f}]"
                 + (f" | render: topo {p.get('r_topo',0):.2f} vae+asm {p.get('r_vae_asm',0):.2f} decode {p.get('r_decode',0):.2f} "
                    f"mesh {p.get('r_mesh',0):.2f} raster {p.get('r_raster',0):.2f} loss {p.get('r_loss',0):.2f}" if 'r_mesh' in p else ""),
                 flush=True,

@@ -206,6 +206,105 @@ def _depth_from_root(parent_idx: torch.Tensor) -> torch.Tensor:
     return depth
 
 
+def _resolve_forest(
+    local_parent: torch.Tensor,
+    best_cost: torch.Tensor,
+    p: torch.Tensor,
+    dist: torch.Tensor,
+    fwd: Optional[torch.Tensor],
+    o: Optional[torch.Tensor],
+    root_own_shoot: bool,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Cycle breaking + shoot walk of chain_phytomers as tensor ops (no per-node
+    Python). Returns (parent, shoot_id, phytomer_idx) over the N live nodes.
+
+    Every node points at its cheapest candidate, so the pointer graph is a
+    forest plus, possibly, cycles (the top two nodes of a shoot are each
+    other's nearest neighbour). Each cycle is cut at its most expensive edge
+    (ties keep the edge whose parent is lower, where the shoot base is).
+    Then one child per node continues its shoot -- the one a step further
+    along the ordinal, the straightest at a tie (or nearest without a
+    direction), never a root's child when root_own_shoot -- and every other
+    child starts a new shoot. Pointer jumping (log N rounds of gathers) finds
+    cycles, cycle labels, chain starts and positions along the chain.
+    """
+    device = local_parent.device
+    N = local_parent.shape[0]
+    ar = torch.arange(N, device=device)
+    rounds = max(1, N.bit_length())
+
+    # ---- cycles ---------------------------------------------------------
+    par = local_parent.clone()
+    cut_cost = best_cost.double() + 1e-6 * (p[par.clamp(min=0), 2] - p[:, 2]).double()   # float64: see the loop path
+    reach_root = par < 0
+    jump = torch.where(par >= 0, par, ar)
+    for _ in range(rounds):
+        reach_root = reach_root | reach_root[jump]
+        jump = jump[jump]
+    in_cycle_or_tail = ~reach_root
+    if bool(in_cycle_or_tail.any()):
+        far = jump[in_cycle_or_tail]                     # lands on a cycle after >= N steps
+        on_cycle = torch.zeros(N, dtype=torch.bool, device=device)
+        on_cycle[far] = True                             # the images cover every cycle exactly
+        # label each cycle by its lowest index (min over ancestors, doubling)
+        lab = torch.where(on_cycle, ar, torch.full_like(ar, N))
+        jp = torch.where(on_cycle & (par >= 0), par, ar)
+        for _ in range(rounds):
+            lab = torch.minimum(lab, lab[jp])
+            jp = jp[jp]
+        cyc = torch.nonzero(on_cycle, as_tuple=True)[0]
+        grp = lab[cyc]
+        gmax = torch.full((N,), float("-inf"), device=device, dtype=torch.float64).scatter_reduce(0, grp, cut_cost[cyc], reduce="amax")
+        is_max = cut_cost[cyc] == gmax[grp]
+        pick = torch.full((N,), N, dtype=torch.long, device=device).scatter_reduce(
+            0, grp[is_max], cyc[is_max], reduce="amin")       # lowest index among the ties
+        worst = pick[pick < N]
+        par[worst] = -1
+
+    # ---- continuation child per node ------------------------------------
+    is_child = par >= 0
+    c = torch.nonzero(is_child, as_tuple=True)[0]
+    pp = par[c]
+    neg_inf = torch.full((N,), float("-inf"), device=device)
+    if o is not None:
+        gap = (o[c] - (o[pp] + 1.0)).abs()
+        gmin = torch.full((N,), float("inf"), device=device).scatter_reduce(0, pp, gap, reduce="amin")
+        tied = gap <= gmin[pp] + 0.5
+        if fwd is not None:
+            score = torch.nn.functional.cosine_similarity(p[c] - p[pp], fwd[pp], dim=-1)
+        else:
+            score = -dist[pp, c]
+        score = torch.where(tied, score, torch.full_like(score, float("-inf")))
+    elif fwd is not None:
+        score = torch.nn.functional.cosine_similarity(p[c] - p[pp], fwd[pp], dim=-1)
+    else:
+        score = -dist[pp, c]
+    smax = neg_inf.scatter_reduce(0, pp, score, reduce="amax")
+    is_best = score == smax[pp]
+    pick = torch.full((N,), N, dtype=torch.long, device=device).scatter_reduce(
+        0, pp[is_best], c[is_best], reduce="amin")            # first child among the ties
+    cont = torch.zeros(N, dtype=torch.bool, device=device)
+    cont[pick[pick < N]] = True
+    if root_own_shoot:
+        cont = cont & (par[par.clamp(min=0)] >= 0) & is_child   # a root's children all start shoots
+    cont = cont & is_child
+
+    # ---- chains: start, position along the chain, shoot numbering -------
+    cont_parent = torch.where(cont, par, torch.full_like(par, -1))
+    local_ord = _depth_from_root(cont_parent)
+    depth = _depth_from_root(par)
+    start = cont_parent < 0
+    start_idx = torch.nonzero(start, as_tuple=True)[0]
+    order = torch.argsort(depth[start_idx] * N + start_idx)  # parents' shoots before their children's
+    sid_of_start = torch.full((N,), -1, dtype=torch.long, device=device)
+    sid_of_start[start_idx[order]] = torch.arange(start_idx.numel(), device=device)
+    jump = torch.where(cont_parent >= 0, cont_parent, ar)
+    for _ in range(rounds):
+        jump = jump[jump]
+    local_shoot = sid_of_start[jump]
+    return par, local_shoot, local_ord
+
+
 def chain_phytomers(
     pos: torch.Tensor,
     rot6d: Optional[torch.Tensor] = None,
@@ -216,6 +315,7 @@ def chain_phytomers(
     ord_weight: float = ORD_WEIGHT,
     is_base: Optional[torch.Tensor] = None,
     root_own_shoot: bool = False,
+    vectorized: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Links phytomer nodes into shoots.
 
@@ -238,6 +338,12 @@ def chain_phytomers(
             directional term almost as well as rotation did (measured).
         is_base: optional (P,) bool/float, predicted shoot bases. Nodes flagged
             here are allowed to have no parent regardless of the edge gate.
+        vectorized: cycle breaking and the shoot walk as pointer-jumping tensor
+            ops (default) instead of the Python loops they replaced on
+            2026-09-14; the loops are kept for `tests/test_chain_vectorized.py`.
+            Same parents and phytomer indices, same partition into shoots;
+            shoots are numbered by (depth of their first node, index), which
+            keeps a parent shoot before its children like the walk did.
         root_own_shoot: every child of a parentless node starts a new shoot,
             so the root node is a shoot of its own. Cowpea's first phytomer is
             the cotyledon node, alone on the unifoliate shoot 0, and both the
@@ -296,101 +402,111 @@ def chain_phytomers(
         has_parent = has_parent & ~(is_base.reshape(-1)[idx] > 0.5)
     local_parent = torch.where(has_parent, best, torch.full_like(best, -1))
 
-    # Every node points at its cheapest candidate, so the pointer graph is a
-    # forest plus, possibly, cycles (the top two nodes of a shoot are each
-    # other's nearest neighbour). Cut each cycle at its most expensive edge;
-    # at a tie keep the edge whose parent is lower, which is where the shoot
-    # base is. Until 2026-09-14 a parent was simply required to sit BELOW its
-    # child, which made cycles impossible but also cut every drooping lateral
-    # (dataset cowpea shoots at DAP 40-75 fall 1-3 mm per node): 8 of 99
-    # same-shoot links lost on one DAP 75 plant, and a 73 cm export error.
-    cut_cost = best_cost + 1e-6 * (p[best.clamp(min=0), 2] - p[:, 2])
-    state = torch.zeros(N, dtype=torch.long)                 # 0 new, 1 on path, 2 done
-    parent_list = local_parent.tolist()
-    for start in range(N):
-        if state[start] != 0:
-            continue
-        path = []
-        node = start
-        while node >= 0 and state[node] == 0:
-            state[node] = 1
-            path.append(node)
-            node = parent_list[node]
-        if node >= 0 and state[node] == 1:                  # closed a cycle
-            cyc = path[path.index(node):]
-            worst = max(cyc, key=lambda k: float(cut_cost[k]))
-            parent_list[worst] = -1
-        for k in path:
-            state[k] = 2
-    local_parent = torch.tensor(parent_list, dtype=torch.long, device=device)
-
-    # Walk each chain from its base so shoot ids and ordinals are consistent.
-    children: list[list[int]] = [[] for _ in range(N)]
-    for c in range(N):
-        pa = int(local_parent[c])
-        if pa >= 0:
-            children[pa].append(c)
-
-    local_shoot = torch.full((N,), -1, dtype=torch.long, device=device)
-    local_ord = torch.full((N,), -1, dtype=torch.long, device=device)
-    next_shoot = 0
-    for base in torch.nonzero(local_parent < 0, as_tuple=True)[0].tolist():
-        stack = [(base, next_shoot, 0)]
-        next_shoot += 1
-        while stack:
-            node, sid, depth = stack.pop()
-            local_shoot[node] = sid
-            local_ord[node] = depth
-            kids = children[node]
-            if not kids:
+    if not vectorized:
+        # Every node points at its cheapest candidate, so the pointer graph is a
+        # forest plus, possibly, cycles (the top two nodes of a shoot are each
+        # other's nearest neighbour). Cut each cycle at its most expensive edge;
+        # at a tie keep the edge whose parent is lower, which is where the shoot
+        # base is. Until 2026-09-14 a parent was simply required to sit BELOW its
+        # child, which made cycles impossible but also cut every drooping lateral
+        # (dataset cowpea shoots at DAP 40-75 fall 1-3 mm per node): 8 of 99
+        # same-shoot links lost on one DAP 75 plant, and a 73 cm export error.
+        # float64: the 1e-6 height tie-break is below float32 resolution next to
+        # a 3 cm distance, so in float32 two nodes of a mutual-nearest pair
+        # often tie exactly and the cut fell to traversal order.
+        cut_cost = best_cost.double() + 1e-6 * (p[best.clamp(min=0), 2] - p[:, 2]).double()
+        state = torch.zeros(N, dtype=torch.long)                 # 0 new, 1 on path, 2 done
+        parent_list = local_parent.tolist()
+        for start in range(N):
+            if state[start] != 0:
                 continue
-            # One child continues this shoot; the rest start their own, which is
-            # how a lateral branch becomes a separate shoot. With ordinals the
-            # successor is simply the one a step further along; otherwise fall
-            # back to the straightest child.
-            if root_own_shoot and int(local_parent[node]) < 0:
-                cont = -1                                 # the root keeps to itself
-            elif len(kids) == 1:
-                cont = kids[0]
-            elif ordinal is not None:
-                o = ordinal.reshape(-1)[idx]
-                want = o[node] + 1.0
-                gap = torch.stack([(o[k] - want).abs() for k in kids])
-                tied = [k for k, g in zip(kids, gap.tolist()) if g <= float(gap.min()) + 0.5]
-                if len(tied) == 1:
-                    cont = tied[0]
+            path = []
+            node = start
+            while node >= 0 and state[node] == 0:
+                state[node] = 1
+                path.append(node)
+                node = parent_list[node]
+            if node >= 0 and state[node] == 1:                  # closed a cycle
+                cyc = path[path.index(node):]
+                top = max(float(cut_cost[k]) for k in cyc)
+                worst = min(k for k in cyc if float(cut_cost[k]) == top)   # lowest index among exact ties
+                parent_list[worst] = -1
+            for k in path:
+                state[k] = 2
+        local_parent = torch.tensor(parent_list, dtype=torch.long, device=device)
+
+        # Walk each chain from its base so shoot ids and ordinals are consistent.
+        children: list[list[int]] = [[] for _ in range(N)]
+        for c in range(N):
+            pa = int(local_parent[c])
+            if pa >= 0:
+                children[pa].append(c)
+
+        local_shoot = torch.full((N,), -1, dtype=torch.long, device=device)
+        local_ord = torch.full((N,), -1, dtype=torch.long, device=device)
+        next_shoot = 0
+        for base in torch.nonzero(local_parent < 0, as_tuple=True)[0].tolist():
+            stack = [(base, next_shoot, 0)]
+            next_shoot += 1
+            while stack:
+                node, sid, depth = stack.pop()
+                local_shoot[node] = sid
+                local_ord[node] = depth
+                kids = children[node]
+                if not kids:
+                    continue
+                # One child continues this shoot; the rest start their own, which is
+                # how a lateral branch becomes a separate shoot. With ordinals the
+                # successor is simply the one a step further along; otherwise fall
+                # back to the straightest child.
+                if root_own_shoot and int(local_parent[node]) < 0:
+                    cont = -1                                 # the root keeps to itself
+                elif len(kids) == 1:
+                    cont = kids[0]
+                elif ordinal is not None:
+                    o = ordinal.reshape(-1)[idx]
+                    want = o[node] + 1.0
+                    gap = torch.stack([(o[k] - want).abs() for k in kids])
+                    tied = [k for k, g in zip(kids, gap.tolist()) if g <= float(gap.min()) + 0.5]
+                    if len(tied) == 1:
+                        cont = tied[0]
+                    elif fwd is not None:
+                        # Depth cannot separate the continuation from a lateral's
+                        # first node (both are one step up): the straighter one
+                        # continues the shoot.
+                        ax = fwd[node]
+                        cos_k = torch.stack([
+                            torch.nn.functional.cosine_similarity(
+                                (p[k] - p[node]).unsqueeze(0), ax.unsqueeze(0), dim=-1)[0]
+                            for k in tied])
+                        cont = tied[int(cos_k.argmax())]
+                    else:
+                        cont = tied[int(dist[node][torch.tensor(tied)].argmin())]
                 elif fwd is not None:
-                    # Depth cannot separate the continuation from a lateral's
-                    # first node (both are one step up): the straighter one
-                    # continues the shoot.
                     ax = fwd[node]
                     cos_k = torch.stack([
                         torch.nn.functional.cosine_similarity(
                             (p[k] - p[node]).unsqueeze(0), ax.unsqueeze(0), dim=-1)[0]
-                        for k in tied])
-                    cont = tied[int(cos_k.argmax())]
+                        for k in kids])
+                    cont = kids[int(cos_k.argmax())]
                 else:
-                    cont = tied[int(dist[node][torch.tensor(tied)].argmin())]
-            elif fwd is not None:
-                ax = fwd[node]
-                cos_k = torch.stack([
-                    torch.nn.functional.cosine_similarity(
-                        (p[k] - p[node]).unsqueeze(0), ax.unsqueeze(0), dim=-1)[0]
-                    for k in kids])
-                cont = kids[int(cos_k.argmax())]
-            else:
-                # Neither cue available: continue with the nearest child.
-                # Only reachable with rot6d=None AND ordinal=None -- an
-                # unusual call; distance alone (§ module docstring) still
-                # recovers most parents, just not which child extends the
-                # shoot at a branch point as reliably.
-                cont = kids[int(dist[node][torch.tensor(kids)].argmin())]
-            for k in kids:
-                if k == cont:
-                    stack.append((k, sid, depth + 1))
-                else:
-                    stack.append((k, next_shoot, 0))
-                    next_shoot += 1
+                    # Neither cue available: continue with the nearest child.
+                    # Only reachable with rot6d=None AND ordinal=None -- an
+                    # unusual call; distance alone (§ module docstring) still
+                    # recovers most parents, just not which child extends the
+                    # shoot at a branch point as reliably.
+                    cont = kids[int(dist[node][torch.tensor(kids)].argmin())]
+                for k in kids:
+                    if k == cont:
+                        stack.append((k, sid, depth + 1))
+                    else:
+                        stack.append((k, next_shoot, 0))
+                        next_shoot += 1
+
+    else:
+        local_parent, local_shoot, local_ord = _resolve_forest(
+            local_parent, best_cost, p, dist, fwd,
+            ordinal.reshape(-1)[idx] if ordinal is not None else None, root_own_shoot)
 
     parent_idx[idx] = torch.where(local_parent >= 0, idx[local_parent.clamp(min=0)],
                                   torch.full_like(local_parent, -1))
