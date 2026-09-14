@@ -4,11 +4,22 @@
 #SBATCH --error=slurm_scripts/logs/hierarchical_fm_%j.log
 #SBATCH --account=geminigrp
 #SBATCH --partition=gpu-6000_ada-h
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:2
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=96G
 #SBATCH --time=24:00:00
+
+# Defaults below are the CURRENT recipe (v9 lineage, 2026-09-14): PhytomerVAE
+# v9_tl_rw4_20k + terminal-last packet cache _pkt_v9, lr 1e-4, batch 48/GPU,
+# render loss from epoch 11 on 3% of the batch, a checkpoint every 5 epochs and
+# an eval every epoch (30-min floor). Every knob is an env override, e.g.
+#   sbatch slurm_scripts/train_hierarchical_flow_matching.sh                       # plain: this recipe, 2 GPUs, geminigrp
+#   sbatch --partition=low --account=publicgrp --gres=gpu:a100:4 --time=7-00:00:00 \
+#          --requeue --export=ALL,AUTO_RESUME=1 slurm_scripts/train_hierarchical_flow_matching.sh
+#   INIT_CHECKPOINT=<...>/hierarchical_fm_epoch_015.pt RESUME=1 sbatch ...           # continue a lineage elsewhere
+# The v8 recipe (bottom-to-top packets) needs PHYTOMER_VAE_CHECKPOINT=.../phytomer_vae_v8/...,
+# PKT_CACHE_DIR=dataset/cache/cowpea_curv26_pkt and PHYTOMER_TERMINAL_LAST=0 together; never mix.
 
 set -e
 
@@ -18,17 +29,18 @@ TORCHRUN_BIN="/home/lion397/.conda/envs/digital-crops/bin/torchrun"
 
 # Python Runtime Profiling: Automatically probes model parameters and autograd activations
 # to achieve safe GPU VRAM utilization on any GPU architecture (H100, A100, RTX 6000 Ada).
-# Batch size "auto" = runtime probe (target_vram_ratio of total VRAM); override via FORCE_BATCH_SIZE=<int>.
-BATCH_ARG=${FORCE_BATCH_SIZE:-auto}
+# Batch size: FORCE_BATCH_SIZE=<int> per GPU (default 48, the setting the v9 lineage was validated with);
+# FORCE_BATCH_SIZE=auto = runtime VRAM probe (target_vram_ratio of total VRAM).
+BATCH_ARG=${FORCE_BATCH_SIZE:-48}
 TARGET_RATIO=0.88
 
 # Image backbone for scaling A/B (see diffusion_based/models/dinov2_ray_encoder.py):
 #   dinov2_vits14 (control) | dinov2_vitb14 | dinov2_vitl14 |
 #   dinov3_vits16 | dinov3_vitb16 | dinov3_vitl16 | dinov3_vitl16_sat
 BACKBONE=${BACKBONE:-dinov2_vits14}
-OUTPUT_DIR=${OUTPUT_DIR:-diffusion_based/checkpoints/hierarchical_latent_fm}
+OUTPUT_DIR=${OUTPUT_DIR:-diffusion_based/checkpoints/hierarchical_fm_v9}
 EPOCHS=${EPOCHS:-500}
-SAVE_EVERY=${SAVE_EVERY:-25}
+SAVE_EVERY=${SAVE_EVERY:-5}
 FREEZE_BACKBONE=${FREEZE_BACKBONE:-1}
 FREEZE_ARGS=""
 if [ "${FREEZE_BACKBONE}" = "1" ]; then
@@ -61,6 +73,9 @@ export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=4
 export PYTHONPATH=.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# Packet leaflet order must match the VAE and the cache: "1" (terminal leaflet
+# last) for v9_tl_* VAEs and _pkt_v9; "0" (bottom-to-top) for v8 and _pkt.
+export PHYTOMER_TERMINAL_LAST=${PHYTOMER_TERMINAL_LAST:-1}
 
 # GPU count detection
 NPROC=${SLURM_GPUS_ON_NODE:-$(nvidia-smi --list-gpus | wc -l)}
@@ -71,12 +86,13 @@ echo "Starting Hierarchical Matryoshka Botanical Flow Matching Training"
 echo "Job ID: $SLURM_JOB_ID | Host: $(hostname) | GPUs allocated: $NPROC"
 echo "Per-GPU VRAM: ${VRAM_MB} MiB | Batch Mode: ${BATCH_ARG} (Target VRAM: ${TARGET_RATIO})"
 echo "Phytomer Capacity: 512 phytomers x ${SLOTS_PER_PHYTOMER:-10} slots/phytomer"
-echo "Render gate: fast warmup bypass (epochs 1-3) -> active at epoch ${RENDER_GRAD_START_EPOCH:-4}"
-echo "Eval cadence: every ${EVAL_EVERY:-25} epochs OR every ${EVAL_MIN_INTERVAL_MINUTES:-30} min (time fallback)"
-echo "Render fraction: ${RENDER_FRACTION:-0.167} of batch per step (batch-relative; 2-scale pyramid 1x/2x — profiling 2026-09-09: render was 70% of step time)"
-echo "Flow granularity: ${FLOW_GRANULARITY:-phytomer} (hybrid decoupled: pure 64D VAE latent flow + Stage 2 3D scaffold)"
-echo "Phytomer VAE: ${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt}"
-echo "Pkt cache dir: ${PKT_CACHE_DIR:-dataset/cache/cowpea_curv26_pkt} (missing samples fall back to on-the-fly)"
+echo "Render gate: fast warmup bypass (epochs 1-3) -> active at epoch ${RENDER_GRAD_START_EPOCH:-11}"
+echo "Eval cadence: every ${EVAL_EVERY:-1} epochs OR every ${EVAL_MIN_INTERVAL_MINUTES:-30} min (time fallback)"
+echo "Render fraction: ${RENDER_FRACTION:-0.03} of batch per step (batch-relative; 2-scale pyramid 1x/2x — profiling 2026-09-09: render was 70% of step time)"
+echo "Flow granularity: ${FLOW_GRANULARITY:-phytomer} (hybrid decoupled: 128D VAE latent flow + Stage 2 3D scaffold)"
+echo "Phytomer VAE: ${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt}"
+echo "Pkt cache dir: ${PKT_CACHE_DIR:-dataset/cache/cowpea_curv26_pkt_v9} (missing samples fall back to on-the-fly) | PHYTOMER_TERMINAL_LAST=${PHYTOMER_TERMINAL_LAST}"
+echo "LR: ${LR:-1e-4} | Save every ${SAVE_EVERY} epochs | Git: $(git rev-parse --short HEAD 2>/dev/null)"
 echo "Backbone: ${BACKBONE}${FREEZE_ARGS:+ (frozen)} | Output: ${OUTPUT_DIR} | Epochs: ${EPOCHS}"
 echo "Train subset: ${MAX_TRAIN_SAMPLES:-0} (0 = full dataset)"
 echo "Date: $(date)"
@@ -119,7 +135,7 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     --epochs "${EPOCHS}" \
     --batch_size "${BATCH_ARG}" \
     --target_vram_ratio "${TARGET_RATIO}" \
-    --lr "${LR:-3e-4}" \
+    --lr "${LR:-1e-4}" \
     --backbone_lr_ratio "${BACKBONE_LR_RATIO:-0.3}" \
     --phy_count_weight "${PHY_COUNT_WEIGHT:-2.0}" \
     --dap_weight "${DAP_WEIGHT:-0.05}" \
@@ -133,8 +149,8 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     ${DETECT_ANOMALY_ARGS} \
     --phytomer_latent_dim "${PHYTOMER_LATENT_DIM:-128}" \
     --phytomer_residual_dim "${PHYTOMER_RESIDUAL_DIM:-8}" \
-    --phytomer_vae_checkpoint "${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt}" \
-    --pkt_cache_dir "${PKT_CACHE_DIR:-dataset/cache/cowpea_curv26_pkt}" \
+    --phytomer_vae_checkpoint "${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt}" \
+    --pkt_cache_dir "${PKT_CACHE_DIR:-dataset/cache/cowpea_curv26_pkt_v9}" \
     --max_phytomers 512 \
     --slots_per_phytomer "${SLOTS_PER_PHYTOMER:-10}" \
     --embed_dim 384 \
@@ -145,17 +161,17 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     --depth_weight 0.5 \
     --color_weight 0.0 \
     --silhouette_weight 1.0 \
-    --render_fraction "${RENDER_FRACTION:-0.167}" \
-    --render_grad_start_epoch "${RENDER_GRAD_START_EPOCH:-4}" \
+    --render_fraction "${RENDER_FRACTION:-0.03}" \
+    --render_grad_start_epoch "${RENDER_GRAD_START_EPOCH:-11}" \
     --scale_weight "${SCALE_WEIGHT:-1.0}" \
     --save_every "${SAVE_EVERY}" \
-    --eval_every "${EVAL_EVERY:-25}" \
+    --eval_every "${EVAL_EVERY:-1}" \
     --eval_min_interval_minutes "${EVAL_MIN_INTERVAL_MINUTES:-30}" \
     --eval_samples_per_bucket "${EVAL_SAMPLES_PER_BUCKET:-2}" \
     --dap_buckets "${DAP_BUCKETS:-8}" \
     --max_train_samples "${MAX_TRAIN_SAMPLES:-0}" \
     --figure_dir "${RUN_DIR}" \
     --wandb_project part-flow-matching \
-    --wandb_run_name "${WANDB_RUN_NAME:-hierarchical-3stage-cascaded-cowpea-100k}"
+    --wandb_run_name "${WANDB_RUN_NAME:-hierarchical-fm-v9}"
 
 echo "Training Completed at $(date)"

@@ -76,7 +76,7 @@ for ARM in ${ARMS}; do
                      EPOCHS="${EPOCHS}" \
                      EVAL_EVERY="${EVAL_EVERY}" \
                      SAVE_EVERY="${SAVE_EVERY}" \
-                     bash slurm_scripts/submit_train_best_gpu.sh ${DEP} 2>&1 | tee /dev/stderr | grep -oP 'Submitted batch job \K\d+' | tail -1)
+                     bash archive/slurm_scripts/submit_train_best_gpu.sh ${DEP} 2>&1 | tee /dev/stderr | grep -oP 'Submitted batch job \K\d+' | tail -1)
         if [[ -z "${JOB_ID}" ]]; then
             echo "ERROR: failed to submit ${ARM}"
             exit 1

@@ -44,6 +44,9 @@ This directory consolidates legacy, historical, and exploratory scripts accumula
 | [`tests_render_legacy/`](tests_render_legacy/) | `diffusion_based/tests/legacy/` | 40D | `verify_rendering_equivalence_40d.py`. |
 | [`tests_unit_legacy/`](tests_unit_legacy/) | `tests/unit/legacy/` | 40D | 40D unit test suite (`test_part_representation_40d.py`, `test_plant_organ_array_image_backprop_40d.py`, `test_plant_organ_array_xml_roundtrip_40d.py`). |
 | [`scratch/`](scratch/) | `scratch/` | Aug 23 - Aug 25 | Active working snapshots: ground clipping verification, multi-species round-trip scripts, XML PR comparison tools, and direct optimization debug scripts. |
+| [`scratch/20260903_phase1_basics/`](scratch/20260903_phase1_basics/) | `scratch/` | Sep 3 - Sep 4 | Phase-1 "back-to-basics" five-method comparison (unifoliate target generation, per-organ ICP, differentiable-renderer direct optimization, toy flow matching, over/under-allocation, dimension coverage/recovery) plus `phase2_core.py` anti-erasure core and its `*_recon_14d.pt` artifacts. See [`docs/done/20260903-back-to-basics.md`](../docs/done/20260903-back-to-basics.md). |
+| [`scratch/20260906_eval_500ep/`](scratch/20260906_eval_500ep/) | `scratch/` | Sep 6 - Sep 8 | Option B 500-epoch evaluation runners and panel/figure scripts (epoch-50/500 eval, 7/8-column panels, latent flow/train-step smoke tests, class-mismatch debug). |
+| [`scratch/20260910_nan_debug/`](scratch/20260910_nan_debug/) | `scratch/` | Sep 10 - Sep 11 | Grad-NaN/explosion repro scripts (`reproduce_nan.py`, `inspect_grad_nan.py`), Gram-Schmidt and slimmed-pipeline smoke tests, Helios-vs-Torch focus check. Findings recorded in [`docs/ongoing/`](../docs/ongoing/) takeover docs. |
 
 ---
 
@@ -55,3 +58,21 @@ For current production code, refer to:
 - **Fast GPU Mesh Building**: `diffusion_based/models/helios_pytorch_geometry.py` (`build_mesh_from_part_tensor`)
 - **Multi-Modal Differentiable Renderer**: `diffusion_based/models/helios_pytorch_renderer.py` (`render_part_tensor`, `render_multimodal`)
 - **DiT-Large Flow Matching Training**: `diffusion_based/training/train_cowpea_dit_100k_ddp.py`
+
+---
+
+## 🗄️ `archive/slurm_scripts/` — superseded cluster launchers (moved 2026-09-14)
+
+`slurm_scripts/` keeps only the launchers that are part of the current workflow
+(`train_hierarchical_flow_matching.sh`, `train_phytomer_vae.sh`,
+`generate_phytomer_packets_jobs.sh`, `generate_helios_dataset_jobs.sh`). One-off and
+superseded launchers live here:
+
+| Script | What it was | Why archived |
+|---|---|---|
+| `submit_train_best_gpu.sh` (2026-09-05) | Wrapper that picked the emptiest GPU partition before `sbatch`-ing the main launcher | Partition/account are now chosen explicitly (`low`/`publicgrp` overrides, see the launcher header); nothing references it |
+| `submit_backbone_ablation.sh` (2026-09-09) | DINOv2 backbone ablation array (ViT-S/B, frozen vs fine-tuned) | Ablation finished; `dinov2_vits14` frozen is the default |
+| `smoke_test_fix.sh`, `train_smoke_low.sh` (2026-09-11) | Smoke tests for the grad-norm deadlock fix and the 10-slot restore | One-off verification of a fix that landed (`4b70266`, `75928d9`) |
+
+Old job logs (everything the current docs do not point at) were moved to
+`slurm_scripts/logs/archive_20260914/` on the same day; `slurm_scripts/logs/` is git-ignored.

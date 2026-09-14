@@ -89,8 +89,8 @@ fig14(exact_gt)도 다시 그렸다: IK-only 95.7 / 99.5 / 96.7 → **99.9 / 99.
 
 ## 4. 학습 상태와 다음 단계
 
-- 로컬 v9 run은 09-14 09:09에 죽어 있었다(세션 중단 시점과 일치, 에러 없음). 새 코드(topology 타깃 수정 포함)로 epoch 15 체크포인트에서 `setsid nohup`으로 재시작: `local_v9_run2b.log`, 패널 `slurm_scripts/logs/run_local_20260914_095047/`.
-- 클러스터: `38249632`(a100 ×4), `38250275`(4 GPU) `low`/`publicgrp` 대기, 시작 예정 9/18-19. 먼저 시작하는 쪽만 남기고 다른 하나와 로컬 run을 정리한다. `regen_*` 잡은 건드리지 않는다.
+- 로컬 v9 run은 09-14 09:09에 죽어 있었다(세션 중단 시점과 일치, 에러 없음). 새 코드로 epoch 15에서 잠시 재개했다가(`local_v9_run2b.log`), 10:30에 **클러스터 잡 `38252603`**(geminigrp, 2 GPU, 24 h)이 같은 epoch 15 체크포인트에서 이어받으면서 로컬 run은 정리했다. launcher 기본값을 v9 레시피로 바꿨으므로(`slurm_scripts/train_hierarchical_flow_matching.sh` 헤더 참고) 이후로는 plain `sbatch`로도 같은 설정이 뜬다. 체크포인트는 `hierarchical_fm_v9/`.
+- 대기 중: `38249632`(`low`/`publicgrp`, a100 ×4, `AUTO_RESUME=1`, 같은 `hierarchical_fm_v9/`라 38252603의 최신 체크포인트를 이어받음), `38250275`(`low`, 4 GPU, `hierarchical_fm_v9_alt/`). 시작 예정 9/18-19. `regen_*` 잡은 건드리지 않는다.
 - 다음: epoch 30 통과 확인(canary, Stage 2 Scl/Ord/Ext), 렌더링 품질 추적; §2.1 남은 항목(Stage 3가 child position/roll/scale 예측, parent noise 재보정); export 잔여 오차.
 
 ## 5. 변경 파일
