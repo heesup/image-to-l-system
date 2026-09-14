@@ -156,6 +156,33 @@ def _make_layer_probe(label: str):
     return _hook
 
 
+STAGE3_GEOM_DIM = 8   # [dpos(3) * BASE_SCALE | roll (cos, sin) | scale(3), FM units]
+
+
+def split_flow_state(x: torch.Tensor, latent_dim: int):
+    """Stage 3 flow state -> (geometry block or None, latent block).
+
+    With `stage3_geometry` the per-phytomer state is
+        [ (pos - parent_pos) * BASE_SCALE (3) | roll (2) | scale (3) | latent (D) ]
+    so the child's position is generated RELATIVE TO ITS FIXED PARENT (design doc
+    §2.1; the 2026-09-14 GT-substitution ablation put node position first among the
+    per-node errors, rotation and latent next). Without it the state is the latent alone.
+    """
+    if x.shape[-1] == latent_dim:
+        return None, x
+    return x[..., :STAGE3_GEOM_DIM], x[..., -latent_dim:]
+
+
+def geometry_from_flow(geom: torch.Tensor, parent_pos: torch.Tensor):
+    """(B, K, 8) geometry block + (B, K, 3) parent position (NaN -> origin) ->
+    (pos (B, K, 3) metres, roll (B, K, 2) unit, scale (B, K, 3) FM units)."""
+    parent = torch.nan_to_num(parent_pos, nan=0.0)
+    pos = parent + geom[..., :3] / BASE_SCALE
+    roll = safe_normalize(geom[..., 3:5], eps=1e-3)
+    scale = geom[..., 5:8]
+    return pos, roll, scale
+
+
 def parent_relative(pos: torch.Tensor, parent_pos: torch.Tensor,
                     has_parent: Optional[torch.Tensor]) -> torch.Tensor:
     """(B, K, 4) [parent - self, has_parent] for Stage 3's (parent, self) conditioning.
@@ -1402,8 +1429,10 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         backbone: str = "dinov2_vits14",
         freeze_backbone: bool = False,
         init_phytomer_count: float = 50.0,
+        stage3_geometry: bool = False,
     ):
         super().__init__()
+        self.stage3_geometry = bool(stage3_geometry)
         self.max_phytomers = max_phytomers
         self.slots_per_phytomer = slots_per_phytomer
         self.max_fine_slots = max_phytomers * slots_per_phytomer  # 512 * 10 = 5,120
@@ -1460,11 +1489,14 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         #                  (Hybrid Decoupled Architecture: pure standard Gaussian prior
         #                  z_0 ~ N(0, I_D), pose/scale as conditioning).
         if flow_granularity == "phytomer":
+            # stage3_geometry: the child's position (relative to its fixed parent),
+            # roll and scale ride in the flow state with the latent (see
+            # split_flow_state); otherwise the state is the pure VAE latent.
             self.fine_stage = PhytomerFlowMatchingDecoder(
                 latent_dim=phytomer_latent_dim,
-                base_dim=0,
-                rot_dim=0,
-                scale_dim=0,
+                base_dim=3 if self.stage3_geometry else 0,
+                rot_dim=2 if self.stage3_geometry else 0,
+                scale_dim=3 if self.stage3_geometry else 0,
                 num_classes=num_classes,
                 embed_dim=embed_dim,
                 num_heads=vit_heads,
@@ -1480,6 +1512,8 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                 num_heads=vit_heads,
                 num_layers=fine_layers,
             )
+        # Width of the per-phytomer flow state Stage 3 integrates.
+        self.flow_dim = (self.fine_stage.node_flow_dim if flow_granularity == "phytomer" else node_dim)
 
     def probe_pred_dap(self, image_tokens: torch.Tensor) -> torch.Tensor:
         """Two-pass helper: reads Stage 1's predicted DAP from the CLS token (no grad
@@ -1679,7 +1713,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         if self.flow_granularity == "phytomer":
             D = self.phytomer_latent_dim
             N_fine = active_k  # K phytomers
-            x = torch.randn(B, active_k, D, device=device)
+            x = torch.randn(B, active_k, self.flow_dim, device=device)
         else:
             N_fine = active_k * M
             x = torch.randn(B, N_fine, self.node_dim, device=device)
@@ -1701,7 +1735,15 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             _, chain_parent_pos = reconstruct_phytomer_rot(
                 phytomer_pos, phytomer_roll, phytomer_ordinal, phytomer_base_logits,
                 exist=phytomer_existence)
-            forward_kwargs["phytomer_parent_rel"] = parent_relative(phytomer_pos, chain_parent_pos, None)
+            if self.stage3_geometry:
+                # Training conditions the root on the ORIGIN as its parent
+                # (gt_parent_links), so do the same here instead of the
+                # parentless [0, 0, 0, 0] row.
+                chain_parent_pos = torch.nan_to_num(chain_parent_pos, nan=0.0)
+                live = (phytomer_existence > 0.5).float()
+                forward_kwargs["phytomer_parent_rel"] = parent_relative(phytomer_pos, chain_parent_pos, live)
+            else:
+                forward_kwargs["phytomer_parent_rel"] = parent_relative(phytomer_pos, chain_parent_pos, None)
         for step in range(num_steps):
             t_curr = step * dt
             t_next = (step + 1) * dt
@@ -1738,9 +1780,14 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             pred_slot_exist = torch.sigmoid(pred_slot_exist_logits)             # (B, K, M)
             combined_prob = pred_slot_exist * phytomer_existence.unsqueeze(-1)    # (B, K, M)
             slot_active = (combined_prob > 0.35).float().reshape(B, active_k * M)
-            pred_latent = x          # (B, K, D) latent flow vector (caller reference)
+            geom_block, pred_latent = split_flow_state(x, D)   # (B, K, D) latent flow vector (caller reference)
             pred_fine_exist_logits = pred_slot_exist_logits
             N_fine = active_k * M    # flat slot surface for legacy callers
+            stage2_pos, stage2_roll, stage2_scale = phytomer_pos, phytomer_roll, phytomer_scale
+            if geom_block is not None:
+                # Stage 3 refined the child against its (chain) parent: these are
+                # the node position / roll / scale the plant is built from now.
+                phytomer_pos, phytomer_roll, phytomer_scale = geometry_from_flow(geom_block, chain_parent_pos)
         else:
             final_out = self.fine_stage(
                 noisy_fine_nodes=x, timesteps=torch.ones((B,), device=device), **forward_kwargs)
@@ -1792,7 +1839,8 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             "phytomer_pos": phytomer_pos,
             "phytomer_roll": phytomer_roll,
             "phytomer_rot": phytomer_rot,
-            "phytomer_scale": coarse_out.get("phytomer_scale"),
+            "phytomer_scale": (phytomer_scale if self.flow_granularity == "phytomer" else coarse_out.get("phytomer_scale")),
+            "phytomer_pos_stage2": (stage2_pos if self.flow_granularity == "phytomer" else phytomer_pos),
             "phytomer_existence": phytomer_existence,
             "pred_num_phytomers": coarse_out["pred_num_phytomers"],
             "pred_dap": coarse_out["pred_dap"],

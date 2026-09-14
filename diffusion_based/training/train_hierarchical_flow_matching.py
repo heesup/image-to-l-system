@@ -48,6 +48,7 @@ from diffusion_based.models.plant_organ_array import (
 )
 from diffusion_based.training.flow_matching import FlowMatchingScheduler
 from diffusion_based.models.hierarchical_part_flow_matching import (
+    split_flow_state, geometry_from_flow, STAGE3_GEOM_DIM,
     HierarchicalPartFlowMatchingModel,
     compute_matryoshka_slice,
     estimate_phytomer_capacity,
@@ -109,6 +110,7 @@ def forward_backward_step(
     render_fraction: float = 1.0 / 6.0,
     parent_jitter_m: float = 0.015,
     parent_substitution: float = 0.05,
+    stage3_geom_weight: float = 4.0,
     capacity_schedule: Optional[Dict[str, float]] = None,
     flow_granularity: str = "organ",
     phytomer_vae: Optional[nn.Module] = None,
@@ -212,6 +214,8 @@ def forward_backward_step(
     phyto_targets = None
     if flow_granularity == "phytomer":
         D = raw_model.phytomer_latent_dim
+        D_flow = getattr(raw_model, "flow_dim", D)   # latent, or [geometry(8) | latent] with stage3_geometry
+        s3geom = bool(getattr(raw_model, "stage3_geometry", False))
         # FAST PATH: precomputed pkt cache (packets/presence/centers/refs/keys
         # per sample, from generate_cache.py). The batch carries a 'pkt' list of
         # per-sample dicts (or None where the pkt cache is missing — those
@@ -299,7 +303,7 @@ def forward_backward_step(
         # we use a placeholder Gaussian (the velocity target is independent of
         # Decoupled standard Gaussian prior for 64D VAE latent space (Hybrid Decoupled Architecture)
         D = raw_model.phytomer_latent_dim
-        z_0 = torch.randn(B, active_k, D, device=device)
+        z_0 = torch.randn(B, active_k, getattr(raw_model, "flow_dim", D), device=device)
         t = scheduler.sample_time(B, device)
         z_t = z_0.clone()
     else:
@@ -331,7 +335,7 @@ def forward_backward_step(
         pred_phytomer_roll = outputs["pred_phytomer_roll"].detach().float()  # (B, K, 2)
         K_eff = pred_phytomer_pos.shape[1]
         # Standard Gaussian prior in 64D VAE latent space (No bridge coupling into z_0)
-        z_0 = torch.randn(B, K_eff, D, device=device)
+        z_0 = torch.randn(B, K_eff, getattr(raw_model, "flow_dim", D), device=device)
         z_t = z_0.clone()
 
     # Model may resolve a wider phytomer slice than the padded GT tensor provides
@@ -441,7 +445,7 @@ def forward_backward_step(
         D = raw_model.phytomer_latent_dim
         K_eff = pred_phytomer_pos.shape[1]
         M = raw_model.slots_per_phytomer
-        tgt_z1_phyto = torch.zeros(B, K_eff, D, device=device)
+        tgt_z1_phyto = torch.zeros(B, K_eff, D_flow, device=device)
         slot_presence_target = torch.zeros(B, K_eff, M, device=device)
         matched_phytomer_mask = torch.zeros(B, K_eff, dtype=torch.bool, device=device)
         phytomer_exist_targets = torch.zeros(B, K_eff, 1, device=device)
@@ -508,7 +512,7 @@ def forward_backward_step(
             # GT phytomer scale = petiole (slot 1) scale row of the matched packets
             # (absolute FM units; the latent carries only normalized scales).
             gt_scl = phytomer_scale(pt["packets"].to(device, dtype=torch.float32))[pkt_idx].float()  # (M_node, 3)
-            tgt_z1_phyto[b, node_src] = gt_lat
+            tgt_z1_phyto[b, node_src, -D:] = gt_lat
             slot_presence_target[b, node_src] = pt["presence"][pkt_idx].float()
 
             matched_phytomer_mask[b, node_src] = True
@@ -599,8 +603,7 @@ def forward_backward_step(
 
         _sync_cuda(); prof["tgt_loop"] = time.time() - _t_tgt; _t_tgt = time.time()
         # Decoupled Flow Matching: standard normal Gaussian prior z_0 ~ N(0, I_D)
-        z_0 = torch.randn(B, K_eff, D, device=device)
-        z_t = scheduler.sample_xt(z_0, tgt_z1_phyto, t)
+        z_0 = torch.randn(B, K_eff, D_flow, device=device)
         # Noise on the fixed parent (§2.1): position jitter at Stage 2's node
         # error, and substitution -- a random other matched node's GT position
         # stands in for the parent -- at the rate the chain picks the wrong
@@ -620,6 +623,15 @@ def forward_backward_step(
                 donors = cand[torch.randint(0, cand.numel(), (swap.numel(),), device=device)]
                 parent_pos_in[b, swap] = gt_phytomer_pos_target[b, donors].float()
         parent_pos_in = torch.where(gt_parent_has_train.unsqueeze(-1), parent_pos_in, torch.zeros_like(parent_pos_in))
+        if s3geom:
+            # Geometry block targets, RELATIVE to the (noised) parent the model is
+            # conditioned on, so parent_in + dpos lands on the GT node: the model
+            # learns to correct the parent's error from the image.
+            m_ = matched_phytomer_mask.unsqueeze(-1)
+            tgt_z1_phyto[..., 0:3] = torch.where(m_, (gt_phytomer_pos_target - parent_pos_in) * BASE_SCALE, torch.zeros_like(parent_pos_in))
+            tgt_z1_phyto[..., 3:5] = torch.where(m_, gt_phytomer_roll_target, torch.zeros_like(gt_phytomer_roll_target))
+            tgt_z1_phyto[..., 5:8] = torch.where(m_, gt_phytomer_scl_target, torch.zeros_like(gt_phytomer_scl_target))
+        z_t = scheduler.sample_xt(z_0, tgt_z1_phyto, t)
         _sync_cuda(); prof["par_noise"] = time.time() - _t_tgt
         # Re-run the model forward with the true x_t.
         t0 = time.time()
@@ -673,7 +685,7 @@ def forward_backward_step(
         correct_cls = 0
         total_cls_slots = 0
         with torch.no_grad():
-            clean_lat = clean_z1
+            clean_lat = split_flow_state(clean_z1, D)[1]
             vae_out = phytomer_vae.decode(clean_lat.reshape(-1, D))
             pred_cls_all = vae_out["cls_logits"].argmax(-1).reshape(B, K_eff, M)  # (B, K, M)
             # Accumulate on the device and sync once: two .item() per sample here
@@ -689,12 +701,15 @@ def forward_backward_step(
         _sync_cuda(); prof["lm_vae_cls"] = time.time() - _t_lm; _t_lm = time.time()
 
         # 1. Fine Velocity MSE on matched phytomers (Vectorized 1-shot in 64D VAE space)
+        loss_geom_vel = torch.tensor(0.0, device=device)
         if total_matched_nodes > 0:
-            loss_fine_vel = F.mse_loss(
-                pred_velocity[matched_phytomer_mask],
-                tgt_velocity[matched_phytomer_mask],
-                reduction="sum",
-            ) / (float(D) * float(norm_m))
+            pv_m, tv_m = pred_velocity[matched_phytomer_mask], tgt_velocity[matched_phytomer_mask]
+            loss_fine_vel = F.mse_loss(pv_m[:, -D:], tv_m[:, -D:], reduction="sum") / (float(D) * float(norm_m))
+            if s3geom:
+                # the 8 geometry dims would be 6% of a plain MSE next to 128 latent dims
+                loss_geom_vel = F.mse_loss(pv_m[:, :STAGE3_GEOM_DIM], tv_m[:, :STAGE3_GEOM_DIM], reduction="sum") / (
+                    float(STAGE3_GEOM_DIM) * float(norm_m))
+                loss_fine_vel = loss_fine_vel + stage3_geom_weight * loss_geom_vel
         else:
             loss_fine_vel = torch.tensor(0.0, device=device)
 
@@ -703,7 +718,7 @@ def forward_backward_step(
         num_idle = idle_mask.sum().item()
         if num_idle > 0:
             loss_fine_vel = loss_fine_vel + (
-                0.02 * (pred_velocity[idle_mask] ** 2).sum() / (float(D) * float(num_idle))
+                0.02 * (pred_velocity[idle_mask] ** 2).sum() / (float(D_flow) * float(num_idle))
             )
 
         # 3. Fine Slot Existence Loss (Vectorized 1-shot across B, K, M)
@@ -952,9 +967,19 @@ def forward_backward_step(
             if render_grad_on and _re.requires_grad:
                 _re.register_hook(lambda g: torch.nan_to_num(g.clamp(-5.0, 5.0), nan=0.0))
             if flow_granularity == "phytomer" and n_render > 0:
-                _rz_render = _rz[render_indices]  # (n_render, K, D)
-                lat_all = _rz_render.detach()     # Render gradients should NOT backprop through VAE latent flow
-                pos_all = pred_phytomer_pos_render[render_indices] if render_grad_on else pred_phytomer_pos_render[render_indices].detach()
+                _rz_render = _rz[render_indices]  # (n_render, K, D_flow)
+                geom_r, lat_all = split_flow_state(_rz_render, D)
+                lat_all = lat_all.detach()        # Render gradients should NOT backprop through VAE latent flow
+                if geom_r is not None:
+                    # stage3_geometry: the rendered plant stands on Stage 3's refined
+                    # node position / roll / scale (parent_in + dpos); the render
+                    # loss reaches Stage 3's geometry block through pos and scale.
+                    pos_all, roll_geom, scl_geom = geometry_from_flow(geom_r, parent_pos_in[render_indices])
+                    if not render_grad_on:
+                        pos_all = pos_all.detach()
+                else:
+                    roll_geom = scl_geom = None
+                    pos_all = pred_phytomer_pos_render[render_indices] if render_grad_on else pred_phytomer_pos_render[render_indices].detach()
                 # Full rotation is DERIVED for this render batch (forward axis
                 # from resolved topology -- position + ordinal alone, no
                 # rotation cue needed, see phytomer_topology docstring -- plus
@@ -965,7 +990,7 @@ def forward_backward_step(
                 # behavior of detaching rotation (roll/pos-head training here
                 # was never rotation's job -- "Rot supervised purely by 3D GT
                 # loss" in the prior version of this comment).
-                roll_all = pred_phytomer_roll_render[render_indices].detach()
+                roll_all = roll_geom.detach() if roll_geom is not None else pred_phytomer_roll_render[render_indices].detach()
                 # The chain's own parent positions are not used here: the render
                 # block pairs nodes through the GT-derived, matched-only map
                 # (gt_render_parent_idx) built above, which is stable from
@@ -975,7 +1000,8 @@ def forward_backward_step(
                     pos_all.detach(), roll_all,
                     pred_ord[render_indices].detach(), pred_base_logits[render_indices].detach(),
                 )
-                scl_all = pred_phytomer_scale_render[render_indices] if pred_phytomer_scale_render is not None else torch.ones_like(pos_all)
+                scl_all = scl_geom if scl_geom is not None else (
+                    pred_phytomer_scale_render[render_indices] if pred_phytomer_scale_render is not None else torch.ones_like(pos_all))
                 if not render_grad_on:
                     scl_all = scl_all.detach()
                 else:
@@ -1125,6 +1151,7 @@ def forward_backward_step(
     cls_accuracy = (correct_cls / cls_denom) if cls_denom > 0 else 0.0
 
     _sync_cuda(); prof["tail"] = time.time() - _t_tail
+    _geom_vel = float(loss_geom_vel.item()) if flow_granularity == "phytomer" else 0.0
     return {
         "loss": loss.item(),
         "phytomer_pos_loss": loss_phytomer_pos.item(),
@@ -1142,6 +1169,7 @@ def forward_backward_step(
         "pred_dap_mean": pred_dap.mean().item() if pred_dap is not None else 0.0,
         "gt_dap_mean": daps.mean().item() if daps is not None else 0.0,
         "fine_vel_loss": loss_fine_vel.item(),
+        "geom_vel_loss": _geom_vel,
         "fine_exist_loss": loss_fine_exist.item(),
         "dense_depth_loss": loss_depth.item(),
         "silhouette_dice_loss": loss_dice.item(),
@@ -1169,6 +1197,7 @@ def probe_optimal_batch_size(
     render_fraction: float = 1.0 / 6.0,
     parent_jitter_m: float = 0.015,
     parent_substitution: float = 0.05,
+    stage3_geom_weight: float = 4.0,
     flow_granularity: str = "organ",
     phytomer_vae: Optional[nn.Module] = None,
     phy_count_weight: float = 2.0,
@@ -1230,6 +1259,7 @@ def probe_optimal_batch_size(
         render_fraction=render_fraction,
         parent_jitter_m=parent_jitter_m,
         parent_substitution=parent_substitution,
+        stage3_geom_weight=stage3_geom_weight,
         flow_granularity=flow_granularity,
         phytomer_vae=phytomer_vae,
         phy_count_weight=phy_count_weight,
@@ -1350,6 +1380,7 @@ def train_one_epoch(
     render_fraction: float = 1.0 / 6.0,
     parent_jitter_m: float = 0.015,
     parent_substitution: float = 0.05,
+    stage3_geom_weight: float = 4.0,
     capacity_warmup_epochs: int = 0,
     capacity_full_epochs: int = 0,
     flow_granularity: str = "organ",
@@ -1417,6 +1448,7 @@ def train_one_epoch(
             render_fraction=render_fraction,
             parent_jitter_m=parent_jitter_m,
             parent_substitution=parent_substitution,
+            stage3_geom_weight=stage3_geom_weight,
             flow_granularity=flow_granularity,
             phytomer_vae=phytomer_vae,
             phy_count_weight=phy_count_weight,
@@ -1609,6 +1641,26 @@ def train_one_epoch(
 
 
 
+def _widen_optimizer_state(optimizer) -> int:
+    """After loading an optimizer state saved for narrower parameters (a
+    latent-only Stage 3 into --stage3_geometry), reshape each mismatched moment
+    like the weight was widened: the old block goes in the LAST slice of every
+    dimension that grew (the latent block sits last), the new dims start at zero.
+    Returns the number of state tensors widened."""
+    n = 0
+    for p, st in optimizer.state.items():
+        for k, v in list(st.items()):
+            if torch.is_tensor(v) and v.dim() == p.dim() and v.dim() > 0 and v.shape != p.shape:
+                if all(a <= b for a, b in zip(v.shape, p.shape)):
+                    new = torch.zeros_like(p, dtype=v.dtype)
+                    new[tuple(slice(b - a, b) for a, b in zip(v.shape, p.shape))] = v.to(new.device)
+                    st[k] = new
+                    n += 1
+                else:
+                    del st[k]
+    return n
+
+
 def _partial_optimizer_restore(optimizer, saved_state, old_param_names=None, new_param_markers=()):
     """Copies per-parameter optimizer state from `saved_state` (an optimizer
     state_dict of the same model minus some newly added modules) onto
@@ -1701,6 +1753,11 @@ def main():
     parser.add_argument("--silhouette_weight", type=float, default=2.0, help="Weight for in-loop differentiable silhouette Dice loss")
     parser.add_argument("--parent_jitter_cm", type=float, default=1.5,
                         help="Stage 3 (parent, self) conditioning: Gaussian jitter (cm) on the GT-fixed parent position during training (§2.1; ~Stage 2's node RMSE)")
+    parser.add_argument("--stage3_geometry", action="store_true",
+                        help="Stage 3 generates the child's position (relative to its fixed parent), roll and scale "
+                             "in the flow state with the latent (design doc §2.1; GT-substitution ablation 2026-09-14).")
+    parser.add_argument("--stage3_geom_weight", type=float, default=4.0,
+                        help="Weight of the geometry block's velocity MSE next to the latent block's (--stage3_geometry).")
     parser.add_argument("--parent_substitution", type=float, default=0.05,
                         help="Stage 3 (parent, self) conditioning: fraction of nodes whose fixed parent is replaced by another matched node's GT position (the chain's parent-recovery failure rate once the ordinal works)")
     parser.add_argument("--render_fraction", type=float, default=1.0 / 6.0, help="Fraction of the batch rendered differentiably per step (batch-relative: n_render = round(B * fraction), clamped [1, B]). 1/6 restores the per-sample photometric visit rate of the 2026-09-07 runs; 1.0 renders the full batch (requires small batch — check VRAM).")
@@ -1877,6 +1934,7 @@ def main():
         backbone=args.backbone,
         freeze_backbone=args.freeze_backbone,
         init_phytomer_count=args.init_phytomer_count,
+        stage3_geometry=args.stage3_geometry,
     ).to(device)
 
     # Frozen PhytomerVAE (flow_granularity=phytomer): encodes/decodes the
@@ -1933,6 +1991,27 @@ def main():
             print(f"Loading checkpoint from: {args.init_checkpoint}")
         ckpt = torch.load(args.init_checkpoint, map_location=device)
         state_dict = ckpt.get("model_state_dict", ckpt)
+        # A latent-only Stage 3 checkpoint into a --stage3_geometry model: keep the
+        # learned latent block of the flow projection / velocity head (last D
+        # columns / rows) and start only the 8 geometry dims fresh.
+        cur = model.state_dict()
+        for k in list(state_dict.keys()):
+            if k in cur and state_dict[k].shape != cur[k].shape:
+                old_t, new_t = state_dict[k], cur[k].clone()
+                if k.endswith("fine_stage.geom_proj.weight") and old_t.shape[0] == new_t.shape[0] and old_t.shape[1] < new_t.shape[1]:
+                    new_t[:, -old_t.shape[1]:] = old_t.to(new_t.device)
+                elif k.endswith("fine_stage.velocity_head.2.weight") and old_t.shape[1] == new_t.shape[1] and old_t.shape[0] < new_t.shape[0]:
+                    new_t[-old_t.shape[0]:] = old_t.to(new_t.device)
+                elif k.endswith("fine_stage.velocity_head.2.bias") and old_t.shape[0] < new_t.shape[0]:
+                    new_t[-old_t.shape[0]:] = old_t.to(new_t.device)
+                else:
+                    if rank == 0:
+                        print(f"  shape mismatch, left at init: {k} {tuple(old_t.shape)} -> {tuple(new_t.shape)}")
+                    del state_dict[k]
+                    continue
+                state_dict[k] = new_t
+                if rank == 0:
+                    print(f"  widened {k}: {tuple(old_t.shape)} -> {tuple(new_t.shape)} (latent block copied, geometry dims fresh)")
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
         if rank == 0:
             print(f"Model weights loaded successfully! Missing keys: {len(missing)}, Unexpected: {len(unexpected)}")
@@ -1941,8 +2020,9 @@ def main():
             if "optimizer_state_dict" in ckpt:
                 try:
                     optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+                    n_w = _widen_optimizer_state(optimizer)
                     if rank == 0:
-                        print("Optimizer state successfully restored from checkpoint.")
+                        print("Optimizer state successfully restored from checkpoint." + (f" ({n_w} moment tensors widened)" if n_w else ""))
                 except Exception as e:
                     # A checkpoint from before a module was added (e.g. Stage 3's
                     # node_parent_mlp, 2026-09-12) has fewer parameters. Restore
@@ -2027,6 +2107,7 @@ def main():
             render_fraction=args.render_fraction,
             parent_jitter_m=args.parent_jitter_cm / 100.0,
             parent_substitution=args.parent_substitution,
+            stage3_geom_weight=args.stage3_geom_weight,
             flow_granularity=args.flow_granularity,
             phytomer_vae=phytomer_vae,
             phy_count_weight=args.phy_count_weight,
@@ -2147,6 +2228,7 @@ def main():
             render_fraction=args.render_fraction,
             parent_jitter_m=args.parent_jitter_cm / 100.0,
             parent_substitution=args.parent_substitution,
+            stage3_geom_weight=args.stage3_geom_weight,
             capacity_warmup_epochs=args.capacity_warmup_epochs,
             capacity_full_epochs=args.capacity_full_epochs,
             flow_granularity=args.flow_granularity,
