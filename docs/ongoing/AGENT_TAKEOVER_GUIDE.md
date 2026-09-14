@@ -136,6 +136,21 @@ scaled with the number of rendered phytomers; with the loop gone a larger batch 
 nvdiffrast 0.4 supports range-mode batching (one `rasterize` over concatenated meshes) if rendering ever becomes the
 cost; it is not today. Job **`38253029`** runs the vectorized code from the epoch-15 checkpoint (batch 48, `NUM_WORKERS=8`).
 
+### 0-B.5 The remaining per-sample loops (2026-09-14 ~13:40, `a1a82bc`)
+
+With the assembly vectorized, the same timers at batch 48 / 256 (1 GPU) put the rest of the step in three per-sample
+loops: the GT target loop (`gt_parent_links` + `decode_packets` per sample on the GPU: 0.10 / 0.53 s), the per-sample
+VAE encode of the target latent (0.04 / 0.19 s), and the render block's per-plant render loop (0.05 / 0.30 s).
+Landed: `part_array_dataset.attach_parent_links` computes `parent_pos/parent_idx/depth` in the DataLoader worker
+(the step reads them; target loop 0.02-0.05 / 0.17-0.28 s), one `phytomer_vae.encode` over the whole batch (0.01 / 0.02 s),
+and `HeliosPyTorchRenderer.render_batched` (one nvdiffrast range-mode pass per pyramid level for all rendered plants,
+own camera each; `tests/test_render_batched.py`, `tests/test_render_loss_vectorized.py`). Step: 0.17-0.31 s at 48,
+1.1-1.8 s at 256. Still per sample and still linear in batch: `chain_phytomers` for the rendered plants (`topo`
+0.14-0.21 s for 8 plants -- its walk is a Python loop over nodes), the greedy matcher (0.09-0.24 s), the rest of the
+target loop, and the model backward. **Per-sample cost is flat in batch, so batch 48 remains the recipe**; the render
+fraction (3% of the batch) is unchanged throughout. Job **`38253401`** runs this code, `AUTO_RESUME` from
+`hierarchical_fm_v9/hierarchical_fm_epoch_020.pt` (its predecessor `38253029` did epochs 16-21 at ~9 min/epoch).
+
 ### 0-B.3 Working-tree hygiene
 
 - Anything not in `git status` clean + the two files named in 0-B.2 is either untracked run artifacts
