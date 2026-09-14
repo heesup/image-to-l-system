@@ -23,7 +23,7 @@ retention, IoU 81.6%. Root causes found by debugging:
 3. **Zero-overlap tubes need long-range attraction**: misaligned tubes have no pixel overlap with
    their target, so IoU/depth/RGB only reward shrinking.
 
-Fixes live in `scratch/phase2_core.py` (shared by exp2/4/5/7):
+Fixes live in `archive/scratch/20260903_phase1_basics/phase2_core.py` (shared by exp2/4/5/7):
 - `ExistenceWarden` — warmup freeze (existence + scale frozen for first 15–25 steps), existence floor
   hinge for seeded slots.
 - `apply_scale_floor` — HARD radius floor (straight-through clamp, 0.7×init): radius collapse is a
@@ -165,10 +165,10 @@ print('roundtrip OK')
 EOF
 
 # Dimension coverage audit (26/26 must be OPTIMIZABLE)
-python scratch/exp6_dimension_coverage.py
+python archive/scratch/20260903_phase1_basics/exp6_dimension_coverage.py
 
 # Full anti-erasure benchmark
-python scratch/exp2_diff_render_opt.py        # expect ~90% IoU, 5/5 retention
+python archive/scratch/20260903_phase1_basics/exp2_diff_render_opt.py        # expect ~90% IoU, 5/5 retention
 
 # Train (multi-GPU DDP)
 sbatch --export=FM_EPOCHS=50 slurm_scripts/train_part_fm_curv.sh
@@ -241,8 +241,8 @@ sbatch --export=FM_EPOCHS=50 slurm_scripts/train_part_fm_curv.sh
 | `diffusion_based/training/fm_visualization.py` | NEW: per-epoch panel + W&B |
 | `slurm_scripts/train_part_fm_curv.sh` | torchrun DDP launcher (2×6000_ada, batch 256, cache_dir) |
 | `slurm_scripts/generate_helios_dataset_jobs.sh` | --mode/--pyramid passthrough, crop-named dirs |
-| `scratch/phase2_core.py` | anti-erasure core (warden, pull loss, scale floors, tip anchor) |
-| `scratch/exp2/4/5/6/7*.py` | benchmarks (see §1) |
+| `archive/scratch/20260903_phase1_basics/phase2_core.py` | anti-erasure core (warden, pull loss, scale floors, tip anchor) |
+| `archive/scratch/20260903_phase1_basics/exp2/4/5/6/7*.py` | benchmarks (see §1) |
 | `docs/results/assets/` | exp4/5/6/7 + fm_curv panels |
 | `scripts/cache_dataset_tensors.py` | DELETED (merged) |
 

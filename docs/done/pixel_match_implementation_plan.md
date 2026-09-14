@@ -165,7 +165,7 @@ Port `recomputePeduncleOrientationVectors` from `InputOutput.cpp` L1632-1692.
 ## 6. Pixel-match benchmark harness
 
 ### New file
-`scratch/compare_pixel_match.py`
+`compare_pixel_match.py` (archived to `archive/scratch/`)
 
 ### Inputs
 - C++ GT: `*_vis.jpeg`, `*_masks.json`

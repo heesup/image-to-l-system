@@ -13,7 +13,7 @@ from PIL import Image
 from diffusion_based.eval.eval_13d_xml_organ_masks import render_helios_full
 
 def main():
-    xml_dir = "scratch/xml_outputs"
+    xml_dir = "archive/scratch/20260903_phase1_basics/xml_outputs"
     methods = [
         ("ground_truth", "Ground Truth"),
         ("method_1", "Method 1 (ICP)"),

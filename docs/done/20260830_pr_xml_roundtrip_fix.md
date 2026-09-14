@@ -84,7 +84,7 @@ Also: clear `floral_buds` when a phytomer XML node carries no `<floral_buds>` el
 
 #### Helios Visualizer — 3-stage roundtrip (DAP 50, Cowpea)
 
-Script: [`scratch/helios_xml_roundtrip_visualizer.py`](scratch/helios_xml_roundtrip_visualizer.py)
+Script: [`archive/scratch/helios_xml_roundtrip_visualizer.py`](archive/scratch/helios_xml_roundtrip_visualizer.py)
 
 ```
 Stage 0  -->  write XML  -->  Stage 1  -->  write XML  -->  Stage 2

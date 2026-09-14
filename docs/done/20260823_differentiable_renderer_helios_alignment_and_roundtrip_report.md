@@ -55,7 +55,7 @@ To ensure end-to-end mathematical consistency between the ground-truth Helios C+
 
 ### 3.3 PyTorch Mask Threshold for Organ 0
 * **Issue**: In `HeliosPyTorchRenderer.render_organ_type_buffer`, the background is filled with `-1`, while stem internodes are assigned Organ Type `0`. The test script used `pt_mask = (type_buf > 0)`, which evaluated `0 > 0` as `False`, dropping all 1,108 stem pixels on DAP 70.
-* **Fix in [`scratch/test_helios_xml_render.py`](file:///home/lion397/codes/image-to-l-system/scratch/test_helios_xml_render.py#L165)**:
+* **Fix in [`archive/scratch/test_helios_xml_render.py`](file:///home/lion397/codes/image-to-l-system/archive/scratch/test_helios_xml_render.py#L165)**:
   ```python
   # Correctly include Organ 0 (Stem) while filtering Background (-1)
   pt_mask = (type_buf >= 0).float().cpu().numpy()
@@ -152,7 +152,7 @@ Epoch 01 [00050/01557] | Step Loss: 16940.7227 (v: 0.7762, count: 16939.9473) | 
 | :--- | :--- |
 | [`helios_pytorch_geometry.py`](file:///home/lion397/codes/image-to-l-system/diffusion_based/models/helios_pytorch_geometry.py) | Added `gravitropic_curvature: Optional[float]` parameter to `build_mesh_from_organ_array`; species-aware default ($-600°/\text{m}$ for cowpea); replaced hardcoded `200.0` with `eff_gravitropic_curvature` |
 | [`main.cpp`](file:///home/lion397/codes/image-to-l-system/Digital-Crops/projects/syntheticdata_generation/main.cpp) | Added `"shoot"` label to COCO mask export organ list with Category ID `0` |
-| [`test_helios_xml_render.py`](file:///home/lion397/codes/image-to-l-system/scratch/test_helios_xml_render.py) | 5-column comparison script: GT RGB, Helios C++ XML re-render (radiation), Helios mask, PyTorch render, PyTorch mask; reads per-sample `gravitropic_curvature` from `_params.json`; fixed `type_buf >= 0` threshold |
+| [`test_helios_xml_render.py`](file:///home/lion397/codes/image-to-l-system/archive/scratch/test_helios_xml_render.py) | 5-column comparison script: GT RGB, Helios C++ XML re-render (radiation), Helios mask, PyTorch render, PyTorch mask; reads per-sample `gravitropic_curvature` from `_params.json`; fixed `type_buf >= 0` threshold |
 
 ### 7.2 Files Created
 
@@ -160,5 +160,5 @@ Epoch 01 [00050/01557] | Step Loss: 16940.7227 (v: 0.7762, count: 16939.9473) | 
 | :--- | :--- |
 | [`render_xml/main.cpp`](file:///home/lion397/codes/image-to-l-system/Digital-Crops/projects/render_xml/main.cpp) | Lightweight standalone Helios C++ Visualizer binary for quick XML-to-image rendering (headless OpenGL) |
 | [`render_xml/CMakeLists.txt`](file:///home/lion397/codes/image-to-l-system/Digital-Crops/projects/render_xml/CMakeLists.txt) | CMake build config for `render_xml` project |
-| [`scratch/evaluate_xml_roundtrip_metrics.py`](file:///home/lion397/codes/image-to-l-system/scratch/evaluate_xml_roundtrip_metrics.py) | 100-sample XML round-trip benchmark script (text match + numeric parameter error + 3D vertex deviation) |
+| [`archive/scratch/evaluate_xml_roundtrip_metrics.py`](file:///home/lion397/codes/image-to-l-system/archive/scratch/evaluate_xml_roundtrip_metrics.py) | 100-sample XML round-trip benchmark script (text match + numeric parameter error + 3D vertex deviation) |
 

@@ -30,7 +30,7 @@ The objective of this task is to align the **PyTorch Differentiable Renderer** (
 
 ### 2.3 Camera & Canopy Center Alignment
 - **Root Cause**: Ground Truth C++ Helios (`main.cpp` L247) sets `canopy_center = (min_xyz + max_xyz) * 0.5f` as the camera lookat point when `--focus-plant` is enabled. If PyTorch looks at `(0, 0, 0)` ground level, a 2D translation offset occurs.
-- **Centroid Realignment Benchmark** (`scratch/test_dap10_centroid_alignment.py`):
+- **Centroid Realignment Benchmark** (`test_dap10_centroid_alignment.py`, archived):
   - **Raw Unaligned DAP 10 IoU**: `0.2958` (Dice: `0.4565`)
   - **Centroid Shift**: $dy = -131$ px, $dx = 93$ px
   - **Centroid Aligned IoU**: `0.4549` (Dice: `0.6254`)
@@ -45,11 +45,11 @@ The objective of this task is to align the **PyTorch Differentiable Renderer** (
 2. `diffusion_based/models/helios_rasterizer_3d.py`: PyTorch differentiable rasterizer.
 
 ### Benchmark & Diagnostic Scripts (in Artifacts Scratch Directory)
-- `scratch/compare_pixel_match.py`: Quantitative multi-organ IoU/Dice evaluator.
-- `scratch/test_dap10_leaf_match.py`: DAP 10 leaf mask extraction and comparison.
-- `scratch/test_dap10_exact_match.py`: DAP 10 full plant mask evaluator.
-- `scratch/test_dap10_centroid_alignment.py`: Centroid (Center of Mass/Weight) realignment evaluator.
-- `scratch/test_dap10_optimal_alignment.py`: Optimal 2D translation search evaluator.
+- `compare_pixel_match.py` (archived to `archive/scratch/`, Aug-25 cleanup): Quantitative multi-organ IoU/Dice evaluator.
+- `test_dap10_leaf_match.py` (archived): DAP 10 leaf mask extraction and comparison.
+- `test_dap10_exact_match.py` (archived): DAP 10 full plant mask evaluator.
+- `test_dap10_centroid_alignment.py` (archived): Centroid (Center of Mass/Weight) realignment evaluator.
+- `test_dap10_optimal_alignment.py` (archived): Optimal 2D translation search evaluator.
 
 ---
 

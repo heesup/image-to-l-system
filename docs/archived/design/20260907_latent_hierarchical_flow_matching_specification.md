@@ -190,7 +190,7 @@ Add unified batch conversion utilities:
    - Update `hierarchical_hungarian_matcher.py` for 16D latent distance.
    - Update `train_hierarchical_flow_matching.py` with frozen VAE grounding.
    - Update SLURM submission script.
-2. **Step 2: Local Verification (`scratch/test_latent_flow_step.py`)**:
+2. **Step 2: Local Verification (`archive/scratch/20260906_eval_500ep/test_latent_flow_step.py`)**:
    - Run 1-batch end-to-end forward/backward test on local TITAN RTX GPU.
    - Confirm finite gradients on all Stage 1 and Stage 2 parameters.
    - Confirm `sample_ode` generates valid, non-spiky organ parameters.

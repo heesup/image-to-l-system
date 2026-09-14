@@ -4,6 +4,7 @@ Tests on Canonical Unifoliate Seedling (14cm) and DAP 50 Branching Plant (60cm).
 """
 
 import os
+import sys
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
@@ -25,11 +26,12 @@ def main():
     ref_window = 1.2  # 1.2m x 1.2m global canopy window
 
     # 1. Canonical Unifoliate Seedling
-    target_14d_path = "scratch/target_unifoliate_14d.pt"
+    target_14d_path = "archive/scratch/20260903_phase1_basics/target_unifoliate_14d.pt"
     if os.path.exists(target_14d_path):
         pt_seedling = torch.load(target_14d_path, map_location=DEVICE)
     else:
-        from scratch.make_target_unifoliate import create_canonical_unifoliate_gt
+        sys.path.insert(0, "archive/scratch/20260903_phase1_basics")
+        from make_target_unifoliate import create_canonical_unifoliate_gt
         pt_seedling = create_canonical_unifoliate_gt(device=DEVICE)
 
     mesh_seedling = geo_builder.build_mesh_from_part_tensor(pt_seedling, device=DEVICE)

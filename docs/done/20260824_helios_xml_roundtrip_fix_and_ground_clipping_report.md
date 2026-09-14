@@ -100,7 +100,7 @@ make -j8 plantarchitecture && make -j8 main
 Execute the Python verification script that performs an end-to-end roundtrip test across both Helios C++ raytracing and Python PyTorch rendering:
 ```bash
 cd /home/lion397/codes/image-to-l-system
-PYTHONPATH=. /home/lion397/.conda/envs/digital-crops/bin/python scratch/visualize_true_roundtrip_row_comparison.py
+PYTHONPATH=. /home/lion397/.conda/envs/digital-crops/bin/python archive/scratch/visualize_true_roundtrip_row_comparison.py
 ```
 
 **Expected Console Output**:
@@ -108,14 +108,14 @@ PYTHONPATH=. /home/lion397/.conda/envs/digital-crops/bin/python scratch/visualiz
 Helios C++ Roundtrip Pixel Diff: Mean=0.05072, Max=0.92810
 Python PyTorch Roundtrip Pixel Diff: Mean=0.004225, Max=0.576094
 Original Height: 0.9272m, Roundtrip Height: 0.9094m, ΔH: 17.81mm
-Saved true roundtrip row comparison image to: scratch/helios_python_true_roundtrip_comparison.png
+Saved true roundtrip row comparison image to: archive/scratch/helios_python_true_roundtrip_comparison.png
 ```
 
 ---
 
 ## 4. Verification Images & Layout
 
-The evaluation produces a 2-row comparison figure (`scratch/helios_python_true_roundtrip_comparison.png`):
+The evaluation produces a 2-row comparison figure (`archive/scratch/helios_python_true_roundtrip_comparison.png`):
 
 | Row | Panel 1 | Panel 2 | Panel 3 |
 | :--- | :--- | :--- | :--- |

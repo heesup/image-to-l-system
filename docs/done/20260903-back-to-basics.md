@@ -40,7 +40,7 @@ Rather than the hack of reducing existence (alpha) to erase organs, we **fully o
 
 ### Phase 1: Minimal 5-Organ Benchmark (Fixed Topology) — [**COMPLETED ✓**]
 
-#### Step 1. Canonical 5-Organ Ground Truth & True Top-View Target (`scratch/make_target_unifoliate.py`)
+#### Step 1. Canonical 5-Organ Ground Truth & True Top-View Target (`archive/scratch/20260903_phase1_basics/make_target_unifoliate.py`)
 - **Plant Configuration (7-Row Canonical Unifoliate Seedling)**:
   - Row 0: `ORGAN_ROOT_META` (plant age DAP 10)
   - Row 1: `ORGAN_SHOOT_META` (Shoot ID 0, unifoliate)
@@ -58,7 +58,7 @@ Rather than the hack of reducing existence (alpha) to erase organs, we **fully o
 
 ---
 
-#### Step 2. Method 1: Per-Organ Point Cloud ICP (`scratch/exp1_per_organ_icp.py`)
+#### Step 2. Method 1: Per-Organ Point Cloud ICP (`archive/scratch/20260903_phase1_basics/exp1_per_organ_icp.py`)
 - **Pipeline**:
   1. Back-project the top-view CHM depth channel into a 3D metric point cloud $\mathcal{P}_{\text{tgt}} \in \mathbb{R}^{K \times 3}$ using calibrated camera intrinsics.
   2. Cluster by height ($Z$) and normal vectors to segment stem/petiole/leaf point sets.
@@ -67,7 +67,7 @@ Rather than the hack of reducing existence (alpha) to erase organs, we **fully o
 - **Evaluation & Visualization**:
   - 3D point cloud alignment trajectory, 14D Part Tensor reconstruction error (MSE), final Helios XML re-render (`docs/results/assets/exp1_icp_alignment.png`).
 
-#### Step 3. Method 2: Differentiable Renderer Multi-Loss Direct Optimization (`scratch/exp2_diff_render_opt.py`)
+#### Step 3. Method 2: Differentiable Renderer Multi-Loss Direct Optimization (`archive/scratch/20260903_phase1_basics/exp2_diff_render_opt.py`)
 - **Blank-canvas local minima prevention**:
   - Pure RGB L1 loss collapses to the trivial zero-transparency local minimum, so we use a **multi-objective loss**:
     $$\mathcal{L}_{\text{total}} = \sum_{s \in \{1, 4, 8\}} w_s \cdot (2\mathcal{L}_{\text{IoU}}^{(s)} + \mathcal{L}_{\text{Depth}}^{(s)} + \mathcal{L}_{\text{RGB}}^{(s)}) + \lambda_{\text{scale}} \mathcal{L}_{\text{prior}}$$
@@ -83,7 +83,7 @@ Rather than the hack of reducing existence (alpha) to erase organs, we **fully o
 - **Evaluation & Visualization**:
   - Step 0 / 15 / 30 / 45 / 60 / 75 rendering progression, pyramid loss convergence curve, 14D parameter error trace (`docs/results/assets/exp2_diff_render_progression.png`).
 
-#### Step 4. Method 3: Conditional Flow Matching Vector Field (`scratch/exp3_toy_flow_matching.py`)
+#### Step 4. Method 3: Conditional Flow Matching Vector Field (`archive/scratch/20260903_phase1_basics/exp3_toy_flow_matching.py`)
 - **Architecture**:
   - Input: 4-channel RGB-D top-view image ($256 \times 256 \times 4$).
   - Condition encoder: lightweight CNN backbone → image embedding vector $c_{\text{img}} \in \mathbb{R}^{256}$.
@@ -96,7 +96,7 @@ Rather than the hack of reducing existence (alpha) to erase organs, we **fully o
 - **Evaluation & Visualization**:
   - ODE trajectory snapshots at $t \in \{0, 5, 10, 15\}$, 14D Part Tensor generation accuracy (`docs/results/assets/exp3_flow_matching_trajectory.png`).
 
-#### Step 5. Phase 1 Synthesis & Helios C++ Raytracing Verification (`scratch/eval_phase1_comparison.py`)
+#### Step 5. Phase 1 Synthesis & Helios C++ Raytracing Verification (`archive/scratch/20260903_phase1_basics/eval_phase1_comparison.py`)
 - **Phase 1 Benchmark Final Results (Canonical 14D + 7-Row Target with Metadata)**:
 
 | Method | Latency | Top-View Mask IoU | 3D Chamfer Distance | Position MSE | Scale MSE | XML Export |
@@ -141,11 +141,11 @@ Extending the fixed-organ Phase 1 problem to the case where organ count is varia
 
 ### Verification & Deliverables
 - **Core Scripts**:
-  - `PYTHONPATH=. python scratch/make_target_unifoliate.py`: Generate standard 7-row target (with metadata)
-  - `PYTHONPATH=. python scratch/exp1_per_organ_icp.py`: Method 1 ICP
-  - `PYTHONPATH=. python scratch/exp2_diff_render_opt.py`: Method 2 Differentiable Renderer
-  - `PYTHONPATH=. python scratch/exp3_toy_flow_matching.py`: Method 3 Flow Matching
-  - `PYTHONPATH=. python scratch/eval_phase1_comparison.py`: Synthesis benchmark evaluation and Figure 12
+  - `PYTHONPATH=. python archive/scratch/20260903_phase1_basics/make_target_unifoliate.py`: Generate standard 7-row target (with metadata)
+  - `PYTHONPATH=. python archive/scratch/20260903_phase1_basics/exp1_per_organ_icp.py`: Method 1 ICP
+  - `PYTHONPATH=. python archive/scratch/20260903_phase1_basics/exp2_diff_render_opt.py`: Method 2 Differentiable Renderer
+  - `PYTHONPATH=. python archive/scratch/20260903_phase1_basics/exp3_toy_flow_matching.py`: Method 3 Flow Matching
+  - `PYTHONPATH=. python archive/scratch/20260903_phase1_basics/eval_phase1_comparison.py`: Synthesis benchmark evaluation and Figure 12
 - **Visual Deliverables**:
   - `docs/results/assets/fig10_helios_per_organ_mask_comparison.png`: Full lifecycle Helios raytracing verification (DAP 10: 95.1%, DAP 50: 92.8%, DAP 90: 86.5%)
   - `docs/results/assets/fig12_back_to_basics_benchmark_summary.png`: Phase 1 three-method comparison grid

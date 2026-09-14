@@ -39,6 +39,6 @@ This Pull Request resolves a critical geometry distortion bug in the Helios `Pla
 
 ## 3. Comparison Figure
 
-![Helios XML Roundtrip Invariance Verification](file:///home/lion397/codes/image-to-l-system/scratch/helios_xml_pr_roundtrip_verification.png)
+![Helios XML Roundtrip Invariance Verification](file:///home/lion397/codes/image-to-l-system/archive/scratch/helios_xml_pr_roundtrip_verification.png)
 
 Across all test ages (DAP 20, 35, 80), the XML roundtrip loop (Stage 1 $\to$ Stage 2) produces **0.0 mm height drift** and **pixel MAE < 0.005**, achieving complete mathematical and visual invariance.

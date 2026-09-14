@@ -11,7 +11,7 @@ Uses main_old for the "before" row and main for the "after" row.
 Both rows share the same Stage-0 XML so the comparison is fair.
 
 Run from repo root:
-  PYTHONPATH=. python scratch/helios_xml_roundtrip_visualizer.py
+  PYTHONPATH=. python archive/scratch/helios_xml_roundtrip_visualizer.py
 """
 
 import os

@@ -131,7 +131,7 @@ Positional Encoding의 본질은 **"좌표 공간(Coordinate Space)을 주파수
 
 ## 7. Option B Gradient Isolation 실측 단위 검증 결과
 
-`scratch/test_isolation.py` 실측 결과:
+`scratch/test_isolation.py` (현재 위치 이동/삭제됨 — 결과는 아래에 보존) 실측 결과:
 - `pos_head grad norm from render loss`: **102.2648 (> 0, 정상 학습)**
 - `rot_head grad norm from render loss`: **1796.4927 (> 0, 정상 학습)**
 - `scale_head grad norm from render loss`: **103.6325 (> 0, 정상 학습)**
