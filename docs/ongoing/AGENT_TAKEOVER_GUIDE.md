@@ -179,6 +179,20 @@ node SET (missing / spurious, 0.5 gate) is the last 18 points; seedlings (DAP �
 the evidence for §2.1's remaining piece -- child position/roll/scale generated in Stage 3 relative to the fixed parent
 -- with position first. Details: `docs/results/20260914_stage2_burst_fix_and_dataset_plant_roundtrip.md` §7.
 
+### 0-B.8 Stage 3 geometry implemented, A/B in flight (2026-09-14 ~16:10, `abdbaf1`)
+
+`--stage3_geometry` (launcher `STAGE3_GEOMETRY=1`): Stage 3's flow state becomes `[(pos − parent_pos)·BASE_SCALE | roll | scale | latent]`
+(`split_flow_state` / `geometry_from_flow` in `hierarchical_part_flow_matching.py`; decoder built with base/rot/scale dims 3/2/3).
+Targets are relative to the NOISED parent the model is conditioned on (jitter + substitution unchanged), velocity loss =
+latent MSE + `--stage3_geom_weight` (4.0) × geometry MSE, `sample_ode` returns the refined pos/roll/scale under the usual
+keys (Stage 2's under `phytomer_pos_stage2`), the render block renders the refined plant and its loss reaches Stage 3's
+geometry block through pos and scale. A latent-only checkpoint widens on load (latent block kept in `geom_proj` / the
+velocity head; Adam moments widened by `_widen_optimizer_state`). Stage 2 keeps its heads (matching, parents, ordinal,
+existence). Off by default. **A/B** from `hierarchical_fm_v9/hierarchical_fm_epoch_045.pt`: baseline `38257989`
+(cluster, 2 GPU, render 1/6) vs the geometry arm running locally on 1 GPU (`slurm_scripts/logs/local_s3geom_ab.log`,
+`hierarchical_fm_v9_s3geom/`, eval every epoch). Read the per-epoch `[Self-Consistency]` IoU of both; the arm's velocity
+loss starts high (fresh geometry dims, ~12-20) and should fall within the first epochs.
+
 ### 0-B.3 Working-tree hygiene
 
 - Anything not in `git status` clean + the two files named in 0-B.2 is either untracked run artifacts

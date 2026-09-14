@@ -471,7 +471,7 @@ This is worth adopting for three separate reasons. It takes parent coverage from
 
 **Not yet done.**
 
-1. **Stage 3 predicting the child's position, roll and scale against the fixed
+1. **[IMPLEMENTED 2026-09-14, `abdbaf1`, behind `--stage3_geometry`; A/B against the latent-only baseline from epoch 45 in flight -- takeover guide §0-B.8]** Stage 3 predicting the child's position, roll and scale against the fixed
    parent** (today it still predicts only the 128D shape latent; the parent is
    conditioning). Then drop `roll_head`/`scale_head` from Stage 2 (§2's
    original plumbing).
