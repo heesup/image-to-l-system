@@ -180,6 +180,52 @@ def parent_relative(pos: torch.Tensor, parent_pos: torch.Tensor,
     return torch.cat([rel, has.to(pos.dtype).unsqueeze(-1)], dim=-1)
 
 
+def _make_act_recorder(store: dict, name: str):
+    def _fwd(module, inputs, output):
+        try:
+            outs = output if isinstance(output, (tuple, list)) else (output,)
+            m = 0.0
+            for o in outs:
+                if torch.is_tensor(o) and o.numel():
+                    f = o.detach()[torch.isfinite(o.detach())].abs()
+                    if f.numel():
+                        m = max(m, float(f.max()))
+            ins = [i for i in inputs if torch.is_tensor(i) and i.numel()]
+            mi = max((float(i.detach()[torch.isfinite(i.detach())].abs().max()) for i in ins if torch.isfinite(i.detach()).any()), default=0.0)
+            store[name] = (mi, m)
+        except Exception:
+            pass
+    return _fwd
+
+
+_op_probe_seen: set = set()
+
+
+def _make_op_probe(store: dict, name: str, threshold: float = 1e12):
+    def _hook(module, grad_input, grad_output):
+        if name in _op_probe_seen:
+            return
+
+        def _mx(ts):
+            best = 0.0
+            for t in ts:
+                if t is None:
+                    continue
+                f = t[torch.isfinite(t)].abs()
+                if f.numel():
+                    best = max(best, float(f.max()))
+            return best
+
+        g_in, g_out = _mx(grad_input), _mx(grad_output)
+        if g_in > threshold or g_out > threshold:
+            _op_probe_seen.add(name)
+            a_in, a_out = store.get(name, (float("nan"), float("nan")))
+            print(f"  [OpProbe] {name}: grad_out={g_out:.3e} -> grad_in={g_in:.3e} "
+                  f"(x{(g_in / g_out) if g_out > 0 else float('inf'):.1f}) | fwd max|in|={a_in:.3e} max|out|={a_out:.3e}", flush=True)
+
+    return _hook
+
+
 def safe_normalize(v: torch.Tensor, eps: float = 1e-3) -> torch.Tensor:
     """Safely normalizes vectors along the last dimension with bounded gradient.
     Detaching the denominator norm prevents collinear/zero division where d/dv(v/||v||)
@@ -556,6 +602,16 @@ class CoarseSkeletalTransformer(nn.Module):
             # which says WHICH layer rather than just that it is in here.
             for _i, _layer in enumerate(self.decoder.layers):
                 _layer.register_full_backward_hook(_make_layer_probe(f"decoder.layer{_i}"))
+        if os.environ.get("FM_GRAD_PROBE", "0") == "2":
+            # FM_GRAD_PROBE=2 (2026-09-14): every leaf submodule of this stage
+            # reports, once, the first backward pass in which its grad_input
+            # exceeds 1e12 (with the max |activation| it produced in the
+            # matching forward), so a burst can be pinned to an op, not a layer.
+            self._probe_act = {}
+            for _name, _mod in self.named_modules():
+                if len(list(_mod.children())) == 0 and _name:
+                    _mod.register_forward_hook(_make_act_recorder(self._probe_act, _name))
+                    _mod.register_full_backward_hook(_make_op_probe(self._probe_act, _name))
 
         # Stage 1: Macro Biological Head
         self.macro_head = MacroBiologicalHead(embed_dim=embed_dim,

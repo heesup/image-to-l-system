@@ -315,7 +315,22 @@ the 4-GPU trajectory happens to reach around epoch 27, not a deterministic
 trigger; and the training loop now **skips any step whose canary fires** (a
 finite-but-huge gradient was previously clipped to norm 1 and applied, and that
 first garbage update is what made the next forty steps burst too in
-`38242849`). The v9 run (`38248747`) carries that guard. *22:00*: the group quota is now also queued behind two more of
+`38242849`). The v9 run (`38248747`) carries that guard.
+
+*2026-09-14 00:20, REPRODUCED on one GPU.* The local v9 run (from scratch,
+batch 48, `slurm_scripts/logs/local_v9_run.log`) burst at **epoch 7, step
+2062/2084**, first on `coarse_stage.decoder.layers.0.self_attn.in_proj_weight`,
+`.multihead_attn.in_proj_weight` and `.norm1.weight`. The new guard skipped that
+step and every step since -- and **the burst fires on every batch anyway**
+(the last 22 of epoch 7, then all of epoch 8, young and old plants alike) with
+the weights frozen at their step-2061 values. So it is purely the model state:
+one ordinary clipped step took the coarse stage across a threshold beyond which
+the backward pass explodes on any input. Not DDP, not the data order, not the
+eval, and no single corrupted update is needed. The same run is being left in
+that state so its epoch-10 checkpoint captures it (`hierarchical_fm_v9_local/
+hierarchical_fm_epoch_010.pt`, weights identical to step 2061 of epoch 7);
+`FM_GRAD_PROBE=2` (new: a per-op backward probe with the forward activation
+magnitudes) on one step from that checkpoint is the dissection. *22:00*: the group quota is now also queued behind two more of
 Heesup's `regen_shard` arrays (60+ tasks each, plus `regen_synth`/`regen_mopup`
 with dependencies), so neither cluster job has a start time. The v9 run was
 therefore also started **locally on the single RTX 6000 Ada** (from scratch,
