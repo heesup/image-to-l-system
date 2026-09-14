@@ -49,7 +49,7 @@ The two outcomes of 2026-09-13/14 with their tables, the three export/topology f
 **Session Takeover: Grad-Norm Inf Deadlock Fix, Helios Roundtrip Diagnosis & 10-Slot Contract Restore (2026-09-11) — READ THIS FIRST**  
 Root-cause analysis and fixes for Job `38237555` grad_norm=inf deadlock (eval-mode leak + renderer 1/w² Jacobian overflow → w-floor Lipschitz bound, latent OOD clamp, atomic grad clamp, eval model.train() restore). Per-organ Helios roundtrip IoU diagnosis (COCO category mapping bug fixed; FK pitch accumulation identified as follow-up). **Restored the canonical v2/v3 10-slot phytomer contract** (internode slot 0 + repro ×4, matches 240D `phytomer_vae_v3` checkpoint). Lists exact SLURM resubmission sequence for the next agent.
 
-### → [`ongoing/20260908_cascaded_architecture_design_space_analysis.md`](ongoing/20260908_cascaded_architecture_design_space_analysis.md)
+### → [`ongoing/20260908_cascaded_architecture_design_space_analysis.md`](archived/design/20260908_cascaded_architecture_design_space_analysis.md)
 **Cascaded Architecture Design Space: Deterministic vs. Diffusion Analysis (2026-09-08) — READ THIS FIRST**  
 Exhaustive evaluation of the $2 \times 2 = 4$ design space (Stage 2 3D node scaffold vs Stage 3 intra-phytomer organs across Deterministic ViT vs Diffusion/Flow Matching). Mathematical and botanical rationale proving why **Combination 2 ([Deterministic Scaffold] + [16D Latent Flow Matching])** achieves the optimal trade-off between metric accuracy, organic leaf curvature, fast inference (30 ms), and DepthAnything v2 compatibility.
 
@@ -61,15 +61,15 @@ Comprehensive empirical verification of 3D spatial vision (DINOv2 + PETR 3D Ray 
 **Option B: 16D Latent Hierarchical Botanical Flow Matching — 500-Epoch Training & 3D Reconstruction Report (2026-09-07)**  
 Complete realization and empirical verification of Option B (16D Latent Botanical Flow Matching) using a frozen `OrganLatentVAE`. 500 epochs completed on 4× RTX 6000 Ada (18h 57m, job `38143585`). Velocity loss dropped by 83% ($1.71 \to 0.29$), 3D node position RMSE collapsed from 35.9 cm to 4.24 cm, and organ classification accuracy reached 85.6%. Demonstrates **55.1% Mean Silhouette IoU** (peaking at **67.9%** on mature plants), **2.49 cm Peak Height Error**, and complete elimination of ghost organ artifacts.
 
-### → [`ongoing/20260907_latent_hierarchical_flow_matching_specification.md`](ongoing/20260907_latent_hierarchical_flow_matching_specification.md)
+### → [`ongoing/20260907_latent_hierarchical_flow_matching_specification.md`](archived/design/20260907_latent_hierarchical_flow_matching_specification.md)
 **Latent Hierarchical Flow Matching (Option B) Architecture & Transition Specification (2026-09-07)**  
 Detailed architectural blueprint explaining the resolution of the 150× gradient scale disparity and spiky organ collapse via the 16D normalized standard Gaussian latent manifold ($\mathbf{z} \in \mathbb{R}^{16} \sim \mathcal{N}(0, I)$), backward compatibility with 14D part tensors, and frozen VAE differentiable decoding.
 
-### → [`ongoing/20260906_hierarchical_matryoshka_botanical_flow_matching_architecture.md`](ongoing/20260906_hierarchical_matryoshka_botanical_flow_matching_architecture.md)
+### → [`ongoing/20260906_hierarchical_matryoshka_botanical_flow_matching_architecture.md`](archived/design/20260906_hierarchical_matryoshka_botanical_flow_matching_architecture.md)
 **Hierarchical Matryoshka Botanical Flow Matching & In-Loop Differentiable Loss Architecture (2026-09-06)**  
 Two-stage hierarchical Flow Matching architecture with DAP-conditional Matryoshka node allocation, linear scaling with plant maturity ($O(K \log K)$ bipartite matching), in-loop differentiable dense depth (2.5D ICP) loss ($\lambda=0.5$), and lighting/shadow-invariant pixel-wise cosine color loss ($\lambda=0.2$). Backpropagates full autograd gradients through nvdiffrast rasterization into 3D organ geometries directly within training.
 
-### → [`ongoing/20260903_14d_part_tensor_to_xml_dynamic_ik_report.md`](ongoing/20260903_14d_part_tensor_to_xml_dynamic_ik_report.md)
+### → [`ongoing/20260903_14d_part_tensor_to_xml_dynamic_ik_report.md`](done/20260903_14d_part_tensor_to_xml_dynamic_ik_report.md)
 **14D Part Tensor to Helios XML: Analytical Inverse Kinematics & Dynamic Reproductive Reconstruction Report (2026-09-03)**  
 Complete closed-form Inverse Kinematics for lateral shoot insertion ($0.0000^\circ$ error), analytical dynamic phyllotaxis ($<0.85^\circ$ error), phytomer lookahead for `bud_state`, resolution of pod double scaling, and dynamic inverse kinematics for pitch ($\text{pitch} = \text{asin}(-R_{2, 0})$) and scale from 14D Part Tensor without hardcoding. State-of-the-art Helios C++ raytraced accuracy across all growth stages: DAP 10 (87.7% IoU, 34.71 dB), DAP 50 (89.6% IoU, 20.87 dB), and DAP 90 (83.3% IoU, Pod IoU 7.0%, Flower IoU 22.7%, 18.62 dB).
 
