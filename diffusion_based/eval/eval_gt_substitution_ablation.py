@@ -95,7 +95,9 @@ def main():
         num_classes=NUM_ORGAN_TYPES, image_size=128, patch_size=8, embed_dim=args["embed_dim"], vit_layers=args["vit_layers"],
         vit_heads=args["vit_heads"], coarse_layers=args["coarse_layers"], fine_layers=args["fine_layers"],
         flow_granularity=args["flow_granularity"], phytomer_latent_dim=args["phytomer_latent_dim"], backbone=args["backbone"],
-        freeze_backbone=True, init_phytomer_count=args.get("init_phytomer_count", 50.0)).to(dev)
+        freeze_backbone=True, init_phytomer_count=args.get("init_phytomer_count", 50.0),
+        stage3_geometry=bool(args.get("stage3_geometry", False))).to(dev)
+    print(f"  stage3_geometry: {bool(args.get('stage3_geometry', False))} (flow width {model.flow_dim})")
     missing, unexpected = model.load_state_dict(ck["model_state_dict"], strict=False)
     if missing or unexpected:
         print("  state dict: missing", missing[:5], "unexpected", unexpected[:5])
@@ -153,8 +155,9 @@ def main():
             image_tokens = model.image_encoder(images)
             clue = model.probe_pred_dap(image_tokens)
             co = model.coarse_stage(image_tokens, active_k=K, pred_dap=clue)
+            # with --stage3_geometry these are Stage 3's refined values (sample_ode returns them under the usual keys)
             p_pos = so["phytomer_pos"][0].float(); p_exist = so["phytomer_existence"][0].float()
-            p_roll = co["phytomer_roll"][0].float(); p_ord = co["phytomer_ordinal"][0].float(); p_base = co["phytomer_base_logits"][0].float()
+            p_roll = so["phytomer_roll"][0].float(); p_ord = co["phytomer_ordinal"][0].float(); p_base = co["phytomer_base_logits"][0].float()
             p_scale = (so.get("phytomer_scale") if so.get("phytomer_scale") is not None else co.get("phytomer_scale"))[0].float()
             p_lat = so["pred_latent"][0].float()
             # match predicted nodes to GT phytomers (as training does), then to GT packets by centre
