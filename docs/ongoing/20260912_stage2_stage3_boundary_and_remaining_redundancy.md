@@ -315,7 +315,19 @@ the 4-GPU trajectory happens to reach around epoch 27, not a deterministic
 trigger; and the training loop now **skips any step whose canary fires** (a
 finite-but-huge gradient was previously clipped to norm 1 and applied, and that
 first garbage update is what made the next forty steps burst too in
-`38242849`). The v9 run (`38248747`) carries that guard.
+`38242849`). The v9 run (`38248747`) carries that guard. *22:00*: the group quota is now also queued behind two more of
+Heesup's `regen_shard` arrays (60+ tasks each, plus `regen_synth`/`regen_mopup`
+with dependencies), so neither cluster job has a start time. The v9 run was
+therefore also started **locally on the single RTX 6000 Ada** (from scratch,
+batch 48, eval every epoch, checkpoints every 5 epochs into
+`diffusion_based/checkpoints/hierarchical_fm_v9_local/`, log
+`slurm_scripts/logs/local_v9_run.log`, panels in the newest
+`slurm_scripts/logs/run_local_*/`). It shares that GPU with Heesup's local
+Helios regeneration shards, so it is slower than a dedicated GPU and slows them
+a little; stop it with `pkill -f hierarchical_fm_v9_loca[l]` if that matters.
+Whichever of the cluster jobs starts first should be cancelled if the other
+makes it redundant: the replay if the local run reaches epoch ~30 without a
+burst, the v9 cluster run if the local one is already well along.
 
 ---
 
