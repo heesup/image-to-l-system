@@ -134,6 +134,29 @@ matcher의 phytomer 단계는 pad된 배치 위에서 한 번에 돈다 (`_forwa
 
 샘플당 비용은 여전히 배치에 거의 무관(3~5 ms vs 3.5~6 ms)해서 batch 48을 유지한다. **`38253656`**이 이 코드로 `hierarchical_fm_v9/hierarchical_fm_epoch_025.pt`에서 이어 달린다 (`38253401`: epoch 22~25, ~7분/epoch, IoU 32.6~35.5%).
 
+## 7. GT 치환 ablation: 무엇이 실루엣을 잃게 하나 (15:50, epoch 40)
+
+"지금 구조가 이상적인가"에 답하려고, 고정 eval set 20개 식물에서 예측 노드를 GT phytomer에 매칭한 뒤 매칭된 노드의 한 가지 양만 GT로 바꿔 다시 렌더했다 (`diffusion_based/eval/eval_gt_substitution_ablation.py`, `hierarchical_fm_v9/hierarchical_fm_epoch_040.pt`, 같은 렌더러·카메라의 GT 렌더 대비 실루엣 IoU). existence는 항상 예측값이다.
+
+| variant | IoU % | depth MAE cm | young (DAP ≤ 15) | mid | old (> 60) |
+|---|---|---|---|---|---|
+| P (all predicted) | 24.8 | 14.97 | 2.5 | 23.6 | 37.2 |
+| pos ← GT | 42.3 | 12.80 | 27.2 | 36.1 | 55.9 |
+| topo / rot / scale / latent ← GT (one at a time) | 25.3 / 26.3 / 23.9 / 25.2 | ~14.9 | | | |
+| pos+rot / pos+latent / pos+scale / pos+topo | 45.6 / 45.0 / 43.4 / 42.7 | 12.1-12.7 | | | |
+| ALL − pos | 30.6 | 13.98 | 1.2 | 32.9 | 42.9 |
+| ALL − rot | 49.1 | 11.28 | 27.3 | 47.5 | 61.7 |
+| ALL − latent | 47.5 | 11.53 | 27.5 | 44.6 | 60.4 |
+| ALL − scale | 61.6 | 7.90 | 37.5 | 57.5 | 77.7 |
+| ALL − topo | 82.1 | 4.92 | 77.4 | 80.2 | 86.4 |
+| ALL (pos+topo+rot+scale+latent ← GT, existence predicted) | 82.1 | 4.92 | 77.2 | 80.3 | 86.4 |
+
+읽는 법: 노드 **위치**가 1차 병목이다. 위치만 맞추면 24.8 → 42.3, 나머지가 다 맞아도 위치가 예측값이면 30.6으로 무너진다. 그 다음이 **회전과 latent**(나머지가 맞을 때 각각 −33, −35), 그 다음 scale(−20). ordinal/topology head는 나머지가 맞으면 아무 비용도 없다. 항목 간 상호작용이 커서(잎이 GT 잎과 겹치려면 위치·회전·latent·scale이 함께 맞아야 한다) 하나씩 고쳐서는 IoU가 거의 안 오르고 함께 맞아야 오른다. ALL이 82%인 것은 예측 노드 집합 자체(누락·가짜 노드, 0.5 gate)가 남은 18점이다. 어린 식물(DAP ≤ 15)은 예측만으로 2.5%다.
+
+결론: 설계 문서 §2.1의 남은 항목, 즉 **child의 position/roll/scale을 고정된 parent 기준 상대량으로 Stage 3에서 생성**하는 변경의 근거가 선다. 위치를 먼저, 회전·scale을 같은 flow 상태에 넣는다. latent 쪽(렌더 손실을 Stage 3로 여는 것)은 그 다음이다.
+
+같은 시각에 launcher의 렌더 비율 기본값을 3% → 1/6로 되돌렸다 (배치 48에서 8개 식물, step 0.21~0.45 s; 3%는 렌더 한 식물이 0.65 s 걸리던 때의 타협이었다). `38253656`은 epoch 45 체크포인트부터 이 설정으로 이어간다.
+
 ## 5. 변경 파일
 
 | 파일 | 변경 |
@@ -149,3 +172,4 @@ matcher의 phytomer 단계는 pad된 배치 위에서 한 번에 돈다 (`_forwa
 | `diffusion_based/dataset/phytomer_packets.py`, `tests/test_assemble_packets_batched.py` (신규) | §6: 조립 벡터화 (`f3c5366`) |
 | `part_array_dataset.py` (`attach_parent_links`), `helios_pytorch_renderer.py` (`render_batched`), `train_hierarchical_flow_matching.py`, `tests/test_render_batched.py`, `tests/test_render_loss_vectorized.py` | §6.1: 샘플별 루프 제거 (`a1a82bc`) |
 | `phytomer_topology.py` (`_resolve_forest`), `hierarchical_hungarian_matcher.py` (`_forward_phytomer_batched`), `tests/test_chain_vectorized.py`, `tests/test_matcher_batched.py` | §6.2: chain·matcher 벡터화 (`25c2251`) |
+| `diffusion_based/eval/eval_gt_substitution_ablation.py`, launcher `RENDER_FRACTION` 0.167 | §7: GT 치환 ablation |

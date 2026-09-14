@@ -168,6 +168,17 @@ Step (1 GPU): **batch 48: 0.15-0.24 s; batch 256: 0.9-1.5 s.** What is left per 
 roughly flat in batch (3-5 ms at 48, 3.5-6 ms at 256), so batch 48 remains the recipe. Job **`38253656`** runs this
 code, `AUTO_RESUME` from `hierarchical_fm_v9/hierarchical_fm_epoch_025.pt`.
 
+### 0-B.7 GT-substitution ablation: node position is the first-order error (2026-09-14 ~15:50, epoch 40)
+
+`diffusion_based/eval/eval_gt_substitution_ablation.py` (run dir: `gt_substitution_epochNNN.json`): every predicted node
+matched to a GT phytomer, one quantity of the matched nodes replaced by ground truth, re-rendered, silhouette IoU against
+the GT render, 20 plants of the fixed eval set. P 24.8% → pos←GT 42.3 → ALL (pos+topo+rot+scale+latent) 82.1;
+leave-one-out from ALL: −pos 30.6, −rot 49.1, −latent 47.5, −scale 61.6, −topo 82.1. Position first, then rotation
+and latent (−33 each when the rest is right), then scale; the ordinal head costs nothing given the rest; the predicted
+node SET (missing / spurious, 0.5 gate) is the last 18 points; seedlings (DAP ≤ 15) are at 2.5% as predicted. This is
+the evidence for §2.1's remaining piece -- child position/roll/scale generated in Stage 3 relative to the fixed parent
+-- with position first. Details: `docs/results/20260914_stage2_burst_fix_and_dataset_plant_roundtrip.md` §7.
+
 ### 0-B.3 Working-tree hygiene
 
 - Anything not in `git status` clean + the two files named in 0-B.2 is either untracked run artifacts
