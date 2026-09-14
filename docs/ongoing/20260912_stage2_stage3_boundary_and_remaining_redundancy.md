@@ -28,7 +28,7 @@
 | **Leaf size is one scalar per node (1 : 1 : 10/9); terminal leaflet identified per node; opt-in terminal-last packet order for v9** | `2f1691b` |
 | **Stem inverse kinematics in the export: Helios's FK now follows the predicted nodes (§2.5)** | `d3731d3`, `7d92840`, `5827327` |
 
-**The blocker is NOT resolved -- see §1.9.2 (2026-09-12 afternoon): it recurred at epoch 28 with lr below 1e-4.** The earlier reading, kept for the record: the intermittent Stage 2 gradient explosion tracks the **learning rate**, not the architecture: every observed onset sat above ~1.6e-4 effective lr, and job `38240281` at `LR=1e-4` has now run **10 epochs clean** with 0 canary hits, through and well past the point where three of four runs at 3e-4 died. Eight architecture-level hypotheses were tested against minimal reproductions and refuted first; §1.9 records them so nobody pays for them twice.
+**The blocker is RESOLVED (2026-09-14, §1.9.2 end): the coarse decoder had no final LayerNorm, so its raw residual stream fed the bf16 phytomer self-attention; a final norm gives 0/8 burst steps on the frozen burst state against 8/8. The rest of this paragraph is the earlier reading.** The earlier reading, kept for the record: the intermittent Stage 2 gradient explosion tracks the **learning rate**, not the architecture: every observed onset sat above ~1.6e-4 effective lr, and job `38240281` at `LR=1e-4` has now run **10 epochs clean** with 0 canary hits, through and well past the point where three of four runs at 3e-4 died. Eight architecture-level hypotheses were tested against minimal reproductions and refuted first; §1.9 records them so nobody pays for them twice.
 
 **Quality on that run** (render loss still off, it enables at epoch 40): IoU 14.0% -> 25.9%, depth MAE 17.67 -> 13.74 cm, node RMSE 2.4 -> 2.0 cm, predicted phytomer count 52.2 against 54.4. Node RMSE is already inside the 2.5 cm target; IoU is far from the 50%+ target but the photometric signal has not been switched on yet. **Roll has started to learn** — 0.885 (the no-information value, §1.6) down to 0.8250 — which is why it was right not to restructure the roll head on the strength of a few flat epochs.
 
@@ -357,7 +357,24 @@ degrades gradually until one ordinary step crosses the threshold -- which is
 why a lower learning rate only delayed it and why no batch order, eval or DDP
 setting was the trigger. The v9 run was restarted from scratch with the fixes
 (`slurm_scripts/logs/local_v9_run2.log`, `hierarchical_fm_v9_local2/`); the
-queued `low`-partition jobs pick the same defaults up when they start. *22:00*: the group quota is now also queued behind two more of
+queued `low`-partition jobs pick the same defaults up when they start.
+
+*Ablation matrix on the frozen state, 8 steps each, fresh seeds (01:45):*
+
+| final LayerNorm on decoder | self-attention in fp32 | burst steps |
+|---|---|---|
+| off | off (bf16) | 8/8, 8/8 |
+| off | on | 1/8, 2/8 |
+| **on** | off (bf16) | **0/8** |
+| **on** | on | **0/8, 0/8** |
+
+So the **missing final norm is the root cause** -- `nn.TransformerDecoder` was
+built with `norm_first=True` and no `norm`, leaving an unbounded residual
+stream as the self-attention's input -- and fp32 in the self-attention is a
+partial mitigation of the same thing. Both stay on. This closes §1.9 / §1.9.1
+/ §1.9.2: the learning rate never was the cause, the query barrier (`684a9f1`)
+and the canary-skip guard are no longer load-bearing (kept as safety nets),
+and the eight refuted hypotheses stand refuted. *22:00*: the group quota is now also queued behind two more of
 Heesup's `regen_shard` arrays (60+ tasks each, plus `regen_synth`/`regen_mopup`
 with dependencies), so neither cluster job has a start time. The v9 run was
 therefore also started **locally on the single RTX 6000 Ada** (from scratch,
