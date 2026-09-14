@@ -1,8 +1,14 @@
 # Agent Takeover & Engineering Handover Guide
 **Project: Image-to-L-System / 3D Inverse Procedural Plant Reconstruction**  
-**Last Updated:** 2026-09-14 PDT (see §0 below; the sections after it are the 2026-09-11 state and are superseded where §0 says so)  
-**Primary Author/Agent:** Antigravity Autonomous Agent (Pair programming with Heesup Yun)  
-**Environment:** Linux, Python 3.10+, Mamba (`mamba activate digital-crops`), CUDA, PyTorch, `nvdiffrast`, Helios C++ OptiX Raytracer.  
+**Last Updated:** 2026-09-14 ~11:30 PDT (see §0-A below — it is the live handover state for the **Claude Code** session that takes over next; the sections after it are the 2026-09-11 state and are superseded where §0 says so)  
+**Primary Author/Agent:** Antigravity Autonomous Agent → **Claude Code** (since 2026-09-14; pair programming with Heesup Yun)  
+**Environment:** Linux, Python 3.10+, Mamba (`mamba activate digital-crops`), CUDA, PyTorch, `nvdiffrast`, Helios C++ OptiX Raytracer.
+
+> **Takeover for Claude Code (2026-09-14):** this guide is the handover doc. Claude Code session
+> memory additionally lives outside the repo at `~/.claude/projects/-home-lion397-codes-image-to-l-system/memory/*.md`
+> (launcher layout, terminology, run-log conventions, HPC partition rules, VAE round-trip rules).
+> Read §0-B first (live handover state), then `docs/ongoing/README.md` (status dashboard) and
+> `docs/ongoing/20260912_stage2_stage3_boundary_and_remaining_redundancy.md` (§5 reading order).  
 
 ---
 
@@ -58,6 +64,66 @@ exact resume of an older checkpoint; otherwise older checkpoints resume with a n
 
 **Debug switches**: `FM_GRAD_PROBE=1` (per-layer gradient amplification), `FM_ACT_PROBE=1` (decoder LayerNorm input
 std), `FM_SPIKE_DUMP=1` (sample names on Stage 2 spikes), `FM_ASSEMBLY_PROBE=1` (assembly dump).
+
+## 0-B. Handover state as of 2026-09-14 ~11:30 PDT (Claude Code; read this first)
+
+### 0-B.1 Pipeline decoupling & launcher consolidation (committed + pushed today)
+
+Two commits, `main` == `origin/main`:
+
+- **`369c3b4` — pipeline: decouple VAE from packet cache; fold VAE/pkt launchers into the two current launchers.**
+  - `train_hierarchical_flow_matching.py` now encodes the Stage-3 target latent **on the fly** from the cached
+    packets with the VAE the run loaded (verified against the old cached v9 latents: max |diff| ≈ 2e-3, the fp16
+    floor). A `latent` field in older caches is ignored. The packet cache is therefore **VAE-independent**: a new VAE
+    needs no 40-job cache rebuild; only the packet order (`pkt_version`, `PHYTOMER_TERMINAL_LAST`) must still match.
+  - `generate_cache.py`: `--vae-checkpoint` defaults to `""` (latent is an opt-in extra); dead
+    `DEFAULT_VAE_CHECKPOINT` constant removed; docstrings updated (`pkt` mode = packets/presence/centers/refs/keys).
+  - `train_hierarchical_flow_matching.sh`: opt-in **`TRAIN_VAE=1`** stage trains the PhytomerVAE first in the same
+    allocation with the v9 recipe (`--rot-weight 4`, 20,000 files, 120 epochs), then runs FM with it.
+    Standalone `slurm_scripts/train_phytomer_vae.sh` moved to `archive/slurm_scripts/` (indexed in `archive/README.md`).
+  - `generate_helios_dataset_jobs.sh`: the XML-direct packet backfill is now the **`--packets-only`** phase
+    (`--pkt-version`, `--terminal-last`, `--pkt-out-dir`, `--num-jobs`), no VAE. Standalone
+    `slurm_scripts/generate_phytomer_packets_jobs.sh` moved to `archive/slurm_scripts/`.
+  - `tests/test_hierarchical_3stage_cascaded.py` fixed to the current model contract (pure-latent flow width,
+    10 slots, `phytomer_parent_rel` input, valid 1+16×16 patch grid) — 2 stale failures closed. Full relevant suite:
+    **57 passed**.
+- **`f735ce9` — docs: repoint stale scratch/ paths to archive/scratch/ and add 2026-09-14 result figures** (fig13,
+  fig14, `hierarchical_self_consistency_epoch_005.png`, metrics JSONs; `tests/unit/` path fixes).
+
+### 0-B.2 Training state — GPU-efficiency experiment in flight, needs a decision
+
+- Job `38252603` (batch 48/GPU, the validated v9 recipe; ~6.7 GB/49 GB VRAM, ~20% GPU util, **32 min/epoch**) was
+  cancelled at ~11:15 and replaced by **`38252937`** (`gpu-6000_ada-h`, gpu-10-54, 24 h, log
+  `slurm_scripts/logs/hierarchical_fm_38252937.log`): `FORCE_BATCH_SIZE=auto NUM_WORKERS=8`, resume
+  (`INIT_CHECKPOINT=.../hierarchical_fm_v9_local2/hierarchical_fm_epoch_015.pt RESUME=1`) → resumed at **epoch 16**,
+  output `diffusion_based/checkpoints/hierarchical_fm_v9/`, same LR 1e-4 / seed 1234 / render-from-11 / save-every-5.
+- The VRAM probe (`probe_optimal_batch_size`) tuned **256 per GPU** (global 512; est peak 29.4 GB). Its `max_batch`
+  is hardcoded to 256 in `train_hierarchical_flow_matching.py`; without the cap it would have picked ~392.
+- **Finding (measured, not guessed):** step time went **2.2 s → ~18 s** (prof: backward 1.3→11.2 s, render
+  0.65→5.27 s — roughly linear in batch), while steps/epoch fell only 1044→200. Net: **~55–60 min/epoch, WORSE than
+  the 32 min/epoch at batch 48**. Backward scaling is slightly superlinear (8.6× for 5.3× batch).
+- **Uncommitted changes backing the experiment** (commit or revert them):
+  - `diffusion_based/training/train_hierarchical_flow_matching.py`: new `--num_workers` arg (default 4);
+    both DataLoaders now use `num_workers=args.num_workers, prefetch_factor=4, persistent_workers=True`.
+  - `slurm_scripts/train_hierarchical_flow_matching.sh`: passes `--num_workers "${NUM_WORKERS:-8}"`.
+- **Recommendation for the next agent:** wall-clock favours the small batch. Either (a) cancel 38252937 and
+  resubmit with `FORCE_BATCH_SIZE=48` (the validated recipe; keeps LR/optimizer-momentum consistency of the lineage)
+  while keeping the loader improvements (they are harmless and shave the small `other` wait), or (b) sweep one
+  intermediate batch (96 or 128) once, measuring step profs from the log, before deciding. Batch 256 also changes the
+  optimisation landscape mid-resume (Adam moments were calibrated at batch 48) — another reason to prefer (a).
+
+- **Decision taken 2026-09-14 11:40 (Claude Code):** option (a). `38252937` cancelled; **`38252981`** resubmitted with
+  `FORCE_BATCH_SIZE=48` (launcher default), `NUM_WORKERS=8`, resume from `hierarchical_fm_v9_local2/hierarchical_fm_epoch_015.pt`
+  (no newer checkpoint existed: `hierarchical_fm_v9/` held only `eval_set.json`), output `hierarchical_fm_v9/`. The loader
+  changes are committed. Batch 48 stays the recipe until an intermediate batch is measured deliberately.
+
+### 0-B.3 Working-tree hygiene
+
+- Anything not in `git status` clean + the two files named in 0-B.2 is either untracked run artifacts
+  (`docs/results/assets/`) or belongs to the archived-launcher index (`archive/README.md`). Keep `slurm_scripts/`
+  to the two current launchers (`train_hierarchical_flow_matching.sh`, `generate_helios_dataset_jobs.sh`).
+- Cluster etiquette: Heesup's `regen_*` jobs (geminigrp) hold the group GPU quota — do not cancel; training goes on
+  `gpu-6000_ada-h` / `low`. The OnDemand desktop (38252204) must not be killed.
 
 ## 0. Quick State Check (Run This First)
 

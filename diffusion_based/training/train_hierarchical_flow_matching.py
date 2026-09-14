@@ -1611,6 +1611,8 @@ def main():
     parser.add_argument("--epochs", type=int, default=500)
     parser.add_argument("--batch_size", type=str, default="auto", help="Batch size per GPU ('auto' for dynamic probe or integer)")
     parser.add_argument("--target_vram_ratio", type=float, default=0.90, help="Target fraction of total GPU VRAM (default: 0.90)")
+    parser.add_argument("--num_workers", type=int, default=4, help="DataLoader workers per process (raise to hide the image+pkt cache load latency)")
+
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument("--max_phytomers", type=int, default=512)
@@ -2012,8 +2014,10 @@ def main():
         dataloader = DataLoader(
             dataset,
             batch_sampler=sampler,
-            num_workers=4,
+            num_workers=args.num_workers,
             pin_memory=True,
+            prefetch_factor=4,
+            persistent_workers=True,
             collate_fn=collate_with_pkt,
         )
     else:
@@ -2023,8 +2027,10 @@ def main():
             batch_size=resolved_batch_size,
             sampler=sampler,
             shuffle=(sampler is None),
-            num_workers=4,
+            num_workers=args.num_workers,
             pin_memory=True,
+            prefetch_factor=4,
+            persistent_workers=True,
             drop_last=True,
             collate_fn=collate_with_pkt,
         )

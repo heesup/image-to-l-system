@@ -167,6 +167,7 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     --epochs "${EPOCHS}" \
     --batch_size "${BATCH_ARG}" \
     --target_vram_ratio "${TARGET_RATIO}" \
+    --num_workers "${NUM_WORKERS:-8}" \
     --lr "${LR:-1e-4}" \
     --backbone_lr_ratio "${BACKBONE_LR_RATIO:-0.3}" \
     --phy_count_weight "${PHY_COUNT_WEIGHT:-2.0}" \
