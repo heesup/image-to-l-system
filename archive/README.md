@@ -76,3 +76,5 @@ superseded launchers live here:
 
 Old job logs (everything the current docs do not point at) were moved to
 `slurm_scripts/logs/archive_20260914/` on the same day; `slurm_scripts/logs/` is git-ignored.
+| `train_phytomer_vae.sh` (2026-09-11) | Standalone PhytomerVAE launcher (1 GPU, 6 h) | Folded into `train_hierarchical_flow_matching.sh` as the `TRAIN_VAE=1` stage (2026-09-14); FM encodes latents on the fly, so a VAE swap no longer needs a cache rebuild |
+| `generate_phytomer_packets_jobs.sh` (2026-09-13) | XML-direct packet-target backfill array (`--pkt-version`, `--terminal-last`) | Folded into `generate_helios_dataset_jobs.sh --packets-only` (2026-09-14); no phase runs the VAE any more |

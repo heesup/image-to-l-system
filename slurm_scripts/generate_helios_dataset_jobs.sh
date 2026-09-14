@@ -18,6 +18,12 @@
 #   ./slurm_scripts/generate_helios_dataset_jobs.sh --skip-shards --submit   # Run only C++ XML generation
 #   ./slurm_scripts/generate_helios_dataset_jobs.sh --pyramid concat --skip-xml --submit
 #       # per-sample cache with pyramid-concat 16-ch image, cowpea-only
+#   ./slurm_scripts/generate_helios_dataset_jobs.sh --packets-only --pkt-version 7 --terminal-last --submit
+#       # [Phase 3] packet targets only, XML-direct, no re-rendering: (re)build
+#       # dataset/cache/<species>_curv26_pkt* when the PACKET FORMAT changes
+#       # (10-slot layout, leaflet order). Not needed for a new VAE: FM training
+#       # encodes the Stage 3 latents on the fly from these packets (2026-09-14),
+#       # so no phase here runs a VAE (--vae-checkpoint is an opt-in extra).
 # =============================================================================
 
 set -e
@@ -44,7 +50,7 @@ TIME_LIMIT="24:00:00"
 CPUS_PER_JOB=8
 MEM_PER_JOB="32G"
 EXCLUDE_NODES=""
-VAE_CKPT="${REPO_ROOT}/diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt"
+VAE_CKPT=""   # opt-in: also store a latent per packet (FM no longer needs it)
 
 RUN_XML=true
 RUN_SHARDS=true
@@ -127,6 +133,26 @@ while [[ $# -gt 0 ]]; do
             RUN_SHARDS=false
             shift
             ;;
+        --packets-only)
+            PACKETS_ONLY=true
+            shift
+            ;;
+        --pkt-version)
+            PKT_VERSION_ARG="--pkt-version $2"
+            shift 2
+            ;;
+        --terminal-last)
+            TERMINAL_LAST_ARG="--terminal-leaflet-last"
+            shift
+            ;;
+        --pkt-out-dir)
+            PKT_OUT_DIR="$2"
+            shift 2
+            ;;
+        --num-jobs)
+            PKT_NUM_JOBS="$2"
+            shift 2
+            ;;
         --partition)
             PARTITION="$2"
             shift 2
@@ -141,11 +167,80 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown argument: $1"
-            echo "Usage: $0 [--submit] [--dry-run] [--plant-types P] [--seeds S | --total-samples N] [--max-slots M] [--skip-xml] [--skip-shards]"
+            echo "Usage: $0 [--submit] [--dry-run] [--plant-types P] [--seeds S | --total-samples N] [--max-slots M] [--skip-xml] [--skip-shards] [--packets-only --pkt-version N [--terminal-last] [--pkt-out-dir D] [--num-jobs J]]"
             exit 1
             ;;
     esac
 done
+
+# -----------------------------------------------------------------------------
+# Phase 3 (standalone): packet targets from the XML, sharded over PKT_NUM_JOBS
+# jobs, no rendering and no VAE (this used to be generate_phytomer_packets_jobs.sh).
+# -----------------------------------------------------------------------------
+if [[ "${PACKETS_ONLY:-false}" == true ]]; then
+    PKT_DATA_DIR="${DATASET_DIR}/${PLANT_TYPES}"
+    PKT_OUT_DIR="${PKT_OUT_DIR:-dataset/cache/${PLANT_TYPES}_curv26_pkt}"
+    PKT_NUM_JOBS="${PKT_NUM_JOBS:-40}"
+    mkdir -p "${LOGS_DIR}"
+    cd "${REPO_ROOT}"
+    PKT_LOG_DIR="${LOGS_DIR}/pkt_xml_$(date +"%Y%m%d_%H%M%S")"
+    mkdir -p "${PKT_LOG_DIR}"
+    MASTER_LIST="${PKT_LOG_DIR}/xml_master_list.txt"
+    find "${PKT_DATA_DIR}" -maxdepth 1 -name "*_plant_*.xml" | sort > "${MASTER_LIST}"
+    PKT_TOTAL=$(wc -l < "${MASTER_LIST}")
+    PKT_PER_JOB=$(( (PKT_TOTAL + PKT_NUM_JOBS - 1) / PKT_NUM_JOBS ))
+    echo "============================================================"
+    echo "Phase 3: XML-direct packet targets (no render, no VAE)"
+    echo "XML Dir:       ${PKT_DATA_DIR} (${PKT_TOTAL} files)"
+    echo "Output:        ${PKT_OUT_DIR}"
+    echo "Parallel Jobs: ${PKT_NUM_JOBS} (${PKT_PER_JOB} XML / job) on ${PARTITION}/${ACCOUNT}, 1 GPU + 8 cpus each"
+    echo "Convention:    ${PKT_VERSION_ARG:-pkt_version default} ${TERMINAL_LAST_ARG:-bottom-to-top leaflets}"
+    echo "Batch Log:     ${PKT_LOG_DIR}"
+    echo "============================================================"
+    for ((job_idx=0; job_idx<PKT_NUM_JOBS; job_idx++)); do
+        START=$(( job_idx * PKT_PER_JOB )); END=$(( START + PKT_PER_JOB ))
+        if [[ $START -ge $PKT_TOTAL ]]; then break; fi
+        if [[ $END -gt $PKT_TOTAL ]]; then END=$PKT_TOTAL; fi
+        JOB_SCRIPT="${PKT_LOG_DIR}/job_${job_idx}.sh"
+        LIST_FILE="${PKT_LOG_DIR}/xml_list_${job_idx}.txt"
+        sed -n "$((START + 1)),${END}p" "${MASTER_LIST}" > "${LIST_FILE}"
+        cat > "${JOB_SCRIPT}" << EOF
+#!/bin/bash
+#SBATCH --job-name=pkt_xml_${job_idx}
+#SBATCH --partition=${PARTITION}
+#SBATCH --account=${ACCOUNT}
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --time=06:00:00
+#SBATCH --gres=gpu:1
+#SBATCH --output=${PKT_LOG_DIR}/pkt_xml_${job_idx}_%j.log
+#SBATCH --error=${PKT_LOG_DIR}/pkt_xml_${job_idx}_%j.log
+
+cd ${REPO_ROOT}
+export PYTHONUNBUFFERED=1
+export PYTHONPATH=.
+echo "Job ${job_idx}: ${START}..${END} (${LIST_FILE})"
+${PYTHON_BIN} diffusion_based/dataset/generate_cache.py \
+    --mode pkt \
+    --data-root ${PKT_DATA_DIR} \
+    --output-dir ${PKT_OUT_DIR} \
+    --workers 8 \
+    --batch-size 128 \
+    --device cuda:0 \
+    --file-list ${LIST_FILE} ${PKT_VERSION_ARG} ${TERMINAL_LAST_ARG}
+EOF
+        chmod +x "${JOB_SCRIPT}"
+        if [[ "${SUBMIT}" == true ]]; then
+            sbatch "${JOB_SCRIPT}"
+        else
+            echo "[dry-run] ${JOB_SCRIPT} (${START}..${END})"
+        fi
+    done
+    echo "Done. Job scripts in ${PKT_LOG_DIR}/job_*.sh"
+    exit 0
+fi
 
 TOTAL_DAPS=$((DAP_MAX - DAP_MIN + 1))
 
@@ -372,7 +467,7 @@ if [[ "${RUN_SHARDS}" == true ]]; then
         --worker-id 0 \\
         --image-size ${IMAGE_SIZE} \\
         --max-slots ${MAX_SLOTS} \\
-        --vae-checkpoint "${VAE_CKPT}" \\
+        ${VAE_CKPT:+--vae-checkpoint ${VAE_CKPT}} \\
         --device cuda
 
     SHARD_STATUS=\$?

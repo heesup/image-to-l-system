@@ -151,14 +151,18 @@ python diffusion_based/dataset/generate_cache.py --help  # XML -> .pt cache + ph
 ### 3. Train
 
 ```bash
-# Stage 4: PhytomerVAE (train first — Stage 3 decodes into its latent space, frozen)
+# PhytomerVAE (train first — Stage 3 decodes into its latent space, frozen).
+# Cached packets no longer store latents: the FM trainer encodes Stage-3 target
+# latents on the fly with the VAE it loads (2026-09-14), so a new VAE does NOT
+# need a packet-cache rebuild. Retrain the VAE only when the packet format changes.
 python diffusion_based/training/train_phytomer_vae.py --help
-# or on a SLURM cluster:
-sbatch slurm_scripts/train_phytomer_vae.sh
 
-# Stages 1-3: hierarchical scaffold + phytomer-latent flow matching
+# Stages 1-3: hierarchical scaffold + phytomer-latent flow matching.
 python diffusion_based/training/train_hierarchical_flow_matching.py --help
 sbatch slurm_scripts/train_hierarchical_flow_matching.sh
+# One launcher trains the VAE first in the same allocation, then FM with it
+# (the standalone train_phytomer_vae.sh is archived under archive/slurm_scripts/):
+TRAIN_VAE=1 sbatch slurm_scripts/train_hierarchical_flow_matching.sh
 ```
 
 ### 4. Evaluate
@@ -184,8 +188,8 @@ Checkpoints are git-ignored (`diffusion_based/checkpoints/`) and live on disk on
 
 | Directory | Model | Status |
 |---|---|---|
-| `diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/` | PhytomerVAE 128D hybrid (48 + 10×8), terminal-last packets, 20k files | **Accepted default** (export VAE and the v9 FM run's VAE; needs `dataset/cache/cowpea_curv26_pkt_v9/`, `PHYTOMER_TERMINAL_LAST=1`) |
-| `diffusion_based/checkpoints/phytomer_vae_v8/` | PhytomerVAE 128D hybrid, bottom-to-top packets | VAE of every FM run before v9 (`cowpea_curv26_pkt/`, `PHYTOMER_TERMINAL_LAST=0`) |
+| `diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/` | PhytomerVAE 128D hybrid (48 + 10×8), terminal-last packets, 20k files | **Accepted default** (export VAE and the v9 FM run's VAE; `PHYTOMER_TERMINAL_LAST=1`) |
+| `diffusion_based/checkpoints/phytomer_vae_v8/` | PhytomerVAE 128D hybrid, bottom-to-top packets | VAE of every FM run before v9 (`cowpea_curv26_pkt/`, pkt `6`, `PHYTOMER_TERMINAL_LAST=0`) |
 | `diffusion_based/checkpoints/hierarchical_fm_v9_local2/` | 3-stage cascaded FM, v9 lineage (final-norm decoder, fp32 self-attention) | Active training — see `docs/ongoing/README.md` |
 | `diffusion_based/checkpoints/organ_vae/organ_latent_vae_best.pt` | Frozen per-organ latent VAE bridge (earlier design) | Kept for lineage |
 

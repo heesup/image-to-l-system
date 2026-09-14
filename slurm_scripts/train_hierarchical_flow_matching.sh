@@ -18,6 +18,7 @@
 #   sbatch --partition=low --account=publicgrp --gres=gpu:a100:4 --time=7-00:00:00 \
 #          --requeue --export=ALL,AUTO_RESUME=1 slurm_scripts/train_hierarchical_flow_matching.sh
 #   INIT_CHECKPOINT=<...>/hierarchical_fm_epoch_015.pt RESUME=1 sbatch ...           # continue a lineage elsewhere
+#   TRAIN_VAE=1 sbatch slurm_scripts/train_hierarchical_flow_matching.sh             # train a fresh VAE first, then FM with it
 # The v8 recipe (bottom-to-top packets) needs PHYTOMER_VAE_CHECKPOINT=.../phytomer_vae_v8/...,
 # PKT_CACHE_DIR=dataset/cache/cowpea_curv26_pkt and PHYTOMER_TERMINAL_LAST=0 together; never mix.
 
@@ -79,6 +80,37 @@ export PHYTOMER_TERMINAL_LAST=${PHYTOMER_TERMINAL_LAST:-1}
 
 # GPU count detection
 NPROC=${SLURM_GPUS_ON_NODE:-$(nvidia-smi --list-gpus | wc -l)}
+
+# TRAIN_VAE=1: train the PhytomerVAE first, in this same allocation, then run
+# FM with it. FM encodes the Stage 3 target latents on the fly from the cached
+# packets (2026-09-14), so a new VAE needs no packet-cache rebuild; only the
+# packet order must agree (PHYTOMER_TERMINAL_LAST, exported above). Default 0:
+# the VAE is a shared frozen component -- retraining it per FM run
+# re-randomises the latent space and makes runs incomparable, so retrain it
+# when the packet format changes, not per run. The recipe below is the one
+# v9_tl_rw4_20k was trained with (rot weight 4, 20,000 files, 120 epochs).
+if [ "${TRAIN_VAE:-0}" = "1" ]; then
+    VAE_DIR=${VAE_CHECKPOINT_DIR:-diffusion_based/checkpoints/phytomer_vae_$(date +%Y%m%d_%H%M)}
+    mkdir -p "${VAE_DIR}"
+    echo ">>> [VAE] training PhytomerVAE-${VAE_LATENT_DIM:-128}D into ${VAE_DIR} (files ${VAE_MAX_FILES:-20000}, epochs ${VAE_EPOCHS:-120}, rot weight ${VAE_ROT_WEIGHT:-4}, terminal-last ${PHYTOMER_TERMINAL_LAST})"
+    ${PYTHON_BIN} diffusion_based/training/train_phytomer_vae.py \
+        --cache-dir "${CACHE_DIR:-dataset/cache/cowpea_curv26}" \
+        --latent-dim "${VAE_LATENT_DIM:-128}" \
+        --residual-dim "${VAE_RESIDUAL_DIM:-8}" \
+        --hidden-dim 256 \
+        --epochs "${VAE_EPOCHS:-120}" \
+        --batch-size 4096 \
+        --lr 1e-3 \
+        --beta-kl 1e-3 \
+        --rot-weight "${VAE_ROT_WEIGHT:-4}" \
+        --max-files "${VAE_MAX_FILES:-20000}" \
+        --seed "${SEED:-0}" \
+        --packet-cache "${VAE_DIR}/packets_${VAE_MAX_FILES:-20000}files.pt" \
+        --checkpoint-dir "${VAE_DIR}" \
+        --device cuda:0
+    PHYTOMER_VAE_CHECKPOINT="${VAE_DIR}/phytomer_vae_${VAE_LATENT_DIM:-128}d_best.pt"
+    echo ">>> [VAE] done at $(date): ${PHYTOMER_VAE_CHECKPOINT}"
+fi
 VRAM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -n 1)
 
 echo "================================================================================"

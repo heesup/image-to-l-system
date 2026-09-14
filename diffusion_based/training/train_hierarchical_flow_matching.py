@@ -211,21 +211,33 @@ def forward_backward_step(
     phyto_targets = None
     if flow_granularity == "phytomer":
         D = raw_model.phytomer_latent_dim
-        # FAST PATH: precomputed pkt cache (packets/presence/centers/refs/latent
-        # per sample, from generate_cache.py / train_phytomer_vae.py --pkt-cache-dir).
-        # The batch carries a 'pkt' list of per-sample dicts (or None where the
-        # pkt cache is missing — those samples fall back to the on-the-fly build).
+        # FAST PATH: precomputed pkt cache (packets/presence/centers/refs/keys
+        # per sample, from generate_cache.py). The batch carries a 'pkt' list of
+        # per-sample dicts (or None where the pkt cache is missing — those
+        # samples fall back to the on-the-fly build).
+        # The Stage 3 target latent is encoded HERE from the cached packets with
+        # the VAE this run loaded, never read from the cache (2026-09-14): the
+        # cache is then VAE-independent and a new VAE needs no cache rebuild;
+        # only the packet order (PHYTOMER_TERMINAL_LAST) must agree with the
+        # VAE. A `latent` field in older caches is ignored. The VAE is a ~1M
+        # parameter MLP over <= 512 packets per sample, so this costs nothing
+        # next to the backbone and the renderer.
         pkt_batch = batch.get("pkt", None)
         phyto_targets = []
         for b in range(B):
             pb = pkt_batch[b] if pkt_batch is not None else None
             if pb is not None:
+                packets_b = pb["packets"].to(device, dtype=torch.float32)
+                presence_b = pb["presence"].to(device)
+                with torch.no_grad():
+                    lat_b = phytomer_vae.encode(
+                        phytomer_vae.pack_input(packets_b, presence_b))[0].float()
                 entry = {
-                    "packets": pb["packets"].to(device, dtype=torch.float32),
-                    "presence": pb["presence"].to(device, dtype=torch.float32),
+                    "packets": packets_b,
+                    "presence": presence_b.to(dtype=torch.float32),
                     "centers": pb["centers"].to(device, dtype=torch.float32),
                     "refs": pb["refs"].to(device, dtype=torch.float32),
-                    "latent": pb["latent"].to(device, dtype=torch.float32),
+                    "latent": lat_b,
                 }
                 if "keys" in pb:
                     entry["keys"] = pb["keys"].to(device)

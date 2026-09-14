@@ -943,11 +943,18 @@ from-scratch run. Do this only once §1.9.2's burst has an answer, or accept tha
 run may need the same treatment at epoch ~27.
 
 *2026-09-13 10:00*: `dataset/cache/cowpea_curv26_pkt_v9` is complete and verified
-(100,000 files, 0 errors; sampled files all pkt_version 7, terminal-last, 128D
-latents). The from-scratch v9 run is queued as the job after the replay (see the
+(100,000 files, 0 errors; sampled files all pkt_version 7, terminal-last). The from-scratch v9 run is queued as the job after the replay (see the
 commit log); both wait on the group's GPU quota. If the replay names a cause
 before the v9 run reaches epoch ~25, patch and resume it from its latest
 checkpoint rather than restarting.
+
+*2026-09-14 (addendum)*: the packet cache no longer stores latents at all —
+`train_hierarchical_flow_matching.py` encodes the Stage-3 target latent on the
+fly from the cached `packets`/`presence` with the VAE the run loaded (verified
+equal to the old cached v9 latents to fp16 precision, max |diff| ≈ 2e-3). The
+cache is therefore VAE-independent; only the packet ORDER (`pkt_version`,
+`PHYTOMER_TERMINAL_LAST`) still has to match the VAE. Retraining/swapping the
+VAE no longer forces a 40-job cache rebuild.
 
 **Recommendation on sequencing §2 vs §3 vs a real training run**: §2 and §3 both change what the FM/VAE checkpoints look like, so either should happen *before* committing to a long real training run, not after (avoid training for hours against an architecture you're about to change again). §3 is the smaller, more mechanical change (a VAE-only retrain, ~3.5 minutes on a TITAN RTX per the v8 precedent) and has no open design questions -- do it first. §2 has one open question (§2's "not yet resolved" paragraph) to settle before writing code. Only after both land does a real, non-smoke hierarchical FM training run make sense.
 

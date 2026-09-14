@@ -8,17 +8,19 @@ Modes (--mode):
             image          (4*zooms, H, W) rendered pyramid
             num_zooms, zooms
             phytomer_ids   (N, 2) XML (shoot_id, phytomer_idx) membership
-            pkt            {packets, presence, centers, refs, latent}
-                           (latent only when --vae-checkpoint is given)
+            pkt            {packets, presence, centers, refs, keys}
+                           (+ latent only when --vae-checkpoint is given; FM
+                           training encodes latents on the fly since 2026-09-14
+                           and ignores a stored one)
           Rendering the pyramid image is the expensive step; `pkt` is derived
           from the same XML rows for free, so the training loop never has to
-          rebuild/encode packets per step.
+          rebuild packets per step.
 
-  pkt   - XML-direct packet targets only (NO rendering), one small .pt per
-          sample: {packets, presence, centers, refs, latent}. Use this to build
-          or refresh packet targets for an existing image cache without
-          re-rendering (reads ~250KB XML instead of the ~630KB cache file).
-          Requires --vae-checkpoint to store `latent`.
+  pkt   - XML-direct packet targets only (NO rendering, no VAE), one small .pt
+          per sample: {packets, presence, centers, refs, keys}. Use this to
+          build or refresh packet targets for an existing image cache without
+          re-rendering (reads ~250KB XML instead of the ~630KB cache file) when
+          the PACKET FORMAT changes; a new VAE needs nothing here.
 
 Pyramid option (--pyramid):
   none     - (4,  H, W)        RGB(3, [-1,1]) + CHM depth(1, meters)
@@ -67,8 +69,6 @@ from diffusion_based.dataset.phytomer_packets import build_phytomer_packets
 from diffusion_based.models.phytomer_vae import PhytomerVAE
 
 PYRAMID_ZOOMS = [1.0, 2.0, 4.0, 8.0]
-DEFAULT_VAE_CHECKPOINT = os.path.join(
-    repo_root, "diffusion_based", "checkpoints", "phytomer_vae_v8", "phytomer_vae_128d_best.pt")
 
 # 1: 8-slot, 2: 10-slot absolute latent, 3: 10-slot + normalized-space latent,
 # 4: adds `keys` = the (shoot_id, phytomer_idx) each packet was grouped by, which
@@ -85,9 +85,9 @@ DEFAULT_VAE_CHECKPOINT = os.path.join(
 #    caught via a smoke test showing `Dir: 0.0000` on every step.
 PKT_VERSION = 6
 # The version stamped into the files this process writes. --pkt-version raises it
-# for a cache built under a newer convention (7 = terminal-last leaflet packets
-# and a v9 VAE's latents) without changing what the training gate expects of the
-# existing cache until that constant is bumped too.
+# for a cache built under a newer convention (7 = terminal-last leaflet packets)
+# without changing what the training gate expects of the existing cache until
+# that constant is bumped too.
 _PKT_VERSION_OUT = PKT_VERSION
 
 
@@ -115,14 +115,17 @@ def parse_args():
     parser.add_argument("--image-size", type=int, default=128)
     parser.add_argument("--max-slots", type=int, default=4096)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--vae-checkpoint", type=str, default=DEFAULT_VAE_CHECKPOINT,
-                        help="Frozen PhytomerVAE checkpoint for `latent` (empty string = skip latent)")
+    parser.add_argument("--vae-checkpoint", type=str, default="",
+                        help="Optional frozen PhytomerVAE checkpoint: also store a `latent` per packet. "
+                             "Default empty = no latent. Since 2026-09-14 FM training encodes the Stage 3 "
+                             "target latent on the fly from the cached packets with the VAE it loads, so "
+                             "the cache stops before the VAE and a new VAE needs no cache rebuild.")
     parser.add_argument("--vae-latent-dim", type=int, default=128,
                         help="Must match the checkpoint's total latent width (coarse + slots*residual).")
     parser.add_argument("--vae-residual-dim", type=int, default=8,
                         help="Must match the checkpoint's per-slot rotation-residual width.")
     parser.add_argument("--pkt-version", type=int, default=PKT_VERSION,
-                        help="pkt mode: pkt_version stamped into the written files (7 = terminal-last packets + v9 VAE latents).")
+                        help="pkt mode: pkt_version stamped into the written files (7 = terminal-last packets).")
     parser.add_argument("--terminal-leaflet-last", action="store_true",
                         help="pkt mode: build packets with the terminal leaflet always in slot 4 (sets PHYTOMER_TERMINAL_LAST=1 for this process; must match the VAE the latents come from).")
     parser.add_argument("--file-list", type=str, default="",

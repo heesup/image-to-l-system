@@ -276,10 +276,11 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
         self.assertEqual(sample_out["pred_num_phytomers"].shape, (B, 1))
 
     def test_end_to_end_phytomer_mode_forward_and_ode(self):
-        """Phytomer granularity: forward + sample_ode on the (B, K, 12+D) path."""
+        """Phytomer granularity: forward + sample_ode on the pure-latent (B, K, D) path."""
+        slots = 10
         model = HierarchicalPartFlowMatchingModel(
             max_phytomers=16,
-            slots_per_phytomer=8,
+            slots_per_phytomer=slots,
             node_dim=16,
             embed_dim=96,
             coarse_layers=1,
@@ -288,11 +289,11 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
             phytomer_latent_dim=32,
         ).to(self.device)
 
-        B, D = 2, 12 + 32
+        B, D = 2, 32  # Hybrid Decoupled: flow vector is the pure VAE latent (node_flow_dim = D)
         dummy_img = torch.randn(B, 16, 128, 128, device=self.device)
         daps = torch.tensor([15.0, 25.0], device=self.device)
 
-        # 1. Forward (flow x is (B, K, 12+D))
+        # 1. Forward (flow x is (B, K, D))
         K = 16
         noisy_flow = torch.randn(B, K, D, device=self.device)
         timesteps = torch.rand(B, device=self.device)
@@ -304,7 +305,7 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
         )
         self.assertEqual(out["flow_granularity"], "phytomer")
         self.assertEqual(out["pred_velocity"].shape, (B, max(K, 8), D))
-        self.assertEqual(out["pred_fine_exist_logits"].shape, (B, max(K, 8), 8))
+        self.assertEqual(out["pred_fine_exist_logits"].shape, (B, max(K, 8), slots))
 
         # 2. Sample ODE
         sample_out = model.sample_ode(images=dummy_img, daps=daps, num_steps=2)
@@ -316,31 +317,42 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
         self.assertEqual(sample_out["phytomer_latent"].shape[-1], 32)
 
     def test_phytomer_flow_decoder_shapes_and_gradients(self):
-        """Phytomer mode: flow-matches [base(3) + roll(2) + scale(3) + latent(D)] per phytomer."""
+        """Phytomer mode: the Hybrid-Decoupled decoder flow-matches the pure VAE
+        latent (node_flow_dim = latent_dim, pose/roll/scale/parent as conditioning)."""
         latent_dim = 64
-        D = 8 + latent_dim
+        D = latent_dim  # Hybrid Decoupled: base_dim=rot_dim=scale_dim=0 -> flow is the latent
         decoder = PhytomerFlowMatchingDecoder(
-            latent_dim=latent_dim, rot_dim=2, embed_dim=128, num_heads=4, num_layers=2
+            latent_dim=latent_dim, base_dim=0, rot_dim=0, scale_dim=0,
+            embed_dim=128, num_heads=4, num_layers=2,
         ).to(self.device)
-        B, K, T = 2, 8, 16
+        B, K = 2, 8
         noisy = torch.randn(B, K, D, device=self.device, requires_grad=True)
         t = torch.rand(B, device=self.device)
         phytomer_feat = torch.randn(B, K, 128, device=self.device)
-        img_tokens = torch.randn(B, T, 128, device=self.device)
+        # Valid patch grid: 1 CLS + 16*16 = 257 tokens, so PhytomerVisualProjector
+        # actually samples (a non-square token count makes it return zeros and cuts grad).
+        img_tokens = torch.randn(B, 1 + 16 * 16, 128, device=self.device)
         phytomer_pos = torch.randn(B, K, 3, device=self.device)
         phytomer_roll = torch.randn(B, K, 2, device=self.device)
         phytomer_scale = torch.randn(B, K, 3, device=self.device)
+        phytomer_parent_rel = torch.randn(B, K, 4, device=self.device)
         out = decoder(
             noisy_flow=noisy, timesteps=t, phytomer_features=phytomer_feat,
             image_tokens=img_tokens, phytomer_pos=phytomer_pos, phytomer_roll=phytomer_roll,
-            phytomer_scale=phytomer_scale,
+            phytomer_scale=phytomer_scale, phytomer_parent_rel=phytomer_parent_rel,
         )
         self.assertEqual(out["pred_velocity"].shape, (B, K, D))
         self.assertEqual(out["pred_slot_exist_logits"].shape, (B, K, 10))
         loss = out["pred_velocity"].pow(2).mean() + out["pred_slot_exist_logits"].pow(2).mean()
         loss.backward()
         self.assertIsNotNone(noisy.grad)
+        # Zero-init residual heads (phytomer_projector.fusion[-1], node_parent_mlp[2]) sit
+        # at zero on random-init weights, so params feeding only INTO them receive no
+        # gradient in this isolated test; the layer's OWN output weight/bias still must.
+        zero_init_upstream = {"pos_to_uv.weight", "pos_to_uv.bias", "0.weight", "0.bias"}
         for name, p in decoder.named_parameters():
+            if any(name.endswith(s) for s in zero_init_upstream):
+                continue
             self.assertIsNotNone(p.grad, f"missing grad: {name}")
 
     def test_phytomer_flow_target_roundtrip(self):
