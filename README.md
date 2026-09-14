@@ -20,10 +20,12 @@
   2. A native Helios C++ XML tree that compiles and raytraces in the physical simulation engine
 - **Rendering**: fully-differentiable `nvdiffrast` rasterization (RGB + CHM depth + soft-existence
   alpha), with a multi-scale pyramid loss
-- **Latest per-organ roundtrip benchmark** (`eval_13d_xml_organ_masks.py`, DAP 10/50/90):
-  Foreground IoU 95.7 / 94.1 / 87.4%, Leaf IoU 80–96% across all stages. Internode/Petiole IoU is
-  still low (an open IK-convention bug — see §11 of the takeover guide) so treat whole-plant
-  numbers as leaf-dominated for now.
+- **Helios round-trip benchmarks** (foreground IoU against the Helios raytrace, 2026-09-14):
+  exact_gt plants DAP 10/50/90 (`eval_phytomer_vae_helios_roundtrip.py`, fig14): IK-only
+  99.9 / 99.6 / 97.7%, through the PhytomerVAE 93.7 / 98.3 / 95.8%; dataset plants DAP 15/40/75
+  (`eval_phytomer_10slot_assembly_views.py`, fig12): packet path 98.3 / 98.2 / 95.6%, through the
+  VAE 95.1 / 96.8 / 95.6%. The export runs a stem and a leaf inverse-kinematics pass so Helios's
+  own forward kinematics lands on the predicted nodes and leaf rotations.
 
 ### Architecture: Hybrid-Decoupled 3-Stage Cascaded Flow Matching
 
@@ -41,11 +43,11 @@ RGB-D image (4×256×256)
           (deterministic set transformer, "botanical scaffold")
    │
    ▼
-[Stage 3] PhytomerFlowMatchingDecoder        → Rectified Flow over the 64D PhytomerVAE latent only
-          (conditioned on detached Stage-2 scaffold + image tokens; z_0 ~ N(0, I_64))
+[Stage 3] PhytomerFlowMatchingDecoder        → Rectified Flow over the 128D PhytomerVAE latent only
+          (conditioned on the detached Stage-2 scaffold, the node's fixed parent, and image tokens; z_0 ~ N(0, I_128))
    │
    ▼
-[Stage 4] PhytomerVAE v3 (frozen)            → 64D latent → 10-slot canonical 14D organ packet
+[Stage 4] PhytomerVAE v9 (frozen)            → 128D hybrid latent (48 coarse + 10×8 per-slot residual) → 10-slot canonical 14D organ packet
    │
    ▼
 HeliosPyTorchRenderer                        → multi-scale CHM depth + soft-Dice silhouette loss
@@ -75,12 +77,14 @@ image-to-l-system/
 │   │   ├── dinov2_ray_encoder.py         # Stage 0: DINOv2 + PETR 3D ray positional encoding
 │   │   ├── hierarchical_part_flow_matching.py  # [CRITICAL] Stages 1-3: scaffold + phytomer-latent FM
 │   │   ├── botanical_scaffold.py         # Coarse 3D skeletal transformer building blocks
-│   │   ├── phytomer_vae.py               # Stage 4: PhytomerVAE (240D in / 64D latent, 10-slot)
+│   │   ├── phytomer_vae.py               # Stage 4: PhytomerVAE (10-slot packets in / 128D hybrid latent)
 │   │   ├── organ_latent_vae.py           # Earlier per-organ latent VAE (16D/organ), frozen bridge
 │   │   ├── plant_organ_array.py          # 14D/40D constants, organ types, XML round-trip
 │   │   ├── helios_pytorch_geometry.py    # 26D/40D → differentiable 3D mesh builder
 │   │   ├── helios_pytorch_renderer.py    # nvdiffrast multi-scale pyramid rasterizer
-│   │   ├── part_tensor_to_40d.py         # Closed-form IK + Helios XML assembler
+│   │   ├── part_tensor_to_40d.py         # Analytical 14D → 40D converter + Helios XML assembler
+│   │   ├── part_tensor_stem_ik.py        # Stem inverse kinematics: Helios's FK lands on the predicted nodes
+│   │   ├── part_tensor_leaf_ik.py        # Leaf orientation inverse: FK reproduces each leaf's 14D rotation
 │   │   ├── vit_image_encoder.py          # Conditioning encoder for the direct 26D-node FM track
 │   │   └── part_flow_matching.py         # Direct 26D-node FM denoiser (earlier-gen baseline)
 │   ├── training/
@@ -91,12 +95,16 @@ image-to-l-system/
 │   │   └── train_part_flow_matching.py   # trainer for the direct 26D-node FM baseline
 │   ├── dataset/
 │   │   ├── part_array_dataset.py         # [CRITICAL] cache-first dataset, pkt-cache version gate
-│   │   ├── phytomer_packets.py           # ordered 10-slot phytomer packet assembly
+│   │   ├── phytomer_packets.py           # ordered 10-slot phytomer packet assembly + shoot-structured emitter
+│   │   ├── phytomer_topology.py          # gt_parent_links (training targets) and chain_phytomers (node cloud → shoots)
+│   │   ├── phytomer_roll.py              # forward axis from the chain, 1-DOF roll encoding
 │   │   ├── generate_cache.py             # XML → GPU render → .pt cache + phytomer packets
 │   │   └── dap_bucket_sampler.py         # DAP-stratified batch sampler
 │   ├── eval/
 │   │   ├── eval_hierarchical_self_consistency.py  # DAP-spread diagnostic panel generator
 │   │   ├── eval_13d_xml_organ_masks.py   # per-organ COCO mask IoU + depth PSNR roundtrip
+│   │   ├── eval_phytomer_vae_helios_roundtrip.py   # fig14: IK-only vs VAE round-trip in Helios (exact_gt plants)
+│   │   ├── eval_phytomer_10slot_assembly_views.py  # fig12: GT vs assembly (nadir, 45°) + Helios round-trips (dataset plants)
 │   │   ├── benchmark_helios_vs_torch_renderer.py
 │   │   ├── benchmark_organ_vae_roundtrip.py
 │   │   └── metrics.py                    # mSSIM, FG-IoU, Chamfer
@@ -158,6 +166,8 @@ sbatch slurm_scripts/train_hierarchical_flow_matching.sh
 ```bash
 python diffusion_based/eval/eval_hierarchical_self_consistency.py --help
 python diffusion_based/eval/eval_13d_xml_organ_masks.py --help   # Helios raytrace + per-organ IoU
+python diffusion_based/eval/eval_phytomer_vae_helios_roundtrip.py   # fig14 (exact_gt DAP 10/50/90)
+python diffusion_based/eval/eval_phytomer_10slot_assembly_views.py  # fig12 (dataset DAP 15/40/75, GT + assembly at nadir and 45°)
 ```
 
 ### 5. Tests
@@ -174,8 +184,9 @@ Checkpoints are git-ignored (`diffusion_based/checkpoints/`) and live on disk on
 
 | Directory | Model | Status |
 |---|---|---|
-| `diffusion_based/checkpoints/phytomer_vae_v3/` | PhytomerVAE-64 (10-slot, scale-normalized targets) | **Accepted default** |
-| `diffusion_based/checkpoints/hierarchical_latent_fm/` | 3-stage hybrid-decoupled cascaded FM | Active training — check epoch/job status in the takeover guide |
+| `diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/` | PhytomerVAE 128D hybrid (48 + 10×8), terminal-last packets, 20k files | **Accepted default** (export VAE and the v9 FM run's VAE; needs `dataset/cache/cowpea_curv26_pkt_v9/`, `PHYTOMER_TERMINAL_LAST=1`) |
+| `diffusion_based/checkpoints/phytomer_vae_v8/` | PhytomerVAE 128D hybrid, bottom-to-top packets | VAE of every FM run before v9 (`cowpea_curv26_pkt/`, `PHYTOMER_TERMINAL_LAST=0`) |
+| `diffusion_based/checkpoints/hierarchical_fm_v9_local2/` | 3-stage cascaded FM, v9 lineage (final-norm decoder, fp32 self-attention) | Active training — see `docs/ongoing/README.md` |
 | `diffusion_based/checkpoints/organ_vae/organ_latent_vae_best.pt` | Frozen per-organ latent VAE bridge (earlier design) | Kept for lineage |
 
 Checkpoint naming/size is the fastest way to tell architectures apart — see §4 of
@@ -186,6 +197,9 @@ incompatible architectures have been saved under the same directory during migra
 
 ## Documentation
 
+- [`docs/ongoing/20260912_stage2_stage3_boundary_and_remaining_redundancy.md`](docs/ongoing/20260912_stage2_stage3_boundary_and_remaining_redundancy.md)
+  — the primary engineering record since 2026-09-12: status, the Stage 2 gradient-burst root cause,
+  the Stage 2/3 boundary redesign, the Helios round-trip and its two inverse-kinematics passes
 - [`docs/ongoing/AGENT_TAKEOVER_GUIDE.md`](docs/ongoing/AGENT_TAKEOVER_GUIDE.md) — master handover:
   full system state, active SLURM jobs, failed-launch forensics, next steps, gotchas
 - [`docs/ongoing/README.md`](docs/ongoing/README.md) — live status dashboard

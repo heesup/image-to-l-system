@@ -1,11 +1,11 @@
 # Image-to-L-System: Project Documentation
 
 **Project**: Single-view aerial RGB/RGB-D drone image → 3D plant organ parameter reconstruction via Hierarchical Botanical Flow Matching.  
-**Active Representation**: 16D Organ Latent Space ($\mathbf{z} \in \mathbb{R}^{16} \sim \mathcal{N}(0, I)$ via pre-trained `OrganLatentVAE`) + 14D Canonical Part Tensor (`[cls, base(3), rot(6), scale(3), curv(1)]`).  
-**Active Model**: Two-Stage Hierarchical Botanical Flow Matching (Stage 1: Coarse Set Transformer with Matryoshka Phytomer Node Queries; Stage 2: Fine Flow Matching Decoder over 16D Latents + Frozen Differentiable VAE Decoder).  
-**Cluster Infrastructure**: UC Davis Farm HPC | **Active Nodes**: 4× NVIDIA RTX 6000 Ada Generation (192 GB VRAM) & 4× NVIDIA H100 NVL.  
-**Latest Milestone (2026-09-07)**: Option B (16D Latent Hierarchical Flow Matching) completed 500 epochs (Job `38143585`). Velocity loss collapsed by 83% ($1.71 \to 0.29$), 3D node position RMSE reduced to 4.24 cm, organ classification accuracy reached 85.6%, achieving **55.1% mean silhouette IoU** (peaking at **67.9%** on mature canopies), **2.49 cm peak height error**, and complete elimination of ghost organ artifacts.  
-**Active Checkpoints**: `diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_500.pt` & `diffusion_based/checkpoints/organ_vae/organ_latent_vae_best.pt`.
+**Active Representation**: 14D canonical part tensor (`[cls, base(3), rot(6), scale(3), curv(1)]`) grouped into 10-slot phytomer packets (`[Internode | Petiole | Leaflet×3 | Peduncle | Repro×4]`); the PhytomerVAE compresses a packet to a 128D hybrid latent (48 coarse + 10×8 per-slot residual).  
+**Active Model**: Hybrid-decoupled 3-stage cascaded Flow Matching (Stage 1 macro count; Stage 2 `CoarseSkeletalTransformer`, per-node position / roll / scale / depth-ordinal; Stage 3 `PhytomerFlowMatchingDecoder`, rectified flow over the 128D packet latent conditioned on the node and its fixed parent), differentiable render loss from epoch 11, Helios XML export with stem + leaf inverse kinematics.  
+**Cluster Infrastructure**: UC Davis Farm HPC | training runs on the `low` partition under `publicgrp` (A100 `gpu-3-38`/`gpu-4-56`, H100 `gpu-10-58`; `--requeue` + `AUTO_RESUME=1`); the group's `geminigrp` quota is held by Heesup's dataset-regeneration jobs.  
+**Latest Milestone (2026-09-14)**: the Stage 2 gradient burst is root-caused (missing final LayerNorm on the coarse decoder) and fixed; the Helios round-trip is solved on exact_gt plants (IK-only 99.9 / 99.6 / 97.7%, VAE 93.7 / 98.3 / 95.8% FG IoU, fig14) and on dataset plants (packet path 98.3 / 98.2 / 95.6%, VAE 95.1 / 96.8 / 95.6%, fig12) after fixing shoot chaining, lateral branch points (also the training targets) and leaf orientation in the export. See [`results/20260914_stage2_burst_fix_and_dataset_plant_roundtrip.md`](results/20260914_stage2_burst_fix_and_dataset_plant_roundtrip.md).  
+**Active Checkpoints**: `diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt` (VAE) and `diffusion_based/checkpoints/hierarchical_fm_v9_local2/` (FM, training in progress; see `ongoing/README.md`).
 
 ---
 
@@ -36,6 +36,14 @@
 ---
 
 ## 🌟 Key Active & Authoritative Documents
+
+### → [`ongoing/20260912_stage2_stage3_boundary_and_remaining_redundancy.md`](ongoing/20260912_stage2_stage3_boundary_and_remaining_redundancy.md)
+**Session record 2026-09-12 → 2026-09-14 — READ THIS FIRST (its §5 gives the reading order)**  
+§0 status; §1.9.2 the Stage 2 gradient burst, reproduced on one GPU, dissected per op and root-caused to the coarse decoder's missing final LayerNorm (ablation: 0/8 burst steps vs 8/8); §2.1-2.3 the Stage 2/3 boundary redesign (ordinal = depth from the root, one parent rule, Stage 3 conditioned on the fixed parent); §2.4-2.5 the Helios round-trip and the stem inverse kinematics; **§2.6 the round-trip on dataset plants** (drooping-shoot chaining, branch points from the internode base, leaf orientation inverse); §6 commit log.
+
+### → [`results/20260914_stage2_burst_fix_and_dataset_plant_roundtrip.md`](results/20260914_stage2_burst_fix_and_dataset_plant_roundtrip.md)
+**2026-09-14 report (Korean): burst fix, dataset-plant round-trip, figures 12/14, training state**  
+The two outcomes of 2026-09-13/14 with their tables, the three export/topology fixes, what was tried and reverted, and where training stands.
 
 ### → [`ongoing/20260911_takeover_grad_norm_fix_roundtrip_diagnosis_10slot_restore.md`](ongoing/20260911_takeover_grad_norm_fix_roundtrip_diagnosis_10slot_restore.md)
 **Session Takeover: Grad-Norm Inf Deadlock Fix, Helios Roundtrip Diagnosis & 10-Slot Contract Restore (2026-09-11) — READ THIS FIRST**  
@@ -75,8 +83,13 @@ System architecture, 14D Part Tensor contract, Helios procedural kinematics rule
 
 ```
 diffusion_based/checkpoints/
-├── hierarchical_latent_fm/
-│   ├── hierarchical_fm_epoch_500.pt       # SOTA Option B 16D Latent Hierarchical FM (500 epochs, 55.1% IoU)
+├── phytomer_vae_v9_tl_rw4_20k/
+│   └── phytomer_vae_128d_best.pt          # CURRENT PhytomerVAE: 128D hybrid (48 + 10x8), terminal-last packets, 20k files
+├── phytomer_vae_v8/                       # VAE of the FM runs before v9 (bottom-to-top packets, cowpea_curv26_pkt cache)
+├── hierarchical_fm_v9_local2/
+│   └── hierarchical_fm_epoch_0{05,10,15}.pt  # CURRENT FM lineage (final-norm decoder, fp32 self-attention), training in progress
+├── hierarchical_latent_fm/                # 2026-09-07 Option B lineage (16D OrganLatentVAE), kept for history
+│   ├── hierarchical_fm_epoch_500.pt       # Option B 16D Latent Hierarchical FM (500 epochs, 55.1% IoU)
 │   ├── hierarchical_fm_epoch_400.pt       # Checkpoint at epoch 400
 │   └── hierarchical_fm_epoch_300.pt       # Checkpoint at epoch 300
 ├── organ_vae/
@@ -102,6 +115,10 @@ diffusion_based/checkpoints/
 
 | File | Description |
 |---|---|
+| [`results/20260914_stage2_burst_fix_and_dataset_plant_roundtrip.md`](results/20260914_stage2_burst_fix_and_dataset_plant_roundtrip.md) | **2026-09-14**: Stage 2 gradient burst root-caused and fixed (ablation table); Helios round-trip on dataset plants 81.8/92.2/54.6 → 98.3/98.2/95.6% after fixing shoot chaining, lateral branch points and leaf orientation in the export |
+| [`results/assets/fig14_phytomer_vae_helios_roundtrip.png`](results/assets/fig14_phytomer_vae_helios_roundtrip.png) | Helios GT vs IK-only recon vs VAE round-trip, exact_gt DAP 10/50/90 (IK-only 99.9/99.6/97.7%, VAE 93.7/98.3/95.8% FG IoU) |
+| [`results/assets/fig12_phytomer_10slot_helios_roundtrip.png`](results/assets/fig12_phytomer_10slot_helios_roundtrip.png) | Dataset plants DAP 15/40/75: GT mesh and 10-slot assembly under the same nadir and 45° cameras, then both Helios round-trips |
+| [`results/20260910_gradient_explosion_debug_and_architecture_comparison.md`](results/20260910_gradient_explosion_debug_and_architecture_comparison.md) | 2026-09-10: `.detach()` positive-feedback bug, hybrid-decoupled architecture decision |
 | [`results/20260907_latent_hierarchical_flow_matching_500epoch_report.md`](results/20260907_latent_hierarchical_flow_matching_500epoch_report.md) | **Option B 500-Epoch Comprehensive Milestone Report**: Convergence curves, qualitative 3D reconstructions, physical loss breakdown, and ablation analysis. |
 | [`results/20260825_direct_optimization_cowpea_dap10_report.md`](results/20260825_direct_optimization_cowpea_dap10_report.md) | **Cowpea DAP 10 Direct Optimization & Differentiable PyTorch Renderer Verification Report** (RGB+Depth multi-modal inverse optimization, DAP 1 seedling growth trajectory, random seed recovery, modality ablation). |
 | [`results/assets/hierarchical_self_consistency_epoch_150.png`](results/assets/hierarchical_self_consistency_epoch_150.png) | **3D Spatial Vision Epoch 150 Landmark**: Ground Truth vs Predicted 3D mesh (up to 66.5% IoU), 3D point cloud and skeleton nodes (2.6 cm RMSE), and depth error heatmaps. |

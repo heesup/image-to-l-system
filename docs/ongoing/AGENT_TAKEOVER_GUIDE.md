@@ -10,7 +10,7 @@
 ## 0-A. State as of 2026-09-13 (read this first; supersedes the older sections where they disagree)
 
 The full record is `docs/ongoing/20260912_stage2_stage3_boundary_and_remaining_redundancy.md`
-(§0 status, §1.9.2 the training blocker, §2.4-2.5 the round-trip, §5 reading order, §6 commit log).
+(§0 status, §1.9.2 the training blocker, §2.4-2.5 the round-trip, §2.6 the dataset-plant round-trip, §5 reading order, §6 commit log); the 2026-09-14 report is `docs/results/20260914_stage2_burst_fix_and_dataset_plant_roundtrip.md`.
 
 **Round-trip (the "very important" requirement): solved.** `docs/results/assets/fig14_phytomer_vae_helios_roundtrip.png`
 reads IK-only 99.9 / 99.6 / 97.7% and VAE round-trip **93.7 / 98.3 / 95.8%** FG IoU (DAP 10 / 50 / 90; regenerated
@@ -44,7 +44,7 @@ terminal-last, latents from `v9_tl_rw4_20k`; generated 2026-09-13 with
 to 7 in `generate_cache.py`, point `PKT_CACHE_DIR` and `PHYTOMER_VAE_CHECKPOINT` at v9, and export
 `PHYTOMER_TERMINAL_LAST=1` in that job. Do not mix: a v8 run must keep the v6 cache and the "0" convention.
 
-**Training: the Stage 2 gradient burst is FIXED (2026-09-14).** Root cause: the coarse `nn.TransformerDecoder` (`norm_first=True`) had no final norm, so its raw residual stream (magnitude ~1e3 late in training) went into the bf16 phytomer self-attention as query/key/value; on a frozen burst state the backward amplified the gradient ~6000x on every batch. A final LayerNorm (`FM_DECODER_FINAL_NORM`, default on) gives 0/8 burst steps vs 8/8; fp32 self-attention (`FM_SELFATTN_FP32`, default on) is a partial mitigation kept as well. The v9 run restarted from scratch with both (`slurm_scripts/logs/local_v9_run2.log`, `hierarchical_fm_v9_local2/`; the queued `low`-partition jobs 38249632 / 38250275 use the same defaults). The history below is kept for the record. It recurred at epoch 27-28 in two runs that
+**Training: the Stage 2 gradient burst is FIXED (2026-09-14).** Root cause: the coarse `nn.TransformerDecoder` (`norm_first=True`) had no final norm, so its raw residual stream (magnitude ~1e3 late in training) went into the bf16 phytomer self-attention as query/key/value; on a frozen burst state the backward amplified the gradient ~6000x on every batch. A final LayerNorm (`FM_DECODER_FINAL_NORM`, default on) gives 0/8 burst steps vs 8/8; fp32 self-attention (`FM_SELFATTN_FP32`, default on) is a partial mitigation kept as well. The v9 run restarted from scratch with both (`slurm_scripts/logs/local_v9_run2.log`, epochs 1-15, 0 canary hits; resumed on 2026-09-14 09:50 from epoch 15 with the §2.6 topology targets as `local_v9_run2b.log`, panels `run_local_20260914_095047/`, checkpoints `hierarchical_fm_v9_local2/`; the queued `low`-partition jobs 38249632 / 38250275 use the same defaults and pick up the current code when they start). The history below is kept for the record. It recurred at epoch 27-28 in two runs that
 differ in seed and learning rate (`38240479` at 1e-4, `38242849` at 5e-5, both resumed from the same lineage) at the
 same steps, and `DistributedSampler` is seeded by epoch only, so those runs saw the same batches. Refuted: weight decay,
 decoder token collapse (`FM_ACT_PROBE=1`), a 512-sample subset replay. Live: a full-dataset replay of epochs 26-28 from

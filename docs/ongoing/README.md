@@ -10,17 +10,20 @@ This directory tracks **only actively running work** for the **Image-to-L-System
 
 ---
 
-## 🚨 CURRENT SYSTEM STATE (2026-09-10 night PDT)
+## 🚨 CURRENT SYSTEM STATE (2026-09-14 PDT)
 
 | Component | Status | Details |
 | :--- | :---: | :--- |
-| **Main Training Job** | 🟢 RUNNING | Job `38236720` (4x RTX 6000 Ada, `gpu-10-50`) — **하이브리드 디커플링 + GPU Batch Greedy Matcher 가동 중** |
-| **Architecture Decision**| 🟢 RATIFIED | **하이브리드 디커플링 (Hybrid Decoupled Architecture)** 확정: Stage 2 3D 뼈대 전담 + Stage 3 64D VAE Latent Flow Matching ($z_0 \sim \mathcal{N}(0, I_{64})$) |
-| **Loss Function Diet** | 🟢 RATIFIED | 10개 $\to$ 8개 정예 손실 체계 (`loss_cos`, `loss_dap` 제거, `loss_phytomer_rot` 정규 지도 추가) |
-| **PhytomerVAE v3 (normalized)** | 🟢 DEFAULT | `phytomer_vae_v3` — val recon **0.070**, cls **100%** (10-slot, 240D in, scale-normalized targets) |
-| **Dataset (images+nodes)** | 🟢 COMPLETE | **100,000 / 100,000** XMLs + cache `.pt` (all with `phytomer_ids`) |
-| **Phytomer packet cache** | 🟢 COMPLETE | **100,000 / 100,000** v3 (10-slot, absolute packets + normalized latent, `pkt_version: 3`) |
-| **OnDemand Desktop** | 🟢 RUNNING | Job `38230613`, gpu-5-58 — **DO NOT CANCEL** |
+| **Main training** | 🟡 LOCAL, 1 GPU | v9 run (final-norm + fp32 self-attention, v9 cache/VAE) resumed from epoch 15 on 2026-09-14 09:50 with the new topology targets: log `slurm_scripts/logs/local_v9_run2b.log`, panels `slurm_scripts/logs/run_local_20260914_095047/`, checkpoints `diffusion_based/checkpoints/hierarchical_fm_v9_local2/`. First leg (`local_v9_run2.log`, epochs 1-15): **0 canary hits**, loss 74 → 20.0, self-consistency IoU 19.5 → 31.9%, node RMSE 1.8 cm. |
+| **Cluster jobs** | 🟡 PENDING | `38249632` (`low`/`publicgrp`, a100 ×4) and `38250275` (`low`/`publicgrp`, any 4 GPU), start estimates 9/18-19. Keep whichever starts first; cancel the other and the local run. Both pick up the current code at start. |
+| **Stage 2 gradient burst** | 🟢 FIXED | The coarse `nn.TransformerDecoder` had no final LayerNorm, so its raw residual stream fed the bf16 phytomer self-attention (design doc §1.9.2). `FM_DECODER_FINAL_NORM=1` + `FM_SELFATTN_FP32=1` (defaults): 0/8 burst steps on the frozen burst state vs 8/8. Consider it closed once the run passes epoch ~30 (the v8 lineage burst at 27-28). |
+| **PhytomerVAE** | 🟢 DEFAULT | `phytomer_vae_v9_tl_rw4_20k` — 128D hybrid (48 coarse + 10×8 per-slot residual), terminal-last packets, 20,000 files. Export VAE (eval scripts default to it, `PHYTOMER_TERMINAL_LAST=1`) and the FM training VAE of the v9 run. |
+| **Packet cache** | 🟢 COMPLETE | `dataset/cache/cowpea_curv26_pkt_v9/` — 100,000 files, `pkt_version` 7, terminal-last, latents from `v9_tl_rw4_20k`. (v8 runs keep `cowpea_curv26_pkt/`, pkt 6, `PHYTOMER_TERMINAL_LAST=0`; do not mix.) |
+| **Helios round-trip, exact_gt DAP 10/50/90** | 🟢 SOLVED | fig14: IK-only **99.9 / 99.6 / 97.7%**, VAE round-trip **93.7 / 98.3 / 95.8%** FG IoU (`docs/results/assets/fig14_phytomer_vae_helios_roundtrip.png`). |
+| **Helios round-trip, dataset DAP 15/40/75** | 🟢 SOLVED | fig12: packet path **98.3 / 98.2 / 95.6%**, VAE **95.1 / 96.8 / 95.6%** (was 81.8 / 92.2 / 54.6 on the morning of 2026-09-14; `docs/results/assets/fig12_phytomer_10slot_helios_roundtrip.png`). |
+| **Topology targets** | 🟢 FIXED | `gt_parent_links(..., internode_base=)` resolves 97.8% of lateral branch points (was 66.2%; the training call site passes the decoded base). `chain_phytomers` follows drooping shoots (same-shoot links 100% on 30 plants) and keeps the cotyledon node as shoot 0 (`root_own_shoot`). |
+| **Export (14D → Helios XML)** | 🟢 | Analytical converter + **stem IK** (`part_tensor_stem_ik.py`) + **leaf IK** (`part_tensor_leaf_ik.py`), both on by default (`PART_TENSOR_STEM_IK`, `PART_TENSOR_LEAF_IK`). |
+| **Heesup's regeneration jobs** | ⛔ DO NOT CANCEL | `regen_shard` / `regen_synth` / `regen_mopup` (geminigrp) — they hold the group's GPU quota; training goes to `low`/`publicgrp`. |
 
 ---
 
@@ -28,19 +31,23 @@ This directory tracks **only actively running work** for the **Image-to-L-System
 
 | Document | Purpose |
 | :--- | :--- |
-| **[AGENT_TAKEOVER_GUIDE.md](AGENT_TAKEOVER_GUIDE.md)** | Master handover: full system state, 2026-09-08→10 changes, failed-launch forensics, next steps, gotchas |
-| **[`docs/results/20260910_gradient_explosion_debug_and_architecture_comparison.md`](../results/20260910_gradient_explosion_debug_and_architecture_comparison.md)** | 오늘 세션: .detach() 버그 해부, 하이브리드 디커플링 아키텍처 확정 및 Loss 정예화 분석 |
-| **[20260909_phytomer_latent_and_local_matching.md](20260909_phytomer_latent_and_local_matching.md)** | Master engineering log: phytomer latent, Stage-3 decoder, pipeline refactor |
-| **[20260909_phytomer_latent_visualizer_gui.md](20260909_phytomer_latent_visualizer_gui.md)** | Completed PhytomerVAE latent visualizer GUI |
-| **[20260908_phytomer_capacity_recalibration_and_pred_phytomer_slicing.md](20260908_phytomer_capacity_recalibration_and_pred_phytomer_slicing.md)** | Node capacity logistic recalibration, gradient-safety audit |
+| **[20260912_stage2_stage3_boundary_and_remaining_redundancy.md](20260912_stage2_stage3_boundary_and_remaining_redundancy.md)** | **Primary record (read §5 first):** §0 status, §1.9.2 gradient-burst root cause + ablation, §2.1-2.3 Stage 2/3 boundary redesign, §2.4-2.5 round-trip + stem IK, **§2.6 dataset-plant round-trip (chaining, branch points, leaf IK)**, §6 commit log |
+| **[AGENT_TAKEOVER_GUIDE.md](AGENT_TAKEOVER_GUIDE.md)** | Master handover; §0-A is the 2026-09-14 state, later sections are the 2026-09-11 state where not contradicted |
+| **[`docs/results/20260914_stage2_burst_fix_and_dataset_plant_roundtrip.md`](../results/20260914_stage2_burst_fix_and_dataset_plant_roundtrip.md)** | 2026-09-14 report: burst fix, dataset-plant round-trip, figures, training state (Korean) |
+| [20260911_takeover_grad_norm_fix_roundtrip_diagnosis_10slot_restore.md](20260911_takeover_grad_norm_fix_roundtrip_diagnosis_10slot_restore.md) | 2026-09-11: grad-norm deadlock fix, 10-slot contract restore, first round-trip collapse diagnosis |
+| [20260911_hybrid_vae_rotation_capacity_and_topology_experiments.md](20260911_hybrid_vae_rotation_capacity_and_topology_experiments.md) | 2026-09-11: hybrid 128D VAE, rotation capacity, topology-recovery ablation |
+| [20260909_phytomer_latent_and_local_matching.md](20260909_phytomer_latent_and_local_matching.md) | Engineering log: phytomer latent, Stage-3 decoder, pipeline refactor |
+| [20260909_phytomer_latent_visualizer_gui.md](20260909_phytomer_latent_visualizer_gui.md) | PhytomerVAE latent visualizer GUI |
+| [20260908_phytomer_capacity_recalibration_and_pred_phytomer_slicing.md](20260908_phytomer_capacity_recalibration_and_pred_phytomer_slicing.md) | Node capacity logistic recalibration, gradient-safety audit |
 
 ---
 
-## Next Steps (updated 2026-09-10 night)
+## Next Steps (updated 2026-09-14)
 
 | Priority | Task | Notes |
 | :--- | :--- | :--- |
-| **P0** | **하이브리드 디커플링 코드 구현** | ✅ Stage 3 64D VAE Flow Matching, Stage 2 rot_head 지도, 8대 손실 정리 완료 |
-| **P1** | **단일 배치/유닛 테스트 검증** | `loss_fine_vel` $\sim 1.0$ 및 그래디언트 안전성 확인 |
-| **P2** | **Slurm 신규 잡 제출** | Job `38235969` 취소 후 신규 학습 잡 제출 및 초기 에폭 안정성 모니터 |
-| **P3** | **AncPos / PhyLoss 모니터** | Epoch 30까지 0.01~0.03m 안착 모니터 |
+| **P0** | **Watch the v9 run past epoch 30** | canary hits, Stage 2 Scl/Ord/Ext losses, and the per-epoch self-consistency panels; the goal is rendering that matches the original, not the loss alone |
+| **P1** | **Move training to the cluster** | when `38249632` or `38250275` starts, cancel the other and the local run (`pkill -f "train_hierarchical_flow_matching.p[y]"`) |
+| **P2** | **§2.1 remaining pieces** | Stage 3 predicting the child's position/roll/scale against the fixed parent (heads still in Stage 2); recalibrate the parent noise (`--parent_jitter_cm`, `--parent_substitution`) from `ord_step_mae` |
+| **P3** | **Export residuals** | terminal leaflets (one free angle, 1-1.6° mean), first-node petiole azimuth (only the shoot base roll can set it; a naive roll step was reverted), 2.2% of laterals still resolve to the wrong branch point |
+| **P4** | Housekeeping | delete diagnostic checkpoint dirs (`local_probe_burst`, `local_act_probe`, `local_replay_*`, `local_smoke_parent`) if space matters |
