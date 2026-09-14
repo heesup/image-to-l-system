@@ -304,6 +304,19 @@ the queued cluster replay can test. If the eval reproduces it, look at what
 `evaluate_self_consistency` / `sample_ode` leave behind: train/eval mode,
 in-place writes to buffers or parameters, autocast state, RNG.
 
+*2026-09-13 18:00, result*: the eval-in-the-loop replay also went through epochs
+26-27 clean (epoch 27: Scl 0.28, Ord MAE 2.11, no canary; evals 34.0% / 34.3%
+IoU). So on one GPU, with exact state, the same permutation and the same
+per-epoch eval, the burst does not happen. What is left is the 4-rank DDP
+configuration itself -- 192-sample global batches with per-rank DAP-bucketed
+48s, gradient all-reduce, per-rank RNG -- which only the queued cluster replay
+(`38243735`) can test. Two consequences: the burst is stochastic dynamics that
+the 4-GPU trajectory happens to reach around epoch 27, not a deterministic
+trigger; and the training loop now **skips any step whose canary fires** (a
+finite-but-huge gradient was previously clipped to norm 1 and applied, and that
+first garbage update is what made the next forty steps burst too in
+`38242849`). The v9 run (`38248747`) carries that guard.
+
 ---
 
 ## 2. Proposed next step A: move roll + scale prediction from Stage 2 to Stage 3

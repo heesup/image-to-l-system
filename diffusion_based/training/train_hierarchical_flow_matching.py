@@ -1425,9 +1425,17 @@ def train_one_epoch(
                     print(f"  [Canary] batch samples: {batch.get('prefix', '?')}")
 
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        if torch.isnan(grad_norm) or torch.isinf(grad_norm):
+        # A canary burst (elements past 1e15 before clipping) is a corrupted
+        # gradient even when it is finite: clipping it to norm 1 keeps its
+        # direction, and applying that is what turned one burst into forty
+        # consecutive ones in job 38242849 (2026-09-12). Skip the step like the
+        # NaN case; the counter shows in the epoch line as Recovery.
+        burst_step = step_canary_hits > 0
+        if torch.isnan(grad_norm) or torch.isinf(grad_norm) or burst_step:
             recovery_skips += 1
-            if rank == 0:
+            if rank == 0 and burst_step and not (torch.isnan(grad_norm) or torch.isinf(grad_norm)):
+                print(f"  [Recovery] Step {batch_idx+1}: canary burst ({step_canary_hits} elements) with finite norm -> SKIPPING STEP (weights untouched)")
+            if rank == 0 and (torch.isnan(grad_norm) or torch.isinf(grad_norm)):
                 bad_params = []
                 for name, p in model.named_parameters():
                     if p.grad is None:
