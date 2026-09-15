@@ -34,6 +34,9 @@ def main():
     ap.add_argument("--lr_scale", type=float, default=2e-2)
     ap.add_argument("--lr_latent", type=float, default=2e-2)
     ap.add_argument("--out", default="")
+    ap.add_argument("--keep_best", action="store_true",
+                    help="Return the variables of the step with the lowest INPUT loss (model selection on the input only), "
+                         "not the last step -- guards against the divergent plants.")
     a = ap.parse_args()
     dev = torch.device("cuda:0")
     ck = torch.load(a.checkpoint, map_location="cpu", weights_only=False); args = ck["args"] if isinstance(ck["args"], dict) else vars(ck["args"])
@@ -82,7 +85,8 @@ def main():
         opt = torch.optim.Adam(params)
         # input CHM at the two training zooms (cache channels 3 and 7)
         tgt = {1.0: images[0, 3], 2.0: images[0, 7]}
-        for step in range(a.steps):
+        best = (float("inf"), pos0.clone(), scale0.clone(), lat0.clone())
+        for step in range(a.steps + (1 if a.keep_best else 0)):
             opt.zero_grad()
             parts = plant_from_nodes(pvae, pos, rot, scale, lat, exist, par, M)
             if parts.shape[0] == 0:
@@ -98,7 +102,14 @@ def main():
                 pm = torch.sigmoid((pred - 0.005) * 100.0); gm = (t > 0.005).float()
                 dice = 1.0 - (2.0 * (pm * gm).sum() + 1e-4) / (pm.sum() + gm.sum() + 1e-4)
                 loss = loss + 0.5 * loss_d + 1.0 * dice
+            if a.keep_best and float(loss) < best[0]:
+                best = (float(loss), pos.detach().clone(), scale.detach().clone(), lat.detach().clone())
+            if step == a.steps:
+                break
             loss.backward(); opt.step()
+        if a.keep_best:
+            with torch.no_grad():
+                pos, scale, lat = best[1], best[2], best[3]
         with torch.no_grad():
             iou1, _ = score(render_depth(renderer, plant_from_nodes(pvae, pos, rot, scale, lat, exist, par, M), zoom, dev), gt_depth)
             moved = float((pos - pos0).norm(dim=-1).mean() * 100)

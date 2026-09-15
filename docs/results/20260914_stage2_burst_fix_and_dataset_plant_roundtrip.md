@@ -338,6 +338,19 @@ Heesup: geminigrp의 `gpu-6000_ada-h` 파티션은 최대 8 GPU를 높은 우선
 
 v10 ep95에서 Stage 3가 refine한 노드(pos/roll/scale)를 다시 조건으로 넣고 한 번(2-pass) 또는 두 번(3-pass) 더 샘플했다 (`eval_gt_substitution_ablation.py --self_cond_passes N`): 배포 P 33.6 → 31.7 / 31.7. 자기 노드를 조건으로 되먹여도 노드가 좋아지지 않는다. 즉 Stage 3의 refine은 "GT parent에 대한 상대 위치"를 배운 것이지 "자기 예측을 고쳐 나가는" 능력이 아니다.
 
+### 11.7 추론 쪽 지렛대 (b): test-time refinement — 오늘 가장 큰 이득 (13:20)
+
+`diffusion_based/eval/eval_test_time_refinement.py`: 식물마다 샘플한 뒤 노드 위치·scale·phytomer latent를 leaf 변수로 두고, **입력 CHM**(캐시의 1×·2× 깊이 채널)에 대한 학습용 렌더 손실(depth smooth-L1 + dice)로 Adam 40 step 최적화한다. GT는 쓰지 않는다(analysis-by-synthesis). v10 ep95, 고정 20개 식물, 엄격 256 px 프로토콜:
+
+| | 전체 20 | DAP > 15 |
+|---|---|---|
+| 샘플 그대로 | 37.0 | 41.7 |
+| **40 step 정제 후** | **44.3** | **52.0** |
+
+식물별로는 24.5 → 55.8 (DAP 39), 31.9 → 67.5 (DAP 60), 48.4 → 74.6 (DAP 51)처럼 크게 오르는 것과 54.4 → 25.6 (DAP 89), 51.9 → 41.7 (DAP 94)처럼 무너지는 것이 섞여 있다(노드 이동 평균 0.3–4.7 cm). 무너지는 경우를 막기 위해 **입력 손실이 가장 낮은 step의 변수를 택하는** `--keep_best`(GT 없이 입력만으로 선택)와 변수 집합별(pos+scale / latent만) 변형을 이어서 잰다.
+
+의미: 학습 쪽 지렛대는 모두 35에서 멈췄는데, 추론 때 입력 이미지를 직접 맞추는 것만으로 +7–10점이 나온다. 모델이 이미지에서 못 읽어 내는 노드별 정보를 렌더러가 대신 찾아 주는 셈이고, 이는 곧 학습 중 렌더 손실이 (1/6 샘플, 2 scale, 노드당 한 번의 기울기로는) 아직 충분히 쓰이지 못한다는 뜻이기도 하다.
+
 ## 5. 변경 파일
 
 | 파일 | 변경 |
