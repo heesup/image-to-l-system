@@ -203,9 +203,9 @@ loss starts high (fresh geometry dims, ~12-20) and should fall within the first 
 | baseline (latent-only Stage 3) | cluster `38257989`, 2 GPU | `slurm_scripts/logs/hierarchical_fm_38257989.log`, `hierarchical_fm_v9/` | — |
 | geometry | local 1 GPU | `slurm_scripts/logs/local_s3geom_ab2.log`, `hierarchical_fm_v9_s3geom/`, panels `run_local_20260914_164059/` | `STAGE3_GEOMETRY=1` |
 | gt_nodes (teacher forcing) | local 1 GPU, started 17:07 | `slurm_scripts/logs/local_gtnodes_ab.log`, `hierarchical_fm_v9_gtnodes/`, panels `run_local_20260914_170731/` | `STAGE3_GT_NODES=1` |
-| render→latent | cluster `low` job `38260124`, 2×A100, queued 17:45 | `slurm_scripts/logs/hierarchical_fm_38260124.log`, `hierarchical_fm_v9_r2l/` | `RENDER_TO_LATENT=1` |
-| standardized latent (`--latent_norm`) | geminigrp 2×6000 Ada, job `38274201`, dependent on the baseline's end (~15:53 9/15) | `slurm_scripts/logs/hierarchical_fm_38274201.log`, `hierarchical_fm_v9_lnorm/` | `LATENT_NORM=1` |
-| scheduled teacher forcing (p 0.5, jitter 1 cm) | cluster `low` job `38273174`, 2×A100, queued 20:10 | `slurm_scripts/logs/hierarchical_fm_38273174.log`, `hierarchical_fm_v9_stf/` | `STAGE3_GT_NODES=1 STAGE3_GT_NODES_P=0.5 STAGE3_GT_NODES_JITTER_CM=1.0` |
+| standardized latent (`--latent_norm`) | geminigrp 2×6000 Ada, job `38274220`, after the baseline ends (~15:53 9/15), epochs 46–80 | `slurm_scripts/logs/hierarchical_fm_38274220.log`, `hierarchical_fm_v9_lnorm/` | `LATENT_NORM=1` |
+| scheduled teacher forcing (p 0.5, jitter 1 cm) | same slot, job `38274221` after `38274220`, epochs 46–75 | `hierarchical_fm_38274221.log`, `hierarchical_fm_v9_stf/` | `STAGE3_GT_NODES=1 STAGE3_GT_NODES_P=0.5 STAGE3_GT_NODES_JITTER_CM=1.0` |
+| render→latent | same slot, job `38274222` after `38274221`, epochs 46–70 | `hierarchical_fm_38274222.log`, `hierarchical_fm_v9_r2l/` | `RENDER_TO_LATENT=1` |
 
 | epoch | baseline IoU % | geometry IoU % | gt_nodes IoU % |
 | :---: | :---: | :---: | :---: |
@@ -382,6 +382,14 @@ first; read its latent probe (`scratchpad/latent_probe.py`, R² at t = 0) before
   stems and flowers, but floating organs and over-long stems), while today's phytomer packets with a mean-like latent
   give compact uniform blobs whose IoU is higher because they cover the plant's centre. Both miss the canopy spread of
   star-shaped plants (DAP 72 / 88). The architecture stays; the latent's variance and per-node content are the levers.
+- **Not better nodes either** (`nodes_cmp.json` there): on the same 7 plants Option B's predicted nodes sit 18.3 cm (nearest
+  GT phytomer RMSE) with a convex hull 4.35× the GT's — scatter, not spread; today's arms 4.5–5.9 cm but hull 0.5–0.7×
+  and only ~25% of GT phytomers have a predicted node within 3 cm (the geometry arm is best: 4.5 cm / 29%). That
+  under-spread is the "pos←GT +10–14 IoU" of the substitution ablation, and it is the next lever after the latent.
+- **`low` cannot run our arms now (10:50)**: its GPU nodes have idle A100/H100s but their RAM is fully allocated by other
+  users' jobs (5–13 GB free per node) and one training needs ~15 GB (6 GB main + 8 workers × 1.1 GB). The two low jobs
+  were cancelled and the three arms chained on the baseline's slot: `38274220` latent_norm (46–80) → `38274221`
+  scheduled TF (46–75) → `38274222` render→latent (46–70), ~2 h each at 2 GPUs.
 
 **Node caveat (21:05):** `gpu-10-50`, where both local arms run inside the OnDemand desktop job `38252204`, is
 `MIXED+DRAIN` since 17:20 (`Reason=Kill task failed (JobId=38249157)`, an automatic SLURM drain). Running jobs are not

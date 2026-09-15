@@ -1,8 +1,16 @@
-# PhytomerVAE-64 Latent Visualizer GUI (2026-09-09)
+# PhytomerVAE Latent Visualizer GUI (2026-09-09, updated 2026-09-14)
 
 **Status**: DONE — Gradio web app at `tools/phytomer_vae_visualizer.py`.
-Implements the §4.2 handoff spec (PCA latent cloud + 64D sliders → render),
+Implements the §4.2 handoff spec (PCA latent cloud + latent sliders → render),
 extended with organ-combo coloring, leaf-quality toggle, and Web 3D view.
+
+**2026-09-14 update**: the GUI now runs on the accepted **128D hybrid VAE**
+(`phytomer_vae_v9_tl_rw4_20k`, 48 coarse + 10×8 residual, terminal-last
+packets). The GUI cache is rebuilt from `dataset/cache/cowpea_curv26_pkt_v9`
+with latents re-encoded **on the fly** with the loaded checkpoint — since
+2026-09-14 the pkt caches are VAE-independent, so stored `latent` fields are
+no longer trusted (see note 17). PCA evr 13.7/10.7/8.1%, PCA16 86.9%.
+
 
 ---
 
@@ -13,7 +21,7 @@ extended with organ-combo coloring, leaf-quality toggle, and Web 3D view.
 | **PCA latent cloud (2D)** | Clickable matplotlib scatter (250,000 packet latents, XML-phytomer) — click → nearest packet's z loads into sliders |
 | **PCA latent cloud (3D)** | Rotatable plotly Scatter3d, hover shows packet idx |
 | **Color by** | `combo` (default; 3 groups, 90% pure vegetative) / `slots` (presence count 0–10) / `dap` (1–100) / `none` |
-| **64D sliders** | Data-range bounds (min/max + 10% pad), Random z ~ N(0,I), Reset |
+| **128D sliders** | Data-range bounds (min/max + 10% pad), Random z ~ N(0,I), Reset |
 | **Reference frame** | `identity` (true 6D identity `[1,0,0,0,1,0]`) or `real` (a packet's own ref + center) |
 | **Render** | `HeliosPyTorchRenderer` RGB + depth (bbox auto-focus, `zoom_factor=1.0`) |
 | **Leaf quality** | `high` = highres cowpea OBJ leaves (~1.4k verts) / `low` = lightweight alpha-cutout (~80 verts) |
@@ -24,21 +32,28 @@ extended with organ-combo coloring, leaf-quality toggle, and Web 3D view.
 
 | File | Purpose |
 | :--- | :--- |
-| `tools/precompute_phytomer_latent_pca.py` | Cache build: full rebuild (packets from cache + VAE encode) or `--from-pkt-cache` fast path (reuses stored pkt latents, no encode) → `dataset/cache/phytomer_gui_cache/` |
-| `tools/phytomer_vae_visualizer.py` | Gradio app (loads cache + frozen `phytomer_vae_v2` ckpt, `centers.pt` for exact world-frame placement; 10 slots: repro1–4) |
+| `tools/precompute_phytomer_latent_pca.py` | Cache build: full rebuild (packets from cache + VAE encode) or `--from-pkt-cache` (packets from the pkt cache + **on-the-fly** VAE encode with `--ckpt`) → `dataset/cache/phytomer_gui_cache/` |
+| `tools/phytomer_vae_visualizer.py` | Gradio app (loads cache + frozen PhytomerVAE ckpt, `centers.pt` for exact world-frame placement; 10 slots: repro1–4) |
 | `diffusion_based/models/helios_pytorch_geometry.py` | + `"lowpoly"` leaf mode (~80-vert alpha-cutout leaf, `get_generic_leaf_mesh(Nx=8,Ny=8)`) |
 
 ## Run
 
 ```bash
-# 1. Precompute latent cloud + PCA (fast path: reuses pkt-cache latents, ~15s)
+# 1. Precompute latent cloud + PCA (pkt-cache packets + on-the-fly VAE encode, ~12s)
 .../bin/python tools/precompute_phytomer_latent_pca.py --from-pkt-cache \
+    --pkt-dir dataset/cache/cowpea_curv26_pkt_v9 \
+    --ckpt diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt \
     --max-packets 250000 --out dataset/cache/phytomer_gui_cache
 
 # 2. Launch GUI
 .../bin/python tools/phytomer_vae_visualizer.py \
+    --ckpt diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt \
     --server-name 0.0.0.0 --server-port 7860
 ```
+
+Both tools auto-set `PHYTOMER_TERMINAL_LAST` from the checkpoint path (`_tl` ⇒ 1,
+same convention as the eval scripts). For the legacy v8/bottom-to-top lineage
+use `--pkt-dir dataset/cache/cowpea_curv26_pkt` and the `phytomer_vae_v8` ckpt.
 
 Access: VNC browser `localhost:7860` or SSH tunnel `ssh -L 7860:localhost:7860`.
 
@@ -147,3 +162,32 @@ Access: VNC browser `localhost:7860` or SSH tunnel `ssh -L 7860:localhost:7860`.
     point / loading an idx now also sets `ref_idx` so the render updates in one
     cascade; Web 3D is the default render tab; GLB export keeps Helios Z-up so
     RGB and Web 3D show the identical view.
+17. **128D v9 migration** (2026-09-14, supersedes note 8): GUI moved to the
+    accepted 128D hybrid VAE `phytomer_vae_v9_tl_rw4_20k` (48 coarse + 10×8
+    residual, terminal-last packets). The GUI cache is rebuilt from
+    `dataset/cache/cowpea_curv26_pkt_v9` (pkt_version 7, 250k packets, seed-0
+    shuffle of 100k files; full cloud ~5M). Since 2026-09-14 the pkt caches
+    are **VAE-independent** (FM encodes Stage-3 latents on the fly), so the
+    stored `latent` field is no longer trustworthy — `--from-pkt-cache` now
+    ALWAYS re-encodes packets on the fly with `--ckpt` (250k encode ~1s on
+    one GPU; the whole rebuild is ~12s). Both tools auto-set
+    `PHYTOMER_TERMINAL_LAST` from the ckpt path (`_tl` ⇒ 1, eval-script
+    convention); v8/bottom-to-top remains runnable via the v6 pkt cache.
+    New PCA evr 13.7/10.7/8.1% (PCA16 86.9%) vs the old 64D 15.5/12.3/9.3%.
+    `latent_usage.json` does not ship with the v9 ckpt, so the raw-slider
+    ordering falls back to z_std (Δrot labels hidden) — regenerate it with
+    `eval_phytomer_vae_latent_usage.py` to restore the Δrot ordering.
+    Verified 2026-09-14: precompute smoke (3k) + full rebuild, visualizer
+    decode→render→GLB (250k cloud, high/low leaf quality), gradio app build
+    and live launch (HTTP 200). Old 64D/v7 cache backed up at
+    `/tmp/opencode/gui_cache_backup_64d_v7/`.
+18. **Flower/fruit toggles** (2026-09-14): the v9 hybrid latent keeps flower/
+    fruit presence fully (LogReg AUC 1.000 in 16D+) but NOT aligned with the
+    top-2 PCA axes (2D AUC 0.512; the old shared-64D VAE showed 4.1σ in 2D
+    because its single bottleneck had to spend top-PC variance on slot
+    occupancy). Added: `has_flower` / `has_fruit` / `repro` color-by modes
+    (two-tone + legend with dataset counts) and two filter checkboxes
+    (`has flower` / `has fruit`, union semantics) that restrict the 2D and 3D
+    scatters to matching packets; click→idx mapping is updated to the visible
+    subset (global indices preserved). Counts: flower 11,760 / fruit 11,923 /
+    repro 23,683 of 250k packets.

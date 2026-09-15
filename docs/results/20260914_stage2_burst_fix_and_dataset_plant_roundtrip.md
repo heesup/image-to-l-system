@@ -209,7 +209,20 @@ Heesup의 지적: `docs/results/assets/20260907/hierarchical_self_consistency_ep
 
 시각적 인상은 근거가 있다. Option B는 **기관 하나하나를 flow로 생성**해(16D 단위 분산 organ latent, 위치가 latent 안에 포함) 잎이 퍼지고 줄기·꽃이 보이며 큰 수관(DAP 72)의 넓이를 살린다. 대신 떠 있는 기관과 지나치게 긴 줄기가 섞인다. 오늘 모델은 phytomer 패킷으로 조립하므로 물리적으로 일관되지만, **latent가 노드별 정보를 담지 못해 모든 phytomer가 평균 모양**이 되고 노드 위치도 중심으로 몰려 **작고 균일한 덩어리**가 된다. IoU는 덩어리가 중심부를 덮어 오늘 쪽이 높지만, DAP 72·88처럼 팔이 뻗은 식물의 넓이는 둘 다 놓친다.
 
-결론: 되돌릴 대상은 architecture가 아니라 Option B latent의 성질이다. (a) 단위 분산 latent → `LATENT_NORM=1` arm (`38274201`, 15:53 시작), (b) 노드별 정보가 latent에 들어가게 하는 gt_nodes 계열, (c) Stage 2 노드 위치의 중심 쏠림(수관 넓이 부족)은 별도 항목으로 잰다 (예측/GT convex hull 면적비).
+**노드 위치가 더 잘 맞아서인가?** 아니다. 같은 7개 식물에서 예측 노드 → 가장 가까운 GT phytomer 중심 RMSE, 3 cm 안에 예측 노드가 있는 GT phytomer 비율, 예측/GT 노드 convex hull 면적비 (`nodes_cmp.json`):
+
+| | 노드 RMSE (cm) | GT 3 cm 내 커버 | hull 면적비 |
+|---|---|---|---|
+| Option B ep125 | 18.3 (DAP 38: 54.9) | 22.2% | 4.35 (DAP 38: 17.9) |
+| baseline ep135 | 5.9 | 23.3% | 0.68 |
+| 기하 arm ep76 | **4.5** | **28.7%** | 0.51 |
+| gt_nodes arm ep70 | 5.6 | 24.9% | 0.58 |
+
+Option B의 "퍼짐"은 정확도가 아니라 **흩뿌림**이다 (hull이 GT의 4배, 노드 RMSE 18 cm). 오늘 arm들은 반대로 **수관이 GT의 50–70%로 오그라들고** GT phytomer의 4분의 1만 3 cm 안에 노드가 있다. 이것이 치환 ablation의 "pos←GT +10–14점"의 실체다.
+
+결론: 되돌릴 대상은 architecture가 아니라 Option B latent의 성질이다. (a) 단위 분산 latent → `LATENT_NORM=1` arm (`38274201`, 15:53 시작), (b) 노드별 정보가 latent에 들어가게 하는 gt_nodes 계열, (c) Stage 2 노드 위치의 중심 쏠림(수관 hull 0.5–0.7, 커버 25%)은 위 지표로 계속 잰다.
+
+**`low` 파티션에서 여러 학습을 동시에 돌릴 수 있나 (10:50).** 지금은 불가능하다. `low`의 GPU 노드에는 놀고 있는 GPU가 많지만(A100 16개, H100 3개) 다른 사용자의 작업이 **노드 메모리를 전부 점유**하고 있어(노드당 여유 5–13 GB) 학습 하나(메인 6 GB + 워커 8×1.1 GB ≈ 15 GB)도 못 들어간다. 16시간 대기의 원인이 GPU가 아니라 메모리였다. 그래서 `low`의 두 작업을 취소하고, baseline이 15:53에 끝나며 비는 geminigrp 2-GPU 슬롯에 **세 arm을 순차 체인**으로 걸었다: `38274220` latent 단위 분산 (epoch 46–80) → `38274221` scheduled teacher forcing p 0.5 / jitter 1 cm (46–75) → `38274222` render→latent (46–70). 2 GPU에서 epoch당 ~3.5분이라 각 2시간 안팎, 오늘 밤 안에 셋 다 결과가 나온다.
 
 ## 5. 변경 파일
 
