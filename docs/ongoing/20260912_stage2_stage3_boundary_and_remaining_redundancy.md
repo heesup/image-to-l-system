@@ -479,6 +479,15 @@ This is worth adopting for three separate reasons. It takes parent coverage from
    burst at epoch 27; the instrumented cluster replay `38243730` is queued).
 3. Re-calibrating the noise from `ord_step_mae` once it falls below 1.0.
 4. Worth considering while doing (1): with `is_base` reduced to the plant root, `chain_phytomers` may not need the `is_base` gate at all -- the lowest node has no candidate below it and so becomes parentless on its own.
+5. **[MEASURED 2026-09-14 17:30 -- takeover guide §0-B.9]** The latent path carries no per-node image information: the
+   sampled latent's error against the matched GT latent is worse than the dataset-mean latent's (RMSE 5.39 vs 4.66),
+   and the network's estimate from the conditioning alone (t = 0) has R² ≈ 0.1 over the mean and ≈ 0 over the per-plant
+   mean, with or without GT nodes as conditioning. With GT geometry the predicted latent is worth 2-3 IoU points over
+   a constant latent; the GT latent is worth 33-38. Cause consistent with the numbers: the latent's per-dim std
+   (≈0.41) is small against unit noise, so the velocity loss is mostly noise prediction and sits at the unconditional
+   floor (~0.16-0.17). Levers, in order: `--render_to_latent` (render loss into the latent block, arm queued), a
+   unit-variance latent scale for the flow, t sampling toward 0. `--stage3_gt_nodes` (teacher forcing) runs as the
+   control for "node error starves the latent".
 
 ### 2.3 What the epoch-11 panel showed, and the two inference bugs behind it
 

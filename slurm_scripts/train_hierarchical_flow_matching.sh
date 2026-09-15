@@ -67,6 +67,10 @@ fi
 if [ "${STAGE3_GT_NODES:-0}" = "1" ]; then
     STAGE3_ARGS="${STAGE3_ARGS} --stage3_gt_nodes"
 fi
+# RENDER_TO_LATENT=1: the render loss also trains Stage 3's shape latent (default: flow loss only).
+if [ "${RENDER_TO_LATENT:-0}" = "1" ]; then
+    STAGE3_ARGS="${STAGE3_ARGS} --render_to_latent"
+fi
 
 mkdir -p "${REPO_ROOT}/slurm_scripts/logs"
 cd ${REPO_ROOT}
@@ -139,7 +143,7 @@ echo "Render fraction: ${RENDER_FRACTION:-0.167} of batch per step (batch-relati
 echo "Flow granularity: ${FLOW_GRANULARITY:-phytomer} (hybrid decoupled: 128D VAE latent flow + Stage 2 3D scaffold)"
 echo "Phytomer VAE: ${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt}"
 echo "Pkt cache dir: ${PKT_CACHE_DIR:-dataset/cache/cowpea_curv26_pkt_v9} (missing samples fall back to on-the-fly) | PHYTOMER_TERMINAL_LAST=${PHYTOMER_TERMINAL_LAST}"
-echo "LR: ${LR:-1e-4} | Save every ${SAVE_EVERY} epochs | Stage 3 geometry: ${STAGE3_GEOMETRY:-0} | GT nodes: ${STAGE3_GT_NODES:-0} | Git: $(git rev-parse --short HEAD 2>/dev/null)"
+echo "LR: ${LR:-1e-4} | Save every ${SAVE_EVERY} epochs | Stage 3 geometry: ${STAGE3_GEOMETRY:-0} | GT nodes: ${STAGE3_GT_NODES:-0} | render->latent: ${RENDER_TO_LATENT:-0} | Git: $(git rev-parse --short HEAD 2>/dev/null)"
 echo "Backbone: ${BACKBONE}${FREEZE_ARGS:+ (frozen)} | Output: ${OUTPUT_DIR} | Epochs: ${EPOCHS}"
 echo "Train subset: ${MAX_TRAIN_SAMPLES:-0} (0 = full dataset)"
 echo "Date: $(date)"

@@ -193,6 +193,78 @@ existence). Off by default. **A/B** from `hierarchical_fm_v9/hierarchical_fm_epo
 `hierarchical_fm_v9_s3geom/`, eval every epoch). Read the per-epoch `[Self-Consistency]` IoU of both; the arm's velocity
 loss starts high (fresh geometry dims, ~12-20) and should fall within the first epochs.
 
+### 0-B.9 Three arms, and what the latent path actually knows (2026-09-14 ~17:30, `b348fd7`)
+
+**Arms** (all from `hierarchical_fm_v9/hierarchical_fm_epoch_045.pt`, same recipe, self-consistency IoU on the fixed
+20-plant set every epoch):
+
+| arm | where | log / checkpoints | flag |
+| :--- | :--- | :--- | :--- |
+| baseline (latent-only Stage 3) | cluster `38257989`, 2 GPU | `slurm_scripts/logs/hierarchical_fm_38257989.log`, `hierarchical_fm_v9/` | — |
+| geometry | local 1 GPU | `slurm_scripts/logs/local_s3geom_ab2.log`, `hierarchical_fm_v9_s3geom/`, panels `run_local_20260914_164059/` | `STAGE3_GEOMETRY=1` |
+| gt_nodes (teacher forcing) | local 1 GPU, started 17:07 | `slurm_scripts/logs/local_gtnodes_ab.log`, `hierarchical_fm_v9_gtnodes/`, panels `run_local_20260914_170731/` | `STAGE3_GT_NODES=1` |
+
+| epoch | baseline IoU % | geometry IoU % | gt_nodes IoU % |
+| :---: | :---: | :---: | :---: |
+| 46 | 31.5 | (crashed at eval, fixed `985ba26`) | |
+| 47 | 31.0 | 30.6 | |
+| 48–52 | 32.7 / 26.9 / 29.9 / 31.4 / 30.7 | | |
+
+Read the table with the training-arm caveat: the gt_nodes arm is *trained* with GT nodes but the in-training eval
+samples with Stage 2's nodes (train/test mismatch by design); its meaningful readout is the substitution ablation run
+on its checkpoints, which teacher-forces the sampler automatically (`--teacher_force` is implied by the checkpoint's
+`stage3_gt_nodes`), and the latent probe below. The geometry arm's Vel loss (3.1 → 2.4 at epochs 46–47) is still
+falling; the arm is not readable before ~epoch 50.
+
+**`--stage3_gt_nodes`** (`STAGE3_GT_NODES=1`): `model.forward(stage3_cond_override=)` / `sample_ode(cond_override=)`
+replace Stage 2's pos/roll/scale by the given tensors for Stage 3's conditioning only (Stage 2's outputs and losses
+untouched); training passes the GT target of every matched node (Stage 2's prediction for unmatched ones). Refused
+together with `--stage3_geometry`. Test `tests/test_stage3_teacher_forcing.py`.
+
+**Substitution ablation with the mean latent** (`eval_gt_substitution_ablation.py`, variants `meanlat` = predicted
+geometry + dataset-mean latent, `ALL-latent+meanlat` = GT geometry + mean latent; JSON next to the run logs:
+`run_38257989/gt_substitution_epoch050.json`, `run_local_20260914_164059/gt_substitution_epoch047.json`):
+
+| variant | baseline ep50 | geometry ep47 |
+| :--- | :---: | :---: |
+| P (all predicted) | 27.5 | 27.5 |
+| pos ← GT | 38.5 | 38.3 |
+| ALL − pos | 33.1 | 36.4 |
+| ALL − latent (GT geometry, predicted latent) | 43.3–44.1 | 42.3 |
+| ALL − latent + meanlat (GT geometry, mean latent) | 40.8 | 40.9 |
+| meanlat (predicted geometry, mean latent) | 28.5 | 28.5 |
+| ALL | 76.1 | 80.9 |
+
+So with perfect geometry the *predicted* latent is worth 2–3 IoU points over a constant mean latent, while the GT latent
+is worth 33–38. The per-node readout confirms it — the ablation now prints the RMSE of the sampled latent against the
+GT latent of the matched phytomer next to the mean latent's: **5.39 vs 4.66 (R² −0.34)** on baseline ep50, with the
+right per-dim spread (0.174 vs GT 0.177). The sampled latents are draws from the marginal, not the plant's phytomers.
+
+**Latent probe** (`scratchpad/latent_probe.py`, not in the repo — copies the ablation's setup): x1_hat = x_t + (1−t)·v at
+t = 0 is what the network reads off the conditioning alone (x_0 is pure noise), averaged over 8 draws:
+
+| conditioning | t | R² vs dataset mean | R² vs per-plant mean |
+| :--- | :---: | :---: | :---: |
+| Stage 2 nodes (baseline ep50) | 0 | 0.12 | −0.06 |
+| GT nodes, same checkpoint | 0 | 0.15 | −0.03 |
+| Stage 2 nodes | 0.5 | 0.85 | 0.82 |
+| geometry ep47, Stage 2 nodes | 0 | 0.14 | −0.03 |
+
+The conditioning carries a plant-level shift (DAP / size) and nothing per node; the R² at t = 0.5 is x_t leaking z1.
+Stage 3 is a denoiser of the marginal, which is exactly what the flow loss rewards here: the latent's per-dim std is
+≈0.41 (4.66/√128) against unit noise, so the velocity target is ~85% noise, the unconditional floor at small t is
+Var(z1) ≈ 0.17 per dim, and the run's Vel loss (0.16) sits on that floor. Giving Stage 3 the GT nodes at eval on the
+untrained-for-it checkpoint does not change this (row 2), so node error is not what hides the per-node shape.
+
+**What follows.** The render loss is the only per-node image signal that does not pass through the flow loss, and the
+latent rows were detached from it. `--render_to_latent` (`RENDER_TO_LATENT=1`, same commit series) keeps the latent
+block attached in the render block. Next arm: baseline recipe + `RENDER_TO_LATENT=1` from epoch 45 on `low`
+(`AUTO_RESUME=1 OUTPUT_DIR=…_r2l`); read its per-node latent R² (ablation summary `_latent`) before its IoU. Two
+further levers are cheap and principled if that is not enough: scale the latent to unit variance for the flow (an
+SD-style scale factor; changes the velocity head, so fine-tune from epoch 45) and sample t toward 0 where the
+conditioning matters. The gt_nodes arm answers the other half: if per-node R² rises when the nodes are right, the
+latent path is starved by node error after all.
+
 ### 0-B.3 Working-tree hygiene
 
 - Anything not in `git status` clean + the two files named in 0-B.2 is either untracked run artifacts

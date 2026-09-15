@@ -112,6 +112,7 @@ def forward_backward_step(
     parent_substitution: float = 0.05,
     stage3_geom_weight: float = 4.0,
     stage3_gt_nodes: bool = False,
+    render_to_latent: bool = False,
     capacity_schedule: Optional[Dict[str, float]] = None,
     flow_granularity: str = "organ",
     phytomer_vae: Optional[nn.Module] = None,
@@ -982,7 +983,11 @@ def forward_backward_step(
             if flow_granularity == "phytomer" and n_render > 0:
                 _rz_render = _rz[render_indices]  # (n_render, K, D_flow)
                 geom_r, lat_all = split_flow_state(_rz_render, D)
-                lat_all = lat_all.detach()        # Render gradients should NOT backprop through VAE latent flow
+                if not render_to_latent:
+                    # Default: the render loss does not reach the latent block (it is supervised by the flow
+                    # loss alone). --render_to_latent keeps it attached: the rendered silhouette/depth then
+                    # pulls the per-node shape latent toward the image through the frozen VAE decoder.
+                    lat_all = lat_all.detach()
                 if geom_r is not None:
                     # stage3_geometry: the rendered plant stands on Stage 3's refined
                     # node position / roll / scale (parent_in + dpos); the render
@@ -1225,6 +1230,7 @@ def probe_optimal_batch_size(
     parent_substitution: float = 0.05,
     stage3_geom_weight: float = 4.0,
     stage3_gt_nodes: bool = False,
+    render_to_latent: bool = False,
     flow_granularity: str = "organ",
     phytomer_vae: Optional[nn.Module] = None,
     phy_count_weight: float = 2.0,
@@ -1288,6 +1294,7 @@ def probe_optimal_batch_size(
         parent_substitution=parent_substitution,
         stage3_geom_weight=stage3_geom_weight,
         stage3_gt_nodes=stage3_gt_nodes,
+        render_to_latent=render_to_latent,
         flow_granularity=flow_granularity,
         phytomer_vae=phytomer_vae,
         phy_count_weight=phy_count_weight,
@@ -1410,6 +1417,7 @@ def train_one_epoch(
     parent_substitution: float = 0.05,
     stage3_geom_weight: float = 4.0,
     stage3_gt_nodes: bool = False,
+    render_to_latent: bool = False,
     capacity_warmup_epochs: int = 0,
     capacity_full_epochs: int = 0,
     flow_granularity: str = "organ",
@@ -1479,6 +1487,7 @@ def train_one_epoch(
             parent_substitution=parent_substitution,
             stage3_geom_weight=stage3_geom_weight,
             stage3_gt_nodes=stage3_gt_nodes,
+            render_to_latent=render_to_latent,
             flow_granularity=flow_granularity,
             phytomer_vae=phytomer_vae,
             phy_count_weight=phy_count_weight,
@@ -1786,6 +1795,9 @@ def main():
     parser.add_argument("--stage3_geometry", action="store_true",
                         help="Stage 3 generates the child's position (relative to its fixed parent), roll and scale "
                              "in the flow state with the latent (design doc §2.1; GT-substitution ablation 2026-09-14).")
+    parser.add_argument("--render_to_latent", action="store_true",
+                        help="Let the render loss back-propagate into Stage 3's latent block (default: latent rows are "
+                             "detached in the render block, only the flow loss trains them).")
     parser.add_argument("--stage3_gt_nodes", action="store_true",
                         help="Teacher forcing: Stage 3 conditioned on the GT node position/roll/scale of matched nodes "
                              "(upper bound of the latent path with clean geometry; evaluate with the substitution "
@@ -2146,6 +2158,7 @@ def main():
             parent_substitution=args.parent_substitution,
             stage3_geom_weight=args.stage3_geom_weight,
             stage3_gt_nodes=args.stage3_gt_nodes,
+            render_to_latent=args.render_to_latent,
             flow_granularity=args.flow_granularity,
             phytomer_vae=phytomer_vae,
             phy_count_weight=args.phy_count_weight,
@@ -2268,6 +2281,7 @@ def main():
             parent_substitution=args.parent_substitution,
             stage3_geom_weight=args.stage3_geom_weight,
             stage3_gt_nodes=args.stage3_gt_nodes,
+            render_to_latent=args.render_to_latent,
             capacity_warmup_epochs=args.capacity_warmup_epochs,
             capacity_full_epochs=args.capacity_full_epochs,
             flow_granularity=args.flow_granularity,

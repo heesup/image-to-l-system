@@ -163,6 +163,31 @@ matcher의 phytomer 단계는 pad된 배치 위에서 한 번에 돈다 (`_forwa
 
 A/B: 같은 epoch 45 체크포인트에서 baseline(`38257989`, 클러스터 2 GPU, render 1/6)과 기하 arm(로컬 1 GPU, `slurm_scripts/logs/local_s3geom_ab.log`, `hierarchical_fm_v9_s3geom/`)을 매 epoch self-consistency IoU로 비교한다. arm의 Vel 손실은 기하 차원이 새로 시작해 12~20에서 출발한다.
 
+## 9. Stage 3 latent는 이미지를 노드 단위로 보고 있지 않다 (17:30, `b348fd7`)
+
+"latent가 입력 이미지를 보긴 하나?"에 수치로 답했다. 세 가지를 재었다 (모두 고정 eval set 20개 식물, baseline epoch 50 / 기하 arm epoch 47).
+
+1. **치환 ablation에 평균 latent 조건 추가** (`meanlat` = 예측 기하 + 데이터셋 평균 latent, `ALL-latent+meanlat` = GT 기하 + 평균 latent).
+
+| variant | baseline ep50 | 기하 arm ep47 |
+|---|---|---|
+| P (전부 예측) | 27.5 | 27.5 |
+| pos ← GT | 38.5 | 38.3 |
+| ALL − latent (GT 기하 + 예측 latent) | 43.3–44.1 | 42.3 |
+| ALL − latent + meanlat (GT 기하 + 평균 latent) | 40.8 | 40.9 |
+| meanlat (예측 기하 + 평균 latent) | 28.5 | 28.5 |
+| ALL | 76.1 | 80.9 |
+
+기하가 완벽할 때 **예측 latent는 상수 평균 latent보다 2–3점**밖에 낫지 않고, GT latent는 33–38점을 더 준다.
+
+2. **노드별 latent 오차**: 매칭된 노드에서 샘플된 latent와 GT latent의 RMSE 5.39 vs 평균 latent 4.66 (R² −0.34). 차원별 표준편차는 GT와 같다 (0.174 vs 0.177). 즉 Stage 3는 "그럴듯한 phytomer"를 marginal에서 뽑을 뿐 그 식물의 phytomer를 만들지 않는다.
+
+3. **조건만으로 읽어내는 양** (x_0 = 순수 노이즈에서 x1_hat = x_0 + v): 데이터셋 평균 대비 R² 0.12, 식물별 평균 대비 −0.06. Stage 3 조건에 GT 노드를 넣어도 (0.15 / −0.03) 같다. t = 0.5에서는 0.85인데 이는 x_t가 z1을 새는 것이다.
+
+해석: 조건은 식물 수준(DAP, 크기) 정보만 전달한다. latent의 차원별 표준편차가 ≈0.41로 단위 노이즈에 비해 작아 velocity 타깃의 ~85%가 노이즈이고, t≈0의 무조건 하한이 Var(z1) ≈ 0.17/차원인데 학습 Vel 손실(0.16)이 그 바닥에 앉아 있다. flow 손실만으로는 노드별 조건을 쓸 이유가 없다.
+
+다음: (a) `--render_to_latent` (`RENDER_TO_LATENT=1`) — 렌더 손실을 latent 블록까지 흘린다 (지금까지는 detach). epoch 45에서 `low`로 arm 추가. (b) flow용 latent를 단위 분산으로 스케일 (velocity head가 바뀌므로 epoch 45에서 fine-tune). (c) t 샘플링을 0 쪽으로. 대조군으로 **teacher forcing arm** (`STAGE3_GT_NODES=1`, `local_gtnodes_ab.log`)이 17:07부터 돈다: 노드가 맞을 때 노드별 R²가 오르면 "노드 오차가 latent를 굶긴다"가 맞는 것이다. 세 arm의 epoch별 IoU: baseline 46–52 = 31.5/31.0/32.7/26.9/29.9/31.4/30.7, 기하 47 = 30.6 (Vel 3.1 → 2.4, 아직 내려가는 중).
+
 ## 5. 변경 파일
 
 | 파일 | 변경 |
