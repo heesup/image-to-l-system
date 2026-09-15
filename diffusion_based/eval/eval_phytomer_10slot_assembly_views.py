@@ -187,7 +187,7 @@ def main():
                 ax.text(0.03, 0.03, note, transform=ax.transAxes, fontsize=9, color="#111111",
                         bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="#888888", linewidth=0.5, alpha=0.9))
         axes[r, 0].text(-0.02, 0.5, label, transform=axes[r, 0].transAxes, fontsize=12, fontweight="bold",
-                        color="#f0f0f0", rotation=90, ha="right", va="center")
+                        color="#111111", rotation=90, ha="right", va="center")
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     plt.savefig(args.out, dpi=150, facecolor=fig.get_facecolor(), edgecolor="none")
