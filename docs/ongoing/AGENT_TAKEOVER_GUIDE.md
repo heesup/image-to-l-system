@@ -210,7 +210,11 @@ loss starts high (fresh geometry dims, ~12-20) and should fall within the first 
 | 46 | 31.5 | (crashed at eval, fixed `985ba26`) | |
 | 47 | 31.0 | 30.6 | |
 | 48 | 32.7 | **35.0** (Vel 2.08, still falling) | |
-| 49–56 | 26.9 / 29.9 / 31.4 / 30.7 / 33.5 / 33.9 / – / 32.4 | | |
+| 49 | 26.9 | 28.6 (Vel 1.95) | |
+| 50–57 | 29.9 / 31.4 / 30.7 / 33.5 / 33.9 / 29.1 / 32.4 / 32.0 | | |
+
+Epoch-to-epoch spread is ±3 points on the 20-plant set (baseline 26.9 → 33.9 within eight epochs), so read arms by
+their mean over several epochs, not by one epoch: baseline 46–57 mean 31.3; geometry 47–49 mean 31.4 (3 epochs).
 | 46 (gt_nodes) | 31.5 | | 32.8 (Vel 0.159 vs baseline 0.169; in-training eval uses Stage 2 nodes) |
 
 The gt_nodes arm was launched with the launcher's default `SAVE_EVERY=5`, so its first checkpoint (for the teacher-forced
