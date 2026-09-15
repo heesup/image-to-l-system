@@ -417,7 +417,7 @@ number is now set by test-time refinement (67.6–69.1). So the two plateaued 10
 the s3geom ep78 checkpoint, `EVAL_SET_FILE` + `HOLDOUT_PER_BUCKET=2`, `SAVE_EVERY=5`, 128 epochs, output
 `diffusion_based/checkpoints/hierarchical_fm_v10_cam/`, log `slurm_scripts/logs/20260915/hierarchical_fm_38275054.log`.
 It is the generalisation check of the 10% findings and the candidate deployable model for refinement. Full-run readings
-(detached scorer, JSONs in `slurm_scripts/logs/20260915/run_38275054/`): ep80 strict P 27.5, meanlat 34.4, ALL 79.6 (~15 min/epoch).
+(detached scorer, JSONs in `slurm_scripts/logs/20260915/run_38275054/`): ep80 strict P 27.5, meanlat 34.4, ALL 79.6 (~15 min/epoch). The two local 10% runs were stopped at 15:20 (`sub10_v10_cam` ep100, `sub10_v10_w3t0` ep113; both plateaued, checkpoints kept) so the local GPU serves evaluations; a second detached loop runs the default test-time refinement on every full-run checkpoint after its strict reading (log `full_refine.log` in the session scratchpad).
 
 **13:30 — training render loss now has the same camera option; run `sub10_v10_cam` launched (results report §11.10).**
 `--render_input_camera 1` (launcher `RENDER_INPUT_CAMERA=1`, commit `d492e01`): for every rendered plant the training
