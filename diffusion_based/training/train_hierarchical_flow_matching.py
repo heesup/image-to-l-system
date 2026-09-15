@@ -88,6 +88,36 @@ import importlib
 import diffusion_based.eval.eval_hierarchical_self_consistency as ehsc
 
 
+class WeightEMA:
+    """Exponential moving average of the model weights, kept on the same device and updated after every
+    optimizer step (registered as an optimizer post-step hook). Flow-matching checkpoints land on whatever state
+    the last epoch left (holdout IoU swung 32.5 -> 15.0 -> 37.6 across three consecutive epochs on 2026-09-15);
+    the EMA copy is what gets evaluated and saved as `<checkpoint>_ema.pt` with the same layout as the raw one."""
+
+    def __init__(self, model: torch.nn.Module, decay: float):
+        self.decay = float(decay)
+        self.module = copy.deepcopy(model).eval()
+        for p in self.module.parameters():
+            p.requires_grad_(False)
+
+    @torch.no_grad()
+    def update(self, model: torch.nn.Module) -> None:
+        d = self.decay
+        for e, p in zip(self.module.parameters(), model.parameters()):
+            if e.dtype.is_floating_point:
+                e.mul_(d).add_(p.detach(), alpha=1.0 - d)
+            else:
+                e.copy_(p)
+        for e, b in zip(self.module.buffers(), model.buffers()):
+            e.copy_(b)
+
+    def state_dict(self):
+        return self.module.state_dict()
+
+    def load_state_dict(self, sd):
+        self.module.load_state_dict(sd, strict=False)
+
+
 def _sync_cuda():
     """GPU flush for truthful wall-time section timers (CUDA is async).
     ~10us per call — negligible against second-scale sections."""
@@ -1941,6 +1971,9 @@ def main():
     parser.add_argument("--parent_substitution", type=float, default=0.05,
                         help="Stage 3 (parent, self) conditioning: fraction of nodes whose fixed parent is replaced by another matched node's GT position (the chain's parent-recovery failure rate once the ordinal works)")
     parser.add_argument("--render_fraction", type=float, default=1.0 / 6.0, help="Fraction of the batch rendered differentiably per step (batch-relative: n_render = round(B * fraction), clamped [1, B]). 1/6 restores the per-sample photometric visit rate of the 2026-09-07 runs; 1.0 renders the full batch (requires small batch — check VRAM).")
+    parser.add_argument("--ema_decay", type=float, default=0.0,
+                        help="EMA decay of the model weights per optimizer step (0 = off). ~0.999 for 1000 steps/epoch, "
+                             "~0.995 for 200. Saves <checkpoint>_ema.pt next to every checkpoint, same layout, for evaluation.")
     parser.add_argument("--render_input_camera", type=int, default=0,
                         help="1: render the training loss in the camera frame of the cached input (GT plant bbox centre, "
                              "generate_cache focus_plant=True) instead of the origin-centred window, so the depth/dice "
@@ -2471,6 +2504,21 @@ def main():
         print("=" * 80)
 
     last_eval_time = {"t": time.time()}
+    ema = None
+    if args.ema_decay > 0:
+        _raw = model.module if hasattr(model, "module") else model
+        ema = WeightEMA(_raw, args.ema_decay)
+        if args.init_checkpoint and os.path.isfile(args.init_checkpoint):
+            _ck = torch.load(args.init_checkpoint, map_location="cpu", weights_only=False)
+            if isinstance(_ck, dict) and "ema_state_dict" in _ck:
+                ema.load_state_dict(_ck["ema_state_dict"])
+                if rank == 0:
+                    print("EMA: restored from checkpoint", flush=True)
+            del _ck
+        optimizer.register_step_post_hook(lambda opt, a_, k_: ema.update(model.module if hasattr(model, "module") else model))
+        if rank == 0:
+            print(f"EMA: decay {args.ema_decay} per step, saved as <checkpoint>_ema.pt", flush=True)
+
     for epoch in range(start_epoch, args.epochs + 1):
         if sampler is not None and hasattr(sampler, "set_epoch"):
             sampler.set_epoch(epoch)
@@ -2582,8 +2630,13 @@ def main():
                     "model_state_dict": raw_model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "args": vars(args),
+                    **({"ema_state_dict": ema.state_dict()} if ema is not None else {}),
                 }, save_path)
                 print(f"Saved checkpoint to {save_path}", flush=True)
+                if ema is not None:
+                    ema_path = save_path[:-3] + "_ema.pt"
+                    torch.save({"epoch": epoch, "model_state_dict": ema.state_dict(), "args": vars(args), "ema": True}, ema_path)
+                    print(f"Saved EMA checkpoint to {ema_path}", flush=True)
 
             # Differentiable Renderer Self-Consistency Check (Silhouette IoU & CHM Depth MAE & 3D Nodes)
             # Triggered by (a) the --eval_every epoch cadence, or (b) a time-based
