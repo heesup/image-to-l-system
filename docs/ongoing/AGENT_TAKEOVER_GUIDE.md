@@ -308,6 +308,15 @@ submitted as `low` job **`38273174`** (p 0.5, jitter 1 cm, from epoch 45 into `h
 jobs (`38260124` render→latent, `38273174`) were still queued on priority at 20:10; the low partition's GPU nodes were
 all in use since 17:45.
 
+**Node caveat (21:05):** `gpu-10-50`, where both local arms run inside the OnDemand desktop job `38252204`, is
+`MIXED+DRAIN` since 17:20 (`Reason=Kill task failed (JobId=38249157)`, an automatic SLURM drain). Running jobs are not
+affected and the desktop job has ~36 h left, but an admin reboot to clear the drain would kill both local arms. Both
+resume from their checkpoints: geometry saves every epoch (`hierarchical_fm_v9_s3geom/`), gt_nodes every 5
+(`hierarchical_fm_v9_gtnodes/`, next at 55). To move either to the cluster:
+`sbatch --partition=low --account=publicgrp --gres=gpu:a100:2 --time=7-00:00:00 --requeue --export=ALL,AUTO_RESUME=1,STAGE3_GEOMETRY=1,OUTPUT_DIR=diffusion_based/checkpoints/hierarchical_fm_v9_s3geom slurm_scripts/train_hierarchical_flow_matching.sh`
+(gt_nodes: `STAGE3_GT_NODES=1,OUTPUT_DIR=…_gtnodes` instead). The baseline `38257989` ends at its 24 h limit 2026-09-15 ~15:53
+— resubmit with `AUTO_RESUME=1` into `hierarchical_fm_v9/` before then.
+
 **What follows.** The render loss is the only per-node image signal that does not pass through the flow loss, and the
 latent rows were detached from it. `--render_to_latent` (`RENDER_TO_LATENT=1`, same commit series) keeps the latent
 block attached in the render block; the smoke run's `FM_RENDER_GRAD_PROBE` shows the render loss on the velocity head's
