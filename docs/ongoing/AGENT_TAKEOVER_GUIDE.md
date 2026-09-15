@@ -204,6 +204,7 @@ loss starts high (fresh geometry dims, ~12-20) and should fall within the first 
 | geometry | local 1 GPU | `slurm_scripts/logs/local_s3geom_ab2.log`, `hierarchical_fm_v9_s3geom/`, panels `run_local_20260914_164059/` | `STAGE3_GEOMETRY=1` |
 | gt_nodes (teacher forcing) | local 1 GPU, started 17:07 | `slurm_scripts/logs/local_gtnodes_ab.log`, `hierarchical_fm_v9_gtnodes/`, panels `run_local_20260914_170731/` | `STAGE3_GT_NODES=1` |
 | render→latent | cluster `low` job `38260124`, 2×A100, queued 17:45 | `slurm_scripts/logs/hierarchical_fm_38260124.log`, `hierarchical_fm_v9_r2l/` | `RENDER_TO_LATENT=1` |
+| scheduled teacher forcing (p 0.5, jitter 1 cm) | cluster `low` job `38273174`, 2×A100, queued 20:10 | `slurm_scripts/logs/hierarchical_fm_38273174.log`, `hierarchical_fm_v9_stf/` | `STAGE3_GT_NODES=1 STAGE3_GT_NODES_P=0.5 STAGE3_GT_NODES_JITTER_CM=1.0` |
 
 | epoch | baseline IoU % | geometry IoU % | gt_nodes IoU % |
 | :---: | :---: | :---: | :---: |
@@ -300,7 +301,10 @@ baseline 24.8), while the in-training eval (128 px, no zoom) still scores it abo
 46–50 mean 34.4 vs 30.4). The two protocols differ in strictness, not in what they measure: 256 px + 8× zoom punishes
 organ misplacement that 128 px hides. **Next arm: scheduled teacher forcing** — GT nodes with probability
 `--stage3_gt_nodes_p` per matched node and Gaussian jitter `--stage3_gt_nodes_jitter_cm` on the GT position — to keep
-(a) without (b).
+(a) without (b). Implemented `117f86f` (launcher `STAGE3_GT_NODES_P` / `STAGE3_GT_NODES_JITTER_CM`, smoke-tested) and
+submitted as `low` job **`38273174`** (p 0.5, jitter 1 cm, from epoch 45 into `hierarchical_fm_v9_stf/`). Both `low`
+jobs (`38260124` render→latent, `38273174`) were still queued on priority at 20:10; the low partition's GPU nodes were
+all in use since 17:45.
 
 **What follows.** The render loss is the only per-node image signal that does not pass through the flow loss, and the
 latent rows were detached from it. `--render_to_latent` (`RENDER_TO_LATENT=1`, same commit series) keeps the latent
