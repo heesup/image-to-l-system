@@ -211,10 +211,16 @@ loss starts high (fresh geometry dims, ~12-20) and should fall within the first 
 | 47 | 31.0 | 30.6 | |
 | 48 | 32.7 | **35.0** (Vel 2.08, still falling) | |
 | 49 | 26.9 | 28.6 (Vel 1.95) | |
-| 50–57 | 29.9 / 31.4 / 30.7 / 33.5 / 33.9 / 29.1 / 32.4 / 32.0 | | |
+| 50 | 29.9 | 30.9 (Vel 1.87) | |
+| 47 (gt_nodes) | 31.0 | | 31.2 (Vel 0.156) |
+| 51–59 | 31.4 / 30.7 / 33.5 / 33.9 / 29.1 / 32.4 / 32.0 / 31.6 / 32.7 | | |
 
 Epoch-to-epoch spread is ±3 points on the 20-plant set (baseline 26.9 → 33.9 within eight epochs), so read arms by
-their mean over several epochs, not by one epoch: baseline 46–57 mean 31.3; geometry 47–49 mean 31.4 (3 epochs).
+their mean over several epochs, not by one epoch: baseline 46–59 mean 31.4; geometry 47–50 mean 31.3 (4 epochs);
+gt_nodes 46–47 mean 32.0 (2 epochs). No separation yet under the in-training protocol. Under the ablation protocol
+the geometry arm's P went 27.5 → 26.3 → 29.6 (ep47/48/50; baseline ep50 27.5) and pos←GT 38.3 → 39.4 → 41.7, i.e.
+directionally up but inside the noise; its latent spread stayed high at ep50 (0.46 vs GT 0.18, R² −1.27), so the
+noisier latent has not corrected itself as the geometry rows settled.
 | 46 (gt_nodes) | 31.5 | | 32.8 (Vel 0.159 vs baseline 0.169; in-training eval uses Stage 2 nodes) |
 
 The gt_nodes arm was launched with the launcher's default `SAVE_EVERY=5`, so its first checkpoint (for the teacher-forced
