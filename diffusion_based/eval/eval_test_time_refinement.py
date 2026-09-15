@@ -16,6 +16,9 @@ import torch.nn.functional as F
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from diffusion_based.dataset.part_array_dataset import PartArrayDataset, attach_parent_links, FM_OT_END, FM_BASE_START
 from diffusion_based.models.hierarchical_part_flow_matching import HierarchicalPartFlowMatchingModel, reconstruct_phytomer_rot
+from diffusion_based.dataset.phytomer_topology import chain_phytomers
+from diffusion_based.dataset.phytomer_roll import derive_forward, roll_to_matrix
+from diffusion_based.dataset.phytomer_packets import matrix_to_rot6d
 from diffusion_based.models.phytomer_vae import PhytomerVAE
 from diffusion_based.models.organ_latent_vae import OrganLatentVAE
 from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
@@ -45,6 +48,8 @@ def main():
     ap.add_argument("--save_renders", default="", help="folder: save gt / before / after top-view renders (256 px PNG) per plant")
     ap.add_argument("--only", default="", help="comma-separated plant indices to process (default: the whole eval set)")
     ap.add_argument("--target_zooms", default="1,2,4,8", help="comma list of cache zoom levels (1,2,4,8) whose depth channels are the refinement targets; the 4x/8x levels add signal for plants that are only a few pixels wide at 1x/2x")
+    ap.add_argument("--recompute_rot", action="store_true", help="re-derive each node's rotation (forward axis from the CURRENT parent->node segment, plus roll) and parent position inside the loop instead of freezing them at the sampled node positions; the topology (parent lookup) stays the one chained once from the sampled positions. Required for roll in --opt.")
+    ap.add_argument("--lr_roll", type=float, default=2e-2)
     ap.add_argument("--reg_scale", type=float, default=5.0, help="penalty weight on (scale - sampled scale)^2, keeps leaves from inflating to fill the silhouette")
     ap.add_argument("--reg_latent", type=float, default=0.5, help="penalty weight on mean (latent - sampled latent)^2")
     ap.add_argument("--keep_best", action="store_true",
@@ -97,21 +102,38 @@ def main():
             scale0 = (so.get("phytomer_scale") if so.get("phytomer_scale") is not None else co.get("phytomer_scale"))[0].float(); lat0 = so["pred_latent"][0].float()
             rot, par = reconstruct_phytomer_rot(pos0.unsqueeze(0), roll.unsqueeze(0), ordn.unsqueeze(0), base.unsqueeze(0), exist=(exist > 0.5).float().unsqueeze(0))
             rot, par = rot[0].float(), par[0].float()
+            # topology chained once from the sampled positions (discrete, non-differentiable); the rotation and
+            # parent position can then be re-derived differentiably from the current pos / roll (--recompute_rot)
+            parent_idx, _, _ = chain_phytomers(pos0, ordinal=ordn, is_base=(base > 0).float(), exist=(exist > 0.5).float())
+            live_m = exist > 0.5; has_par_m = parent_idx >= 0
             parts0 = plant_from_nodes(pvae, pos0, rot, scale0, lat0, exist, par, M)
             iou0, _ = score(render_depth(renderer, parts0, zoom, dev), gt_depth)
         # variables
         pos = pos0.clone().requires_grad_("pos" in opt_set); scale = scale0.clone().requires_grad_("scale" in opt_set); lat = lat0.clone().requires_grad_("latent" in opt_set)
+        roll_v = roll.clone().requires_grad_("roll" in opt_set)
+        if "roll" in opt_set and not a.recompute_rot:
+            raise SystemExit("roll in --opt needs --recompute_rot")
+
+        def _rot_par(pos_c, roll_c):
+            if not a.recompute_rot:
+                return rot, par
+            R = roll_to_matrix(derive_forward(pos_c, parent_idx), roll_c)
+            par_c = torch.where(has_par_m.unsqueeze(-1), pos_c[parent_idx.clamp(min=0)],
+                                torch.where(live_m.unsqueeze(-1), torch.zeros_like(pos_c), pos_c))
+            return matrix_to_rot6d(R), par_c
         params = [{"params": [pos], "lr": a.lr_pos}] if "pos" in opt_set else []
         if "scale" in opt_set: params.append({"params": [scale], "lr": a.lr_scale})
         if "latent" in opt_set: params.append({"params": [lat], "lr": a.lr_latent})
+        if "roll" in opt_set: params.append({"params": [roll_v], "lr": a.lr_roll})
         opt = torch.optim.Adam(params)
         # input CHM at the two training zooms (cache channels 3 and 7)
         _zi = {1.0: 3, 2.0: 7, 4.0: 11, 8.0: 15}
         tgt = {float(z): images[0, _zi[float(z)]] for z in a.target_zooms.split(",") if images.shape[1] > _zi[float(z)]}
-        best = (float("inf"), pos0.clone(), scale0.clone(), lat0.clone())
+        best = (float("inf"), pos0.clone(), scale0.clone(), lat0.clone(), roll.clone())
         for step in range(a.steps + (1 if a.keep_best else 0)):
             opt.zero_grad()
-            parts = plant_from_nodes(pvae, pos, rot, scale, lat, exist, par, M)
+            rot_c, par_c = _rot_par(pos, roll_v)
+            parts = plant_from_nodes(pvae, pos, rot_c, scale, lat, exist, par_c, M)
             if parts.shape[0] == 0:
                 break
             mesh = renderer.geo_builder.build_mesh_from_part_tensor(parts, device=dev)
@@ -136,15 +158,16 @@ def main():
             if a.reg_latent > 0:
                 loss = loss + a.reg_latent * ((lat - lat0) ** 2).mean()
             if a.keep_best and float(loss) < best[0]:
-                best = (float(loss), pos.detach().clone(), scale.detach().clone(), lat.detach().clone())
+                best = (float(loss), pos.detach().clone(), scale.detach().clone(), lat.detach().clone(), roll_v.detach().clone())
             if step == a.steps:
                 break
             loss.backward(); opt.step()
         if a.keep_best:
             with torch.no_grad():
-                pos, scale, lat = best[1], best[2], best[3]
+                pos, scale, lat, roll_v = best[1], best[2], best[3], best[4]
         with torch.no_grad():
-            parts1 = plant_from_nodes(pvae, pos, rot, scale, lat, exist, par, M)
+            rot_c, par_c = _rot_par(pos, roll_v)
+            parts1 = plant_from_nodes(pvae, pos, rot_c, scale, lat, exist, par_c, M)
             iou1, _ = score(render_depth(renderer, parts1, zoom, dev), gt_depth)
             moved = float((pos - pos0).norm(dim=-1).mean() * 100)
             if a.save_renders:
