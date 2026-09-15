@@ -352,6 +352,24 @@ depends on the latent. The baseline job ends at its 24 h limit at 15:53; a depen
 partition, `AUTO_RESUME=1`) is queued behind it — cancel it if the decline makes continuing pointless. Low jobs
 `38260124` / `38273174` still queued at 08:40 (15 h).
 
+**Why the 2026-09-07/08 "45.4%" panel is not a bar to beat (2026-09-15 09:30).** Heesup asked whether
+`docs/results/assets/20260907/hierarchical_self_consistency_epoch_125.png` (Option B, organ-level 16D latent, job
+`38145444`, epoch 125) was a coincidence and whether to go back to it. Measured, not argued:
+
+- That number was the mean over the **first 4 plants of one random batch** (DAP 17/42/72/49, no seedlings; the eval of
+  that era used `num_samples_to_plot=4` on `next(iter(dataloader))`, different plants every time). The job evaluated
+  six times in all — epochs 25/50/75/100/125/150 → 39.1 / 26.4 / 33.8 / 26.9 / 45.4 / 49.2 — a series dominated by
+  draw variance. The 55.1% / 67.9% in the 09-07 report are the same kind of number.
+- The same checkpoint (`hierarchical_latent_fm/hierarchical_fm_epoch_125.pt`), run with its exact code (worktree at
+  `870074f`, state dict loads with 0 missing / 0 unexpected; `73edc46` gives 27.5 with 4 random head weights) on
+  today's fixed 20-plant set with the same 128 px eval lineage: **24.8%** (DAP ≥ 17: 30.8, 40–75: 34.5, > 60: 37.0,
+  ≤ 15: 0.9; per plant 0–60%). Today's arms on the same 20 plants: baseline ~30, geometry ~32–33, gt_nodes ~34.
+  Script + per-plant JSON: `slurm_scripts/logs/archive_20260914/optionb_ep125_reeval/`.
+- What Option B did have that today's model lacks: its per-organ latent was a **unit-variance N(0, I)** space, so the
+  flow loss was not dominated by noise prediction — the exact property whose absence (128D latent, per-dim std ≈ 0.41)
+  explains why today's Stage 3 latent carries no per-node image information. That is the piece to port (the pending
+  unit-variance latent scale for the flow), not the architecture.
+
 **Node caveat (21:05):** `gpu-10-50`, where both local arms run inside the OnDemand desktop job `38252204`, is
 `MIXED+DRAIN` since 17:20 (`Reason=Kill task failed (JobId=38249157)`, an automatic SLURM drain). Running jobs are not
 affected and the desktop job has ~36 h left, but an admin reboot to clear the drain would kill both local arms. Both

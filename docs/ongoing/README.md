@@ -23,6 +23,7 @@ This directory tracks **only actively running work** for the **Image-to-L-System
 | **Helios round-trip, dataset DAP 15/40/75** | 🟢 SOLVED | fig12: packet path **98.3 / 98.2 / 95.6%**, VAE **95.1 / 96.8 / 95.6%** (was 81.8 / 92.2 / 54.6 on the morning of 2026-09-14; `docs/results/assets/fig12_phytomer_10slot_helios_roundtrip.png`). |
 | **Topology targets** | 🟢 FIXED | `gt_parent_links(..., internode_base=)` resolves 97.8% of lateral branch points (was 66.2%; the training call site passes the decoded base). `chain_phytomers` follows drooping shoots (same-shoot links 100% on 30 plants) and keeps the cotyledon node as shoot 0 (`root_own_shoot`). |
 | **Export (14D → Helios XML)** | 🟢 | Analytical converter + **stem IK** (`part_tensor_stem_ik.py`) + **leaf IK** (`part_tensor_leaf_ik.py`), both on by default (`PART_TENSOR_STEM_IK`, `PART_TENSOR_LEAF_IK`). |
+| **The 09-07/08 "45.4%" Option B panel** | 🟢 EXPLAINED | A 4-plant random-batch mean at one of six evaluations (series 39/26/34/27/45/49). The same checkpoint with its exact code scores **24.8%** on today's 20-plant set (today's arms: 30–34). Not a bar; its one transferable property is the unit-variance latent (takeover guide §0-B.9). |
 | **Heesup's regeneration jobs** | ⛔ DO NOT CANCEL | `regen_shard` / `regen_synth` / `regen_mopup` (geminigrp) — they hold the group's GPU quota; training goes to `low`/`publicgrp`. |
 
 ---
