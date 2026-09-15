@@ -203,11 +203,7 @@ loss starts high (fresh geometry dims, ~12-20) and should fall within the first 
 | baseline (latent-only Stage 3) | cluster `38257989`, 2 GPU | `slurm_scripts/logs/hierarchical_fm_38257989.log`, `hierarchical_fm_v9/` | — |
 | geometry | local 1 GPU | `slurm_scripts/logs/local_s3geom_ab2.log`, `hierarchical_fm_v9_s3geom/`, panels `run_local_20260914_164059/` | `STAGE3_GEOMETRY=1` |
 | gt_nodes (teacher forcing) | local 1 GPU, started 17:07 | `slurm_scripts/logs/local_gtnodes_ab.log`, `hierarchical_fm_v9_gtnodes/`, panels `run_local_20260914_170731/` | `STAGE3_GT_NODES=1` |
-| standardized latent (`--latent_norm`) | geminigrp 2×6000 Ada, job `38274220`, after the baseline ends (~15:53 9/15), epochs 46–80 | `slurm_scripts/logs/hierarchical_fm_38274220.log`, `hierarchical_fm_v9_lnorm/` | `LATENT_NORM=1` |
-| scheduled teacher forcing (p 0.5, jitter 1 cm) | same slot, job `38274221` after `38274220`, epochs 46–75 | `hierarchical_fm_38274221.log`, `hierarchical_fm_v9_stf/` | `STAGE3_GT_NODES=1 STAGE3_GT_NODES_P=0.5 STAGE3_GT_NODES_JITTER_CM=1.0` |
-| render→latent | same slot, job `38274222` after `38274221`, epochs 46–70 | `hierarchical_fm_38274222.log`, `hierarchical_fm_v9_r2l/` | `RENDER_TO_LATENT=1` |
-| **combination** (geometry + standardized latent + render→latent) | same slot, job `38274224` after `38274222`, from geometry ep78, 34 epochs | `hierarchical_fm_38274224.log`, `hierarchical_fm_v9_combo/` | `STAGE3_GEOMETRY=1 LATENT_NORM=1 RENDER_TO_LATENT=1` |
-| **v10 full** (combination + multizoom + coverage + count) | same slot, 5th job after `38274224`, from geometry ep78, 34 epochs | `hierarchical_fm_v10/` | `… MULTIZOOM=1 COVERAGE_WEIGHT=1.0 EXIST_COUNT_WEIGHT=0.5` |
+| **10% chain** (all: `MAX_TRAIN_SAMPLES=10000 EVAL_SET_FILE=hierarchical_fm_v9/eval_set.json HOLDOUT_PER_BUCKET=2`, geminigrp 2-GPU slot after the baseline ends ~15:53, ~1 min/epoch, 50 epochs each) | `38274483` baseline-on-10% → `38274484` `LATENT_NORM=1` → `38274485` scheduled TF (p 0.5, jitter 1 cm) → `38274486` `RENDER_TO_LATENT=1` → `38274487` combination (geometry ep78 + latent_norm + render→latent) → `38274488` v10 full (+ `MULTIZOOM=1 COVERAGE_WEIGHT=1.0 EXIST_COUNT_WEIGHT=0.5`) | `slurm_scripts/logs/hierarchical_fm_<job>.log`, `diffusion_based/checkpoints/sub10_{base,lnorm,stf,r2l,combo,v10}/` | see §2.7 of the design doc |
 
 | epoch | baseline IoU % | geometry IoU % | gt_nodes IoU % |
 | :---: | :---: | :---: | :---: |
@@ -388,7 +384,15 @@ first; read its latent probe (`scratchpad/latent_probe.py`, R² at t = 0) before
   GT phytomer RMSE) with a convex hull 4.35× the GT's — scatter, not spread; today's arms 4.5–5.9 cm but hull 0.5–0.7×
   and only ~25% of GT phytomers have a predicted node within 3 cm (the geometry arm is best: 4.5 cm / 29%). That
   under-spread is the "pos←GT +10–14 IoU" of the substitution ablation, and it is the next lever after the latent.
-- **`low` cannot run our arms now (10:50)**: its GPU nodes have idle A100/H100s but their RAM is fully allocated by other
+- **10% protocol (12:20, Heesup's proposal)**: every chain arm now trains on a DAP-stratified 10k-plant subset with the
+same 20 eval plants force-included (`--eval_set_file`, matched by prefix) and 20 held-out plants removed from training and
+reported as `[Holdout]` each eval (`--holdout_samples_per_bucket 2`; caveat: arms resumed from epoch 45 saw those plants
+during epochs 1–45, so the held-out is "unseen since 45" — a clean held-out needs training from scratch with the
+exclusion). The point: the baseline saw each of its 100k plants 140 times and still plateaued, so data volume is not the
+limit; 10k plants answer "can this structure memorize the data at all?" ten times faster, and the held-out line tells
+whether what it learns transfers. If the 10% runs reach 70–80% on the training plants the bottleneck is
+optimization/scale; if not, it is the structure/loss (the current diagnosis). The winner gets the full data.
+**`low` cannot run our arms now (10:50)**: its GPU nodes have idle A100/H100s but their RAM is fully allocated by other
   users' jobs (5–13 GB free per node) and one training needs ~15 GB (6 GB main + 8 workers × 1.1 GB). The two low jobs
   were cancelled and the three arms chained on the baseline's slot: `38274220` latent_norm (46–80) → `38274221`
   scheduled TF (46–75) → `38274222` render→latent (46–70), ~2 h each at 2 GPUs.
