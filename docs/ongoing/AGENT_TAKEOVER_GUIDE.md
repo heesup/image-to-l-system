@@ -311,6 +311,27 @@ submitted as `low` job **`38273174`** (p 0.5, jitter 1 cm, from epoch 45 into `h
 jobs (`38260124` render→latent, `38273174`) were still queued on priority at 20:10; the low partition's GPU nodes were
 all in use since 17:45.
 
+**gt_nodes epoch 55 and baseline epoch 80 under the strict protocol (23:05;
+`run_local_20260914_170731/gt_substitution_epoch055_{tf,notf}.json`, `run_38257989/gt_substitution_epoch080.json`):**
+
+| protocol | P | pos←GT | ALL−latent | GT geom + mean latent | ALL | active/GT nodes | latent R² (probe, GT nodes, vs plant mean) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| baseline ep50 | 27.5 | 38.5 | 43.3 | 40.8 | 76.1 | 69.5/73 | ≈0 |
+| **baseline ep80** | **27.3** | 37.6 | 39.6 | 36.7 | **67.1** | **57.4/73** | – |
+| gt_nodes ep50 teacher-forced / deployable | 45.0 / 20.2 | – / 38.0 | 46.8 / 43.3 | 39.0 | 71.7 / 72.1 | 63.2/73 | 0.115 |
+| gt_nodes ep55 teacher-forced / deployable | **46.4** / 23.9 | – / 41.2 | **48.7** / 46.0 | 39.1 | 77.0 / 77.9 | 69.6/73 | **0.187** |
+
+Two things this settles. (1) **The baseline's in-training climb (66–82 mean ~35, best 38.1) is not visible under the
+strict protocol**: P 27.5 → 27.3 between epochs 50 and 80, young plants better (2.1 → 13.7) but mid/old worse (24.8 →
+21.9, 43.0 → 39.4), and its existence head now under-predicts (57 active of 73 GT, was 69.5), which drops the ALL
+ceiling from 76 to 67. The 128 px in-training eval rewards something the 256 px protocol does not; the three runs do
+evaluate the same 20 plants (`eval_set.json` identical), so the disagreement is the metric, not the sample. Decisions
+should rest on the strict protocol plus the latent readouts, with the in-training IoU as a trend indicator only.
+(2) **The gt_nodes arm keeps improving on every latent readout**: with GT nodes the latent is worth +9.6 IoU over the
+mean latent (ep50 +7.8, baseline +2.5), per-node R² 0.187 (ep50 0.115), and its deployable P recovers 20.2 → 23.9 with
+pos←GT already above the baseline (41.2 vs 37.6) — the remaining gap to the baseline's P is exposure bias to its own
+node error, which the scheduled-teacher-forcing job `38273174` targets.
+
 **Node caveat (21:05):** `gpu-10-50`, where both local arms run inside the OnDemand desktop job `38252204`, is
 `MIXED+DRAIN` since 17:20 (`Reason=Kill task failed (JobId=38249157)`, an automatic SLURM drain). Running jobs are not
 affected and the desktop job has ~36 h left, but an admin reboot to clear the drain would kill both local arms. Both
