@@ -233,8 +233,8 @@ Heesup의 제안: 학습 데이터의 10%만 써서 데이터셋에 수렴하는
 
 왜 맞는 전략인가: 지금 baseline은 100k 식물을 140 epoch 봤다(식물당 140회). 정체의 원인이 데이터 부족이 아니라는 뜻이고, 10k 식물로 10배 빠르게 같은 질문 — 이 구조가 데이터를 **외울 수는 있는가** — 에 답할 수 있다. 외워지면(학습 식물 IoU가 70–80으로 오르면) 병목은 최적화/데이터 규모이고, 10k도 못 외우면 구조와 손실이 병목이다(현재 진단은 후자).
 
-체인 (baseline이 15:53에 끝나며 비는 geminigrp 2-GPU 슬롯, 모두 `MAX_TRAIN_SAMPLES=10000`, 같은 eval 20개 + held-out 20개, epoch당 ~1분):
-`38274483` baseline-on-10% (참조, epoch 46–95) → `38274484` 단위 분산 latent → `38274485` scheduled TF → `38274486` render→latent → `38274487` 조합 (기하 ep78에서, 78–128) → `38274488` v10 full (조합 + multizoom + coverage + count). 각 50 epoch, 약 1시간씩. 로컬의 기하·gt_nodes arm(100% 데이터)은 그대로 둔다.
+Heesup: geminigrp의 `gpu-6000_ada-h` 파티션은 최대 8 GPU를 높은 우선순위로 쓸 수 있다 (12:35). 그래서 순차 체인 대신 **독립 1-GPU 작업 여섯 개**로 바꿔 GPU가 비는 대로 병렬로 돌린다 (지금 파티션은 gpu-10-50/54 두 노드 8 GPU: 10-50은 drain 중이라 3개가 놀고, 10-54는 baseline 2 + 타 그룹 1 + 우리 1). 첫 작업은 12:36에 바로 시작했고 나머지는 15:53에 baseline이 끝나면 2개가 더 들어간다. 모두 `MAX_TRAIN_SAMPLES=10000`, 같은 eval 20개 + held-out 20개, 1 GPU에서 epoch당 ~2분:
+`38274493` baseline-on-10% (참조, epoch 46–95) → `38274494` 단위 분산 latent → `38274495` scheduled TF → `38274496` render→latent → `38274497` 조합 (기하 ep78에서, 78–128) → `38274498` v10 full (조합 + multizoom + coverage + count). 각 50 epoch, 1 GPU에서 약 1.5–2시간. 로컬의 기하·gt_nodes arm(100% 데이터)은 그대로 둔다.
 
 ## 5. 변경 파일
 
