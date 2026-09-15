@@ -332,6 +332,26 @@ mean latent (ep50 +7.8, baseline +2.5), per-node R² 0.187 (ep50 0.115), and its
 pos←GT already above the baseline (41.2 vs 37.6) — the remaining gap to the baseline's P is exposure bias to its own
 node error, which the scheduled-teacher-forcing job `38273174` targets.
 
+**Overnight (2026-09-15 08:40) — latest checkpoints under the strict protocol** (`gt_substitution_epoch070_{tf,notf}.json`
+in `run_local_20260914_170731/`, `gt_substitution_epoch076.json` in `run_local_20260914_164059/`, `gt_substitution_epoch135.json`
+in `run_38257989/`):
+
+| arm / checkpoint | P (deployable) | pos←GT | ALL−latent | ALL | active/GT | latent R² (GT nodes, vs plant mean) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| baseline ep135 | 28.9 | 35.2 | 37.9 | 67.0 | 55/73 | – |
+| geometry ep76 | **33.9** | 42.9 | 45.5 | 79.2 | 63/73 | – (latent std still 0.47) |
+| gt_nodes ep70, deployable / teacher-forced | 29.4 / 45.3 | 40.6 / – | 41.0 / 48.2 | 82.5 | 64/73 | **0.409** (ep55 0.187) |
+
+Strict-protocol P over the checkpoints: baseline 27.5 → 27.3 → 28.9 (ep50/80/135, flat, ceiling falling to 67 with the
+existence head at 55/73); geometry 27.5 → 26.3 → 29.6 → 33.9 (ep47/48/50/76, climbing); gt_nodes deployable 20.2 →
+23.9 → 29.4 (ep50/55/70, recovering from the exposure bias, now above the baseline) with the teacher-forced ceiling
+steady at 45–46 and the per-node latent R² doubling again to 0.41. In-training IoU over the same period: baseline peaked
+at 36.2 (76–85) and fell to 29.9 (121–137, several epochs below 25); geometry 32–33; gt_nodes 34. Both arms beat the
+baseline on both protocols now; the geometry arm leads the deployable strict P, the gt_nodes arm leads everything that
+depends on the latent. The baseline job ends at its 24 h limit at 15:53; a dependent continuation (`38274192`, same
+partition, `AUTO_RESUME=1`) is queued behind it — cancel it if the decline makes continuing pointless. Low jobs
+`38260124` / `38273174` still queued at 08:40 (15 h).
+
 **Node caveat (21:05):** `gpu-10-50`, where both local arms run inside the OnDemand desktop job `38252204`, is
 `MIXED+DRAIN` since 17:20 (`Reason=Kill task failed (JobId=38249157)`, an automatic SLURM drain). Running jobs are not
 affected and the desktop job has ~36 h left, but an admin reboot to clear the drain would kill both local arms. Both
