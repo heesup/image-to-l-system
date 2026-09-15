@@ -206,6 +206,7 @@ loss starts high (fresh geometry dims, ~12-20) and should fall within the first 
 | standardized latent (`--latent_norm`) | geminigrp 2×6000 Ada, job `38274220`, after the baseline ends (~15:53 9/15), epochs 46–80 | `slurm_scripts/logs/hierarchical_fm_38274220.log`, `hierarchical_fm_v9_lnorm/` | `LATENT_NORM=1` |
 | scheduled teacher forcing (p 0.5, jitter 1 cm) | same slot, job `38274221` after `38274220`, epochs 46–75 | `hierarchical_fm_38274221.log`, `hierarchical_fm_v9_stf/` | `STAGE3_GT_NODES=1 STAGE3_GT_NODES_P=0.5 STAGE3_GT_NODES_JITTER_CM=1.0` |
 | render→latent | same slot, job `38274222` after `38274221`, epochs 46–70 | `hierarchical_fm_38274222.log`, `hierarchical_fm_v9_r2l/` | `RENDER_TO_LATENT=1` |
+| **combination** (geometry + standardized latent + render→latent) | same slot, job `38274224` after `38274222`, from geometry ep78, 34 epochs | `hierarchical_fm_38274224.log`, `hierarchical_fm_v9_combo/` | `STAGE3_GEOMETRY=1 LATENT_NORM=1 RENDER_TO_LATENT=1` |
 
 | epoch | baseline IoU % | geometry IoU % | gt_nodes IoU % |
 | :---: | :---: | :---: | :---: |

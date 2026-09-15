@@ -894,6 +894,35 @@ resolve to the wrong branch point.
 
 ---
 
+## 2.7 Proposed final structure (v10), 2026-09-15 11:00 — what the measurements add up to
+
+Keep the 3-stage cascade; change the four places the measurements point at.
+
+```
+input   4-level zoom pyramid (1x/2x/4x/8x, already in the cache)  -> DINOv2 (shared) -> tokens per level
+Stage 1 DAP, phytomer count                                        (unchanged)
+Stage 2 node-set proposal: pos, existence, depth ordinal, root
+        + coverage loss (every GT phytomer -> nearest predicted node)   [TO DO]
+        + existence calibration to the Stage 1 count                   [TO DO]
+Stage 3 phytomer generator (rectified flow), state = [dpos*20 | roll | scale | standardized latent]
+        conditioning = fixed parent (GT + jitter in training), node-local token from the matching zoom level [TO DO],
+        Stage 2 features; loss = flow + render loss into geometry rows AND latent rows
+output  nodes + packets -> frozen PhytomerVAE -> assembly -> stem/leaf IK -> Helios XML
+```
+
+| change | evidence | status |
+| :--- | :--- | :--- |
+| Stage 3 generates child geometry against the fixed parent | position is the first-order error (pos<-GT +10-14 IoU); the geometry arm has the best nodes (4.5 cm, 29% coverage) and strict P 33.9 | `STAGE3_GEOMETRY=1` |
+| standardized latent | latent carries no per-node information (R^2 ~ 0); per-dim sigma 0.18 buries the flow loss in noise prediction; Option B's one real asset | `LATENT_NORM=1` |
+| render loss into the latent | GT latent is worth +33-38 IoU; the flow loss alone never rewards per-node conditioning | `RENDER_TO_LATENT=1` |
+| clean parent conditioning + jitter | GT-node conditioning lifts latent R^2 to 0.41; pure teacher forcing has exposure bias | parent jitter 1.5 cm / 5% substitution already in the geometry arm |
+| coverage loss + existence calibration | canopy hull 0.5-0.7x GT, only 25% of GT phytomers within 3 cm of a node, 55-64 of 73 active | to do |
+| multi-zoom node tokens | DAP <= 15 IoU 1-15% while the GT-substituted ceiling is 44-88%: representable, unseen at 1x 128 px | to do |
+
+Chain on the 2-GPU slot after the baseline (15:53): `38274220` latent_norm (46-80) -> `38274221` scheduled TF (46-75) ->
+`38274222` render->latent (46-70) -> `38274224` **combination** (geometry ep78 + latent_norm + render->latent, 34 epochs).
+Judge by the strict 256 px protocol P, node coverage / hull ratio and per-node latent R^2, not the in-training IoU.
+
 ## 3. Proposed next step B: the internode redundancy that's STILL open at the packet level
 
 **Two separate redundancies existed, only one is fixed.** ① Stage 2's own node rotation vs the node-to-node position relationship -- fixed this session (§1, the roll-head reduction). ② The phytomer *packet's* slot-0 (internode organ) rotation+length, encoded inside the 128D VAE latent, vs the SAME node-to-node position relationship -- **not yet fixed**.
