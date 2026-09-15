@@ -894,7 +894,7 @@ resolve to the wrong branch point.
 
 ---
 
-## 2.7 Proposed final structure (v10), 2026-09-15 11:00 — what the measurements add up to
+## 2.7 Proposed final structure (v10), 2026-09-15 09:50 — what the measurements add up to
 
 Keep the 3-stage cascade; change the four places the measurements point at.
 
@@ -916,8 +916,8 @@ output  nodes + packets -> frozen PhytomerVAE -> assembly -> stem/leaf IK -> Hel
 | standardized latent | latent carries no per-node information (R^2 ~ 0); per-dim sigma 0.18 buries the flow loss in noise prediction; Option B's one real asset | `LATENT_NORM=1` |
 | render loss into the latent | GT latent is worth +33-38 IoU; the flow loss alone never rewards per-node conditioning | `RENDER_TO_LATENT=1` |
 | clean parent conditioning + jitter | GT-node conditioning lifts latent R^2 to 0.41; pure teacher forcing has exposure bias | parent jitter 1.5 cm / 5% substitution already in the geometry arm |
-| coverage loss + existence calibration | canopy hull 0.5-0.7x GT, only 25% of GT phytomers within 3 cm of a node, 55-64 of 73 active | `COVERAGE_WEIGHT=1.0 EXIST_COUNT_WEIGHT=0.5` (11:40) |
-| multi-zoom node tokens | DAP <= 15 IoU 1-15% while the GT-substituted ceiling is 44-88%: representable, unseen at 1x 128 px | `MULTIZOOM=1` (11:40) |
+| coverage loss + existence calibration | canopy hull 0.5-0.7x GT, only 25% of GT phytomers within 3 cm of a node, 55-64 of 73 active | `COVERAGE_WEIGHT=1.0 EXIST_COUNT_WEIGHT=0.5` (10:05) |
+| multi-zoom node tokens | DAP <= 15 IoU 1-15% while the GT-substituted ceiling is 44-88%: representable, unseen at 1x 128 px | `MULTIZOOM=1` (10:05) |
 
 All six pieces are implemented (commit after `b722a40`): coverage = one-sided Chamfer GT centre -> nearest active node
 (smooth-L1, 2 cm), count = |sum sigmoid(exist) - N_gt| / N_gt, multizoom = the four cache zoom levels through the frozen
