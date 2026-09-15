@@ -587,12 +587,14 @@ class CoarseSkeletalTransformer(nn.Module):
         init_phytomer_count: float = 50.0,
         dap_clue: bool = True,
         num_levels: int = 1,
+        node_token_window: int = 1,
     ):
         super().__init__()
         self.max_phytomers = max_phytomers
         self.embed_dim = embed_dim
         self.dap_clue = dap_clue
         self.num_levels = int(num_levels)
+        self.node_token_window = int(node_token_window)
         if self.num_levels > 1:
             self.level_embed = nn.Parameter(torch.zeros(self.num_levels, embed_dim))   # multizoom token identity
 
@@ -989,9 +991,13 @@ class PhytomerVisualProjector(nn.Module):
     and fuses them with 3D height/depth cues via a zero-initialized residual MLP.
     """
 
-    def __init__(self, embed_dim: int = 384, num_levels: int = 1, zooms=(1.0, 2.0, 4.0, 8.0)):
+    def __init__(self, embed_dim: int = 384, num_levels: int = 1, zooms=(1.0, 2.0, 4.0, 8.0), window: int = 1):
         super().__init__()
         self.embed_dim = embed_dim
+        # window > 1: the node's local token is the mean over a window x window block of tokens around the
+        # sampled point instead of one bilinear sample -- a 4-6 cm node error at 7.5 cm per token otherwise
+        # reads the neighbouring patch (design doc §2.7 follow-up, 2026-09-15).
+        self.window = int(window)
         # multizoom: the token grid holds num_levels plant-centred zoom levels (level-major); a node
         # samples the FINEST level that still contains it (uv scaled by the level's zoom), so a seedling
         # that is 3 px at 1x is read from the 8x crop.
@@ -1046,15 +1052,24 @@ class PhytomerVisualProjector(nn.Module):
         uv = torch.tanh(uv_pre)
         grid = uv.reshape(B * L, 1, K, 2)
 
-        # Bilinear sampling from each level's patch feature map
-        sampled = F.grid_sample(
-            feat_map,
-            grid,
-            mode="bilinear",
-            padding_mode="border",
-            align_corners=True,
-        )
-        sampled = sampled.squeeze(2).transpose(1, 2).reshape(B, L, K, self.embed_dim)  # (B, L, K, C)
+        # Bilinear sampling from each level's patch feature map (mean over a window of token offsets if window > 1)
+        if self.window > 1:
+            step = 2.0 / max(grid_size - 1, 1)                                        # one token in [-1, 1] units
+            r = (self.window - 1) // 2
+            offs = torch.tensor([(dx * step, dy * step) for dy in range(-r, r + 1) for dx in range(-r, r + 1)],
+                                device=grid.device, dtype=grid.dtype)                  # (W*W, 2)
+            grid_w = (grid.unsqueeze(2) + offs.view(1, 1, -1, 1, 2)).reshape(B * L, 1, K * offs.shape[0], 2)
+            sampled = F.grid_sample(feat_map, grid_w, mode="bilinear", padding_mode="border", align_corners=True)
+            sampled = sampled.squeeze(2).transpose(1, 2).reshape(B * L, K, offs.shape[0], self.embed_dim).mean(dim=2)
+        else:
+            sampled = F.grid_sample(
+                feat_map,
+                grid,
+                mode="bilinear",
+                padding_mode="border",
+                align_corners=True,
+            ).squeeze(2).transpose(1, 2)
+        sampled = sampled.reshape(B, L, K, self.embed_dim)  # (B, L, K, C)
         if L > 1:
             inside = (uv_pre.abs() < 1.0).all(dim=-1)                                # (B, L, K): inside level l's crop
             inside[:, 0] = True                                                       # level 0 always holds the node
@@ -1282,9 +1297,11 @@ class PhytomerFlowMatchingDecoder(nn.Module):
         num_layers: int = 6,
         slots_per_phytomer: int = 10,
         num_levels: int = 1,
+        node_token_window: int = 1,
     ):
         super().__init__()
         self.num_levels = int(num_levels)
+        self.node_token_window = int(node_token_window)
         if self.num_levels > 1:
             self.level_embed = nn.Parameter(torch.zeros(self.num_levels, embed_dim))   # multizoom token identity
         self.latent_dim = latent_dim
@@ -1354,7 +1371,7 @@ class PhytomerFlowMatchingDecoder(nn.Module):
             self.node_parent_mlp = None
 
         # Hybrid 3D-to-2D Phytomer Visual Projector (Point-Query sampling)
-        self.phytomer_projector = PhytomerVisualProjector(embed_dim=embed_dim, num_levels=self.num_levels)
+        self.phytomer_projector = PhytomerVisualProjector(embed_dim=embed_dim, num_levels=self.num_levels, window=self.node_token_window)
 
         # Velocity head: predicts d/dt of the flow vector (node_flow_dim = 12 + latent_dim)
         self.velocity_head = nn.Sequential(
@@ -1474,9 +1491,11 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         init_phytomer_count: float = 50.0,
         stage3_geometry: bool = False,
         multizoom: bool = False,
+        node_token_window: int = 1,
     ):
         super().__init__()
         self.stage3_geometry = bool(stage3_geometry)
+        self.node_token_window = int(node_token_window)
         # multizoom (design doc §2.7): all four cache zoom levels (1x/2x/4x/8x, plant-centred) go through
         # the frozen backbone; Stage 2/3 attend over all levels' tokens (with a learned level embedding)
         # and each node's local token is read from the finest level containing it.
@@ -1534,6 +1553,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             max_phytomers=max_phytomers,
             embed_dim=embed_dim,
             num_levels=self.num_levels,
+            node_token_window=self.node_token_window,
             num_heads=vit_heads,
             num_layers=coarse_layers,
             init_phytomer_count=init_phytomer_count,
@@ -1552,6 +1572,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             self.fine_stage = PhytomerFlowMatchingDecoder(
                 latent_dim=phytomer_latent_dim,
                 num_levels=self.num_levels,
+                node_token_window=self.node_token_window,
                 base_dim=3 if self.stage3_geometry else 0,
                 rot_dim=2 if self.stage3_geometry else 0,
                 scale_dim=3 if self.stage3_geometry else 0,

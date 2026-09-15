@@ -85,6 +85,13 @@ fi
 if [ "${HOLDOUT_PER_BUCKET:-0}" != "0" ]; then
     STAGE3_ARGS="${STAGE3_ARGS} --holdout_samples_per_bucket ${HOLDOUT_PER_BUCKET}"
 fi
+# NODE_TOKEN_WINDOW (default 1): WxW mean-pooled node-local token; T0_FRAC (default 0): fraction of each batch at t=0.
+if [ "${NODE_TOKEN_WINDOW:-1}" != "1" ]; then
+    STAGE3_ARGS="${STAGE3_ARGS} --node_token_window ${NODE_TOKEN_WINDOW}"
+fi
+if [ "${T0_FRAC:-0}" != "0" ]; then
+    STAGE3_ARGS="${STAGE3_ARGS} --t0_frac ${T0_FRAC}"
+fi
 # MULTIZOOM=1: all four cache zoom levels as image tokens (design doc §2.7).
 if [ "${MULTIZOOM:-0}" = "1" ]; then
     STAGE3_ARGS="${STAGE3_ARGS} --multizoom"
@@ -169,7 +176,7 @@ echo "Render fraction: ${RENDER_FRACTION:-0.167} of batch per step (batch-relati
 echo "Flow granularity: ${FLOW_GRANULARITY:-phytomer} (hybrid decoupled: 128D VAE latent flow + Stage 2 3D scaffold)"
 echo "Phytomer VAE: ${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt}"
 echo "Pkt cache dir: ${PKT_CACHE_DIR:-dataset/cache/cowpea_curv26_pkt_v9} (missing samples fall back to on-the-fly) | PHYTOMER_TERMINAL_LAST=${PHYTOMER_TERMINAL_LAST}"
-echo "LR: ${LR:-1e-4} | Save every ${SAVE_EVERY} epochs | Stage 3 geometry: ${STAGE3_GEOMETRY:-0} | GT nodes: ${STAGE3_GT_NODES:-0} (p ${STAGE3_GT_NODES_P:-1.0}, jitter ${STAGE3_GT_NODES_JITTER_CM:-0.0} cm) | render->latent: ${RENDER_TO_LATENT:-0} | latent norm: ${LATENT_NORM:-0} | coverage w: ${COVERAGE_WEIGHT:-0} | multizoom: ${MULTIZOOM:-0} | count w: ${EXIST_COUNT_WEIGHT:-0} | Git: $(git rev-parse --short HEAD 2>/dev/null)"
+echo "LR: ${LR:-1e-4} | Save every ${SAVE_EVERY} epochs | Stage 3 geometry: ${STAGE3_GEOMETRY:-0} | GT nodes: ${STAGE3_GT_NODES:-0} (p ${STAGE3_GT_NODES_P:-1.0}, jitter ${STAGE3_GT_NODES_JITTER_CM:-0.0} cm) | render->latent: ${RENDER_TO_LATENT:-0} | latent norm: ${LATENT_NORM:-0} | coverage w: ${COVERAGE_WEIGHT:-0} | multizoom: ${MULTIZOOM:-0} | token window: ${NODE_TOKEN_WINDOW:-1} | t0 frac: ${T0_FRAC:-0} | count w: ${EXIST_COUNT_WEIGHT:-0} | Git: $(git rev-parse --short HEAD 2>/dev/null)"
 echo "Backbone: ${BACKBONE}${FREEZE_ARGS:+ (frozen)} | Output: ${OUTPUT_DIR} | Epochs: ${EPOCHS}"
 echo "Train subset: ${MAX_TRAIN_SAMPLES:-0} (0 = full dataset) | eval set file: ${EVAL_SET_FILE:-none} | holdout/bucket: ${HOLDOUT_PER_BUCKET:-0}"
 echo "Date: $(date)"

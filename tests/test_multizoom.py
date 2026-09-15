@@ -35,6 +35,7 @@ class TestMultizoom(unittest.TestCase):
             max_phytomers=16, slots_per_phytomer=10, node_dim=16, embed_dim=96, coarse_layers=1, fine_layers=1,
             flow_granularity="phytomer", phytomer_latent_dim=32, multizoom=True).eval()
         self.assertEqual(model.num_levels, 4)
+        model.fine_stage.phytomer_projector.window = 3   # windowed node token must run too
         img = torch.randn(2, 16, 128, 128); daps = torch.tensor([15.0, 25.0])
         with torch.no_grad():
             tok = model.image_encoder(img)

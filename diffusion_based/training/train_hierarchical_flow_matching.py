@@ -116,6 +116,7 @@ def forward_backward_step(
     stage3_gt_nodes_p: float = 1.0,
     stage3_gt_nodes_jitter_m: float = 0.0,
     render_to_latent: bool = False,
+    t0_frac: float = 0.0,
     capacity_schedule: Optional[Dict[str, float]] = None,
     flow_granularity: str = "organ",
     phytomer_vae: Optional[nn.Module] = None,
@@ -312,6 +313,11 @@ def forward_backward_step(
         D = raw_model.phytomer_latent_dim
         z_0 = torch.randn(B, active_k, getattr(raw_model, "flow_dim", D), device=device)
         t = scheduler.sample_time(B, device)
+        if t0_frac > 0:
+            # --t0_frac: a fraction of the batch is trained at t = 0 exactly (x_t = pure noise), where the
+            # velocity target z1 - z0 can only be met from the conditioning -- the same quantity the latent
+            # probe measures. Uniform t lets the flow loss be met by denoising x_t instead (2026-09-15).
+            t = torch.where(torch.rand(B, device=device) < t0_frac, torch.zeros_like(t), t)
         z_t = z_0.clone()
     else:
         _sync_cuda()
@@ -1283,6 +1289,7 @@ def probe_optimal_batch_size(
     stage3_gt_nodes_p: float = 1.0,
     stage3_gt_nodes_jitter_m: float = 0.0,
     render_to_latent: bool = False,
+    t0_frac: float = 0.0,
     flow_granularity: str = "organ",
     phytomer_vae: Optional[nn.Module] = None,
     phy_count_weight: float = 2.0,
@@ -1351,6 +1358,7 @@ def probe_optimal_batch_size(
         stage3_gt_nodes_p=stage3_gt_nodes_p,
         stage3_gt_nodes_jitter_m=stage3_gt_nodes_jitter_m,
         render_to_latent=render_to_latent,
+        t0_frac=t0_frac,
         flow_granularity=flow_granularity,
         phytomer_vae=phytomer_vae,
         phy_count_weight=phy_count_weight,
@@ -1478,6 +1486,7 @@ def train_one_epoch(
     stage3_gt_nodes_p: float = 1.0,
     stage3_gt_nodes_jitter_m: float = 0.0,
     render_to_latent: bool = False,
+    t0_frac: float = 0.0,
     capacity_warmup_epochs: int = 0,
     capacity_full_epochs: int = 0,
     flow_granularity: str = "organ",
@@ -1554,6 +1563,7 @@ def train_one_epoch(
             stage3_gt_nodes_p=stage3_gt_nodes_p,
             stage3_gt_nodes_jitter_m=stage3_gt_nodes_jitter_m,
             render_to_latent=render_to_latent,
+            t0_frac=t0_frac,
             flow_granularity=flow_granularity,
             phytomer_vae=phytomer_vae,
             phy_count_weight=phy_count_weight,
@@ -1867,6 +1877,12 @@ def main():
     parser.add_argument("--stage3_geometry", action="store_true",
                         help="Stage 3 generates the child's position (relative to its fixed parent), roll and scale "
                              "in the flow state with the latent (design doc §2.1; GT-substitution ablation 2026-09-14).")
+    parser.add_argument("--node_token_window", type=int, default=1,
+                        help="Node-local image token = mean over a WxW block of tokens around the node's projected "
+                             "position instead of one bilinear sample (design doc §2.7 follow-up).")
+    parser.add_argument("--t0_frac", type=float, default=0.0,
+                        help="Fraction of each batch trained at flow time t = 0 (pure noise input), forcing the "
+                             "conditioning path to carry the per-node latent.")
     parser.add_argument("--multizoom", action="store_true",
                         help="Feed all four cache zoom levels through the backbone; Stage 2/3 attend over all levels and "
                              "each node reads its local token from the finest level containing it (design doc §2.7).")
@@ -2107,6 +2123,7 @@ def main():
         freeze_backbone=args.freeze_backbone,
         init_phytomer_count=args.init_phytomer_count,
         multizoom=bool(getattr(args, 'multizoom', False)),
+        node_token_window=int(getattr(args, 'node_token_window', 1)),
         stage3_geometry=args.stage3_geometry,
     ).to(device)
 
@@ -2312,6 +2329,7 @@ def main():
             stage3_gt_nodes_p=args.stage3_gt_nodes_p,
             stage3_gt_nodes_jitter_m=args.stage3_gt_nodes_jitter_cm / 100.0,
             render_to_latent=args.render_to_latent,
+            t0_frac=args.t0_frac,
             flow_granularity=args.flow_granularity,
             phytomer_vae=phytomer_vae,
             phy_count_weight=args.phy_count_weight,
@@ -2446,6 +2464,7 @@ def main():
             stage3_gt_nodes_p=args.stage3_gt_nodes_p,
             stage3_gt_nodes_jitter_m=args.stage3_gt_nodes_jitter_cm / 100.0,
             render_to_latent=args.render_to_latent,
+            t0_frac=args.t0_frac,
             capacity_warmup_epochs=args.capacity_warmup_epochs,
             capacity_full_epochs=args.capacity_full_epochs,
             flow_granularity=args.flow_granularity,
