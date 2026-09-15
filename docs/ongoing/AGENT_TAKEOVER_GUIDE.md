@@ -409,6 +409,17 @@ information yet. The standardized-latent and render→latent runs were cancelled
 in their place (`38274747` render fraction 1.0, `38274748` lr 2e-4, both from geometry ep78) — **but the freed GPUs were
 taken at once by other groups' queued jobs on the shared Ada node** (js2552 ×2 running, 4 more pending), so they wait.
 Lesson: on `gpu-6000_ada-h` a cancelled job's GPU does not come back to us; keep runs going until their budget ends.
+**13:30 — training render loss now has the same camera option; run `sub10_v10_cam` launched (results report §11.10).**
+`--render_input_camera 1` (launcher `RENDER_INPUT_CAMERA=1`, commit `d492e01`): for every rendered plant the training
+loss now frames the prediction on the bbox centre of that plant's GT mesh (decoded from the batch `nodes` with
+`ehsc.decode_predictions_to_part_tensor`, mesh built under no_grad, passed as `render_batched(centers=)`), i.e. the
+camera generate_cache used for the input CHM. `tests/test_render_input_camera.py` checks the centred batched render
+equals `forward(focus_plant=True)` for an off-centre plant. Run: v10 flags + RENDER_INPUT_CAMERA=1 from the s3geom ep78
+checkpoint, 10% data, local GPU 0, log `slurm_scripts/logs/20260915/local_sub10_v10_cam.log`, checkpoints
+`diffusion_based/checkpoints/sub10_v10_cam/`. To make room the plateaued unfrozen-backbone run was stopped at ep88
+(strict P 34.3 at ep80; resumable from its ep85 checkpoint with AUTO_RESUME=1). Second strict reading of the other
+variants: w3t0 ep85 34.4, lr 2e-4 ep100 33.0 — every training-side variant sits at 33–35.
+
 **13:20 — refinement in the input's camera frame: 33.5 → 62.9 strict P, but watch the geometry (results report §11.10).**
 `eval_test_time_refinement.py --input_camera` renders the prediction with the camera that produced the cached input CHM
 (GT plant bbox centre, via `render_batched(centers=)`) so the input loss is no longer shifted. v10 ep95, 20 plants, 40
