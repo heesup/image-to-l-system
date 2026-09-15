@@ -92,6 +92,9 @@ def main():
     ap.add_argument("--no_teacher_force", action="store_true",
                     help="Sample with Stage 2's own nodes even for a --stage3_gt_nodes checkpoint (the deployable protocol).")
     ap.add_argument("--tag", default="", help="Suffix for the output JSON name (e.g. 'tf' / 'notf').")
+    ap.add_argument("--self_cond_passes", type=int, default=1,
+                    help="Sample N times, feeding each pass's refined nodes (pos/roll/scale) back as Stage 3's conditioning "
+                         "for the next (2-pass self-conditioning; needs a --stage3_geometry checkpoint to change anything).")
     a = ap.parse_args()
     dev = torch.device("cuda:0")
     ckpt_path = a.checkpoint or sorted(glob.glob("diffusion_based/checkpoints/hierarchical_fm_v9/hierarchical_fm_epoch_*.pt"))[-1]
@@ -200,6 +203,10 @@ def main():
                 o_pos, o_roll, o_scale = p_pos0.clone(), co["phytomer_roll"][0].float().clone(), co["phytomer_scale"][0].float().clone()
                 o_pos[src0] = g_pos[j0]; o_roll[src0] = g_roll[j0]; o_scale[src0] = g_scale[j0]
                 override = {"pos": o_pos.unsqueeze(0), "roll": o_roll.unsqueeze(0), "scale": o_scale.unsqueeze(0)}
+            for _pass in range(max(a.self_cond_passes, 1) - 1):
+                so_prev = model.sample_ode(images=images, daps=None, num_steps=a.num_steps, vae=ovae, phytomer_vae=pvae, cond_override=override)
+                override = {"pos": so_prev["phytomer_pos"].float(), "roll": so_prev["phytomer_roll"].float(),
+                            "scale": (so_prev.get("phytomer_scale") if so_prev.get("phytomer_scale") is not None else co.get("phytomer_scale")).float()}
             so = model.sample_ode(images=images, daps=None, num_steps=a.num_steps, vae=ovae, phytomer_vae=pvae, cond_override=override)
             # with --stage3_geometry these are Stage 3's refined values (sample_ode returns them under the usual keys)
             p_pos = so["phytomer_pos"][0].float(); p_exist = so["phytomer_existence"][0].float()

@@ -334,6 +334,10 @@ Heesup: geminigrp의 `gpu-6000_ada-h` 파티션은 최대 8 GPU를 높은 우선
 
 첫 체크포인트라 판정은 이르지만, 넷 다 v10의 35 근처에서 출발했고 어느 것도 latent probe를 움직이지 않았다. 최적화 강도(학습률, 렌더 비율, 백본)로는 한계가 안 움직인다는 신호가 쌓이고 있어, 학습이 아니라 **추론 쪽 지렛대** 둘을 먼저 잰다: (a) Stage 3가 refine한 노드를 다시 조건으로 넣어 한 번 더 샘플하는 2-pass self-conditioning(학습 없이 평가만), (b) 입력 CHM에 대한 렌더 손실로 노드·latent를 식물마다 몇십 step 최적화하는 test-time refinement(analysis-by-synthesis; 미분 가능 렌더러가 이미 있음).
 
+### 11.6 추론 쪽 지렛대 (a): self-conditioning 재샘플 — 효과 없음 (13:10)
+
+v10 ep95에서 Stage 3가 refine한 노드(pos/roll/scale)를 다시 조건으로 넣고 한 번(2-pass) 또는 두 번(3-pass) 더 샘플했다 (`eval_gt_substitution_ablation.py --self_cond_passes N`): 배포 P 33.6 → 31.7 / 31.7. 자기 노드를 조건으로 되먹여도 노드가 좋아지지 않는다. 즉 Stage 3의 refine은 "GT parent에 대한 상대 위치"를 배운 것이지 "자기 예측을 고쳐 나가는" 능력이 아니다.
+
 ## 5. 변경 파일
 
 | 파일 | 변경 |
