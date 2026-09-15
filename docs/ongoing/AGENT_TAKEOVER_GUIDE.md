@@ -416,8 +416,8 @@ number is now set by test-time refinement (67.6–69.1). So the two plateaued 10
 38274748 lr 2e-4) were cancelled and their slot given to the full-data run: v10 flags + `RENDER_INPUT_CAMERA=1`, from
 the s3geom ep78 checkpoint, `EVAL_SET_FILE` + `HOLDOUT_PER_BUCKET=2`, `SAVE_EVERY=5`, 128 epochs, output
 `diffusion_based/checkpoints/hierarchical_fm_v10_cam/`, log `slurm_scripts/logs/20260915/hierarchical_fm_38275054.log`.
-It is the generalisation check of the 10% findings and the candidate deployable model for refinement. Still running
-locally: `sub10_v10_cam` (ep90/95 strict readings queued) and `sub10_v10_w3t0`.
+It is the generalisation check of the 10% findings and the candidate deployable model for refinement. Full-run readings
+(detached scorer, JSONs in `slurm_scripts/logs/20260915/run_38275054/`): ep80 strict P 27.5, meanlat 34.4, ALL 79.6 (~15 min/epoch).
 
 **13:30 — training render loss now has the same camera option; run `sub10_v10_cam` launched (results report §11.10).**
 `--render_input_camera 1` (launcher `RENDER_INPUT_CAMERA=1`, commit `d492e01`): for every rendered plant the training
@@ -428,7 +428,7 @@ equals `forward(focus_plant=True)` for an off-centre plant. Run: v10 flags + REN
 checkpoint, 10% data, local GPU 0, log `slurm_scripts/logs/20260915/local_sub10_v10_cam.log`, checkpoints
 `diffusion_based/checkpoints/sub10_v10_cam/`. To make room the plateaued unfrozen-backbone run was stopped at ep88
 (strict P 34.3 at ep80; resumable from its ep85 checkpoint with AUTO_RESUME=1). Second strict reading of the other
-variants: w3t0 ep85 34.4, lr 2e-4 ep100 33.0 — every training-side variant sits at 33–35. First reading of `sub10_v10_cam` at ep80: strict P **35.8** (v10 itself was 35.4 at ep80) — ep85 34.0, ep90 **38.5** (highest single 10% reading so far; noise is ±2, ep95 pending) — ep90/95 readings are queued (detached scorer, log in the session scratchpad `cam_readings.log`, JSONs in `slurm_scripts/logs/20260915/run_sub10_v10_cam/`).
+variants: w3t0 ep85 34.4, lr 2e-4 ep100 33.0 — every training-side variant sits at 33–35. First reading of `sub10_v10_cam` at ep80: strict P **35.8** (v10 itself was 35.4 at ep80) — ep85 34.0, ep90 38.5, ep95 34.6, ep100 34.8 (mean 35.5 = v10's 35.0; the corrected training camera does not move the 10% plateau) — ep90/95 readings are queued (detached scorer, log in the session scratchpad `cam_readings.log`, JSONs in `slurm_scripts/logs/20260915/run_sub10_v10_cam/`).
 
 **13:20 — refinement in the input's camera frame: 33.5 → 62.9 strict P, but watch the geometry (results report §11.10).**
 `eval_test_time_refinement.py --input_camera` renders the prediction with the camera that produced the cached input CHM
