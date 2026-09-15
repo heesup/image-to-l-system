@@ -396,7 +396,7 @@ v10 ep95에서 Stage 3가 refine한 노드(pos/roll/scale)를 다시 조건으�
 
 같은 사실이 **학습 렌더 블록**에도 적용된다: 학습 중 렌더 손실도 원점 창으로 계산하고 있으므로 §11.8의 창 불일치(겹침 41–76%)를 안고 학습해 왔다. 다음 단계는 학습 렌더도 `centers=`(GT bbox 중심)로 바꿔 다시 학습하는 것이다.
 
-**학습 렌더에 같은 카메라를 넣은 run `sub10_v10_cam` (13:20 시작).** `--render_input_camera 1`(런처 `RENDER_INPUT_CAMERA=1`): 렌더되는 식물마다 GT 메시 bbox 중심을 계산해 `render_batched(centers=)`로 넘긴다(`tests/test_render_input_camera.py`). v10 설정 + 이 옵션, s3geom ep78에서 시작, 10% 데이터, 로컬 GPU. 첫 판독 ep80 엄격 P **35.8** (meanlat 34.8, ALL 78.3) — 같은 시점의 v10 35.4, 다른 변형 32–34.6보다 조금 높지만 아직 잡음 범위(±1–2). ep85/90/95 판독이 자동으로 이어진다.
+**학습 렌더에 같은 카메라를 넣은 run `sub10_v10_cam` (13:20 시작).** `--render_input_camera 1`(런처 `RENDER_INPUT_CAMERA=1`): 렌더되는 식물마다 GT 메시 bbox 중심을 계산해 `render_batched(centers=)`로 넘긴다(`tests/test_render_input_camera.py`). v10 설정 + 이 옵션, s3geom ep78에서 시작, 10% 데이터, 로컬 GPU. 첫 판독 ep80 엄격 P **35.8** (meanlat 34.8, ALL 78.3) — 같은 시점의 v10 35.4, 다른 변형 32–34.6보다 조금 높지만 아직 잡음 범위(±1–2). ep85 **34.0** (ALL 80.2) — 학습 렌더 창을 맞춰도 두 판독까지는 다른 v10 run과 같은 33–36 구간이다. ep90/95 판독이 자동으로 이어진다.
 
 **주의 — 수치와 그림이 어긋난다.** 입력 카메라 창 버전의 렌더(`docs/results/assets/20260915_test_time_refinement_before_after_input_camera.png`, 여섯 식물 41.1 → 72.2)를 보면 DAP 39·60·88에서 잎 몇 장이 실루엣을 채우기 위해 **크고 납작한 다각형으로 부풀어** 있다. 실루엣 IoU는 오르지만 기하는 식물답지 않다 — 손실이 실루엣·깊이만 보므로 scale·latent가 사전분포를 벗어나도 벌점이 없기 때문이다. 원점 창 버전(§11.7, 여섯 식물 39.8 → 64.3)은 창이 어긋난 만큼 덜 공격적이어서 잎 모양이 유지된다. 그래서 (1) 랩미팅에는 원점 창 그림을 주 결과로, 입력 카메라 창 수치는 "IoU만으로는 부족하다"는 증거로 가져가고, (2) scale·latent를 샘플값 근처에 묶는 벌점(`--reg_scale`, `--reg_latent`)을 추가해 다시 재는 중이다.
 
