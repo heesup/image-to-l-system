@@ -409,6 +409,14 @@ information yet. The standardized-latent and render→latent runs were cancelled
 in their place (`38274747` render fraction 1.0, `38274748` lr 2e-4, both from geometry ep78) — **but the freed GPUs were
 taken at once by other groups' queued jobs on the shared Ada node** (js2552 ×2 running, 4 more pending), so they wait.
 Lesson: on `gpu-6000_ada-h` a cancelled job's GPU does not come back to us; keep runs going until their budget ends.
+**13:35 — test-time refinement is the biggest lever found today (results report §11.7).**
+`diffusion_based/eval/eval_test_time_refinement.py`: after sampling, optimise each plant's node positions, scales and
+phytomer latents for 40 Adam steps against the INPUT canopy height map with the training render loss (no GT), keeping
+the step with the lowest input loss (`--keep_best`). v10 ep95 on the 20 eval plants, strict 256 px protocol: **34.9 →
+46.9** (DAP > 15: 38.2 → 51.2); pos+scale alone +9.8, latent alone +7.8. Every training-side lever plateaued at 35, so
+this — analysis-by-synthesis at inference — is the path to "rendering close to the original": the renderer recovers
+per-node information the network does not read from the image. Follow-ups running: 80 steps, and the same on the
+full-data baseline ep135 (model-agnostic check). Self-conditioning re-sampling (`--self_cond_passes`) gave nothing.
 **12:45 — `slurm_scripts/logs/` is now organized by start date** (Heesup: "어떤게 최신인지 알 수가 없네"): one folder
 per day, `slurm_scripts/logs/YYYYMMDD/`, holding that day's job logs, local-run logs, `run_*` panel folders (with a
 relative `run.log` link) and evaluation folders. Paths quoted earlier in this guide as `slurm_scripts/logs/<x>` now live
