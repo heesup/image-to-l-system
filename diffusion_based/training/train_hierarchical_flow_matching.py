@@ -109,6 +109,7 @@ def forward_backward_step(
     color_loss_weight: float = 0.2,
     silhouette_loss_weight: float = 2.0,
     render_fraction: float = 1.0 / 6.0,
+    render_input_camera: bool = False,
     parent_jitter_m: float = 0.015,
     parent_substitution: float = 0.05,
     stage3_geom_weight: float = 4.0,
@@ -1158,11 +1159,34 @@ def forward_backward_step(
             # each plant keeps its own camera and its own masked mean.
             _sync_cuda(); _t_sub = time.time()
             gt_depth_all = images[render_indices]                                   # (n_render, C, H, W)
+            # Camera frame of the cached input: generate_cache renders the CHM with focus_plant=True, i.e.
+            # centred on the GT plant's mesh bbox, while the origin window used to be assumed here (the two
+            # overlapped only 41-76% on the eval plants). With render_input_camera each rendered plant gets
+            # the bbox centre of its own GT mesh so pred and target are framed identically.
+            render_centers = None
+            if render_input_camera:
+                render_centers = []
+                with torch.no_grad():
+                    for b_idx in range(n_render):
+                        rb = render_indices[b_idx].item()
+                        nb = nodes[rb]; eb = existence_mask[rb]
+                        c_ = None
+                        try:
+                            gt_parts_b = ehsc.decode_predictions_to_part_tensor(
+                                nb[:, FM_BASE_START:], nb[:, :FM_OT_END].argmax(-1), eb, device=device)
+                            if gt_parts_b.shape[0] > 0:
+                                gv = renderer.geo_builder.build_mesh_from_part_tensor(gt_parts_b, device=device)["vertices"]
+                                if gv.shape[0] > 0:
+                                    c_ = 0.5 * (gv.min(0).values + gv.max(0).values)
+                        except Exception:
+                            c_ = None
+                        render_centers.append(c_)
+                _sync_cuda(); prof["r_center"] = prof.get("r_center", 0.0) + time.time() - _t_sub; _t_sub = time.time()
             for k, s_ in enumerate(pyramid_scales):
                 pred = renderer.render_batched(
                     render_meshes, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0,
                     differentiable=True, image_size=128, zoom_factor=float(s_),
-                    reference_window_size=1.2)                                       # (n_render, 4, H, W)
+                    reference_window_size=1.2, centers=render_centers)               # (n_render, 4, H, W)
                 _sync_cuda(); prof["r_raster"] = prof.get("r_raster", 0.0) + time.time() - _t_sub; _t_sub = time.time()
                 gt_depth = gt_depth_all[:, 4 * k + 3]                                # (n_render, H, W)
                 pred_depth = pred[:, 3]
@@ -1282,6 +1306,7 @@ def probe_optimal_batch_size(
     color_loss_weight: float = 0.2,
     silhouette_loss_weight: float = 2.0,
     render_fraction: float = 1.0 / 6.0,
+    render_input_camera: bool = False,
     parent_jitter_m: float = 0.015,
     parent_substitution: float = 0.05,
     stage3_geom_weight: float = 4.0,
@@ -1351,6 +1376,7 @@ def probe_optimal_batch_size(
         color_loss_weight=color_loss_weight,
         silhouette_loss_weight=silhouette_loss_weight,
         render_fraction=render_fraction,
+        render_input_camera=render_input_camera,
         parent_jitter_m=parent_jitter_m,
         parent_substitution=parent_substitution,
         stage3_geom_weight=stage3_geom_weight,
@@ -1479,6 +1505,7 @@ def train_one_epoch(
     color_loss_weight: float = 0.2,
     silhouette_loss_weight: float = 2.0,
     render_fraction: float = 1.0 / 6.0,
+    render_input_camera: bool = False,
     parent_jitter_m: float = 0.015,
     parent_substitution: float = 0.05,
     stage3_geom_weight: float = 4.0,
@@ -1556,6 +1583,7 @@ def train_one_epoch(
             color_loss_weight=color_loss_weight,
             silhouette_loss_weight=silhouette_loss_weight,
             render_fraction=render_fraction,
+            render_input_camera=render_input_camera,
             parent_jitter_m=parent_jitter_m,
             parent_substitution=parent_substitution,
             stage3_geom_weight=stage3_geom_weight,
@@ -1913,6 +1941,10 @@ def main():
     parser.add_argument("--parent_substitution", type=float, default=0.05,
                         help="Stage 3 (parent, self) conditioning: fraction of nodes whose fixed parent is replaced by another matched node's GT position (the chain's parent-recovery failure rate once the ordinal works)")
     parser.add_argument("--render_fraction", type=float, default=1.0 / 6.0, help="Fraction of the batch rendered differentiably per step (batch-relative: n_render = round(B * fraction), clamped [1, B]). 1/6 restores the per-sample photometric visit rate of the 2026-09-07 runs; 1.0 renders the full batch (requires small batch — check VRAM).")
+    parser.add_argument("--render_input_camera", type=int, default=0,
+                        help="1: render the training loss in the camera frame of the cached input (GT plant bbox centre, "
+                             "generate_cache focus_plant=True) instead of the origin-centred window, so the depth/dice "
+                             "loss compares like with like (results report 2026-09-15 §11.8/§11.10).")
     parser.add_argument("--save_every", type=int, default=25)
     parser.add_argument("--eval_every", type=int, default=25, help="Validation image generation interval in epochs (default: 25)")
     parser.add_argument("--render_grad_start_epoch", type=int, default=4,
@@ -2322,6 +2354,7 @@ def main():
             color_loss_weight=args.color_weight,
             silhouette_loss_weight=args.silhouette_weight,
             render_fraction=args.render_fraction,
+            render_input_camera=bool(args.render_input_camera),
             parent_jitter_m=args.parent_jitter_cm / 100.0,
             parent_substitution=args.parent_substitution,
             stage3_geom_weight=args.stage3_geom_weight,
@@ -2457,6 +2490,7 @@ def main():
             color_loss_weight=args.color_weight,
             silhouette_loss_weight=args.silhouette_weight,
             render_fraction=args.render_fraction,
+            render_input_camera=bool(args.render_input_camera),
             parent_jitter_m=args.parent_jitter_cm / 100.0,
             parent_substitution=args.parent_substitution,
             stage3_geom_weight=args.stage3_geom_weight,
