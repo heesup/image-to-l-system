@@ -404,7 +404,7 @@ v10 ep95에서 Stage 3가 refine한 노드(pos/roll/scale)를 다시 조건으�
 
 **shape prior를 넣으면 부풀림 없이 70.4 (13:30).** scale과 latent를 샘플값 근처에 묶는 벌점(`--reg_scale 5 --reg_latent 0.5`, 샘플값과의 제곱 편차)을 넣고 같은 여섯 식물을 다시 정제하면 **39.6 → 70.4**(24.1 → 68.5, 36.1 → 71.8, 47.2 → 77.3, 26.9 → 62.1, 58.7 → 75.0, 44.9 → 67.7)이고, 렌더에서 큰 납작 다각형이 사라져 잎 모양이 GT와 같은 종류로 유지된다. 벌점 없는 72.2와 거의 같은 수치를 식물다운 기하로 얻는 셈이다. 20개 식물 엄격 프로토콜에서는 **35.8 → 63.9** (DAP > 15: 39.3 → 72.2; 벌점 없는 62.9 / 74.5와 같은 수준)로, 기하를 지키면서 이득은 그대로다. **오늘의 최고 배포 수치는 엄격 P 63.9** (baseline 학습만 27, v10 학습만 35, 원점 창 정제 46.9)다.
 
-그림: `docs/results/assets/20260915_test_time_refinement_before_after.png` (`tools/refinement_before_after_figure.py`; 여섯 식물, 입력 JPEG · GT 렌더 · 샘플 그대로 · 정제 후; 입력 카메라 창 + shape prior, 39.6 → 70.4). 비교용: `..._origin_frame.png` (원점 창, 39.8 → 64.3), `..._input_camera_noprior.png` (입력 카메라 창, 벌점 없음, 41.1 → 72.2, 잎 부풀림).
+그림: `docs/results/assets/20260915_test_time_refinement_before_after.png` (`tools/refinement_before_after_figure.py`; 여섯 식물, 입력 JPEG · GT 렌더 · 샘플 그대로 · 정제 후; 입력 카메라 창 + shape prior + 네 zoom 목표 = 스크립트 기본값, 40.8 → 70.6). 비교용: `..._origin_frame.png` (원점 창, 39.8 → 64.3), `..._input_camera_noprior.png` (입력 카메라 창, 벌점 없음, 41.1 → 72.2, 잎 부풀림).
 
 ## 5. 변경 파일
 
