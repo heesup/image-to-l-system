@@ -926,6 +926,15 @@ crop containing the node. Smoke runs (96 samples, one epoch): Cov 0.03-0.04 (3-4
 over-counts low-probability slots; the loss pushes them down), multizoom trains and evaluates with 5 new zero-init
 parameters. Cost: four backbone forwards per step (frozen ViT-S at 128 px).
 
+**Follow-up levers (2026-09-15 12:40, `49efc04`)** for the per-node latent that stays uninformative (probe R² ≈ 0
+in every run, 0.41 with GT nodes as conditioning): (a) `--node_token_window 3` — the node-local image token is the mean
+over a 3×3 block of tokens around the projected node instead of one bilinear sample, so a 4–6 cm node error on the
+7.5 cm token grid still reads the leaf; (b) `--t0_frac 0.25` — a quarter of each batch is trained at t = 0 (pure noise
+input), where the velocity target can only be met from the conditioning, closing the "denoise x_t instead" shortcut of
+the uniform-t flow loss. Launcher `NODE_TOKEN_WINDOW` / `T0_FRAC`. Running as v10 + both on this node
+(`local_sub10_v10_w3t0.log`, `sub10_v10_w3t0/`). Also running: v10 + unfrozen backbone (local), v10 + render every
+sample (`38274747`), v10 + lr 2e-4 (`38274748`).
+
 Chain on the 2-GPU slot after the baseline (15:53): `38274220` latent_norm (46-80) -> `38274221` scheduled TF (46-75) ->
 `38274222` render->latent (46-70) -> `38274224` **combination** (geometry ep78 + latent_norm + render->latent, 34 epochs).
 -> **`hfm_v10` (5th, after `38274224`): the full v10** = combination + multizoom + coverage 1.0 + count 0.5, from
