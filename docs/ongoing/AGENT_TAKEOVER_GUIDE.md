@@ -376,6 +376,12 @@ first; read its latent probe (`scratchpad/latent_probe.py`, R² at t = 0) before
   flow loss was not dominated by noise prediction — the exact property whose absence (128D latent, per-dim std ≈ 0.41)
   explains why today's Stage 3 latent carries no per-node image information. That is the piece to port (the pending
   unit-variance latent scale for the flow), not the architecture.
+- **Same-plant visual comparison** (`docs/results/assets/20260915_optionb_vs_today_same_plants.png`, results report §10):
+  on 7 mature plants Option B 38.3 vs baseline 42.0 / geometry 43.1 / gt_nodes 42.9 mean IoU. Heesup's impression that
+  Option B *looks* closer to the input is real and explained: it generated organs one by one (spread canopy, visible
+  stems and flowers, but floating organs and over-long stems), while today's phytomer packets with a mean-like latent
+  give compact uniform blobs whose IoU is higher because they cover the plant's centre. Both miss the canopy spread of
+  star-shaped plants (DAP 72 / 88). The architecture stays; the latent's variance and per-node content are the levers.
 
 **Node caveat (21:05):** `gpu-10-50`, where both local arms run inside the OnDemand desktop job `38252204`, is
 `MIXED+DRAIN` since 17:20 (`Reason=Kill task failed (JobId=38249157)`, an automatic SLURM drain). Running jobs are not
