@@ -401,6 +401,14 @@ the two 10% runs that could not get a cluster GPU: **combination** (`slurm_scrip
 COVERAGE_WEIGHT=1.0 EXIST_COUNT_WEIGHT=0.5` for v10), sharing one Ada GPU. Their cluster copies were cancelled. Heesup
 also opened `jmearlesgrp`'s `gpum` partition (and the association lists `gpuh`, `gpu-a100-h`), but at 10:50 every one of
 those nodes was RAM-blocked by other users' jobs, and a job cannot list several partitions under this association.
+**12:10 — second 10% reading (results report §11.2)**: geometry-based runs lead the deployable strict P (v10 full ep85
+**36.0**, combination ep85 33.6) against 25–29 for the latent-only single changes (baseline-on-10% 26.5, standardized
+latent 25.4, scheduled TF 27.3 deployable / 43.7 teacher-forced, render→latent 27.5); no run memorizes the 10k plants
+(train-plant IoU flat at 33–36 for 25–30 epochs, held-out within 5 points), and no run's latent carries per-node image
+information yet. The standardized-latent and render→latent runs were cancelled as flat; two v10 variants were submitted
+in their place (`38274747` render fraction 1.0, `38274748` lr 2e-4, both from geometry ep78) — **but the freed GPUs were
+taken at once by other groups' queued jobs on the shared Ada node** (js2552 ×2 running, 4 more pending), so they wait.
+Lesson: on `gpu-6000_ada-h` a cancelled job's GPU does not come back to us; keep runs going until their budget ends.
 **`low` cannot run our runs now (10:00)**: its GPU nodes have idle A100/H100s but their RAM is fully allocated by other
   users' jobs (5–13 GB free per node) and one training needs ~15 GB (6 GB main + 8 workers × 1.1 GB). The two low jobs
   were cancelled and the three runs chained on the baseline's slot: `38274220` latent_norm (46–80) → `38274221`
