@@ -1929,7 +1929,8 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             phytomer_rot, phytomer_parent_pos = None, None
 
         res = {
-            "pred_latent": pred_latent,
+            # raw VAE latent (denormalized under --latent_norm) -- what every consumer decodes
+            "pred_latent": (self.denormalize_latent(pred_latent) if self.flow_granularity == "phytomer" else pred_latent),
             "pred_fine_exist_logits": pred_fine_exist_logits,
             "slot_active": slot_active,
             "phytomer_pos": phytomer_pos,
