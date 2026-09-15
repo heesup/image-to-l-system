@@ -42,6 +42,8 @@ from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 from diffusion_based.models.plant_organ_array import NUM_ORGAN_TYPES
 from diffusion_based.training.hierarchical_hungarian_matcher import HierarchicalBotanicalMatcher
 from diffusion_based.eval.eval_hierarchical_self_consistency import decode_predictions_to_part_tensor
+from diffusion_based.dataset.phytomer_roll import encode_roll
+from diffusion_based.dataset.phytomer_packets import rot6d_to_matrix as _rot6d_to_matrix
 
 EMPTY_IDX = 0
 
@@ -84,6 +86,9 @@ def main():
     ap.add_argument("--eval_set", default="")
     ap.add_argument("--out_dir", default="")
     ap.add_argument("--num_steps", type=int, default=20)
+    ap.add_argument("--teacher_force", action="store_true",
+                    help="Condition Stage 3 on the GT node geometry of matched nodes when sampling (the "
+                         "--stage3_gt_nodes arm; defaults to the checkpoint's own setting).")
     a = ap.parse_args()
     dev = torch.device("cuda:0")
     ckpt_path = a.checkpoint or sorted(glob.glob("diffusion_based/checkpoints/hierarchical_fm_v9/hierarchical_fm_epoch_*.pt"))[-1]
@@ -121,12 +126,28 @@ def main():
 
     variants = ["P", "pos", "topo", "rot", "scale", "latent", "prune",
                 "pos+topo", "pos+rot", "pos+scale", "pos+latent",
-                "ALL-pos", "ALL-topo", "ALL-rot", "ALL-scale", "ALL-latent", "ALL"]
+                "ALL-pos", "ALL-topo", "ALL-rot", "ALL-scale", "ALL-latent", "ALL",
+                "meanlat", "ALL-latent+meanlat"]
     FULL = {"pos", "topo", "rot", "scale", "latent"}
+    teacher_force = a.teacher_force or bool(args.get("stage3_gt_nodes", False))
+    print(f"  teacher forcing (GT nodes as Stage 3 conditioning): {teacher_force}")
+    # Mean GT latent over the eval set: a latent that carries no image information at all.
+    # 'meanlat' = predicted geometry + mean latent; 'ALL-latent+meanlat' = GT geometry + mean latent,
+    # to be read against 'ALL-latent' (GT geometry + predicted latent).
+    lat_sum, lat_n = None, 0
+    with torch.no_grad():
+        for i in idxs:
+            pk = ds[i].get("pkt")
+            if pk is None: continue
+            l_ = pvae.encode(pvae.pack_input(pk["packets"].to(dev).float(), pk["presence"].to(dev)))[0].float()
+            lat_sum = l_.sum(0) if lat_sum is None else lat_sum + l_.sum(0); lat_n += l_.shape[0]
+    mean_lat = lat_sum / max(lat_n, 1)
+    lat_err = {"pred": [], "mean": [], "pred_std": [], "gt_std": []}
 
     def subset(v):
         if v == "P": return set()
         if v == "ALL": return set(FULL)
+        if v == "ALL-latent+meanlat": return (FULL - {"latent"}) | {"meanlat"}
         if v.startswith("ALL-"): return FULL - {v[4:]}
         return set(v.split("+"))
     rows = []
@@ -149,12 +170,34 @@ def main():
             gt_types = nodes[:, :FM_OT_END].argmax(-1)
             gt_parts = decode_predictions_to_part_tensor(nodes[:, FM_BASE_START:], gt_types, exist_gt, device=dev)
             gt_depth_img = render_depth(renderer, gt_parts, zoom, dev)
-            # prediction
-            so = model.sample_ode(images=images, daps=None, num_steps=a.num_steps, vae=ovae, phytomer_vae=pvae)
-            K = so["phytomer_pos"].shape[1]
+            # prediction (Stage 2 first: the match is made on its positions; with teacher forcing the
+            # sampler is then conditioned on the GT geometry of the matched nodes)
             image_tokens = model.image_encoder(images)
             clue = model.probe_pred_dap(image_tokens)
+            co0 = model.coarse_stage(image_tokens, capacity_mode="pred_phyto", pred_dap=clue)
+            K = int(co0["active_k"])
             co = model.coarse_stage(image_tokens, active_k=K, pred_dap=clue)
+            override = None
+            if teacher_force:
+                p_pos0 = co["phytomer_pos"][0].float(); p_ex0 = (torch.sigmoid(co["phytomer_logits"]).squeeze(-1) * co["soft_margin_weights"])[0].float() if "soft_margin_weights" in co else torch.sigmoid(co["phytomer_logits"]).squeeze(-1)[0].float()
+                labels0 = nodes[:, :FM_OT_END].argmax(-1); positions0 = nodes[:, FM_BASE_START:FM_BASE_END] / BASE_SCALE
+                valid0 = (exist_gt > 0.5) & (labels0 > 0)
+                m0 = matcher(pred_phytomer_pos=p_pos0.unsqueeze(0), pred_phytomer_logits=torch.logit(p_ex0.clamp(1e-4, 1 - 1e-4)).view(1, K, 1),
+                             pred_fine_geom=torch.zeros(1, K * M, 16, device=dev), pred_fine_logits=torch.zeros(1, K * M, 13, device=dev),
+                             tgt_geoms=[torch.zeros(0, 16, device=dev)], tgt_labels=[labels0], tgt_positions=None,
+                             per_sample_max_phytomers=torch.tensor([K], device=dev), skip_fine=True,
+                             tgt_labels_padded=labels0.unsqueeze(0), tgt_positions_padded=positions0.unsqueeze(0), tgt_valid=valid0.unsqueeze(0))[0]
+                src0 = m0["phytomer_src_idx"]; j0 = torch.cdist(m0["phytomer_tgt_pos"], g_pos).argmin(dim=1) if src0.numel() > 0 else torch.zeros(0, dtype=torch.long, device=dev)
+                # same forward axis as the training roll target: parent -> child, world up for the root
+                g_parent = torch.nan_to_num(pkt["parent_pos"].to(dev).float())
+                g_d = g_pos - g_parent
+                g_fwd = torch.where((g_d.norm(dim=-1, keepdim=True) > 1e-6), torch.nn.functional.normalize(g_d, dim=-1),
+                                    torch.tensor([0.0, 0.0, 1.0], device=dev).expand_as(g_d))
+                g_roll = encode_roll(_rot6d_to_matrix(g_refs), g_fwd)
+                o_pos, o_roll, o_scale = p_pos0.clone(), co["phytomer_roll"][0].float().clone(), co["phytomer_scale"][0].float().clone()
+                o_pos[src0] = g_pos[j0]; o_roll[src0] = g_roll[j0]; o_scale[src0] = g_scale[j0]
+                override = {"pos": o_pos.unsqueeze(0), "roll": o_roll.unsqueeze(0), "scale": o_scale.unsqueeze(0)}
+            so = model.sample_ode(images=images, daps=None, num_steps=a.num_steps, vae=ovae, phytomer_vae=pvae, cond_override=override)
             # with --stage3_geometry these are Stage 3's refined values (sample_ode returns them under the usual keys)
             p_pos = so["phytomer_pos"][0].float(); p_exist = so["phytomer_existence"][0].float()
             p_roll = so["phytomer_roll"][0].float(); p_ord = co["phytomer_ordinal"][0].float(); p_base = co["phytomer_base_logits"][0].float()
@@ -170,6 +213,12 @@ def main():
                         tgt_labels_padded=labels.unsqueeze(0), tgt_positions_padded=positions.unsqueeze(0), tgt_valid=valid.unsqueeze(0))[0]
             src = m["phytomer_src_idx"]; tgt_pos = m["phytomer_tgt_pos"]
             j = torch.cdist(tgt_pos, g_pos).argmin(dim=1) if src.numel() > 0 else torch.zeros(0, dtype=torch.long, device=dev)
+            if src.numel() > 0:
+                # how much image information the sampled latent carries: its error against the GT latent of the
+                # matched phytomer, next to the error of the dataset-mean latent (a latent with no information)
+                pl = so["phytomer_latent"][0].float()[src]; gl = g_lat[j]
+                lat_err["pred"].append(((pl - gl) ** 2).sum(-1)); lat_err["mean"].append(((mean_lat - gl) ** 2).sum(-1))
+                lat_err["pred_std"].append(pl.std(0)); lat_err["gt_std"].append(gl.std(0))
             matched = torch.zeros(K, dtype=torch.bool, device=dev); matched[src] = True
 
             def build(sub):
@@ -178,6 +227,7 @@ def main():
                 if "topo" in sub: ordn[src] = g_depth[j]; base[src] = torch.where(g_depth[j] == 0, 8.0, -8.0)
                 if "scale" in sub: scale[src] = g_scale[j]
                 if "latent" in sub: lat[src] = g_lat[j]
+                if "meanlat" in sub: lat[:] = mean_lat
                 if "prune" in sub: ex = torch.where(matched, ex, torch.zeros_like(ex))
                 rot, par = reconstruct_phytomer_rot(pos.unsqueeze(0), roll.unsqueeze(0), ordn.unsqueeze(0), base.unsqueeze(0), exist=(ex > 0.5).float().unsqueeze(0))
                 rot, par = rot[0].float(), par[0].float()
@@ -205,6 +255,13 @@ def main():
                       "iou_old": float(ious[ob].mean()) if ob.any() else None}
         f = lambda x: f"{x*100:6.1f}" if x is not None else "   n/a"
         print(f"{v:<11}{ious.mean()*100:7.1f}{maes.mean()*100:7.2f}   {f(summary[v]['iou_young']):>10}{f(summary[v]['iou_mid']):>7}{f(summary[v]['iou_old']):>8}")
+    if lat_err["pred"]:
+        e_p = torch.cat(lat_err["pred"]).mean().sqrt().item(); e_m = torch.cat(lat_err["mean"]).mean().sqrt().item()
+        s_p = torch.stack(lat_err["pred_std"]).mean().item(); s_g = torch.stack(lat_err["gt_std"]).mean().item()
+        summary["_latent"] = {"rmse_pred": e_p, "rmse_mean": e_m, "r2_vs_mean": 1.0 - (e_p / max(e_m, 1e-9)) ** 2,
+                              "pred_std": s_p, "gt_std": s_g}
+        print(f"latent (matched nodes, 128D): RMSE pred vs GT {e_p:.3f} | mean-latent vs GT {e_m:.3f} | "
+              f"R^2 over the mean {summary['_latent']['r2_vs_mean']:.3f} | per-dim std pred {s_p:.3f} / GT {s_g:.3f}")
     print(f"node set: predicted active / GT / matched = {np.mean([r['n_active'] for r in rows]):.1f} / {np.mean([r['n_gt'] for r in rows]):.1f} / {np.mean([r['n_matched'] for r in rows]):.1f}")
     tag = f"epoch{int(ck.get('epoch', 0)):03d}"
     with open(os.path.join(out_dir, f"gt_substitution_{tag}.json"), "w") as f:

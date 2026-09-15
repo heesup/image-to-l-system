@@ -111,6 +111,7 @@ def forward_backward_step(
     parent_jitter_m: float = 0.015,
     parent_substitution: float = 0.05,
     stage3_geom_weight: float = 4.0,
+    stage3_gt_nodes: bool = False,
     capacity_schedule: Optional[Dict[str, float]] = None,
     flow_granularity: str = "organ",
     phytomer_vae: Optional[nn.Module] = None,
@@ -634,6 +635,17 @@ def forward_backward_step(
         z_t = scheduler.sample_xt(z_0, tgt_z1_phyto, t)
         _sync_cuda(); prof["par_noise"] = time.time() - _t_tgt
         # Re-run the model forward with the true x_t.
+        cond_override = None
+        if stage3_gt_nodes:
+            # Teacher forcing: Stage 3 is conditioned on the GT node (position, roll,
+            # scale) wherever a node was matched, Stage 2's prediction elsewhere.
+            m_ = matched_phytomer_mask.unsqueeze(-1)
+            cond_override = {
+                "pos": torch.where(m_, gt_phytomer_pos_target, pred_phytomer_pos.detach()),
+                "roll": torch.where(m_, gt_phytomer_roll_target, pred_phytomer_roll.detach()),
+                "scale": (torch.where(m_, gt_phytomer_scl_target, pred_phytomer_scale.detach())
+                          if pred_phytomer_scale is not None else gt_phytomer_scl_target),
+            }
         t0 = time.time()
         with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
             outputs = model(
@@ -644,6 +656,7 @@ def forward_backward_step(
                 image_tokens=image_tokens,
                 phytomer_parent_pos=parent_pos_in,
                 phytomer_has_parent=gt_parent_has_train,
+                stage3_cond_override=cond_override,
             )
         prof["fwd2"] = time.time() - t0
         pred_velocity = outputs["pred_velocity"].float()          # (B, K, D)
@@ -1211,6 +1224,7 @@ def probe_optimal_batch_size(
     parent_jitter_m: float = 0.015,
     parent_substitution: float = 0.05,
     stage3_geom_weight: float = 4.0,
+    stage3_gt_nodes: bool = False,
     flow_granularity: str = "organ",
     phytomer_vae: Optional[nn.Module] = None,
     phy_count_weight: float = 2.0,
@@ -1273,6 +1287,7 @@ def probe_optimal_batch_size(
         parent_jitter_m=parent_jitter_m,
         parent_substitution=parent_substitution,
         stage3_geom_weight=stage3_geom_weight,
+        stage3_gt_nodes=stage3_gt_nodes,
         flow_granularity=flow_granularity,
         phytomer_vae=phytomer_vae,
         phy_count_weight=phy_count_weight,
@@ -1394,6 +1409,7 @@ def train_one_epoch(
     parent_jitter_m: float = 0.015,
     parent_substitution: float = 0.05,
     stage3_geom_weight: float = 4.0,
+    stage3_gt_nodes: bool = False,
     capacity_warmup_epochs: int = 0,
     capacity_full_epochs: int = 0,
     flow_granularity: str = "organ",
@@ -1462,6 +1478,7 @@ def train_one_epoch(
             parent_jitter_m=parent_jitter_m,
             parent_substitution=parent_substitution,
             stage3_geom_weight=stage3_geom_weight,
+            stage3_gt_nodes=stage3_gt_nodes,
             flow_granularity=flow_granularity,
             phytomer_vae=phytomer_vae,
             phy_count_weight=phy_count_weight,
@@ -1769,6 +1786,10 @@ def main():
     parser.add_argument("--stage3_geometry", action="store_true",
                         help="Stage 3 generates the child's position (relative to its fixed parent), roll and scale "
                              "in the flow state with the latent (design doc §2.1; GT-substitution ablation 2026-09-14).")
+    parser.add_argument("--stage3_gt_nodes", action="store_true",
+                        help="Teacher forcing: Stage 3 conditioned on the GT node position/roll/scale of matched nodes "
+                             "(upper bound of the latent path with clean geometry; evaluate with the substitution "
+                             "ablation's --teacher_force).")
     parser.add_argument("--stage3_geom_weight", type=float, default=4.0,
                         help="Weight of the geometry block's velocity MSE next to the latent block's (--stage3_geometry).")
     parser.add_argument("--parent_substitution", type=float, default=0.05,
@@ -1830,6 +1851,9 @@ def main():
                              "epoch 3 of another under identical settings. Set it when chasing "
                              "one.")
     args = parser.parse_args()
+    if args.stage3_gt_nodes and args.stage3_geometry:
+        raise SystemExit("--stage3_gt_nodes (teacher forcing of Stage 3's node conditioning) is a diagnostic for the "
+                         "latent-only Stage 3; with --stage3_geometry Stage 3 generates the node geometry itself.")
 
     if args.seed is not None:
         # Offset per rank for anything sampled independently, while the
@@ -2121,6 +2145,7 @@ def main():
             parent_jitter_m=args.parent_jitter_cm / 100.0,
             parent_substitution=args.parent_substitution,
             stage3_geom_weight=args.stage3_geom_weight,
+            stage3_gt_nodes=args.stage3_gt_nodes,
             flow_granularity=args.flow_granularity,
             phytomer_vae=phytomer_vae,
             phy_count_weight=args.phy_count_weight,
@@ -2242,6 +2267,7 @@ def main():
             parent_jitter_m=args.parent_jitter_cm / 100.0,
             parent_substitution=args.parent_substitution,
             stage3_geom_weight=args.stage3_geom_weight,
+            stage3_gt_nodes=args.stage3_gt_nodes,
             capacity_warmup_epochs=args.capacity_warmup_epochs,
             capacity_full_epochs=args.capacity_full_epochs,
             flow_granularity=args.flow_granularity,

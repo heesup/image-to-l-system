@@ -1535,8 +1535,15 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         image_tokens: Optional[torch.Tensor] = None,
         phytomer_parent_pos: Optional[torch.Tensor] = None,
         phytomer_has_parent: Optional[torch.Tensor] = None,
+        stage3_cond_override: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Dict[str, torch.Tensor]:
         """Unified joint forward pass across 3 cascaded stages.
+
+        stage3_cond_override: optional {"pos": (B,K,3), "roll": (B,K,2), "scale": (B,K,3)}
+            used INSTEAD of Stage 2's outputs as Stage 3's conditioning (teacher
+            forcing with ground-truth nodes, --stage3_gt_nodes): measures what the
+            latent path can do when the geometry it is conditioned on is right.
+            Stage 2's own outputs and losses are unaffected.
 
         Args:
             noisy_fine_nodes: (B, N_fine, node_dim) interpolated geometry x_t.
@@ -1601,6 +1608,10 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         phytomer_pos = coarse_out["phytomer_pos"]
         phytomer_roll = coarse_out["phytomer_roll"]
         phytomer_scale = coarse_out.get("phytomer_scale")
+        if stage3_cond_override is not None:
+            phytomer_pos = stage3_cond_override.get("pos", phytomer_pos)
+            phytomer_roll = stage3_cond_override.get("roll", phytomer_roll)
+            phytomer_scale = stage3_cond_override.get("scale", phytomer_scale)
         if self.flow_granularity == "phytomer":
             fine_out = self.fine_stage(
                 noisy_flow=noisy_fine_nodes,
@@ -1661,8 +1672,13 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         guidance_scale: float = 1.0,
         vae: Optional[nn.Module] = None,
         phytomer_vae: Optional[nn.Module] = None,
+        cond_override: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Dict[str, torch.Tensor]:
         """2nd-Order Heun Predictor-Corrector ODE Sampling.
+
+        cond_override: {"pos", "roll", "scale"} (B, K, ·) replacing Stage 2's node
+        outputs as Stage 3's conditioning AND as the plant's node geometry
+        (teacher forcing, see forward's stage3_cond_override).
 
         Generates full 3D plant organ array from an input condition image.
         Integrates velocity field in 16D regularized latent space.
@@ -1700,6 +1716,11 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
 
         phytomer_pos = coarse_out["phytomer_pos"]      # (B, K, 3)
         phytomer_roll = coarse_out["phytomer_roll"]    # (B, K, 2)
+        if cond_override is not None:
+            phytomer_pos = cond_override.get("pos", phytomer_pos)
+            phytomer_roll = cond_override.get("roll", phytomer_roll)
+            if cond_override.get("scale") is not None:
+                coarse_out = dict(coarse_out); coarse_out["phytomer_scale"] = cond_override["scale"]
         phytomer_ordinal = coarse_out["phytomer_ordinal"]        # (B, K)
         phytomer_base_logits = coarse_out["phytomer_base_logits"]  # (B, K)
         phytomer_features = coarse_out["phytomer_features"]
