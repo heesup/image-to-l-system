@@ -409,6 +409,12 @@ information yet. The standardized-latent and render→latent runs were cancelled
 in their place (`38274747` render fraction 1.0, `38274748` lr 2e-4, both from geometry ep78) — **but the freed GPUs were
 taken at once by other groups' queued jobs on the shared Ada node** (js2552 ×2 running, 4 more pending), so they wait.
 Lesson: on `gpu-6000_ada-h` a cancelled job's GPU does not come back to us; keep runs going until their budget ends.
+**12:45 — `slurm_scripts/logs/` is now organized by start date** (Heesup: "어떤게 최신인지 알 수가 없네"): one folder
+per day, `slurm_scripts/logs/YYYYMMDD/`, holding that day's job logs, local-run logs, `run_*` panel folders (with a
+relative `run.log` link) and evaluation folders. Paths quoted earlier in this guide as `slurm_scripts/logs/<x>` now live
+under the date folder of their run (9/14 items under `20260914/`, 9/15 under `20260915/`). The launcher writes new run
+folders into today's folder; `tools/organize_logs.py --apply` files anything left at the top level once it has been
+quiet for 20 minutes (live runs are never moved). `slurm_scripts/logs/README.md` describes the layout.
 **12:25 — fourth reading and the current set.** Four readings put v10 full at a strict P mean of 35.0, the combination
 at 33.5, scheduled TF at 28.0 and baseline-on-10% at 27.0 (results report §11.4); nothing rises further on 10k plants.
 The combination run was stopped on this node at epoch 95 (v10 is its superset) and the **v10 + unfrozen backbone** variant

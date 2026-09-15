@@ -16,7 +16,8 @@
 # from when one rendered plant cost 0.65 s; batched, 8 plants cost ~0.1 s), a
 # checkpoint every 5 epochs and
 # an eval every epoch (30-min floor). Every knob is an env override, e.g.
-#   sbatch slurm_scripts/train_hierarchical_flow_matching.sh                       # plain: this recipe, 2 GPUs, geminigrp
+#   mkdir -p slurm_scripts/logs/$(date +%Y%m%d) && sbatch --output=slurm_scripts/logs/$(date +%Y%m%d)/hierarchical_fm_%j.log \
+#          slurm_scripts/train_hierarchical_flow_matching.sh                       # plain: this recipe, 2 GPUs, geminigrp; log in today's folder
 #   sbatch --partition=low --account=publicgrp --gres=gpu:a100:4 --time=7-00:00:00 \
 #          --requeue --export=ALL,AUTO_RESUME=1 slurm_scripts/train_hierarchical_flow_matching.sh
 #   INIT_CHECKPOINT=<...>/hierarchical_fm_epoch_015.pt RESUME=1 sbatch ...           # continue a lineage elsewhere
@@ -115,10 +116,20 @@ mkdir -p "${OUTPUT_DIR}"
 # for --output, so the log is written where it always was and symlinked in
 # rather than moved (it is appended to for the life of the job).
 RUN_TAG="${SLURM_JOB_ID:-local_$(date +%Y%m%d_%H%M%S)}"
-RUN_DIR="${REPO_ROOT}/slurm_scripts/logs/run_${RUN_TAG}"
+# Logs are organized by start date (Heesup, 2026-09-15): this run's panels go under logs/<YYYYMMDD>/run_<tag>/.
+# The SBATCH --output path above is static; submit with --output=slurm_scripts/logs/$(date +%Y%m%d)/hierarchical_fm_%j.log
+# (directory created here) or let tools/organize_logs.py file top-level logs into their date folder later.
+LOG_DAY="$(date +%Y%m%d)"
+mkdir -p "${REPO_ROOT}/slurm_scripts/logs/${LOG_DAY}"
+RUN_DIR="${REPO_ROOT}/slurm_scripts/logs/${LOG_DAY}/run_${RUN_TAG}"
 mkdir -p "${RUN_DIR}"
 if [ -n "${SLURM_JOB_ID}" ]; then
-    ln -sfn "${REPO_ROOT}/slurm_scripts/logs/hierarchical_fm_${SLURM_JOB_ID}.log" "${RUN_DIR}/run.log"
+    # relative link: valid whether the job log sits at the top level or in this date folder
+    if [ -f "${REPO_ROOT}/slurm_scripts/logs/${LOG_DAY}/hierarchical_fm_${SLURM_JOB_ID}.log" ]; then
+        ln -sfn "../hierarchical_fm_${SLURM_JOB_ID}.log" "${RUN_DIR}/run.log"
+    else
+        ln -sfn "../../hierarchical_fm_${SLURM_JOB_ID}.log" "${RUN_DIR}/run.log"
+    fi
 fi
 echo "Run artifacts: ${RUN_DIR} (self-consistency panels + run.log symlink)"
 
