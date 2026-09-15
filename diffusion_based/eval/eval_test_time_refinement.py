@@ -37,8 +37,8 @@ def main():
     ap.add_argument("--plant_centered", action="store_true",
                     help="Render the prediction with the camera centred on its own bounding box (focus_plant), the frame "
                          "the cached input CHM was rendered in (plant-bbox-centred), instead of the fixed origin window. "
-                         "Measured 2026-09-15: the cached CHM matches a bbox-centred GT render at 73-89% IoU but the "
-                         "origin-window one at only 41-76%.")
+                         "Measured 2026-09-15: the cached CHM matches a bbox-centred GT render at 73-89%% IoU but the "
+                         "origin-window one at only 41-76%%.")
     ap.add_argument("--input_camera", action="store_true", default=True,
                     help="render the prediction in the camera frame the cached input was rendered in (GT plant bbox centre); default on")
     ap.add_argument("--origin_camera", action="store_true", help="use the origin-centred window instead of --input_camera (the pre-2026-09-15 behaviour)")
