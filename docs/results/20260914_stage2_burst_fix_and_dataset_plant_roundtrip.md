@@ -366,6 +366,19 @@ v10 ep95에서 Stage 3가 refine한 노드(pos/roll/scale)를 다시 조건으�
 
 캐시의 입력 CHM(`generate_cache.py`, `focus_plant=True`)은 **GT 식물의 bounding box 중심**을 화면 중심에 두고 그린 것이고, 학습 렌더 블록(`render_batched`, `focus_plant=False` + 고정 1.2 m 창)과 모든 평가 렌더는 **원점**을 중심에 둔다. eval 식물에서 재면 캐시 CHM은 bbox 중심 GT 렌더와 73–89% 겹치지만 원점 창 GT 렌더와는 41–76%만 겹친다(DAP 94: 88.6 vs 40.7). 즉 학습 중 depth/dice 손실은 완벽한 예측이어도 0이 될 수 없었고, 기울기의 일부는 식물 전체를 잘못된 오프셋 쪽으로 밀었다. test-time refinement에서 무너진 두 성체 식물(DAP 89/94)이 바로 오프셋이 큰 경우다. 수정: 예측을 입력과 같은 창(식물 bbox 중심)으로 렌더한다 — refinement에는 `--plant_centered`로 즉시 적용해 재측정 중이고, 학습 렌더 블록에는 샘플별 GT bbox 중심을 카메라 중심으로 넘기는 변경이 다음이다.
 
+### 11.9 refinement 후속 (14:10)
+
+| 조건 (v10 ep95, keep_best) | 전 → 후 |
+|---|---|
+| 원점 창 렌더, 40 step | 34.9 → **46.9** |
+| 원점 창 렌더, 80 step | 33.6 → 45.5 (step을 늘려도 이득 없음) |
+| 예측 자신의 bbox 중심 창(`--plant_centered`), 40 step | 32.8 → 35.1 |
+| 100% baseline ep135, 원점 창 40 step | 27.6 → **42.7** (+15; 모델에 무관하게 작동) |
+
+예측을 **자기** bbox 중심으로 렌더하면 손실이 평행이동에 둔감해져 이득이 사라진다(35.1). 입력 CHM의 창은 **GT** bbox 중심이므로 예측도 그 카메라(입력을 만든 카메라)로 렌더해야 맞다 — 렌더러에 카메라 중심 지정 옵션을 붙여 `--input_camera`로 재측정한다. refinement는 baseline에도 +15를 주므로 모델보다 큰 지렛대이고, 학습 렌더 블록에도 같은 카메라 정렬이 필요하다.
+
+그림 스타일: Heesup의 요청으로 학습 중 패널(`eval_hierarchical_self_consistency.py`)과 같은-식물 비교 그림(`tools/compare_same_plants_figure.py`)을 흰 배경·검정 글자·Okabe-Ito 팔레트(GT 파랑, 예측 주황)의 논문 스타일로 바꿨다. 돌고 있는 run은 다음 평가부터 새 스타일로 패널을 낸다(평가 모듈을 매번 reload). fig12/fig14 스크립트는 다음 차례.
+
 ## 5. 변경 파일
 
 | 파일 | 변경 |

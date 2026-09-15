@@ -482,25 +482,33 @@ def evaluate_self_consistency_batch(
                 val_boosted = torch.pow(val_norm, 0.65) * 0.9 + 0.1
                 return torch.where(mask, val_boosted, torch.zeros_like(lum))
 
-            cyan_vivid = torch.tensor([0.0, 0.95, 1.0], device=device)[:, None, None]
-            amber_vivid = torch.tensor([1.0, 0.45, 0.02], device=device)[:, None, None]
-            gold_vivid = torch.tensor([1.0, 0.95, 0.20], device=device)[:, None, None]
+            # Print style (Heesup, 2026-09-15): composite on WHITE, GT in blue, prediction in vermillion,
+            # overlap in slate (Okabe-Ito palette), shaded by the render's luminance.
+            c_gt = torch.tensor([0.0, 0.447, 0.698], device=device)[:, None, None]
+            c_pred = torch.tensor([0.835, 0.369, 0.0], device=device)[:, None, None]
+            c_both = torch.tensor([0.30, 0.30, 0.36], device=device)[:, None, None]
+            white = torch.ones(3, 1, 1, device=device)
+
+            def _paint(lum, color):
+                # white -> color as luminance grows; keeps the leaf shading visible in print
+                m = (lum > 0.03).float()
+                shade = 0.55 + 0.45 * lum.clamp(0, 1)
+                return m * color * shade + (1 - m) * white
 
             if rend_gt_obl is not None and rend_pred_obl is not None:
                 gt_lum = boost_lum(rend_gt_obl[:3].mean(dim=0, keepdim=True))
                 pred_lum = boost_lum(rend_pred_obl[:3].mean(dim=0, keepdim=True))
-                gt_colored = gt_lum * cyan_vivid
-                pred_colored = pred_lum * amber_vivid
-                overlap_mask = (gt_lum > 0.03) & (pred_lum > 0.03)
-                comp_tensor = gt_colored + pred_colored
-                comp_tensor = torch.where(overlap_mask, gold_vivid * torch.max(gt_lum, pred_lum), comp_tensor)
+                gt_m = gt_lum > 0.03
+                pred_m = pred_lum > 0.03
+                comp_tensor = white.expand(3, gt_lum.shape[1], gt_lum.shape[2]).clone()
+                comp_tensor = torch.where(gt_m & ~pred_m, _paint(gt_lum, c_gt), comp_tensor)
+                comp_tensor = torch.where(pred_m & ~gt_m, _paint(pred_lum, c_pred), comp_tensor)
+                comp_tensor = torch.where(gt_m & pred_m, _paint(torch.max(gt_lum, pred_lum), c_both), comp_tensor)
                 comp_img = comp_tensor.permute(1, 2, 0).clamp(0, 1).cpu().numpy()
             elif rend_gt_obl is not None:
-                gt_lum = boost_lum(rend_gt_obl[:3].mean(dim=0, keepdim=True))
-                comp_img = (gt_lum * cyan_vivid).permute(1, 2, 0).clamp(0, 1).cpu().numpy()
+                comp_img = _paint(boost_lum(rend_gt_obl[:3].mean(dim=0, keepdim=True)), c_gt).permute(1, 2, 0).clamp(0, 1).cpu().numpy()
             elif rend_pred_obl is not None:
-                pred_lum = boost_lum(rend_pred_obl[:3].mean(dim=0, keepdim=True))
-                comp_img = (pred_lum * amber_vivid).permute(1, 2, 0).clamp(0, 1).cpu().numpy()
+                comp_img = _paint(boost_lum(rend_pred_obl[:3].mean(dim=0, keepdim=True)), c_pred).permute(1, 2, 0).clamp(0, 1).cpu().numpy()
         except Exception:
             comp_img = None
 
@@ -615,24 +623,28 @@ def evaluate_self_consistency_batch(
     # 6. Build Diagnostic Visualization Figure (7 Columns: Ref + RGB + Depth + Pred RGB + Pred Depth + Real Solid Mesh + 3D Botanical Skeleton & Nodes)
     if panels_data:
         n_rows = len(panels_data)
-        fig = plt.figure(figsize=(24.5, 3.5 * n_rows), facecolor="#12151a")
+        # Academic print style (white background, one sans-serif family, dark text, muted palette).
+        plt.rcParams.update({"font.family": "sans-serif", "font.sans-serif": ["Arial", "Liberation Sans", "DejaVu Sans"],
+                             "axes.edgecolor": "#444444", "axes.linewidth": 0.6, "text.color": "#111111",
+                             "axes.labelcolor": "#111111", "xtick.color": "#444444", "ytick.color": "#444444"})
+        fig = plt.figure(figsize=(24.5, 3.5 * n_rows), facecolor="white")
         gs = fig.add_gridspec(n_rows, 7, wspace=0.14, hspace=0.25, left=0.03, right=0.97, top=0.84, bottom=0.04)
 
         mean_node_rmse = np.mean([d["node_rmse_cm"] for d in panels_data])
         fig.suptitle(
             f"Hierarchical Flow Matching: 3D Reconstruction, Real Mesh & Botanical Skeleton (Epoch {epoch:03d})\n"
-            f"Mean Silhouette IoU: {np.mean(ious)*100:.1f}% | Depth MAE: {np.mean(depth_maes)*100:.2f} cm | Node RMSE: {mean_node_rmse:.1f} cm",
-            fontsize=15, fontweight="bold", color="#f0f4f8", y=0.96
+            f"Mean silhouette IoU {np.mean(ious)*100:.1f}%, depth MAE {np.mean(depth_maes)*100:.2f} cm, node RMSE {mean_node_rmse:.1f} cm",
+            fontsize=13, fontweight="normal", color="#111111", y=0.96
         )
 
         col_titles = [
-            "0. Helios Raytrace\n(Reference - Not Trained)",
-            "1. Drone RGB Pyramid\n(2x2: 1x, 2x / 4x, 8x)",
-            "2. Drone Depth Pyramid\n(2x2: 1x, 2x / 4x, 8x)",
-            "3. Pred 3D Mesh\n(Top-Down Reconstruction)",
-            "4. Pred 3D Depth\n(Canopy Height CHM)",
-            "5. Real 3D Solid Mesh\n(Oblique 30° Composite)",
-            "6. 3D Botanical Skeleton\n(Stem Trees & Nodes)",
+            "(a) Helios ray-traced reference\n(not used in training)",
+            "(b) Input RGB pyramid\n(1×, 2× / 4×, 8×)",
+            "(c) Input canopy height pyramid\n(1×, 2× / 4×, 8×)",
+            "(d) Predicted plant, top view",
+            "(e) Predicted canopy height",
+            "(f) Oblique overlay\n(blue: GT, orange: prediction)",
+            "(g) Stem trees and nodes",
         ]
 
         for row_idx, data in enumerate(panels_data):
@@ -643,16 +655,15 @@ def evaluate_self_consistency_batch(
             for col_idx in range(6):
                 ax = fig.add_subplot(gs[row_idx, col_idx])
                 if row_idx == 0:
-                    color = "#fbbf24" if col_idx == 0 else ("#38bdf8" if col_idx in (1, 2) else ("#34d399" if col_idx in (3, 4) else "#00e5ff"))
-                    ax.set_title(col_titles[col_idx], fontsize=9.5, fontweight="bold", color=color, pad=8)
+                    ax.set_title(col_titles[col_idx], fontsize=9.5, fontweight="normal", color="#111111", pad=8)
                 axes_row.append(ax)
 
             # Col 0: Helios Raytrace Reference
             if data["im_helios"] is not None:
                 axes_row[0].imshow(data["im_helios"])
             else:
-                axes_row[0].text(0.5, 0.5, "Reference\nN/A", color="#94a3b8", ha="center", va="center")
-            axes_row[0].set_ylabel(f"DAP {data['dap']}\n({data['active_organs']} organs)", fontsize=11, color="#fbbf24", labelpad=8)
+                axes_row[0].text(0.5, 0.5, "Reference\nN/A", color="#666666", ha="center", va="center")
+            axes_row[0].set_ylabel(f"DAP {data['dap']}\n({data['active_organs']} organs)", fontsize=10, color="#111111", labelpad=8)
             axes_row[0].set_xticks([])
             axes_row[0].set_yticks([])
 
@@ -671,22 +682,22 @@ def evaluate_self_consistency_batch(
             # Col 3: Pred 3D Mesh
             axes_row[3].imshow(data["pred_rgb"])
             phy_str = f" | Phy: {data['pred_num_phy']:.1f}/{data['gt_num_phy']}" if data.get("pred_num_phy") is not None else ""
-            axes_row[3].set_xlabel(f"IoU: {data['iou']*100:.1f}%{phy_str}", fontsize=9, color="#4ade80")
+            axes_row[3].set_xlabel(f"IoU {data['iou']*100:.1f}%{phy_str}", fontsize=9, color="#111111")
             axes_row[3].set_xticks([])
             axes_row[3].set_yticks([])
 
             # Col 4: Pred 3D Depth
             axes_row[4].imshow(data["pred_depth"], cmap="viridis", vmin=0.0, vmax=vmax_d)
-            axes_row[4].set_xlabel(f"Depth MAE: {data['depth_mae']*100:.2f} cm", fontsize=8.5, color="#38bdf8")
+            axes_row[4].set_xlabel(f"Depth MAE {data['depth_mae']*100:.2f} cm", fontsize=8.5, color="#111111")
             axes_row[4].set_xticks([])
             axes_row[4].set_yticks([])
 
             # Col 5: Oblique 3D Real Mesh Composite (Cyan: GT, Amber: Pred, Blend: Overlap)
             if data.get("comp_img") is not None:
                 axes_row[5].imshow(data["comp_img"])
-                axes_row[5].set_xlabel("Real 3D Mesh Composite\n(Cyan: GT, Amber: Pred)", fontsize=8.5, color="#00e5ff")
+                axes_row[5].set_xlabel("overlap in slate", fontsize=8.5, color="#111111")
             else:
-                axes_row[5].text(0.5, 0.5, "Mesh N/A", color="#94a3b8", ha="center", va="center")
+                axes_row[5].text(0.5, 0.5, "Mesh N/A", color="#666666", ha="center", va="center")
             axes_row[5].set_xticks([])
             axes_row[5].set_yticks([])
             for spine in axes_row[5].spines.values():
@@ -694,53 +705,53 @@ def evaluate_self_consistency_batch(
 
             # Col 6: 3D Botanical Skeleton & Nodes (Matplotlib 3D)
             ax6 = fig.add_subplot(gs[row_idx, 6], projection="3d")
-            ax6.set_facecolor("#181c24")
+            ax6.set_facecolor("white")
             ax6.view_init(elev=24, azim=-55)
             if row_idx == 0:
-                ax6.set_title(col_titles[6], fontsize=9.5, fontweight="bold", color="#e879f9", pad=8)
+                ax6.set_title(col_titles[6], fontsize=9.5, fontweight="normal", color="#111111", pad=8)
 
             # Draw GT stem segments (internode tubes)
             gt_segs = data.get("gt_stem_segments", [])
             for i, (b_pos, tp_pos) in enumerate(gt_segs):
                 lbl = "GT Stem Tree" if i == 0 else ""
                 ax6.plot([b_pos[0], tp_pos[0]], [b_pos[1], tp_pos[1]], [b_pos[2], tp_pos[2]],
-                         color="#00e5ff", linestyle="-", linewidth=3.2, alpha=0.95, zorder=10, label=lbl)
+                         color="#0072B2", linestyle="-", linewidth=2.2, alpha=0.95, zorder=10, label=lbl)
 
             # Draw Pred stem segments (internode tubes)
             pred_segs = data.get("pred_stem_segments", [])
             for i, (b_pos, tp_pos) in enumerate(pred_segs):
                 lbl = "Pred Stem Tree" if i == 0 else ""
                 ax6.plot([b_pos[0], tp_pos[0]], [b_pos[1], tp_pos[1]], [b_pos[2], tp_pos[2]],
-                         color="#f43f5e", linestyle="--", linewidth=2.4, alpha=0.90, zorder=11, label=lbl)
+                         color="#D55E00", linestyle="--", linewidth=1.8, alpha=0.95, zorder=11, label=lbl)
 
             # Draw GT Nodes
             if len(data["gt_nodes"]) > 0:
                 ax6.scatter(data["gt_nodes"][:, 0] * 100, data["gt_nodes"][:, 1] * 100, data["gt_nodes"][:, 2] * 100,
-                            c="#00e5ff", s=32, edgecolors="white", linewidth=0.9, zorder=12,
+                            c="#0072B2", s=26, edgecolors="black", linewidth=0.5, zorder=12,
                             label=f"GT Node (N={len(data['gt_nodes'])})")
 
             # Draw Pred Nodes
             if len(data["pred_nodes"]) > 0:
                 ax6.scatter(data["pred_nodes"][:, 0] * 100, data["pred_nodes"][:, 1] * 100, data["pred_nodes"][:, 2] * 100,
-                            c="#f43f5e", marker="s", s=28, edgecolors="black", linewidth=0.8, zorder=13,
+                            c="#D55E00", marker="s", s=22, edgecolors="black", linewidth=0.5, zorder=13,
                             label=f"Pred Node (K={len(data['pred_nodes'])})")
 
-            ax6.tick_params(colors="#94a3b8", labelsize=6.5, pad=0.5)
+            ax6.tick_params(colors="#444444", labelsize=6.5, pad=0.5)
             for pane in [ax6.xaxis.pane, ax6.yaxis.pane, ax6.zaxis.pane]:
-                pane.set_facecolor("#1e2330")
-                pane.set_edgecolor("#334155")
+                pane.set_facecolor("white")
+                pane.set_edgecolor("#cccccc")
 
-            ax6.set_xlabel("X [cm]", fontsize=7, color="#94a3b8", labelpad=-3)
-            ax6.set_ylabel("Y [cm]", fontsize=7, color="#94a3b8", labelpad=-3)
-            ax6.set_zlabel("Z [cm]", fontsize=7, color="#94a3b8", labelpad=-3)
+            ax6.set_xlabel("x (cm)", fontsize=7, color="#111111", labelpad=-3)
+            ax6.set_ylabel("y (cm)", fontsize=7, color="#111111", labelpad=-3)
+            ax6.set_zlabel("z (cm)", fontsize=7, color="#111111", labelpad=-3)
 
-            rmse_str = f"Node RMSE: {data['node_rmse_cm']:.1f} cm"
-            ax6.text2D(0.05, 0.88, rmse_str, transform=ax6.transAxes, color="#e879f9", fontsize=8, fontweight="bold")
+            rmse_str = f"node RMSE {data['node_rmse_cm']:.1f} cm"
+            ax6.text2D(0.05, 0.88, rmse_str, transform=ax6.transAxes, color="#111111", fontsize=8)
             if row_idx == 0:
-                ax6.legend(loc="upper right", fontsize=6.0, facecolor="#0f172a", edgecolor="#334155", labelcolor="#f8fafc", framealpha=0.8)
+                ax6.legend(loc="upper right", fontsize=6.0, facecolor="white", edgecolor="#999999", framealpha=0.9)
 
         panel_path = os.path.join(output_dir, f"hierarchical_self_consistency_epoch_{epoch:03d}.png")
-        fig.savefig(panel_path, dpi=120, bbox_inches="tight", facecolor=fig.get_facecolor())
+        fig.savefig(panel_path, dpi=150, bbox_inches="tight", facecolor="white")
         plt.close(fig)
 
         # Log to W&B if active (including interactive 3D Point Cloud object)
