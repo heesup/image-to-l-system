@@ -112,6 +112,8 @@ def forward_backward_step(
     parent_substitution: float = 0.05,
     stage3_geom_weight: float = 4.0,
     stage3_gt_nodes: bool = False,
+    stage3_gt_nodes_p: float = 1.0,
+    stage3_gt_nodes_jitter_m: float = 0.0,
     render_to_latent: bool = False,
     capacity_schedule: Optional[Dict[str, float]] = None,
     flow_granularity: str = "organ",
@@ -640,9 +642,19 @@ def forward_backward_step(
         if stage3_gt_nodes:
             # Teacher forcing: Stage 3 is conditioned on the GT node (position, roll,
             # scale) wherever a node was matched, Stage 2's prediction elsewhere.
-            m_ = matched_phytomer_mask.unsqueeze(-1)
+            # Scheduled variant: each matched node takes the GT with probability
+            # stage3_gt_nodes_p (else Stage 2's prediction), and the GT position gets
+            # Gaussian jitter stage3_gt_nodes_jitter_m, so Stage 3 also sees the kind of
+            # node error it meets at inference (exposure bias of pure teacher forcing).
+            use_gt = matched_phytomer_mask
+            if stage3_gt_nodes_p < 1.0:
+                use_gt = use_gt & (torch.rand(use_gt.shape, device=use_gt.device) < stage3_gt_nodes_p)
+            m_ = use_gt.unsqueeze(-1)
+            gt_pos_c = gt_phytomer_pos_target
+            if stage3_gt_nodes_jitter_m > 0:
+                gt_pos_c = gt_pos_c + torch.randn_like(gt_pos_c) * stage3_gt_nodes_jitter_m
             cond_override = {
-                "pos": torch.where(m_, gt_phytomer_pos_target, pred_phytomer_pos.detach()),
+                "pos": torch.where(m_, gt_pos_c, pred_phytomer_pos.detach()),
                 "roll": torch.where(m_, gt_phytomer_roll_target, pred_phytomer_roll.detach()),
                 "scale": (torch.where(m_, gt_phytomer_scl_target, pred_phytomer_scale.detach())
                           if pred_phytomer_scale is not None else gt_phytomer_scl_target),
@@ -1230,6 +1242,8 @@ def probe_optimal_batch_size(
     parent_substitution: float = 0.05,
     stage3_geom_weight: float = 4.0,
     stage3_gt_nodes: bool = False,
+    stage3_gt_nodes_p: float = 1.0,
+    stage3_gt_nodes_jitter_m: float = 0.0,
     render_to_latent: bool = False,
     flow_granularity: str = "organ",
     phytomer_vae: Optional[nn.Module] = None,
@@ -1294,6 +1308,8 @@ def probe_optimal_batch_size(
         parent_substitution=parent_substitution,
         stage3_geom_weight=stage3_geom_weight,
         stage3_gt_nodes=stage3_gt_nodes,
+        stage3_gt_nodes_p=stage3_gt_nodes_p,
+        stage3_gt_nodes_jitter_m=stage3_gt_nodes_jitter_m,
         render_to_latent=render_to_latent,
         flow_granularity=flow_granularity,
         phytomer_vae=phytomer_vae,
@@ -1417,6 +1433,8 @@ def train_one_epoch(
     parent_substitution: float = 0.05,
     stage3_geom_weight: float = 4.0,
     stage3_gt_nodes: bool = False,
+    stage3_gt_nodes_p: float = 1.0,
+    stage3_gt_nodes_jitter_m: float = 0.0,
     render_to_latent: bool = False,
     capacity_warmup_epochs: int = 0,
     capacity_full_epochs: int = 0,
@@ -1487,6 +1505,8 @@ def train_one_epoch(
             parent_substitution=parent_substitution,
             stage3_geom_weight=stage3_geom_weight,
             stage3_gt_nodes=stage3_gt_nodes,
+            stage3_gt_nodes_p=stage3_gt_nodes_p,
+            stage3_gt_nodes_jitter_m=stage3_gt_nodes_jitter_m,
             render_to_latent=render_to_latent,
             flow_granularity=flow_granularity,
             phytomer_vae=phytomer_vae,
@@ -1798,6 +1818,11 @@ def main():
     parser.add_argument("--render_to_latent", action="store_true",
                         help="Let the render loss back-propagate into Stage 3's latent block (default: latent rows are "
                              "detached in the render block, only the flow loss trains them).")
+    parser.add_argument("--stage3_gt_nodes_p", type=float, default=1.0,
+                        help="With --stage3_gt_nodes: probability per matched node of conditioning on the GT node "
+                             "(else Stage 2's prediction). 1.0 = pure teacher forcing.")
+    parser.add_argument("--stage3_gt_nodes_jitter_cm", type=float, default=0.0,
+                        help="With --stage3_gt_nodes: Gaussian jitter (cm) on the GT node position used as conditioning.")
     parser.add_argument("--stage3_gt_nodes", action="store_true",
                         help="Teacher forcing: Stage 3 conditioned on the GT node position/roll/scale of matched nodes "
                              "(upper bound of the latent path with clean geometry; evaluate with the substitution "
@@ -2158,6 +2183,8 @@ def main():
             parent_substitution=args.parent_substitution,
             stage3_geom_weight=args.stage3_geom_weight,
             stage3_gt_nodes=args.stage3_gt_nodes,
+            stage3_gt_nodes_p=args.stage3_gt_nodes_p,
+            stage3_gt_nodes_jitter_m=args.stage3_gt_nodes_jitter_cm / 100.0,
             render_to_latent=args.render_to_latent,
             flow_granularity=args.flow_granularity,
             phytomer_vae=phytomer_vae,
@@ -2281,6 +2308,8 @@ def main():
             parent_substitution=args.parent_substitution,
             stage3_geom_weight=args.stage3_geom_weight,
             stage3_gt_nodes=args.stage3_gt_nodes,
+            stage3_gt_nodes_p=args.stage3_gt_nodes_p,
+            stage3_gt_nodes_jitter_m=args.stage3_gt_nodes_jitter_cm / 100.0,
             render_to_latent=args.render_to_latent,
             capacity_warmup_epochs=args.capacity_warmup_epochs,
             capacity_full_epochs=args.capacity_full_epochs,
