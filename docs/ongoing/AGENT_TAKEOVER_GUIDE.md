@@ -420,7 +420,7 @@ the silhouette with implausible geometry. The origin-frame version (`..._before_
 keeps leaf shapes. **With a shape prior** (`--reg_scale 5 --reg_latent 0.5`, squared deviation from the sampled values)
 the same six plants go 39.6 → 70.4 and the inflated polygons are gone (now the main figure,
 `..._before_after.png`; the two earlier variants are `..._origin_frame.png` and `..._input_camera_noprior.png`).
-The 20-plant strict-protocol run with the prior is in progress. Lesson: silhouette IoU alone is not sufficient, the
+On all 20 plants with the prior: **35.8 → 63.9** strict P (DAP > 15: 39.3 → 72.2) — the best deployable number so far, with plausible geometry. Lesson: silhouette IoU alone is not sufficient, the
 refinement needs a prior on scale/latent — and the same GT-bbox camera must go into the training render block.
 
 **13:00 — the render loss has been comparing against a shifted target.** The cached input CHM (`generate_cache.py`,
