@@ -35,6 +35,7 @@ def compute_focus_plant_camera(
     fixed_camera_bounds: Optional[Dict[str, Any]] = None,
     zoom_factor: float = 1.0,
     reference_window_size: Optional[float] = None,
+    center_override: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, float]:
     """
     Computes camera view matrix and projection matrix matching Helios C++ init_camera & --focus-plant math.
@@ -74,6 +75,10 @@ def compute_focus_plant_camera(
     # If reference_window_size is specified without plant bounds, center at origin (0, 0, 0)
     if reference_window_size is not None and not focus_plant:
         plant_center = torch.tensor([0.0, 0.0, 0.0], device=device, dtype=torch.float32)
+    # Explicit camera centre (e.g. the bbox centre of the GT plant the cached input was framed on): the
+    # frame the input image was rendered in, so a prediction rendered with it is comparable pixel by pixel.
+    if center_override is not None:
+        plant_center = center_override.to(device=device, dtype=torch.float32).reshape(3)
 
     # 2. Camera spherical positioning from plant center matching Helios C++ main.cpp:1730-1747
     az_rad = math.radians(azimuth_deg)
@@ -221,6 +226,7 @@ class HeliosPyTorchRenderer(nn.Module):
         image_size: Optional[int] = None,
         zoom_factor: float = 1.0,
         reference_window_size: Optional[float] = None,
+        center_override: Optional[torch.Tensor] = None,
     ) -> Any:
         verts = mesh_dict['vertices']     # (V, 3)
         faces = mesh_dict['faces']        # (F, 3)
@@ -252,7 +258,7 @@ class HeliosPyTorchRenderer(nn.Module):
             aspect_ratio=1.0, focus_plant=focus_plant, hfov_override_deg=hfov_override_deg,
             fixed_camera_bounds=fixed_camera_bounds,
             zoom_factor=zoom_factor,
-            reference_window_size=reference_window_size,
+            reference_window_size=reference_window_size, center_override=center_override,
         )
 
         # Transform Vertices to Camera & NDC Space
@@ -491,8 +497,12 @@ class HeliosPyTorchRenderer(nn.Module):
         image_size: Optional[int] = None,
         zoom_factor: float = 1.0,
         reference_window_size: Optional[float] = 1.2,
+        centers: Optional[List[Optional[torch.Tensor]]] = None,
     ) -> torch.Tensor:
         """RGB-D of N plants in ONE nvdiffrast pass (range mode): (N, 4, H, W).
+
+        centers: optional per-plant camera centre (3,) -- the frame the plant's input image was rendered in
+        (the cached CHM is framed on the GT plant's bbox centre, not the origin); None keeps the origin window.
 
         Equivalent to calling `forward(mesh_i, ..., focus_plant=False,
         include_depth=True)` once per plant -- each plant keeps its own camera
@@ -527,7 +537,7 @@ class HeliosPyTorchRenderer(nn.Module):
         clip_list, face_list, attr_list, ranges = [], [], [], []
         v_off = 0
         with torch.amp.autocast('cuda', enabled=False):
-            for m in meshes:
+            for mi, m in enumerate(meshes):
                 verts, faces = m['vertices'], m['faces']
                 if verts.shape[0] == 0 or faces.shape[0] == 0:
                     ranges.append((0, 0))   # an empty range rasterises to nothing -> background
@@ -535,7 +545,8 @@ class HeliosPyTorchRenderer(nn.Module):
                 view_mat, proj_mat, _ = compute_focus_plant_camera(
                     verts, m.get('organ_types', None), azimuth_deg, elevation_deg, camera_height,
                     aspect_ratio=1.0, focus_plant=False, zoom_factor=zoom_factor,
-                    reference_window_size=reference_window_size)
+                    reference_window_size=reference_window_size,
+                    center_override=(centers[mi] if centers is not None else None))
                 mvp = (proj_mat @ view_mat).float()
                 v_hom = torch.cat([verts.float(), torch.ones((verts.shape[0], 1), device=device, dtype=torch.float32)], dim=-1)
                 v_clip = v_hom @ mvp.T

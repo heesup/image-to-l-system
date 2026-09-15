@@ -409,7 +409,19 @@ information yet. The standardized-latent and render→latent runs were cancelled
 in their place (`38274747` render fraction 1.0, `38274748` lr 2e-4, both from geometry ep78) — **but the freed GPUs were
 taken at once by other groups' queued jobs on the shared Ada node** (js2552 ×2 running, 4 more pending), so they wait.
 Lesson: on `gpu-6000_ada-h` a cancelled job's GPU does not come back to us; keep runs going until their budget ends.
-**13:50 — the render loss has been comparing against a shifted target.** The cached input CHM (`generate_cache.py`,
+**13:20 — refinement in the input's camera frame: 33.5 → 62.9 strict P, but watch the geometry (results report §11.10).**
+`eval_test_time_refinement.py --input_camera` renders the prediction with the camera that produced the cached input CHM
+(GT plant bbox centre, via `render_batched(centers=)`) so the input loss is no longer shifted. v10 ep95, 20 plants, 40
+steps, keep_best: **33.5 → 62.9** (DAP > 15: 38.4 → 74.5; every DAP > 15 plant rises, the two that collapsed before now
+reach 80.8 / 81.3; DAP ≤ 15 unchanged). IoU is still the strict origin-frame 256 px protocol. BUT the saved renders
+(`docs/results/assets/20260915_test_time_refinement_before_after_input_camera.png`) show a few leaves inflated into
+large flat polygons on 3 of 6 plants: the silhouette/depth loss has no prior on scale or latent, so the optimiser fills
+the silhouette with implausible geometry. The origin-frame version (`..._before_after.png`, 39.8 → 64.3 on the same six)
+keeps leaf shapes. Added `--reg_scale` / `--reg_latent` (squared deviation from the sampled values) and re-running; the
+lesson for the meeting is that silhouette IoU alone is not sufficient and a shape prior is needed in the refinement —
+and the same GT-bbox camera must go into the training render block.
+
+**13:00 — the render loss has been comparing against a shifted target.** The cached input CHM (`generate_cache.py`,
 `focus_plant=True`) is framed on the **GT plant's bounding-box centre**, while the training render block
 (`render_batched`, `focus_plant=False` + `reference_window_size`) and every evaluation render frame the plant at the
 **origin**. Measured on eval plants: the cached CHM overlaps a bbox-centred GT render at 73–89% IoU but an origin-framed
@@ -418,7 +430,7 @@ even for a perfect prediction, its gradient partly pushes the whole plant toward
 plants that regressed under test-time refinement (DAP 89/94) are exactly the large-offset cases. Fix in progress:
 render the prediction in the input's frame (plant-bbox-centred; `--plant_centered` in
 `eval_test_time_refinement.py`, re-running; the training render block needs the GT bbox centre per sample next).
-**13:35 — test-time refinement is the biggest lever found today (results report §11.7).**
+**12:55 — test-time refinement is the biggest lever found today (results report §11.7).**
 `diffusion_based/eval/eval_test_time_refinement.py`: after sampling, optimise each plant's node positions, scales and
 phytomer latents for 40 Adam steps against the INPUT canopy height map with the training render loss (no GT), keeping
 the step with the lowest input loss (`--keep_best`). v10 ep95 on the 20 eval plants, strict 256 px protocol: **34.9 →

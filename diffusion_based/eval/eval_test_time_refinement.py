@@ -39,6 +39,13 @@ def main():
                          "the cached input CHM was rendered in (plant-bbox-centred), instead of the fixed origin window. "
                          "Measured 2026-09-15: the cached CHM matches a bbox-centred GT render at 73-89% IoU but the "
                          "origin-window one at only 41-76%.")
+    ap.add_argument("--input_camera", action="store_true",
+                    help="Render the prediction with the camera the cached input was rendered with: centred on the GT plant's "
+                         "mesh bounding box (the input's frame), fixed 1.2 m / zoom window.")
+    ap.add_argument("--save_renders", default="", help="folder: save gt / before / after top-view renders (256 px PNG) per plant")
+    ap.add_argument("--only", default="", help="comma-separated plant indices to process (default: the whole eval set)")
+    ap.add_argument("--reg_scale", type=float, default=0.0, help="penalty weight on (scale - sampled scale)^2, keeps leaves from inflating to fill the silhouette")
+    ap.add_argument("--reg_latent", type=float, default=0.0, help="penalty weight on mean (latent - sampled latent)^2")
     ap.add_argument("--keep_best", action="store_true",
                     help="Return the variables of the step with the lowest INPUT loss (model selection on the input only), "
                          "not the last step -- guards against the divergent plants.")
@@ -65,6 +72,8 @@ def main():
     ds = PartArrayDataset(data_root=args["data_dir"], max_nodes=args["max_phytomers"] * M, cache_dir=args["cache_dir"],
                           pkt_cache_dir=args.get("pkt_cache_dir") or None, species="cowpea", image_size=128)
     idxs = json.load(open(a.eval_set))["indices"]
+    if a.only:
+        idxs = [int(x) for x in a.only.split(",")]
     opt_set = set(a.opt.split(","))
     rows = []
     for i in idxs:
@@ -73,6 +82,10 @@ def main():
         with torch.no_grad():
             gt_parts = decode_predictions_to_part_tensor(nodes[:, FM_BASE_START:], nodes[:, :FM_OT_END].argmax(-1), exist_gt, device=dev)
             gt_depth = render_depth(renderer, gt_parts, zoom, dev)
+            gt_center = None
+            if a.input_camera and gt_parts.shape[0] > 0:
+                gv = renderer.geo_builder.build_mesh_from_part_tensor(gt_parts, device=dev)["vertices"]
+                gt_center = 0.5 * (gv.min(0).values + gv.max(0).values) if gv.shape[0] > 0 else None
             tok = model.image_encoder(images); clue = model.probe_pred_dap(tok)
             co0 = model.coarse_stage(tok, capacity_mode="pred_phyto", pred_dap=clue); K = int(co0["active_k"]); co = model.coarse_stage(tok, active_k=K, pred_dap=clue)
             so = model.sample_ode(images=images, daps=None, num_steps=20, vae=ovae, phytomer_vae=pvae)
@@ -81,7 +94,8 @@ def main():
             scale0 = (so.get("phytomer_scale") if so.get("phytomer_scale") is not None else co.get("phytomer_scale"))[0].float(); lat0 = so["pred_latent"][0].float()
             rot, par = reconstruct_phytomer_rot(pos0.unsqueeze(0), roll.unsqueeze(0), ordn.unsqueeze(0), base.unsqueeze(0), exist=(exist > 0.5).float().unsqueeze(0))
             rot, par = rot[0].float(), par[0].float()
-            iou0, _ = score(render_depth(renderer, plant_from_nodes(pvae, pos0, rot, scale0, lat0, exist, par, M), zoom, dev), gt_depth)
+            parts0 = plant_from_nodes(pvae, pos0, rot, scale0, lat0, exist, par, M)
+            iou0, _ = score(render_depth(renderer, parts0, zoom, dev), gt_depth)
         # variables
         pos = pos0.clone().requires_grad_("pos" in opt_set); scale = scale0.clone().requires_grad_("scale" in opt_set); lat = lat0.clone().requires_grad_("latent" in opt_set)
         params = [{"params": [pos], "lr": a.lr_pos}] if "pos" in opt_set else []
@@ -105,13 +119,18 @@ def main():
                                             zoom_factor=z, reference_window_size=1.2)[3]
                 else:
                     pred = renderer.render_batched([mesh], azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, differentiable=True,
-                                                   image_size=128, zoom_factor=z, reference_window_size=1.2)[0, 3]
+                                                   image_size=128, zoom_factor=z, reference_window_size=1.2,
+                                                   centers=([gt_center] if gt_center is not None else None))[0, 3]
                 canopy = (t > 0.005) | (pred > 0.005)
                 l1 = F.smooth_l1_loss(pred, t, beta=0.02, reduction="none")
                 loss_d = (l1 * canopy).sum() / canopy.sum().clamp(min=1)
                 pm = torch.sigmoid((pred - 0.005) * 100.0); gm = (t > 0.005).float()
                 dice = 1.0 - (2.0 * (pm * gm).sum() + 1e-4) / (pm.sum() + gm.sum() + 1e-4)
                 loss = loss + 0.5 * loss_d + 1.0 * dice
+            if a.reg_scale > 0:
+                loss = loss + a.reg_scale * ((scale - scale0) ** 2).mean()
+            if a.reg_latent > 0:
+                loss = loss + a.reg_latent * ((lat - lat0) ** 2).mean()
             if a.keep_best and float(loss) < best[0]:
                 best = (float(loss), pos.detach().clone(), scale.detach().clone(), lat.detach().clone())
             if step == a.steps:
@@ -121,8 +140,22 @@ def main():
             with torch.no_grad():
                 pos, scale, lat = best[1], best[2], best[3]
         with torch.no_grad():
-            iou1, _ = score(render_depth(renderer, plant_from_nodes(pvae, pos, rot, scale, lat, exist, par, M), zoom, dev), gt_depth)
+            parts1 = plant_from_nodes(pvae, pos, rot, scale, lat, exist, par, M)
+            iou1, _ = score(render_depth(renderer, parts1, zoom, dev), gt_depth)
             moved = float((pos - pos0).norm(dim=-1).mean() * 100)
+            if a.save_renders:
+                from PIL import Image as _Image
+                os.makedirs(a.save_renders, exist_ok=True)
+                for name_, parts_ in (("gt", gt_parts), ("before", parts0), ("after", parts1)):
+                    if parts_.shape[0] == 0:
+                        continue
+                    mesh_ = renderer.geo_builder.build_mesh_from_part_tensor(parts_, device=dev)
+                    rgbd_ = renderer.forward(mesh_, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, background="ground",
+                                             focus_plant=False, include_depth=True, image_size=256, zoom_factor=zoom, reference_window_size=1.2)
+                    _Image.fromarray((rgbd_[:3].permute(1, 2, 0).clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)).save(
+                        os.path.join(a.save_renders, f"{i}_{name_}.png"))
+                json.dump({"index": i, "dap": dap, "iou_before": iou0, "iou_after": iou1, "jpeg": ds.samples[i].get("jpeg")},
+                          open(os.path.join(a.save_renders, f"{i}_meta.json"), "w"))
         rows.append({"index": i, "dap": dap, "iou_before": iou0, "iou_after": iou1, "mean_node_move_cm": moved})
         print(f"idx {i:6d} DAP {dap:3d} IoU {iou0*100:5.1f} -> {iou1*100:5.1f}  (nodes moved {moved:.1f} cm)", flush=True)
     b = np.array([r["iou_before"] for r in rows]); c = np.array([r["iou_after"] for r in rows]); d = np.array([r["dap"] for r in rows])
