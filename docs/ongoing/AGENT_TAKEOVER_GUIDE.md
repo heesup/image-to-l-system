@@ -409,6 +409,16 @@ information yet. The standardized-latent and render→latent runs were cancelled
 in their place (`38274747` render fraction 1.0, `38274748` lr 2e-4, both from geometry ep78) — **but the freed GPUs were
 taken at once by other groups' queued jobs on the shared Ada node** (js2552 ×2 running, 4 more pending), so they wait.
 Lesson: on `gpu-6000_ada-h` a cancelled job's GPU does not come back to us; keep runs going until their budget ends.
+**14:15 — scale-up phase: full-data v10 + input-camera run `38275054` on gpu-6000_ada-h (2 GPUs, 96 GB, 24 h).**
+The 10% protocol has done its job: every 10% variant converges within ~10 epochs and plateaus at strict P 33–36
+(v10 35.0 mean; cam ep80/85 35.8/34.0; w3t0 34.4; lr 2e-4 33.0; render-all 34.6; unfrozen 34.3), and the deployable
+number is now set by test-time refinement (67.6–69.1). So the two plateaued 10% cluster jobs (38274747 render-all,
+38274748 lr 2e-4) were cancelled and their slot given to the full-data run: v10 flags + `RENDER_INPUT_CAMERA=1`, from
+the s3geom ep78 checkpoint, `EVAL_SET_FILE` + `HOLDOUT_PER_BUCKET=2`, `SAVE_EVERY=5`, 128 epochs, output
+`diffusion_based/checkpoints/hierarchical_fm_v10_cam/`, log `slurm_scripts/logs/20260915/hierarchical_fm_38275054.log`.
+It is the generalisation check of the 10% findings and the candidate deployable model for refinement. Still running
+locally: `sub10_v10_cam` (ep90/95 strict readings queued) and `sub10_v10_w3t0`.
+
 **13:30 — training render loss now has the same camera option; run `sub10_v10_cam` launched (results report §11.10).**
 `--render_input_camera 1` (launcher `RENDER_INPUT_CAMERA=1`, commit `d492e01`): for every rendered plant the training
 loss now frames the prediction on the bbox centre of that plant's GT mesh (decoded from the batch `nodes` with
