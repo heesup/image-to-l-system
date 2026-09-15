@@ -516,7 +516,7 @@ def forward_backward_step(
             # GT phytomer scale = petiole (slot 1) scale row of the matched packets
             # (absolute FM units; the latent carries only normalized scales).
             gt_scl = phytomer_scale(pt["packets"].to(device, dtype=torch.float32))[pkt_idx].float()  # (M_node, 3)
-            tgt_z1_phyto[b, node_src, -D:] = gt_lat
+            tgt_z1_phyto[b, node_src, -D:] = raw_model.normalize_latent(gt_lat)   # identity unless --latent_norm
             slot_presence_target[b, node_src] = pt["presence"][pkt_idx].float()
 
             matched_phytomer_mask[b, node_src] = True
@@ -711,7 +711,7 @@ def forward_backward_step(
         correct_cls = 0
         total_cls_slots = 0
         with torch.no_grad():
-            clean_lat = split_flow_state(clean_z1, D)[1]
+            clean_lat = raw_model.denormalize_latent(split_flow_state(clean_z1, D)[1])
             vae_out = phytomer_vae.decode(clean_lat.reshape(-1, D))
             pred_cls_all = vae_out["cls_logits"].argmax(-1).reshape(B, K_eff, M)  # (B, K, M)
             # Accumulate on the device and sync once: two .item() per sample here
@@ -1041,7 +1041,7 @@ def forward_backward_step(
                         scl_all.register_hook(lambda g: torch.nan_to_num(g.clamp(-2.0, 2.0), nan=0.0))
 
                 _sync_cuda(); prof["r_topo"] = time.time() - _t_sub; _t_sub = time.time()
-                out_vae_all = phytomer_vae.decode(lat_all.reshape(-1, D))
+                out_vae_all = phytomer_vae.decode(raw_model.denormalize_latent(lat_all).reshape(-1, D))
                 recon_abs_all = denormalize_packet_scales(
                     out_vae_all["recon_packets"], scl_all.reshape(-1, 3)
                 )
@@ -1815,6 +1815,11 @@ def main():
     parser.add_argument("--stage3_geometry", action="store_true",
                         help="Stage 3 generates the child's position (relative to its fixed parent), roll and scale "
                              "in the flow state with the latent (design doc §2.1; GT-substitution ablation 2026-09-14).")
+    parser.add_argument("--latent_norm", action="store_true",
+                        help="Flow-match the per-dim standardized VAE latent ((z - mu) / sigma, statistics from the "
+                             "training packets) so the latent block is unit variance against the noise.")
+    parser.add_argument("--latent_norm_samples", type=int, default=4096,
+                        help="Number of GT phytomer latents used for the --latent_norm statistics.")
     parser.add_argument("--render_to_latent", action="store_true",
                         help="Let the render loss back-propagate into Stage 3's latent block (default: latent rows are "
                              "detached in the render block, only the flow loss trains them).")
@@ -2114,6 +2119,33 @@ def main():
                 group.setdefault("initial_lr", group["lr"])
             if rank == 0:
                 print(f"Resuming training loop from epoch {start_epoch} of {args.epochs}")
+
+    # --latent_norm: per-dim mean / std of the GT VAE latents over the first N training packets
+    # (rank 0; DDP broadcasts the buffers at construction). Skipped when the loaded checkpoint
+    # already carries a non-identity normalization.
+    if getattr(args, "latent_norm", False) and phytomer_vae is not None:
+        if model.latent_norm_active():
+            if rank == 0:
+                print(f"latent_norm: keeping the checkpoint's normalization (sigma mean {model.latent_sigma.mean().item():.3f})")
+        elif rank == 0:
+            _lats = []; _n = 0
+            with torch.no_grad():
+                for _i in range(len(dataset)):
+                    _pk = dataset[_i].get("pkt")
+                    if _pk is None:
+                        continue
+                    _lats.append(phytomer_vae.encode(phytomer_vae.pack_input(
+                        _pk["packets"].to(device).float(), _pk["presence"].to(device)))[0].float())
+                    _n += _lats[-1].shape[0]
+                    if _n >= args.latent_norm_samples:
+                        break
+            _lat = torch.cat(_lats)
+            model.set_latent_norm(_lat.mean(0), _lat.std(0))
+            print(f"latent_norm: mu/sigma from {_lat.shape[0]} GT phytomer latents ({_i + 1} plants): "
+                  f"per-dim sigma mean {model.latent_sigma.mean().item():.3f}, min {model.latent_sigma.min().item():.3f}, "
+                  f"max {model.latent_sigma.max().item():.3f}", flush=True)
+    elif getattr(args, "latent_norm", False) and rank == 0:
+        print("latent_norm requested but no phytomer VAE loaded -- ignored")
 
     # Cosine decay over the full run.
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(

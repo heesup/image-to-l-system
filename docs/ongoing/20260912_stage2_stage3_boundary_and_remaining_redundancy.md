@@ -488,6 +488,14 @@ This is worth adopting for three separate reasons. It takes parent coverage from
    floor (~0.16-0.17). Levers, in order: `--render_to_latent` (render loss into the latent block, arm queued), a
    unit-variance latent scale for the flow, t sampling toward 0. `--stage3_gt_nodes` (teacher forcing) runs as the
    control for "node error starves the latent".
+6. **[IMPLEMENTED 2026-09-15 morning, `--latent_norm` / `LATENT_NORM=1`]** The flow matches the per-dim
+   standardized VAE latent `(z − μ)/σ` (μ, σ over the first 4096 GT phytomer latents at startup; buffers
+   `latent_mu` / `latent_sigma` on the model, saved in the checkpoint; identity for every older checkpoint).
+   `sample_ode`, the class-accuracy decode and the render block hand the raw latent back to the VAE, so no consumer
+   changes. This is the one property of the 2026-09-07 Option B model (16D N(0, I) organ latent) worth porting: that
+   model, re-evaluated with its exact code on today's 20-plant set, scores 24.8% (takeover guide §0-B.9) — its
+   "45.4%" was a 4-plant draw — but its latent was unit variance by construction, which is exactly what today's 128D
+   latent (per-dim std ≈ 0.41) lacks. Test `tests/test_latent_norm.py`.
 
 ### 2.3 What the epoch-11 panel showed, and the two inference bugs behind it
 

@@ -1441,6 +1441,12 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         self.embed_dim = embed_dim
         self.flow_granularity = flow_granularity
         self.phytomer_latent_dim = phytomer_latent_dim
+        # --latent_norm: the flow matches (z - mu) / sigma of the VAE latent instead of z, so every
+        # latent dim is O(1) against the unit noise (the raw 128D latent has per-dim std ~0.4, which
+        # left the velocity loss ~85% noise prediction and the conditioning unused -- 2026-09-15).
+        # Identity (mu 0, sigma 1) unless set_latent_norm() is called; saved with the state dict.
+        self.register_buffer("latent_mu", torch.zeros(phytomer_latent_dim))
+        self.register_buffer("latent_sigma", torch.ones(phytomer_latent_dim))
 
         # 1. Pretrained DINO Backbone with 3D Camera Ray Positional Embedding (PETR style).
         #    Swappable via `backbone` for scaling A/B (dinov2_vits14 / vitb14 / vitl14 /
@@ -1664,6 +1670,23 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         }
 
     @torch.no_grad()
+    def set_latent_norm(self, mu: torch.Tensor, sigma: torch.Tensor) -> None:
+        # sigma floor 0.05: the VAE has near-constant (KL-collapsed) dims with sigma ~1e-3 (smoke 2026-09-15:
+        # min 0.001, mean 0.18, max 1.44); dividing by their true sigma would turn their noise into O(1)
+        # targets the flow must fit for nothing. Floored, they stay ~0 in the flow state and ~mu on decode.
+        self.latent_mu.copy_(mu.to(self.latent_mu)); self.latent_sigma.copy_(sigma.to(self.latent_sigma).clamp(min=0.05))
+
+    def latent_norm_active(self) -> bool:
+        return bool((self.latent_sigma != 1).any() or (self.latent_mu != 0).any())
+
+    def normalize_latent(self, z: torch.Tensor) -> torch.Tensor:
+        """VAE latent -> flow-state latent block."""
+        return (z - self.latent_mu.to(z)) / self.latent_sigma.to(z)
+
+    def denormalize_latent(self, x: torch.Tensor) -> torch.Tensor:
+        """Flow-state latent block -> VAE latent (what the VAE decoder and every consumer expects)."""
+        return self.latent_mu.to(x) + self.latent_sigma.to(x) * x
+
     def sample_ode(
         self,
         images: torch.Tensor,
@@ -1874,7 +1897,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         if self.flow_granularity == "phytomer":
             # The VAE latent block of the flow state (the whole state without
             # stage3_geometry; its last D dims with it -- see split_flow_state).
-            latent = pred_latent
+            latent = self.denormalize_latent(pred_latent)   # identity unless --latent_norm
             res["refined_phytomer_pos"] = phytomer_pos
             res["refined_phytomer_rot"] = phytomer_rot
             res["refined_phytomer_scale"] = phytomer_scale
