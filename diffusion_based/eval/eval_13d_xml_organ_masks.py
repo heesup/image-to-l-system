@@ -186,7 +186,7 @@ def main():
     # 4: Helios Recon Semantic Organ Mask (from 13D XML)
     # 5: Helios Recon Raytraced Depth (from 13D XML)
     # 6: PyTorch 13D Direct Render RGB
-    fig, axes = plt.subplots(num_rows, 7, figsize=(32, 4.8 * num_rows), facecolor="#0a0a14")
+    fig, axes = plt.subplots(num_rows, 7, figsize=(32, 4.8 * num_rows), facecolor="white")
     plt.subplots_adjust(wspace=0.03, hspace=0.08, left=0.06, right=0.98, top=0.93, bottom=0.04)
 
     col_titles = [
@@ -200,7 +200,7 @@ def main():
     ]
 
     for col, title in enumerate(col_titles):
-        axes[0, col].set_title(title, fontsize=12, fontweight="bold", color="#7ee8fa", pad=12)
+        axes[0, col].set_title(title, fontsize=12, color="#111111", pad=12)
 
     for row_idx, (label, orig_xml_rel, tag) in enumerate(TEST_PLANTS):
         orig_xml_path = os.path.join(REPO_ROOT, orig_xml_rel)
@@ -273,66 +273,66 @@ def main():
         ax = ax_row[0]
         ax.imshow(helios_gt["rgb"])
         ax.axis("off")
-        ax.set_facecolor("#0a0a14")
-        ax.set_ylabel(label, fontsize=12, fontweight="bold", color="#f0f0f0", rotation=0, labelpad=70, va="center")
+        ax.set_facecolor("white")
+        ax.set_ylabel(label, fontsize=12, fontweight="bold", color="#111111", rotation=0, labelpad=70, va="center")
         ax.text(0.03, 0.03, "Helios GT", transform=ax.transAxes, fontsize=9, color="white",
-                bbox=dict(boxstyle="round,pad=0.2", facecolor="black", alpha=0.7))
+                bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="#888888", linewidth=0.5, alpha=0.9))
 
         # Col 1: Helios GT Semantic Organ Mask
         ax = ax_row[1]
         ax.imshow(rasterize_semantic_color(helios_gt["mask_map"]))
         ax.axis("off")
-        ax.set_facecolor("#0a0a14")
+        ax.set_facecolor("white")
         ax.text(0.03, 0.03, "GT Organ Mask", transform=ax.transAxes, fontsize=9, color="white",
-                bbox=dict(boxstyle="round,pad=0.2", facecolor="black", alpha=0.7))
+                bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="#888888", linewidth=0.5, alpha=0.9))
 
         # Col 2: Helios GT Depth
         ax = ax_row[2]
         ax.imshow(helios_gt["depth"], cmap="magma")
         ax.axis("off")
-        ax.set_facecolor("#0a0a14")
+        ax.set_facecolor("white")
         ax.text(0.03, 0.03, "GT Depth", transform=ax.transAxes, fontsize=9, color="white",
-                bbox=dict(boxstyle="round,pad=0.2", facecolor="black", alpha=0.7))
+                bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="#888888", linewidth=0.5, alpha=0.9))
 
         # Col 3: Helios Recon RGB
         ax = ax_row[3]
         ax.imshow(helios_recon["rgb"])
         ax.axis("off")
-        ax.set_facecolor("#0a0a14")
-        ax.text(0.03, 0.03, f"14D XML Recon\nIoU: {fg_iou*100:.1f}%", transform=ax.transAxes, fontsize=9, color="#7ee8fa",
-                bbox=dict(boxstyle="round,pad=0.2", facecolor="black", alpha=0.7))
+        ax.set_facecolor("white")
+        ax.text(0.03, 0.03, f"14D XML Recon\nIoU: {fg_iou*100:.1f}%", transform=ax.transAxes, fontsize=9, color="#111111",
+                bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="#888888", linewidth=0.5, alpha=0.9))
 
         # Col 4: Helios Recon Organ Mask
         ax = ax_row[4]
         ax.imshow(rasterize_semantic_color(helios_recon["mask_map"]))
         ax.axis("off")
-        ax.set_facecolor("#0a0a14")
-        ax.text(0.03, 0.03, f"Recon Mask\nmIoU: {m_iou*100:.1f}%", transform=ax.transAxes, fontsize=9, color="#7ee8fa",
-                bbox=dict(boxstyle="round,pad=0.2", facecolor="black", alpha=0.7))
+        ax.set_facecolor("white")
+        ax.text(0.03, 0.03, f"Recon Mask\nmIoU: {m_iou*100:.1f}%", transform=ax.transAxes, fontsize=9, color="#111111",
+                bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="#888888", linewidth=0.5, alpha=0.9))
 
         # Col 5: Helios Recon Depth
         ax = ax_row[5]
         ax.imshow(helios_recon["depth"], cmap="magma")
         ax.axis("off")
-        ax.set_facecolor("#0a0a14")
-        ax.text(0.03, 0.03, f"Recon Depth\nPSNR: {depth_psnr:.1f} dB", transform=ax.transAxes, fontsize=9, color="#ffd166",
-                bbox=dict(boxstyle="round,pad=0.2", facecolor="black", alpha=0.7))
+        ax.set_facecolor("white")
+        ax.text(0.03, 0.03, f"Recon Depth\nPSNR: {depth_psnr:.1f} dB", transform=ax.transAxes, fontsize=9, color="#111111",
+                bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="#888888", linewidth=0.5, alpha=0.9))
 
         # Col 6: PyTorch 14D Direct
         ax = ax_row[6]
         ax.imshow(rgb_pytorch_np)
         ax.axis("off")
-        ax.set_facecolor("#0a0a14")
+        ax.set_facecolor("white")
         ax.text(0.03, 0.03, "PyTorch 14D (Direct)", transform=ax.transAxes, fontsize=9, color="white",
-                bbox=dict(boxstyle="round,pad=0.2", facecolor="black", alpha=0.7))
+                bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="#888888", linewidth=0.5, alpha=0.9))
 
     # Add legend for semantic organ classes at bottom
     patches = [mpatches.Patch(color=ORGAN_COLORS[i]/255.0, label=ORGAN_CLASSES[i]) for i in range(len(ORGAN_CLASSES))]
     fig.legend(handles=patches, loc="lower center", ncol=len(ORGAN_CLASSES), fontsize=12,
-               facecolor="#151525", edgecolor="#444466", labelcolor="white", bbox_to_anchor=(0.52, 0.005))
+               facecolor="white", edgecolor="#888888", labelcolor="#111111", bbox_to_anchor=(0.52, 0.005))
 
     save_path = os.path.join(OUTPUT_DIR, "fig10_helios_per_organ_mask_comparison.png")
-    plt.savefig(save_path, dpi=200, facecolor=fig.get_facecolor(), edgecolor="none")
+    plt.savefig(save_path, dpi=200, facecolor="white", edgecolor="none")
     plt.close()
     print(f"\nSuccessfully generated and saved per-organ comparison figure:\n  -> {save_path}")
 

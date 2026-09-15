@@ -165,7 +165,9 @@ def main():
         p.requires_grad_(False)
 
     num_rows = len(TEST_PLANTS)
-    fig, axes = plt.subplots(num_rows, 6, figsize=(28, 4.8 * num_rows), facecolor="#0a0a14")
+    plt.rcParams.update({"font.family": "sans-serif", "font.sans-serif": ["Arial", "Liberation Sans", "DejaVu Sans"],
+                        "font.size": 9, "axes.edgecolor": "#444444", "axes.linewidth": 0.6, "text.color": "#111111"})
+    fig, axes = plt.subplots(num_rows, 6, figsize=(28, 4.8 * num_rows), facecolor="white")
     plt.subplots_adjust(wspace=0.03, hspace=0.08, left=0.06, right=0.98, top=0.93, bottom=0.06)
     col_titles = [
         "Helios GT\nRaytrace RGB",
@@ -176,7 +178,7 @@ def main():
         "VAE Roundtrip Recon\nOrgan Mask",
     ]
     for col, title in enumerate(col_titles):
-        axes[0, col].set_title(title, fontsize=11, fontweight="bold", color="#7ee8fa", pad=12)
+        axes[0, col].set_title(title, fontsize=10, color="#111111", pad=12)
 
     summary_rows = []
 
@@ -238,33 +240,33 @@ def main():
         summary_rows.append((label, ik_fg, vae_fg, ik_miou, vae_miou, ik_psnr, vae_psnr, n_gt, n_recon))
 
         ax_row = axes[row_idx]
-        ax_row[0].imshow(helios_gt["rgb"]); ax_row[0].axis("off"); ax_row[0].set_facecolor("#0a0a14")
-        ax_row[0].set_ylabel(label, fontsize=12, fontweight="bold", color="#f0f0f0", rotation=0, labelpad=70, va="center")
+        ax_row[0].imshow(helios_gt["rgb"]); ax_row[0].axis("off"); ax_row[0].set_facecolor("white")
+        ax_row[0].set_ylabel(label, fontsize=10, color="#111111", rotation=0, labelpad=70, va="center")
 
-        ax_row[1].imshow(rasterize_semantic_color(helios_gt["mask_map"])); ax_row[1].axis("off"); ax_row[1].set_facecolor("#0a0a14")
+        ax_row[1].imshow(rasterize_semantic_color(helios_gt["mask_map"])); ax_row[1].axis("off"); ax_row[1].set_facecolor("white")
 
-        ax_row[2].imshow(helios_ik["rgb"]); ax_row[2].axis("off"); ax_row[2].set_facecolor("#0a0a14")
-        ax_row[2].text(0.03, 0.03, f"FG IoU: {ik_fg*100:.1f}%", transform=ax_row[2].transAxes, fontsize=9, color="#7ee8fa",
-                        bbox=dict(boxstyle="round,pad=0.2", facecolor="black", alpha=0.7))
+        ax_row[2].imshow(helios_ik["rgb"]); ax_row[2].axis("off"); ax_row[2].set_facecolor("white")
+        ax_row[2].text(0.03, 0.03, f"FG IoU: {ik_fg*100:.1f}%", transform=ax_row[2].transAxes, fontsize=9, color="#111111",
+                        bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="#888888", linewidth=0.5, alpha=0.9))
 
-        ax_row[3].imshow(rasterize_semantic_color(helios_ik["mask_map"])); ax_row[3].axis("off"); ax_row[3].set_facecolor("#0a0a14")
-        ax_row[3].text(0.03, 0.03, f"mIoU: {ik_miou*100:.1f}%", transform=ax_row[3].transAxes, fontsize=9, color="#7ee8fa",
-                        bbox=dict(boxstyle="round,pad=0.2", facecolor="black", alpha=0.7))
+        ax_row[3].imshow(rasterize_semantic_color(helios_ik["mask_map"])); ax_row[3].axis("off"); ax_row[3].set_facecolor("white")
+        ax_row[3].text(0.03, 0.03, f"mIoU: {ik_miou*100:.1f}%", transform=ax_row[3].transAxes, fontsize=9, color="#111111",
+                        bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="#888888", linewidth=0.5, alpha=0.9))
 
-        ax_row[4].imshow(helios_vae["rgb"]); ax_row[4].axis("off"); ax_row[4].set_facecolor("#0a0a14")
-        ax_row[4].text(0.03, 0.03, f"FG IoU: {vae_fg*100:.1f}%\nOrgans: {n_recon}/{n_gt}", transform=ax_row[4].transAxes, fontsize=9, color="#ffd166",
-                        bbox=dict(boxstyle="round,pad=0.2", facecolor="black", alpha=0.7))
+        ax_row[4].imshow(helios_vae["rgb"]); ax_row[4].axis("off"); ax_row[4].set_facecolor("white")
+        ax_row[4].text(0.03, 0.03, f"FG IoU: {vae_fg*100:.1f}%\nOrgans: {n_recon}/{n_gt}", transform=ax_row[4].transAxes, fontsize=9, color="#111111",
+                        bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="#888888", linewidth=0.5, alpha=0.9))
 
-        ax_row[5].imshow(rasterize_semantic_color(helios_vae["mask_map"])); ax_row[5].axis("off"); ax_row[5].set_facecolor("#0a0a14")
-        ax_row[5].text(0.03, 0.03, f"mIoU: {vae_miou*100:.1f}%", transform=ax_row[5].transAxes, fontsize=9, color="#ffd166",
-                        bbox=dict(boxstyle="round,pad=0.2", facecolor="black", alpha=0.7))
+        ax_row[5].imshow(rasterize_semantic_color(helios_vae["mask_map"])); ax_row[5].axis("off"); ax_row[5].set_facecolor("white")
+        ax_row[5].text(0.03, 0.03, f"mIoU: {vae_miou*100:.1f}%", transform=ax_row[5].transAxes, fontsize=9, color="#111111",
+                        bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="#888888", linewidth=0.5, alpha=0.9))
 
     patches = [mpatches.Patch(color=ORGAN_COLORS[i] / 255.0, label=ORGAN_CLASSES[i]) for i in range(len(ORGAN_CLASSES))]
     fig.legend(handles=patches, loc="lower center", ncol=len(ORGAN_CLASSES), fontsize=12,
-               facecolor="#151525", edgecolor="#444466", labelcolor="white", bbox_to_anchor=(0.52, 0.005))
+               facecolor="white", edgecolor="#888888", labelcolor="#111111", bbox_to_anchor=(0.52, 0.005))
 
     save_path = os.path.join(OUTPUT_DIR, "fig14_phytomer_vae_helios_roundtrip.png")
-    plt.savefig(save_path, dpi=200, facecolor=fig.get_facecolor(), edgecolor="none")
+    plt.savefig(save_path, dpi=300, facecolor="white", edgecolor="none", bbox_inches="tight")
     plt.close()
     print(f"\nSaved comparison figure -> {save_path}")
 

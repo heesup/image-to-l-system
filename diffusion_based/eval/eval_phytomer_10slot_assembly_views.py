@@ -133,10 +133,12 @@ def main():
         "10-slot packets -> 14D -> XML\n(stem IK) -> Helios",
         "packets -> PhytomerVAE -> 14D\n-> XML (stem IK) -> Helios",
     ]
-    fig, axes = plt.subplots(len(PLANTS), 7, figsize=(31.5, 4.8 * len(PLANTS)), facecolor="#0a0a14")
+    plt.rcParams.update({"font.family": "sans-serif", "font.sans-serif": ["Arial", "Liberation Sans", "DejaVu Sans"],
+                        "font.size": 9, "axes.edgecolor": "#444444", "axes.linewidth": 0.6, "text.color": "#111111"})
+    fig, axes = plt.subplots(len(PLANTS), 7, figsize=(31.5, 4.8 * len(PLANTS)), facecolor="white")
     plt.subplots_adjust(wspace=0.03, hspace=0.10, left=0.05, right=0.99, top=0.92, bottom=0.02)
     for c, t in enumerate(titles):
-        axes[0, c].set_title(t, fontsize=11, fontweight="bold", color="#7ee8fa", pad=10)
+        axes[0, c].set_title(t, fontsize=10, color="#111111", pad=10)
 
     rows = []
     for r, (label, rel, tag) in enumerate(PLANTS):
@@ -182,8 +184,8 @@ def main():
             ax = axes[r, c]
             ax.imshow(im); ax.axis("off")
             if note:
-                ax.text(0.03, 0.03, note, transform=ax.transAxes, fontsize=9, color="#ffd166",
-                        bbox=dict(boxstyle="round,pad=0.2", facecolor="black", alpha=0.7))
+                ax.text(0.03, 0.03, note, transform=ax.transAxes, fontsize=9, color="#111111",
+                        bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="#888888", linewidth=0.5, alpha=0.9))
         axes[r, 0].text(-0.02, 0.5, label, transform=axes[r, 0].transAxes, fontsize=12, fontweight="bold",
                         color="#f0f0f0", rotation=90, ha="right", va="center")
 
