@@ -409,6 +409,19 @@ information yet. The standardized-latent and render→latent runs were cancelled
 in their place (`38274747` render fraction 1.0, `38274748` lr 2e-4, both from geometry ep78) — **but the freed GPUs were
 taken at once by other groups' queued jobs on the shared Ada node** (js2552 ×2 running, 4 more pending), so they wait.
 Lesson: on `gpu-6000_ada-h` a cancelled job's GPU does not come back to us; keep runs going until their budget ends.
+**16:30 — EMA weights for evaluation; full run continues as `38279147` with `EMA_DECAY=0.999`.**
+The full-data run's ep85 checkpoint scored strict P 14.0 while ep80 scored 27.5 and the in-training holdout went
+32.5 → 15.0 → 37.6 over epochs 84–86: checkpoints land on whatever state the last epoch left, and on full data the
+swing is large. `--ema_decay` (launcher `EMA_DECAY=`, commit `064f1d3`) keeps an EMA of the weights through an
+optimizer post-step hook (`WeightEMA` in the trainer, `tests/test_weight_ema.py`) and saves
+`hierarchical_fm_epoch_NNN_ema.pt` next to every checkpoint with the same layout, so every eval script loads it
+unchanged; the EMA state also rides inside the raw checkpoint (`ema_state_dict`) for resume. Job `38279147`
+(`--dependency=afterany:38275054`, same OUTPUT_DIR, AUTO_RESUME) takes over the lineage the moment `38275054` ends:
+plan is to `scancel 38275054` right after its ep90 checkpoint is saved so nothing is lost. A detached loop scores each
+`_ema.pt` (strict reading with `--tag ema` + default refinement; log `full_ema_readings.log` in the session scratchpad,
+JSONs in `slurm_scripts/logs/20260915/run_38275054/`). Raw-checkpoint readings so far: ep80 27.5 (refined 64.6),
+ep85 14.0 (refined 53.3).
+
 **14:15 — scale-up phase: full-data v10 + input-camera run `38275054` on gpu-6000_ada-h (2 GPUs, 96 GB, 24 h).**
 The 10% protocol has done its job: every 10% variant converges within ~10 epochs and plateaus at strict P 33–36
 (v10 35.0 mean; cam ep80/85 35.8/34.0; w3t0 34.4; lr 2e-4 33.0; render-all 34.6; unfrozen 34.3), and the deployable
