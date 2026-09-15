@@ -409,6 +409,13 @@ information yet. The standardized-latent and render→latent runs were cancelled
 in their place (`38274747` render fraction 1.0, `38274748` lr 2e-4, both from geometry ep78) — **but the freed GPUs were
 taken at once by other groups' queued jobs on the shared Ada node** (js2552 ×2 running, 4 more pending), so they wait.
 Lesson: on `gpu-6000_ada-h` a cancelled job's GPU does not come back to us; keep runs going until their budget ends.
+**12:25 — fourth reading and the current set.** Four readings put v10 full at a strict P mean of 35.0, the combination
+at 33.5, scheduled TF at 28.0 and baseline-on-10% at 27.0 (results report §11.4); nothing rises further on 10k plants.
+The combination run was stopped on this node at epoch 95 (v10 is its superset) and the **v10 + unfrozen backbone** variant
+started in its place (`slurm_scripts/logs/local_sub10_v10_unfreeze.log`, `sub10_v10_unfreeze/`, `FREEZE_BACKBONE=0`,
+backbone lr ratio 0.3), testing whether node precision is capped by the frozen DINOv2 features. On the cluster:
+scheduled TF (`38274495`, to ep95), v10 render-every-sample (`38274747`, ep80: 34.4 after 2 epochs), v10 lr 2e-4
+(`38274748`, started 12:05). The 10% baseline finished its budget at epoch 95.
 **`low` cannot run our runs now (10:00)**: its GPU nodes have idle A100/H100s but their RAM is fully allocated by other
   users' jobs (5–13 GB free per node) and one training needs ~15 GB (6 GB main + 8 workers × 1.1 GB). The two low jobs
   were cancelled and the three runs chained on the baseline's slot: `38274220` latent_norm (46–80) → `38274221`
