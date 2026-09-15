@@ -39,17 +39,20 @@ def main():
                          "the cached input CHM was rendered in (plant-bbox-centred), instead of the fixed origin window. "
                          "Measured 2026-09-15: the cached CHM matches a bbox-centred GT render at 73-89% IoU but the "
                          "origin-window one at only 41-76%.")
-    ap.add_argument("--input_camera", action="store_true",
-                    help="Render the prediction with the camera the cached input was rendered with: centred on the GT plant's "
-                         "mesh bounding box (the input's frame), fixed 1.2 m / zoom window.")
+    ap.add_argument("--input_camera", action="store_true", default=True,
+                    help="render the prediction in the camera frame the cached input was rendered in (GT plant bbox centre); default on")
+    ap.add_argument("--origin_camera", action="store_true", help="use the origin-centred window instead of --input_camera (the pre-2026-09-15 behaviour)")
     ap.add_argument("--save_renders", default="", help="folder: save gt / before / after top-view renders (256 px PNG) per plant")
     ap.add_argument("--only", default="", help="comma-separated plant indices to process (default: the whole eval set)")
-    ap.add_argument("--reg_scale", type=float, default=0.0, help="penalty weight on (scale - sampled scale)^2, keeps leaves from inflating to fill the silhouette")
-    ap.add_argument("--reg_latent", type=float, default=0.0, help="penalty weight on mean (latent - sampled latent)^2")
+    ap.add_argument("--target_zooms", default="1,2,4,8", help="comma list of cache zoom levels (1,2,4,8) whose depth channels are the refinement targets; the 4x/8x levels add signal for plants that are only a few pixels wide at 1x/2x")
+    ap.add_argument("--reg_scale", type=float, default=5.0, help="penalty weight on (scale - sampled scale)^2, keeps leaves from inflating to fill the silhouette")
+    ap.add_argument("--reg_latent", type=float, default=0.5, help="penalty weight on mean (latent - sampled latent)^2")
     ap.add_argument("--keep_best", action="store_true",
                     help="Return the variables of the step with the lowest INPUT loss (model selection on the input only), "
                          "not the last step -- guards against the divergent plants.")
     a = ap.parse_args()
+    if a.origin_camera:
+        a.input_camera = False
     dev = torch.device("cuda:0")
     ck = torch.load(a.checkpoint, map_location="cpu", weights_only=False); args = ck["args"] if isinstance(ck["args"], dict) else vars(ck["args"])
     model = HierarchicalPartFlowMatchingModel(
@@ -103,7 +106,8 @@ def main():
         if "latent" in opt_set: params.append({"params": [lat], "lr": a.lr_latent})
         opt = torch.optim.Adam(params)
         # input CHM at the two training zooms (cache channels 3 and 7)
-        tgt = {1.0: images[0, 3], 2.0: images[0, 7]}
+        _zi = {1.0: 3, 2.0: 7, 4.0: 11, 8.0: 15}
+        tgt = {float(z): images[0, _zi[float(z)]] for z in a.target_zooms.split(",") if images.shape[1] > _zi[float(z)]}
         best = (float("inf"), pos0.clone(), scale0.clone(), lat0.clone())
         for step in range(a.steps + (1 if a.keep_best else 0)):
             opt.zero_grad()
