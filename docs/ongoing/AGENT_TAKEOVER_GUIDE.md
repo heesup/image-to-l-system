@@ -209,7 +209,18 @@ loss starts high (fresh geometry dims, ~12-20) and should fall within the first 
 | :---: | :---: | :---: | :---: |
 | 46 | 31.5 | (crashed at eval, fixed `985ba26`) | |
 | 47 | 31.0 | 30.6 | |
-| 48–52 | 32.7 / 26.9 / 29.9 / 31.4 / 30.7 | | |
+| 48 | 32.7 | **35.0** (Vel 2.08, still falling) | |
+| 49–56 | 26.9 / 29.9 / 31.4 / 30.7 / 33.5 / 33.9 / – / 32.4 | | |
+| 46 (gt_nodes) | 31.5 | | 32.8 (Vel 0.159 vs baseline 0.169; in-training eval uses Stage 2 nodes) |
+
+The gt_nodes arm was launched with the launcher's default `SAVE_EVERY=5`, so its first checkpoint (for the teacher-forced
+ablation and the latent probe) is epoch 50; the geometry arm saves every epoch. Geometry ep48 under the ablation protocol
+(`run_local_20260914_164059/gt_substitution_epoch048.json`): P 26.3, pos←GT 39.4, ALL−pos 33.6, ALL−latent 42.1,
+ALL 77.7 — and a warning: the sampled latent's per-dim spread is **0.42 against the GT's 0.18** (baseline ep50: 0.17),
+RMSE vs GT 7.1 (R² −1.3). The widened flow state is making the latent block noisier while the geometry rows are still
+settling; watch whether it comes back down by epoch 50 before moving the arm to the cluster. The two protocols are not
+comparable with each other (in-training eval: chain topology + training renderer; ablation: greedy match + 256 px
+PyTorch renderer, young plants zoomed 8×) — compare arms within one protocol only.
 
 Read the table with the training-arm caveat: the gt_nodes arm is *trained* with GT nodes but the in-training eval
 samples with Stage 2's nodes (train/test mismatch by design); its meaningful readout is the substitution ablation run
