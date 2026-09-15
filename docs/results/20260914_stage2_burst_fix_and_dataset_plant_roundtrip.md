@@ -186,7 +186,7 @@ A/B: 같은 epoch 45 체크포인트에서 baseline(`38257989`, 클러스터 2 G
 
 해석: 조건은 식물 수준(DAP, 크기) 정보만 전달한다. latent의 차원별 표준편차가 ≈0.41로 단위 노이즈에 비해 작아 velocity 타깃의 ~85%가 노이즈이고, t≈0의 무조건 하한이 Var(z1) ≈ 0.17/차원인데 학습 Vel 손실(0.16)이 그 바닥에 앉아 있다. flow 손실만으로는 노드별 조건을 쓸 이유가 없다.
 
-다음: (a) `--render_to_latent` (`RENDER_TO_LATENT=1`) — 렌더 손실을 latent 블록까지 흘린다 (지금까지는 detach). epoch 45에서 `low`로 arm 추가. (b) flow용 latent를 단위 분산으로 스케일 (velocity head가 바뀌므로 epoch 45에서 fine-tune). (c) t 샘플링을 0 쪽으로. 대조군으로 **teacher forcing arm** (`STAGE3_GT_NODES=1`, `local_gtnodes_ab.log`)이 17:07부터 돈다: 노드가 맞을 때 노드별 R²가 오르면 "노드 오차가 latent를 굶긴다"가 맞는 것이다. 세 arm의 epoch별 IoU: baseline 46–52 = 31.5/31.0/32.7/26.9/29.9/31.4/30.7, 기하 47 = 30.6 (Vel 3.1 → 2.4, 아직 내려가는 중).
+다음: (a) `--render_to_latent` (`RENDER_TO_LATENT=1`) — 렌더 손실을 latent 블록까지 흘린다 (지금까지는 detach; smoke에서 velocity head latent 행에 |g| 0.02–2.7 확인). epoch 45에서 `low` 작업 `38260124` (2×A100, `hierarchical_fm_v9_r2l/`)로 17:45 제출. (b) flow용 latent를 단위 분산으로 스케일 (velocity head가 바뀌므로 epoch 45에서 fine-tune). (c) t 샘플링을 0 쪽으로. 대조군으로 **teacher forcing arm** (`STAGE3_GT_NODES=1`, `local_gtnodes_ab.log`)이 17:07부터 돈다: 노드가 맞을 때 노드별 R²가 오르면 "노드 오차가 latent를 굶긴다"가 맞는 것이다. 세 arm의 epoch별 IoU: baseline 46–52 = 31.5/31.0/32.7/26.9/29.9/31.4/30.7, 기하 47 = 30.6 (Vel 3.1 → 2.4, 아직 내려가는 중).
 
 ## 5. 변경 파일
 

@@ -203,6 +203,7 @@ loss starts high (fresh geometry dims, ~12-20) and should fall within the first 
 | baseline (latent-only Stage 3) | cluster `38257989`, 2 GPU | `slurm_scripts/logs/hierarchical_fm_38257989.log`, `hierarchical_fm_v9/` | — |
 | geometry | local 1 GPU | `slurm_scripts/logs/local_s3geom_ab2.log`, `hierarchical_fm_v9_s3geom/`, panels `run_local_20260914_164059/` | `STAGE3_GEOMETRY=1` |
 | gt_nodes (teacher forcing) | local 1 GPU, started 17:07 | `slurm_scripts/logs/local_gtnodes_ab.log`, `hierarchical_fm_v9_gtnodes/`, panels `run_local_20260914_170731/` | `STAGE3_GT_NODES=1` |
+| render→latent | cluster `low` job `38260124`, 2×A100, queued 17:45 | `slurm_scripts/logs/hierarchical_fm_38260124.log`, `hierarchical_fm_v9_r2l/` | `RENDER_TO_LATENT=1` |
 
 | epoch | baseline IoU % | geometry IoU % | gt_nodes IoU % |
 | :---: | :---: | :---: | :---: |
@@ -258,8 +259,10 @@ untrained-for-it checkpoint does not change this (row 2), so node error is not w
 
 **What follows.** The render loss is the only per-node image signal that does not pass through the flow loss, and the
 latent rows were detached from it. `--render_to_latent` (`RENDER_TO_LATENT=1`, same commit series) keeps the latent
-block attached in the render block. Next arm: baseline recipe + `RENDER_TO_LATENT=1` from epoch 45 on `low`
-(`AUTO_RESUME=1 OUTPUT_DIR=…_r2l`); read its per-node latent R² (ablation summary `_latent`) before its IoU. Two
+block attached in the render block; the smoke run's `FM_RENDER_GRAD_PROBE` shows the render loss on the velocity head's
+latent rows at |g| 0.02–2.7 per step. **Arm 4 submitted 17:45: job `38260124`** (`low`/publicgrp, 2×A100, `--requeue`,
+`AUTO_RESUME=1 RENDER_TO_LATENT=1`, from epoch 45 into `hierarchical_fm_v9_r2l/`, log
+`slurm_scripts/logs/hierarchical_fm_38260124.log`). Read its per-node latent R² (ablation summary `_latent`) before its IoU. Two
 further levers are cheap and principled if that is not enough: scale the latent to unit variance for the flow (an
 SD-style scale factor; changes the velocity head, so fine-tune from epoch 45) and sample t toward 0 where the
 conditioning matters. The gt_nodes arm answers the other half: if per-node R² rises when the nodes are right, the
