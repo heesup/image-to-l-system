@@ -12,6 +12,7 @@ import sys
 import argparse
 import math
 import json
+import copy
 import random
 import time
 from typing import Any, Dict, List, Optional
@@ -1913,6 +1914,13 @@ def main():
     parser.add_argument("--eval_min_interval_minutes", type=int, default=30, help="Time-based eval fallback: force an eval panel if at least this many minutes elapsed since the last one (0 disables). Keeps diagnostic cadence roughly constant as dataset size grows per-epoch time.")
     parser.add_argument("--eval_samples_per_bucket", type=int, default=2, help="Fixed stratified eval set: samples per 10-DAP bucket (2 => ~20 samples).")
     parser.add_argument("--eval_seed", type=int, default=1234, help="Deterministic seed for the fixed stratified eval set.")
+    parser.add_argument("--eval_set_file", type=str, default="",
+                        help="Reuse the plants of an existing eval_set.json (matched by prefix) so arms and data subsets "
+                             "are scored on the same plants; they are force-included in any --max_train_samples subset.")
+    parser.add_argument("--holdout_samples_per_bucket", type=int, default=0,
+                        help="Stratified HELD-OUT set (per 10-DAP bucket, seed eval_seed+1) removed from training and "
+                             "evaluated each eval as '[Holdout]' -- the generalization readout the training-plant "
+                             "self-consistency set cannot give. 0 = none.")
     parser.add_argument("--backbone_lr_ratio", type=float, default=0.3, help="Backbone lr = args.lr * ratio (0.3: restored 2026-09-08 value; 0.15 starved macro-head CLS features)")
     parser.add_argument("--phy_count_weight", type=float, default=2.0, help="Loss weight for phytomer-count (was 0.5 — macro head learned ~6x slower than the Sep-8 organ run)")
     parser.add_argument("--dap_weight", type=float, default=0.05, help="Loss weight for DAP prediction (auxiliary regularizer)")
@@ -2013,6 +2021,30 @@ def main():
         species="cowpea",
         image_size=128,
     )
+    # Eval plants to keep across arms / subsets (by prefix), and a held-out set removed from training.
+    eval_prefixes: set = set()
+    if args.eval_set_file:
+        with open(args.eval_set_file) as _f:
+            _es = json.load(_f)
+        if "samples" in _es:
+            eval_prefixes = {sm_["prefix"] for sm_ in _es["samples"]}
+        else:
+            eval_prefixes = {dataset.samples[i]["prefix"] for i in _es["indices"] if i < len(dataset.samples)}
+        if rank == 0:
+            print(f"Eval set from {args.eval_set_file}: {len(eval_prefixes)} plants (matched by prefix)")
+    holdout_samples: List[Dict[str, Any]] = []
+    if args.holdout_samples_per_bucket > 0:
+        _hold_idx = build_eval_indices(dataset, samples_per_bucket=args.holdout_samples_per_bucket, seed=args.eval_seed + 1)
+        _hold_idx = [i for i in _hold_idx if dataset.samples[i]["prefix"] not in eval_prefixes]
+        holdout_samples = [dataset.samples[i] for i in _hold_idx]
+        _hold_set = set(_hold_idx)
+        dataset.samples = [sm_ for i, sm_ in enumerate(dataset.samples) if i not in _hold_set]
+        if rank == 0:
+            print(f"Held-out set: {len(holdout_samples)} plants removed from training (seed {args.eval_seed + 1})")
+            with open(os.path.join(args.output_dir, "holdout_set.json"), "w") as _f:
+                json.dump({"seed": args.eval_seed + 1, "samples_per_bucket": args.holdout_samples_per_bucket,
+                           "samples": [{"prefix": sm_["prefix"]} for sm_ in holdout_samples]}, _f, indent=2)
+
     if args.max_train_samples > 0 and args.max_train_samples < len(dataset.samples):
         # DAP-stratified subset (same bucket logic as the eval set) so young and
         # mature plants stay represented in fast smoke tests.
@@ -2031,6 +2063,8 @@ def main():
             rng.shuffle(pool)
             keep.extend(pool[:per_bucket])
         keep = sorted(keep)[: args.max_train_samples]
+        if eval_prefixes:   # the fixed eval plants stay inside the subset
+            keep = sorted(set(keep) | {i for i, sm_ in enumerate(dataset.samples) if sm_["prefix"] in eval_prefixes})
         dataset.samples = [dataset.samples[i] for i in keep]
         if rank == 0:
             daps = sorted({int(re.search(r"dap(\d+)", sm["prefix"]).group(1)) for sm in dataset.samples if re.search(r"dap(\d+)", sm["prefix"])})
@@ -2356,9 +2390,16 @@ def main():
 
     # Training Loop
     # Fixed stratified eval set: deterministic, persisted, comparable across epochs/runs.
-    eval_indices = build_eval_indices(
-        dataset, samples_per_bucket=args.eval_samples_per_bucket, seed=args.eval_seed
-    )
+    if eval_prefixes:
+        eval_indices = sorted(i for i, sm_ in enumerate(dataset.samples) if sm_["prefix"] in eval_prefixes)
+    else:
+        eval_indices = build_eval_indices(
+            dataset, samples_per_bucket=args.eval_samples_per_bucket, seed=args.eval_seed
+        )
+    holdout_dataset = None
+    if holdout_samples:
+        holdout_dataset = copy.copy(dataset)
+        holdout_dataset.samples = holdout_samples
     if rank == 0:
         eval_meta = [{"index": i, "prefix": dataset.samples[i]["prefix"]} for i in eval_indices]
         eval_set_path = os.path.join(args.output_dir, "eval_set.json")
@@ -2533,6 +2574,20 @@ def main():
                         f"(n={len(eval_indices)} fixed-set)",
                         flush=True,
                     )
+                    if holdout_dataset is not None:
+                        hb = collate_eval_set(holdout_dataset, list(range(len(holdout_dataset.samples))), device)
+                        hm = ehsc.evaluate_self_consistency_batch(
+                            model=raw_model, val_batch=hb, renderer=renderer, device=device, epoch=epoch,
+                            output_dir=os.path.join(figure_dir, "holdout"), num_samples_to_plot=4,
+                            vae=vae, phytomer_vae=phytomer_vae,
+                        )
+                        print(
+                            f"  [Holdout Epoch {epoch:03d}] Silhouette IoU: {hm['silhouette_iou']*100:.1f}% | "
+                            f"Depth MAE: {hm['depth_mae']*100:.2f} cm | "
+                            f"Node RMSE: {hm.get('val/node_rmse_cm', hm.get('node_rmse_cm', 0.0)):.1f} cm "
+                            f"(n={len(holdout_dataset.samples)} held-out, never trained on)",
+                            flush=True,
+                        )
                 except Exception as e:
                     print(f"  [Self-Consistency Warning] Evaluation skipped: {e}", flush=True)
                 finally:

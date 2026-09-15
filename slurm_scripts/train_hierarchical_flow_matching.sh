@@ -77,6 +77,14 @@ fi
 if [ "${LATENT_NORM:-0}" = "1" ]; then
     STAGE3_ARGS="${STAGE3_ARGS} --latent_norm"
 fi
+# EVAL_SET_FILE: score every arm / subset on the same plants (matched by prefix, force-included in subsets).
+# HOLDOUT_PER_BUCKET: stratified held-out plants removed from training and reported as [Holdout] each eval.
+if [ -n "${EVAL_SET_FILE:-}" ]; then
+    STAGE3_ARGS="${STAGE3_ARGS} --eval_set_file ${EVAL_SET_FILE}"
+fi
+if [ "${HOLDOUT_PER_BUCKET:-0}" != "0" ]; then
+    STAGE3_ARGS="${STAGE3_ARGS} --holdout_samples_per_bucket ${HOLDOUT_PER_BUCKET}"
+fi
 # MULTIZOOM=1: all four cache zoom levels as image tokens (design doc §2.7).
 if [ "${MULTIZOOM:-0}" = "1" ]; then
     STAGE3_ARGS="${STAGE3_ARGS} --multizoom"
@@ -163,7 +171,7 @@ echo "Phytomer VAE: ${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phyto
 echo "Pkt cache dir: ${PKT_CACHE_DIR:-dataset/cache/cowpea_curv26_pkt_v9} (missing samples fall back to on-the-fly) | PHYTOMER_TERMINAL_LAST=${PHYTOMER_TERMINAL_LAST}"
 echo "LR: ${LR:-1e-4} | Save every ${SAVE_EVERY} epochs | Stage 3 geometry: ${STAGE3_GEOMETRY:-0} | GT nodes: ${STAGE3_GT_NODES:-0} (p ${STAGE3_GT_NODES_P:-1.0}, jitter ${STAGE3_GT_NODES_JITTER_CM:-0.0} cm) | render->latent: ${RENDER_TO_LATENT:-0} | latent norm: ${LATENT_NORM:-0} | coverage w: ${COVERAGE_WEIGHT:-0} | multizoom: ${MULTIZOOM:-0} | count w: ${EXIST_COUNT_WEIGHT:-0} | Git: $(git rev-parse --short HEAD 2>/dev/null)"
 echo "Backbone: ${BACKBONE}${FREEZE_ARGS:+ (frozen)} | Output: ${OUTPUT_DIR} | Epochs: ${EPOCHS}"
-echo "Train subset: ${MAX_TRAIN_SAMPLES:-0} (0 = full dataset)"
+echo "Train subset: ${MAX_TRAIN_SAMPLES:-0} (0 = full dataset) | eval set file: ${EVAL_SET_FILE:-none} | holdout/bucket: ${HOLDOUT_PER_BUCKET:-0}"
 echo "Date: $(date)"
 echo "================================================================================"
 
