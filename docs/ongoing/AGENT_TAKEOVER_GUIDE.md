@@ -204,6 +204,7 @@ loss starts high (fresh geometry dims, ~12-20) and should fall within the first 
 | geometry | local 1 GPU | `slurm_scripts/logs/local_s3geom_ab2.log`, `hierarchical_fm_v9_s3geom/`, panels `run_local_20260914_164059/` | `STAGE3_GEOMETRY=1` |
 | gt_nodes (teacher forcing) | local 1 GPU, started 17:07 | `slurm_scripts/logs/local_gtnodes_ab.log`, `hierarchical_fm_v9_gtnodes/`, panels `run_local_20260914_170731/` | `STAGE3_GT_NODES=1` |
 | render→latent | cluster `low` job `38260124`, 2×A100, queued 17:45 | `slurm_scripts/logs/hierarchical_fm_38260124.log`, `hierarchical_fm_v9_r2l/` | `RENDER_TO_LATENT=1` |
+| standardized latent (`--latent_norm`) | geminigrp 2×6000 Ada, job `38274201`, dependent on the baseline's end (~15:53 9/15) | `slurm_scripts/logs/hierarchical_fm_38274201.log`, `hierarchical_fm_v9_lnorm/` | `LATENT_NORM=1` |
 | scheduled teacher forcing (p 0.5, jitter 1 cm) | cluster `low` job `38273174`, 2×A100, queued 20:10 | `slurm_scripts/logs/hierarchical_fm_38273174.log`, `hierarchical_fm_v9_stf/` | `STAGE3_GT_NODES=1 STAGE3_GT_NODES_P=0.5 STAGE3_GT_NODES_JITTER_CM=1.0` |
 
 | epoch | baseline IoU % | geometry IoU % | gt_nodes IoU % |
@@ -349,8 +350,14 @@ steady at 45–46 and the per-node latent R² doubling again to 0.41. In-trainin
 at 36.2 (76–85) and fell to 29.9 (121–137, several epochs below 25); geometry 32–33; gt_nodes 34. Both arms beat the
 baseline on both protocols now; the geometry arm leads the deployable strict P, the gt_nodes arm leads everything that
 depends on the latent. The baseline job ends at its 24 h limit at 15:53; a dependent continuation (`38274192`, same
-partition, `AUTO_RESUME=1`) is queued behind it — cancel it if the decline makes continuing pointless. Low jobs
-`38260124` / `38273174` still queued at 08:40 (15 h).
+partition, `AUTO_RESUME=1`) was queued behind it, then **replaced (09:55) by the standardized-latent arm `38274201`**
+(`LATENT_NORM=1`, from epoch 45 into `hierarchical_fm_v9_lnorm/`, same 2-GPU slot, starts when the baseline ends):
+the baseline's strict P has been flat at 27–29 for 90 epochs and its checkpoints every 5 epochs already serve as the
+reference, while `--latent_norm` (`d46d8fe`) is the lever the latent diagnostics point at — the flow now matches the
+per-dim standardized latent (σ mean 0.18, min 0.001 floored to 0.05, max 1.44), so the latent block is unit variance
+against the noise, the one property of the 09-07 Option B model worth keeping. Its Vel restarts at ~8 and must fall
+first; read its latent probe (`scratchpad/latent_probe.py`, R² at t = 0) before its IoU. Low jobs `38260124` /
+`38273174` still queued at 09:55 (16 h; low's GPU nodes are held by other users' multi-day jobs).
 
 **Why the 2026-09-07/08 "45.4%" panel is not a bar to beat (2026-09-15 09:30).** Heesup asked whether
 `docs/results/assets/20260907/hierarchical_self_consistency_epoch_125.png` (Option B, organ-level 16D latent, job
