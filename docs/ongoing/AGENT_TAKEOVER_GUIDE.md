@@ -217,13 +217,15 @@ loss starts high (fresh geometry dims, ~12-20) and should fall within the first 
 | 48 (gt_nodes) | 32.7 | | 35.8 (Vel 0.154) |
 | 49 (gt_nodes) | 26.9 | | **39.4** (Vel 0.150) |
 | 50 (gt_nodes) | 29.9 | | 32.6 (Vel 0.147) |
+| 51 (gt_nodes) | 31.4 | | 32.2 (Vel 0.148) |
+| 53 | 33.5 | 30.9 (Vel 1.73) | |
 | 52 | 30.7 | 29.6 (Vel 1.81) | |
 | 51 | 31.4 | 31.6 (Vel 1.83) | |
 | 51–59 | 31.4 / 30.7 / 33.5 / 33.9 / 29.1 / 32.4 / 32.0 / 31.6 / 32.7 | | |
 
 Epoch-to-epoch spread is ±3 points on the 20-plant set (baseline 26.9 → 33.9 within eight epochs), so read arms by
 their mean over several epochs, not by one epoch: baseline 46–59 mean 31.4; geometry 47–50 mean 31.3 (4 epochs);
-gt_nodes 46–49 mean 34.8 (4 epochs; baseline 46–49 mean 30.5). The gt_nodes arm is separating: 39.4 at epoch 49 is the highest any arm has reached (baseline max 33.9 over 20 epochs, geometry max 35.0), its Vel falls steadily (0.169 → 0.150), and this in-training eval samples with Stage 2's own nodes, so it is the deployable output, not the teacher-forced one. Reading: training Stage 3 against clean node conditioning gives the latent path a consistent geometry → shape mapping, and Stage 2's nodes at inference (RMSE 1.7 cm) are close enough to use it. Confirm with the epoch 50 checkpoint (ablation `_latent` R², teacher-forced vs not) before promoting it. Under the ablation protocol
+gt_nodes 46–51 mean 34.0 (6 epochs; baseline 46–51 mean 30.6; baseline 46–70 mean 31.4). The gt_nodes arm is separating: 39.4 at epoch 49 is the highest any arm has reached (baseline max 33.9 over 20 epochs, geometry max 35.0), its Vel falls steadily (0.169 → 0.150), and this in-training eval samples with Stage 2's own nodes, so it is the deployable output, not the teacher-forced one. Reading: training Stage 3 against clean node conditioning gives the latent path a consistent geometry → shape mapping, and Stage 2's nodes at inference (RMSE 1.7 cm) are close enough to use it. Confirm with the epoch 50 checkpoint (ablation `_latent` R², teacher-forced vs not) before promoting it. Under the ablation protocol
 the geometry arm's P went 27.5 → 26.3 → 29.6 (ep47/48/50; baseline ep50 27.5) and pos←GT 38.3 → 39.4 → 41.7, i.e.
 directionally up but inside the noise; its latent spread stayed high at ep50 (0.46 vs GT 0.18, R² −1.27), so the
 noisier latent has not corrected itself as the geometry rows settled.
