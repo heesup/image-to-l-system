@@ -161,7 +161,7 @@ matcher의 phytomer 단계는 pad된 배치 위에서 한 번에 돈다 (`_forwa
 
 §7의 결론대로 `--stage3_geometry`를 구현했다. flow 상태를 `[(pos − parent_pos)·20 | roll | scale | latent]`로 넓히고, 타깃은 모델이 조건으로 받는 (노이즈 섞인) parent 기준 상대량으로 만들어 parent_in + Δpos가 GT 노드에 놓이게 했다. 손실은 latent MSE + 4.0 × 기하 MSE. `sample_ode`는 refine된 위치·roll·scale을 돌려주고, 렌더 블록은 그 위치로 식물을 그려 렌더 손실이 Stage 3 기하 블록까지 닿는다. latent-only 체크포인트는 `geom_proj`/velocity head의 latent 블록을 그대로 두고 기하 8차원만 새로 초기화해 불러오며 Adam 모멘트도 같은 규칙으로 넓힌다. 기본값은 꺼짐.
 
-A/B: 같은 epoch 45 체크포인트에서 baseline(`38257989`, 클러스터 2 GPU, render 1/6)과 기하 run(로컬 1 GPU, `slurm_scripts/logs/local_s3geom_ab.log`, `hierarchical_fm_v9_s3geom/`)을 매 epoch self-consistency IoU로 비교한다. arm의 Vel 손실은 기하 차원이 새로 시작해 12~20에서 출발한다.
+A/B: 같은 epoch 45 체크포인트에서 baseline(`38257989`, 클러스터 2 GPU, render 1/6)과 기하 run(로컬 1 GPU, `slurm_scripts/logs/local_s3geom_ab.log`, `hierarchical_fm_v9_s3geom/`)을 매 epoch self-consistency IoU로 비교한다. run의 Vel 손실은 기하 차원이 새로 시작해 12~20에서 출발한다.
 
 ## 9. Stage 3 latent는 이미지를 노드 단위로 보고 있지 않다 (17:30, `b348fd7`)
 
@@ -186,13 +186,13 @@ A/B: 같은 epoch 45 체크포인트에서 baseline(`38257989`, 클러스터 2 G
 
 해석: 조건은 식물 수준(DAP, 크기) 정보만 전달한다. latent의 차원별 표준편차가 ≈0.41로 단위 노이즈에 비해 작아 velocity 타깃의 ~85%가 노이즈이고, t≈0의 무조건 하한이 Var(z1) ≈ 0.17/차원인데 학습 Vel 손실(0.16)이 그 바닥에 앉아 있다. flow 손실만으로는 노드별 조건을 쓸 이유가 없다.
 
-다음: (a) `--render_to_latent` (`RENDER_TO_LATENT=1`) — 렌더 손실을 latent 블록까지 흘린다 (지금까지는 detach; smoke에서 velocity head latent 행에 |g| 0.02–2.7 확인). epoch 45에서 `low` 작업 `38260124` (2×A100, `hierarchical_fm_v9_r2l/`)로 17:45 제출. (b) flow용 latent를 단위 분산으로 스케일 (velocity head가 바뀌므로 epoch 45에서 fine-tune). (c) t 샘플링을 0 쪽으로. 대조군으로 **teacher forcing run** (`STAGE3_GT_NODES=1`, `local_gtnodes_ab.log`)이 17:07부터 돈다: 노드가 맞을 때 노드별 R²가 오르면 "노드 오차가 latent를 굶긴다"가 맞는 것이다. 세 arm의 epoch별 IoU: baseline 46–52 = 31.5/31.0/32.7/26.9/29.9/31.4/30.7, 기하 47 = 30.6 (Vel 3.1 → 2.4, 아직 내려가는 중).
+다음: (a) `--render_to_latent` (`RENDER_TO_LATENT=1`) — 렌더 손실을 latent 블록까지 흘린다 (지금까지는 detach; smoke에서 velocity head latent 행에 |g| 0.02–2.7 확인). epoch 45에서 `low` 작업 `38260124` (2×A100, `hierarchical_fm_v9_r2l/`)로 17:45 제출. (b) flow용 latent를 단위 분산으로 스케일 (velocity head가 바뀌므로 epoch 45에서 fine-tune). (c) t 샘플링을 0 쪽으로. 대조군으로 **teacher forcing run** (`STAGE3_GT_NODES=1`, `local_gtnodes_ab.log`)이 17:07부터 돈다: 노드가 맞을 때 노드별 R²가 오르면 "노드 오차가 latent를 굶긴다"가 맞는 것이다. 세 run의 epoch별 IoU: baseline 46–52 = 31.5/31.0/32.7/26.9/29.9/31.4/30.7, 기하 47 = 30.6 (Vel 3.1 → 2.4, 아직 내려가는 중).
 
 ## 10. 9/8 Option B "45.4%" 패널과 오늘 모델의 같은 식물 비교 (9/15 09:45)
 
 Heesup의 지적: `docs/results/assets/20260907/hierarchical_self_consistency_epoch_125.png`의 Pred 3D Mesh가 원본 이미지에 제일 가까워 보인다. 두 가지를 쟀다.
 
-1. **그 45.4%는 무작위 배치의 앞 4개 식물 평균**이었다 (job `38145444`, eval 6회: epoch 25/50/75/100/125/150 → 39.1/26.4/33.8/26.9/45.4/49.2, 매번 다른 식물, 묘목 없음). 같은 체크포인트를 **당시 코드 그대로**(커밋 `870074f`) 지금의 고정 20개 eval set에 돌리면 **24.8%** (DAP ≥ 17: 30.8, DAP > 60: 37.0, DAP ≤ 15: 0.9). 오늘 arm들은 같은 20개에서 30–34.
+1. **그 45.4%는 무작위 배치의 앞 4개 식물 평균**이었다 (job `38145444`, eval 6회: epoch 25/50/75/100/125/150 → 39.1/26.4/33.8/26.9/45.4/49.2, 매번 다른 식물, 묘목 없음). 같은 체크포인트를 **당시 코드 그대로**(커밋 `870074f`) 지금의 고정 20개 eval set에 돌리면 **24.8%** (DAP ≥ 17: 30.8, DAP > 60: 37.0, DAP ≤ 15: 0.9). 오늘 run들은 같은 20개에서 30–34.
 
 2. **같은 식물 7개(9/7 패널의 DAP 72 식물 + 성체 eval 식물 6개)를 같은 렌더러로 나란히** 그렸다 (`assets/20260915_optionb_vs_today_same_plants.png`, 스크립트와 수치는 `slurm_scripts/logs/archive_20260914/optionb_ep125_reeval/`).
 
@@ -218,23 +218,23 @@ Heesup의 지적: `docs/results/assets/20260907/hierarchical_self_consistency_ep
 | 기하 run ep76 | **4.5** | **28.7%** | 0.51 |
 | gt_nodes run ep70 | 5.6 | 24.9% | 0.58 |
 
-Option B의 "퍼짐"은 정확도가 아니라 **흩뿌림**이다 (hull이 GT의 4배, 노드 RMSE 18 cm). 오늘 arm들은 반대로 **수관이 GT의 50–70%로 오그라들고** GT phytomer의 4분의 1만 3 cm 안에 노드가 있다. 이것이 치환 ablation의 "pos←GT +10–14점"의 실체다.
+Option B의 "퍼짐"은 정확도가 아니라 **흩뿌림**이다 (hull이 GT의 4배, 노드 RMSE 18 cm). 오늘 run들은 반대로 **수관이 GT의 50–70%로 오그라들고** GT phytomer의 4분의 1만 3 cm 안에 노드가 있다. 이것이 치환 ablation의 "pos←GT +10–14점"의 실체다.
 
 결론: 되돌릴 대상은 architecture가 아니라 Option B latent의 성질이다. (a) 단위 분산 latent → `LATENT_NORM=1` run (`38274201`, 15:53 시작), (b) 노드별 정보가 latent에 들어가게 하는 gt_nodes 계열, (c) Stage 2 노드 위치의 중심 쏠림(수관 hull 0.5–0.7, 커버 25%)은 위 지표로 계속 잰다.
 
-**`low` 파티션에서 여러 학습을 동시에 돌릴 수 있나 (10:00).** 지금은 불가능하다. `low`의 GPU 노드에는 놀고 있는 GPU가 많지만(A100 16개, H100 3개) 다른 사용자의 작업이 **노드 메모리를 전부 점유**하고 있어(노드당 여유 5–13 GB) 학습 하나(메인 6 GB + 워커 8×1.1 GB ≈ 15 GB)도 못 들어간다. 16시간 대기의 원인이 GPU가 아니라 메모리였다. 그래서 `low`의 두 작업을 취소하고, baseline이 15:53에 끝나며 비는 geminigrp 2-GPU 슬롯에 **세 arm을 순차 체인**으로 걸었다: `38274220` latent 단위 분산 (epoch 46–80) → `38274221` scheduled teacher forcing p 0.5 / jitter 1 cm (46–75) → `38274222` render→latent (46–70). 2 GPU에서 epoch당 ~3.5분이라 각 2시간 안팎, 오늘 밤 안에 셋 다 결과가 나온다.
+**`low` 파티션에서 여러 학습을 동시에 돌릴 수 있나 (10:00).** 지금은 불가능하다. `low`의 GPU 노드에는 놀고 있는 GPU가 많지만(A100 16개, H100 3개) 다른 사용자의 작업이 **노드 메모리를 전부 점유**하고 있어(노드당 여유 5–13 GB) 학습 하나(메인 6 GB + 워커 8×1.1 GB ≈ 15 GB)도 못 들어간다. 16시간 대기의 원인이 GPU가 아니라 메모리였다. 그래서 `low`의 두 작업을 취소하고, baseline이 15:53에 끝나며 비는 geminigrp 2-GPU 슬롯에 **세 run을 순차 체인**으로 걸었다: `38274220` latent 단위 분산 (epoch 46–80) → `38274221` scheduled teacher forcing p 0.5 / jitter 1 cm (46–75) → `38274222` render→latent (46–70). 2 GPU에서 epoch당 ~3.5분이라 각 2시간 안팎, 오늘 밤 안에 셋 다 결과가 나온다.
 
 ## 11. 10% 데이터로 먼저 수렴을 확인하는 프로토콜 (9/15 10:15)
 
 Heesup의 제안: 학습 데이터의 10%만 써서 데이터셋에 수렴하는지 먼저 확인하고, 나중에 데이터를 늘려 일반화한다. 채택했고, 두 가지를 붙여서 그 전략이 실제로 측정 가능하게 했다.
 
-- **같은 eval 식물**: `--eval_set_file` (`EVAL_SET_FILE`)로 기존 `eval_set.json`의 20개 식물을 이름(prefix)으로 다시 찾아 쓰고, 부분집합을 만들 때 강제로 포함한다. 그래서 10% 학습과 100% 학습, 모든 arm이 같은 20개 식물로 채점된다.
-- **held-out 식물**: `--holdout_samples_per_bucket 2` (`HOLDOUT_PER_BUCKET`)로 DAP 계층별 20개 식물을 학습에서 빼고 매 평가에서 `[Holdout]`으로 따로 보고한다. 지금까지의 "self-consistency" 평가는 전부 학습 식물이었으므로 일반화는 잰 적이 없었다. 단, epoch 45에서 이어가는 arm들은 45 epoch 동안 그 식물들을 이미 봤으므로 이번 체인의 held-out은 "45 이후로는 보지 않은" 식물이다. 진짜 held-out은 처음부터 제외하고 학습해야 한다.
+- **같은 eval 식물**: `--eval_set_file` (`EVAL_SET_FILE`)로 기존 `eval_set.json`의 20개 식물을 이름(prefix)으로 다시 찾아 쓰고, 부분집합을 만들 때 강제로 포함한다. 그래서 10% 학습과 100% 학습, 모든 run이 같은 20개 식물로 채점된다.
+- **held-out 식물**: `--holdout_samples_per_bucket 2` (`HOLDOUT_PER_BUCKET`)로 DAP 계층별 20개 식물을 학습에서 빼고 매 평가에서 `[Holdout]`으로 따로 보고한다. 지금까지의 "self-consistency" 평가는 전부 학습 식물이었으므로 일반화는 잰 적이 없었다. 단, epoch 45에서 이어가는 run들은 45 epoch 동안 그 식물들을 이미 봤으므로 이번 체인의 held-out은 "45 이후로는 보지 않은" 식물이다. 진짜 held-out은 처음부터 제외하고 학습해야 한다.
 
 왜 맞는 전략인가: 지금 baseline은 100k 식물을 140 epoch 봤다(식물당 140회). 정체의 원인이 데이터 부족이 아니라는 뜻이고, 10k 식물로 10배 빠르게 같은 질문 — 이 구조가 데이터를 **외울 수는 있는가** — 에 답할 수 있다. 외워지면(학습 식물 IoU가 70–80으로 오르면) 병목은 최적화/데이터 규모이고, 10k도 못 외우면 구조와 손실이 병목이다(현재 진단은 후자).
 
 Heesup: geminigrp의 `gpu-6000_ada-h` 파티션은 최대 8 GPU를 높은 우선순위로 쓸 수 있다 (10:30). 그래서 순차 체인 대신 **독립 1-GPU 작업 여섯 개**로 바꿔 GPU가 비는 대로 병렬로 돌린다 (지금 파티션은 gpu-10-50/54 두 노드 8 GPU: 10-50은 drain 중이라 3개가 놀고, 10-54는 baseline 2 + 타 그룹 1 + 우리 1). 첫 작업은 10:32에 바로 시작했고 나머지는 15:53에 baseline이 끝나면 2개가 더 들어간다. 모두 `MAX_TRAIN_SAMPLES=10000`, 같은 eval 20개 + held-out 20개, 1 GPU에서 epoch당 ~2분:
-`38274493` baseline-on-10% (참조, epoch 46–95) → `38274494` 단위 분산 latent → `38274495` scheduled TF → `38274496` render→latent → `38274497` 조합 (기하 ep78에서, 78–128) → `38274498` v10 full (조합 + multizoom + coverage + count). 각 50 epoch, 1 GPU에서 약 4시간(평가 40개 식물 포함, epoch당 ~5분). 10:55에 Heesup의 제안으로 로컬의 100% 데이터 run 둘(기하 epoch 80, gt_nodes epoch 78, 체크포인트 보존)을 멈추고, 그 GPU에서 조합 arm과 v10 full을 10% 프로토콜로 돌린다 (`local_sub10_combo.log`, `local_sub10_v10.log`; 클러스터 대기 사본은 취소).
+`38274493` baseline-on-10% (참조, epoch 46–95) → `38274494` 단위 분산 latent → `38274495` scheduled TF → `38274496` render→latent → `38274497` 조합 (기하 ep78에서, 78–128) → `38274498` v10 full (조합 + multizoom + coverage + count). 각 50 epoch, 1 GPU에서 약 4시간(평가 40개 식물 포함, epoch당 ~5분). 10:55에 Heesup의 제안으로 로컬의 100% 데이터 run 둘(기하 epoch 80, gt_nodes epoch 78, 체크포인트 보존)을 멈추고, 그 GPU에서 조합 run과 v10 full을 10% 프로토콜로 돌린다 (`local_sub10_combo.log`, `local_sub10_v10.log`; 클러스터 대기 사본은 취소).
 
 ## 5. 변경 파일
 
