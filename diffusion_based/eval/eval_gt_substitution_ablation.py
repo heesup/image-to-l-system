@@ -89,6 +89,9 @@ def main():
     ap.add_argument("--teacher_force", action="store_true",
                     help="Condition Stage 3 on the GT node geometry of matched nodes when sampling (the "
                          "--stage3_gt_nodes arm; defaults to the checkpoint's own setting).")
+    ap.add_argument("--no_teacher_force", action="store_true",
+                    help="Sample with Stage 2's own nodes even for a --stage3_gt_nodes checkpoint (the deployable protocol).")
+    ap.add_argument("--tag", default="", help="Suffix for the output JSON name (e.g. 'tf' / 'notf').")
     a = ap.parse_args()
     dev = torch.device("cuda:0")
     ckpt_path = a.checkpoint or sorted(glob.glob("diffusion_based/checkpoints/hierarchical_fm_v9/hierarchical_fm_epoch_*.pt"))[-1]
@@ -129,7 +132,7 @@ def main():
                 "ALL-pos", "ALL-topo", "ALL-rot", "ALL-scale", "ALL-latent", "ALL",
                 "meanlat", "ALL-latent+meanlat"]
     FULL = {"pos", "topo", "rot", "scale", "latent"}
-    teacher_force = a.teacher_force or bool(args.get("stage3_gt_nodes", False))
+    teacher_force = (a.teacher_force or bool(args.get("stage3_gt_nodes", False))) and not a.no_teacher_force
     print(f"  teacher forcing (GT nodes as Stage 3 conditioning): {teacher_force}")
     # Mean GT latent over the eval set: a latent that carries no image information at all.
     # 'meanlat' = predicted geometry + mean latent; 'ALL-latent+meanlat' = GT geometry + mean latent,
@@ -263,7 +266,7 @@ def main():
         print(f"latent (matched nodes, 128D): RMSE pred vs GT {e_p:.3f} | mean-latent vs GT {e_m:.3f} | "
               f"R^2 over the mean {summary['_latent']['r2_vs_mean']:.3f} | per-dim std pred {s_p:.3f} / GT {s_g:.3f}")
     print(f"node set: predicted active / GT / matched = {np.mean([r['n_active'] for r in rows]):.1f} / {np.mean([r['n_gt'] for r in rows]):.1f} / {np.mean([r['n_matched'] for r in rows]):.1f}")
-    tag = f"epoch{int(ck.get('epoch', 0)):03d}"
+    tag = f"epoch{int(ck.get('epoch', 0)):03d}" + (f"_{a.tag}" if a.tag else "")
     with open(os.path.join(out_dir, f"gt_substitution_{tag}.json"), "w") as f:
         json.dump({"checkpoint": ckpt_path, "summary": summary, "rows": rows}, f, indent=2)
     print("saved", os.path.join(out_dir, f"gt_substitution_{tag}.json"))

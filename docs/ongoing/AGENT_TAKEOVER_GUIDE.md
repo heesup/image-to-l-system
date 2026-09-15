@@ -215,6 +215,8 @@ loss starts high (fresh geometry dims, ~12-20) and should fall within the first 
 | 47 (gt_nodes) | 31.0 | | 31.2 (Vel 0.156) |
 | 48 (gt_nodes) | 32.7 | | 35.8 (Vel 0.154) |
 | 49 (gt_nodes) | 26.9 | | **39.4** (Vel 0.150) |
+| 50 (gt_nodes) | 29.9 | | 32.6 (Vel 0.147) |
+| 52 | 30.7 | 29.6 (Vel 1.81) | |
 | 51 | 31.4 | 31.6 (Vel 1.83) | |
 | 51–59 | 31.4 / 30.7 / 33.5 / 33.9 / 29.1 / 32.4 / 32.0 / 31.6 / 32.7 | | |
 
@@ -280,6 +282,25 @@ Stage 3 is a denoiser of the marginal, which is exactly what the flow loss rewar
 ≈0.41 (4.66/√128) against unit noise, so the velocity target is ~85% noise, the unconditional floor at small t is
 Var(z1) ≈ 0.17 per dim, and the run's Vel loss (0.16) sits on that floor. Giving Stage 3 the GT nodes at eval on the
 untrained-for-it checkpoint does not change this (row 2), so node error is not what hides the per-node shape.
+
+**gt_nodes epoch 50 checkpoint, read three ways** (`run_local_20260914_170731/gt_substitution_epoch050_{tf,notf}.json`;
+`--no_teacher_force` / `--tag` added to the ablation script):
+
+| protocol | P | pos←GT | ALL−latent (GT geometry + predicted latent) | GT geometry + mean latent | ALL | latent R² vs mean |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| baseline ep50, Stage 2 nodes | 27.5 | 38.5 | 43.3 | 40.8 | 76.1 | −0.34 |
+| gt_nodes ep50, **teacher-forced** (GT nodes for matched) | 45.0 | = P | **46.8** | 39.0 | 71.7 | −0.19 |
+| gt_nodes ep50, Stage 2 nodes (deployable) | **20.2** | 38.0 | 43.3 | 39.0 | 72.1 | −0.45 |
+
+And the latent probe (t = 0, conditioning only): R² over the per-plant mean **0.115 with GT nodes** (baseline ≈ 0), −0.02
+with Stage 2's nodes. So (a) node error does starve the latent path: trained on clean nodes, Stage 3's latent is worth
++7.8 IoU over the mean latent given the right geometry (baseline +2.5) and 45.0 vs 38.5 when the nodes are right;
+(b) it pays with exposure bias: with Stage 2's own nodes the strict protocol falls to 20.2 (mid-DAP plants 15.7 vs
+baseline 24.8), while the in-training eval (128 px, no zoom) still scores it above the baseline (32.6 vs 29.9 at ep50;
+46–50 mean 34.4 vs 30.4). The two protocols differ in strictness, not in what they measure: 256 px + 8× zoom punishes
+organ misplacement that 128 px hides. **Next arm: scheduled teacher forcing** — GT nodes with probability
+`--stage3_gt_nodes_p` per matched node and Gaussian jitter `--stage3_gt_nodes_jitter_cm` on the GT position — to keep
+(a) without (b).
 
 **What follows.** The render loss is the only per-node image signal that does not pass through the flow loss, and the
 latent rows were detached from it. `--render_to_latent` (`RENDER_TO_LATENT=1`, same commit series) keeps the latent
