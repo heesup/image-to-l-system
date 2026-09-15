@@ -586,11 +586,15 @@ class CoarseSkeletalTransformer(nn.Module):
         num_layers: int = 4,
         init_phytomer_count: float = 50.0,
         dap_clue: bool = True,
+        num_levels: int = 1,
     ):
         super().__init__()
         self.max_phytomers = max_phytomers
         self.embed_dim = embed_dim
         self.dap_clue = dap_clue
+        self.num_levels = int(num_levels)
+        if self.num_levels > 1:
+            self.level_embed = nn.Parameter(torch.zeros(self.num_levels, embed_dim))   # multizoom token identity
 
         # Content query
         self.phytomer_queries = nn.Parameter(torch.randn(max_phytomers, embed_dim) * 0.02)
@@ -798,6 +802,8 @@ class CoarseSkeletalTransformer(nn.Module):
         # The predicted DAP (from Stage 1) is broadcast to all phytomers as a
         # developmental-stage prior; zero-init keeps the start state unchanged
         # while loss_dap gradients teach the head, and dap_embed learns to use it.
+        if self.num_levels > 1:
+            image_tokens = add_level_embed(image_tokens, self.level_embed)
         q_content = self.phytomer_queries[:K].unsqueeze(0).expand(B, -1, -1)
         q_pos = self.ref_pos_mlp(self.ref_points[:K]).unsqueeze(0).expand(B, -1, -1)
         q = q_content + q_pos
@@ -964,6 +970,17 @@ SLOT_ROLE_MAPPING = [0, 1, 2, 2, 2, 3, 4, 4, 4, 4]
 SLOT_SUB_ROLE_MAPPING = [0, 0, 0, 1, 2, 0, 0, 1, 2, 3]  # Sub-index within role
 
 
+def add_level_embed(image_tokens: torch.Tensor, level_embed: torch.Tensor) -> torch.Tensor:
+    """Adds a per-zoom-level embedding to level-major pyramid tokens [CLS | L x N patches] (multizoom)."""
+    B, T, C = image_tokens.shape
+    L = level_embed.shape[0]
+    N = (T - 1) // L
+    if L * N != T - 1:
+        return image_tokens
+    patches = image_tokens[:, 1:].view(B, L, N, C) + level_embed.view(1, L, 1, C).to(image_tokens.dtype)
+    return torch.cat([image_tokens[:, :1], patches.reshape(B, L * N, C)], dim=1)
+
+
 class PhytomerVisualProjector(nn.Module):
     """Hybrid 3D-to-2D Phytomer Visual Projector (PETR / Point-Query style).
 
@@ -972,9 +989,16 @@ class PhytomerVisualProjector(nn.Module):
     and fuses them with 3D height/depth cues via a zero-initialized residual MLP.
     """
 
-    def __init__(self, embed_dim: int = 384):
+    def __init__(self, embed_dim: int = 384, num_levels: int = 1, zooms=(1.0, 2.0, 4.0, 8.0)):
         super().__init__()
         self.embed_dim = embed_dim
+        # multizoom: the token grid holds num_levels plant-centred zoom levels (level-major); a node
+        # samples the FINEST level that still contains it (uv scaled by the level's zoom), so a seedling
+        # that is 3 px at 1x is read from the 8x crop.
+        self.num_levels = int(num_levels)
+        # plain attribute (not a buffer): its length differs between multizoom and single-level models and
+        # must not enter the state dict, so checkpoints load across both configurations.
+        self.zooms = tuple(float(z) for z in list(zooms)[:max(self.num_levels, 1)])
 
         # Project 3D position [x, y, z] to 2D normalized image grid [u, v] in [-1, 1]
         # In drone top-down view: x in [-0.5, 0.5], y in [-0.5, 0.5] map across the image.
@@ -1005,20 +1029,24 @@ class PhytomerVisualProjector(nn.Module):
         """
         B, K, _ = phytomer_pos.shape
         # Strip CLS token (token 0) to leave the 2D spatial patch tokens
-        patch_tokens = image_tokens[:, 1:]  # (B, N_patches, C)
-        N_patches = patch_tokens.shape[1]
+        patch_tokens = image_tokens[:, 1:]  # (B, L * N_patches, C)
+        L = self.num_levels if (self.num_levels > 1 and patch_tokens.shape[1] % self.num_levels == 0) else 1
+        N_patches = patch_tokens.shape[1] // L
         grid_size = int(math.isqrt(N_patches))
         if grid_size * grid_size != N_patches:
             return torch.zeros(B, K, self.embed_dim, device=phytomer_pos.device, dtype=phytomer_pos.dtype)
 
-        # Reshape to 2D spatial feature map: (B, H, W, C) -> (B, C, H, W)
-        feat_map = patch_tokens.view(B, grid_size, grid_size, self.embed_dim).permute(0, 3, 1, 2)
+        # Reshape to 2D spatial feature maps: (B*L, C, H, W)
+        feat_map = patch_tokens.reshape(B * L, grid_size, grid_size, self.embed_dim).permute(0, 3, 1, 2)
 
-        # Compute 2D normalized grid coordinates (u, v) in [-1, 1]
-        uv = torch.tanh(self.pos_to_uv(phytomer_pos.float()))  # (B, K, 2) in [-1, 1]
-        grid = uv.unsqueeze(1)  # (B, 1, K, 2)
+        # 2D normalized grid coordinates (u, v) in [-1, 1] per level: the level-0 map scaled by the zoom
+        uv0 = self.pos_to_uv(phytomer_pos.float())                                   # (B, K, 2)
+        zoom = torch.tensor(self.zooms[:L], device=uv0.device, dtype=uv0.dtype).view(1, L, 1, 1)
+        uv_pre = uv0.unsqueeze(1) * zoom                                              # (B, L, K, 2) crop-normalized
+        uv = torch.tanh(uv_pre)
+        grid = uv.reshape(B * L, 1, K, 2)
 
-        # Bilinear sampling from patch feature map
+        # Bilinear sampling from each level's patch feature map
         sampled = F.grid_sample(
             feat_map,
             grid,
@@ -1026,7 +1054,14 @@ class PhytomerVisualProjector(nn.Module):
             padding_mode="border",
             align_corners=True,
         )
-        sampled = sampled.squeeze(2).transpose(1, 2)  # (B, K, C)
+        sampled = sampled.squeeze(2).transpose(1, 2).reshape(B, L, K, self.embed_dim)  # (B, L, K, C)
+        if L > 1:
+            inside = (uv_pre.abs() < 1.0).all(dim=-1)                                # (B, L, K): inside level l's crop
+            inside[:, 0] = True                                                       # level 0 always holds the node
+            lvl = (inside.float() * torch.arange(L, device=uv.device, dtype=uv.dtype).view(1, L, 1)).argmax(dim=1)  # finest inside
+            sampled = sampled.gather(1, lvl.view(B, 1, K, 1).expand(-1, 1, -1, self.embed_dim)).squeeze(1)
+        else:
+            sampled = sampled[:, 0]
 
         # Fuse sampled local visual features with 3D phytomer coordinates
         fused = self.fusion(torch.cat([sampled, phytomer_pos], dim=-1))  # (B, K, C)
@@ -1060,8 +1095,8 @@ class FineBotanicalFlowMatchingDecoder(nn.Module):
         self.slot_pos_emb = nn.Embedding(slots_per_phytomer, embed_dim)
         self.role_emb = self.slot_pos_emb  # Backward compatibility alias
 
-        # Hybrid 3D-to-2D Phytomer Visual Projector (Point-Query sampling)
-        self.phytomer_projector = PhytomerVisualProjector(embed_dim=embed_dim)
+        # Hybrid 3D-to-2D Phytomer Visual Projector (Point-Query sampling); organ mode has no zoom pyramid
+        self.phytomer_projector = PhytomerVisualProjector(embed_dim=embed_dim, num_levels=1)
 
         # Continuous geometry projection
         self.geom_proj = nn.Linear(node_dim, embed_dim)
@@ -1246,8 +1281,12 @@ class PhytomerFlowMatchingDecoder(nn.Module):
         num_heads: int = 8,
         num_layers: int = 6,
         slots_per_phytomer: int = 10,
+        num_levels: int = 1,
     ):
         super().__init__()
+        self.num_levels = int(num_levels)
+        if self.num_levels > 1:
+            self.level_embed = nn.Parameter(torch.zeros(self.num_levels, embed_dim))   # multizoom token identity
         self.latent_dim = latent_dim
         self.base_dim = base_dim
         self.rot_dim = rot_dim
@@ -1315,7 +1354,7 @@ class PhytomerFlowMatchingDecoder(nn.Module):
             self.node_parent_mlp = None
 
         # Hybrid 3D-to-2D Phytomer Visual Projector (Point-Query sampling)
-        self.phytomer_projector = PhytomerVisualProjector(embed_dim=embed_dim)
+        self.phytomer_projector = PhytomerVisualProjector(embed_dim=embed_dim, num_levels=self.num_levels)
 
         # Velocity head: predicts d/dt of the flow vector (node_flow_dim = 12 + latent_dim)
         self.velocity_head = nn.Sequential(
@@ -1356,6 +1395,8 @@ class PhytomerFlowMatchingDecoder(nn.Module):
         VAE latent in the currently wired Hybrid Decoupled configuration --
         base_dim=rot_dim=scale_dim=0 at construction, see
         HierarchicalPartFlowMatchingModel.__init__).
+        With multizoom the image tokens are the level-major pyramid and get this stage's own
+        level embedding before the projector and the cross-attention memory read them.
 
         Args:
             noisy_flow: (B, K, node_flow_dim) interpolated x_t.
@@ -1370,6 +1411,8 @@ class PhytomerFlowMatchingDecoder(nn.Module):
             'pred_velocity': (B, K, node_flow_dim) velocity field.
             'pred_slot_exist_logits': (B, K, M) per-slot existence logits.
         """
+        if self.num_levels > 1:
+            image_tokens = add_level_embed(image_tokens, self.level_embed)
         B, K, _ = noisy_flow.shape
         device = noisy_flow.device
 
@@ -1430,9 +1473,15 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         freeze_backbone: bool = False,
         init_phytomer_count: float = 50.0,
         stage3_geometry: bool = False,
+        multizoom: bool = False,
     ):
         super().__init__()
         self.stage3_geometry = bool(stage3_geometry)
+        # multizoom (design doc §2.7): all four cache zoom levels (1x/2x/4x/8x, plant-centred) go through
+        # the frozen backbone; Stage 2/3 attend over all levels' tokens (with a learned level embedding)
+        # and each node's local token is read from the finest level containing it.
+        self.multizoom = bool(multizoom)
+        self.num_levels = 4 if self.multizoom else 1
         self.max_phytomers = max_phytomers
         self.slots_per_phytomer = slots_per_phytomer
         self.max_fine_slots = max_phytomers * slots_per_phytomer  # 512 * 10 = 5,120
@@ -1456,6 +1505,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             pretrained=True,
             freeze_backbone=freeze_backbone,
             embed_dim=embed_dim,
+            num_levels=self.num_levels,
         )
 
         # Semantic color palette (13, 3): learnable per-organ-type RGB used by the
@@ -1483,6 +1533,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         self.coarse_stage = CoarseSkeletalTransformer(
             max_phytomers=max_phytomers,
             embed_dim=embed_dim,
+            num_levels=self.num_levels,
             num_heads=vit_heads,
             num_layers=coarse_layers,
             init_phytomer_count=init_phytomer_count,
@@ -1500,6 +1551,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             # split_flow_state); otherwise the state is the pure VAE latent.
             self.fine_stage = PhytomerFlowMatchingDecoder(
                 latent_dim=phytomer_latent_dim,
+                num_levels=self.num_levels,
                 base_dim=3 if self.stage3_geometry else 0,
                 rot_dim=2 if self.stage3_geometry else 0,
                 scale_dim=3 if self.stage3_geometry else 0,

@@ -96,8 +96,14 @@ class DINORayEncoder(nn.Module):
         freeze_backbone: bool = False,
         embed_dim: int = 384,
         weights_path: Optional[str] = None,
+        num_levels: int = 1,
     ):
         super().__init__()
+        # num_levels > 1: the input carries the cache's zoom pyramid (4 channels per level, RGB + depth,
+        # zooms 1x/2x/4x/8x centred on the plant); every level's RGB goes through the backbone and the
+        # tokens come back level-major after the level-0 CLS: [CLS_0 | patches_0 | patches_1 | ...].
+        # Level identity is added by the consumers (trainable), the ray embedding is shared.
+        self.num_levels = int(num_levels)
         if backbone not in BACKBONES:
             raise KeyError(f"Unknown backbone '{backbone}'. Available: {sorted(BACKBONES)}")
         self.backbone_name = backbone
@@ -152,14 +158,19 @@ class DINORayEncoder(nn.Module):
                 token 0: CLS token
                 tokens 1..N: 3D Ray-embedded spatial patch tokens
         """
-        rgb = x[:, :3].float()
+        B = x.shape[0]
+        L = self.num_levels if (self.num_levels > 1 and x.shape[1] >= 4 * self.num_levels) else 1
+        if L == 1:
+            rgb = x[:, :3].float()
+        else:
+            rgb = torch.cat([x[:, 4 * l:4 * l + 3] for l in range(L)], dim=0).float()   # (L*B, 3, H, W), level-major
         if rgb.shape[-1] != self.input_size or rgb.shape[-2] != self.input_size:
             rgb = F.interpolate(rgb, size=(self.input_size, self.input_size),
                                 mode="bilinear", align_corners=False)
 
         features = self.backbone.forward_features(rgb)
-        patch_tokens = self.proj(features["x_norm_patchtokens"])  # (B, N, embed_dim)
-        cls_token = self.proj(features["x_norm_clstoken"]).unsqueeze(1)  # (B, 1, embed_dim)
+        patch_tokens = self.proj(features["x_norm_patchtokens"])  # (L*B, N, embed_dim)
+        cls_token = self.proj(features["x_norm_clstoken"])[:B].unsqueeze(1)  # level-0 CLS (B, 1, embed_dim)
 
         if patch_tokens.shape[1] != self.num_patches:
             raise RuntimeError(
@@ -167,6 +178,9 @@ class DINORayEncoder(nn.Module):
                 f"at input {self.input_size}, expected {self.num_patches}.")
 
         patch_tokens = patch_tokens + self.canonical_ray_embed.to(dtype=patch_tokens.dtype)
+        if L > 1:
+            N, C = patch_tokens.shape[1], patch_tokens.shape[2]
+            patch_tokens = patch_tokens.view(L, B, N, C).permute(1, 0, 2, 3).reshape(B, L * N, C)
         return torch.cat([cls_token, patch_tokens], dim=1)
 
 

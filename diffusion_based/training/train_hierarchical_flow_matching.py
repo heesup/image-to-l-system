@@ -123,6 +123,8 @@ def forward_backward_step(
     scale_weight: float = 2.0,
     order_weight: float = 0.5,
     stem_dir_weight: float = 0.5,
+    coverage_weight: float = 0.0,
+    exist_count_weight: float = 0.0,
     render_grad: bool = True,
 ) -> Optional[Dict[str, float]]:
     images = batch["image"].to(device)
@@ -769,6 +771,35 @@ def forward_backward_step(
         else:
             loss_phytomer_pos = torch.tensor(0.0, device=device)
 
+        # 5b. Coverage loss (design doc §2.7): every GT phytomer centre -- matched or not -- should have an
+        # ACTIVE predicted node nearby. The matched position loss only pulls the nodes the matcher paired,
+        # so GT phytomers on far arms that never get matched exert no pull and the canopy stays compressed
+        # (measured 2026-09-15: predicted node hull 0.5-0.7x GT, 25% of GT phytomers within 3 cm).
+        # One-sided Chamfer GT -> nearest active node (existence gated, no gradient through the gate).
+        # 5c. Existence-count loss: the soft active count should match the GT phytomer count (55-64 of 73
+        # active on the eval set).
+        loss_coverage = torch.tensor(0.0, device=device)
+        loss_exist_count = torch.tensor(0.0, device=device)
+        if coverage_weight > 0 or exist_count_weight > 0:
+            _centers = [pt_["centers"] for pt_ in phyto_targets if pt_ is not None and pt_["centers"].shape[0] > 0]
+            P_max = max([c.shape[0] for c in _centers] + [0])
+            if P_max > 0:
+                gt_c = torch.zeros(B, P_max, 3, device=device); gt_v = torch.zeros(B, P_max, dtype=torch.bool, device=device)
+                for b_, pt_ in enumerate(phyto_targets):
+                    if pt_ is not None and pt_["centers"].shape[0] > 0:
+                        c_ = pt_["centers"].to(device=device, dtype=torch.float32); gt_c[b_, :c_.shape[0]] = c_; gt_v[b_, :c_.shape[0]] = True
+                prob_ = torch.sigmoid(pred_phytomer_logits.squeeze(-1).detach())          # (B, K)
+                active_ = prob_ > 0.5
+                active_ = active_ | (~active_.any(dim=1)).unsqueeze(1)                     # no active node: use all
+                if coverage_weight > 0:
+                    d_ = torch.cdist(gt_c, pred_phytomer_pos.float()).masked_fill(~active_.unsqueeze(1), float("inf"))
+                    dmin_ = d_.min(dim=2).values[gt_v]                                     # (sum P_b,) metres
+                    loss_coverage = F.smooth_l1_loss(dmin_, torch.zeros_like(dmin_), beta=0.02, reduction="mean")
+                if exist_count_weight > 0:
+                    n_gt_ = gt_v.sum(dim=1).float()
+                    n_pred_ = torch.sigmoid(pred_phytomer_logits.squeeze(-1).clamp(min=-10.0, max=10.0)).sum(dim=1)
+                    loss_exist_count = (F.smooth_l1_loss(n_pred_, n_gt_, reduction="none") / n_gt_.clamp(min=1.0)).mean()
+
         # 6. Phytomer Roll Loss (Vectorized 1-shot). Not "rotation" anymore --
         # the forward axis is derived from position post-hoc (phytomer_roll.py),
         # so only the roll about it needs supervision.
@@ -951,6 +982,8 @@ def forward_backward_step(
         loss_phytomer_scale = torch.tensor(0.0, device=device)
         loss_phytomer_order = torch.tensor(0.0, device=device)
         loss_stem_dir = torch.tensor(0.0, device=device)
+        loss_coverage = torch.tensor(0.0, device=device)
+        loss_exist_count = torch.tensor(0.0, device=device)
 
     # Stage 1: Macro Losses (Phytomer Count & DAP)
     loss_phy_count = torch.tensor(0.0, device=device)
@@ -1154,6 +1187,8 @@ def forward_backward_step(
         + scale_weight * loss_phytomer_scale
         + order_weight * loss_phytomer_order
         + stem_dir_weight * loss_stem_dir
+        + coverage_weight * loss_coverage
+        + exist_count_weight * loss_exist_count
         + 1.0 * loss_phytomer_exist
         + 1.0 * loss_fine_vel
         + 1.0 * loss_fine_exist
@@ -1205,6 +1240,8 @@ def forward_backward_step(
         "phytomer_ord_mae": ord_mae.item(),
         "phytomer_ord_step_mae": ord_step_mae.item(),
         "stem_dir_loss": loss_stem_dir.item(),
+        "coverage_loss": loss_coverage.item(),
+        "exist_count_loss": loss_exist_count.item(),
         "phy_count_loss": loss_phy_count.item(),
         "dap_loss": loss_dap.item(),
         "pred_phy_mean": pred_num_phytomers.mean().item() if pred_num_phytomers is not None else 0.0,
@@ -1252,6 +1289,8 @@ def probe_optimal_batch_size(
     scale_weight: float = 2.0,
     order_weight: float = 0.5,
     stem_dir_weight: float = 0.5,
+    coverage_weight: float = 0.0,
+    exist_count_weight: float = 0.0,
 ) -> int:
     """
     Directly measures base model/optimizer memory and per-sample activation memory on this GPU
@@ -1318,6 +1357,8 @@ def probe_optimal_batch_size(
         scale_weight=scale_weight,
         order_weight=order_weight,
         stem_dir_weight=stem_dir_weight,
+        coverage_weight=coverage_weight,
+        exist_count_weight=exist_count_weight,
         render_grad=True,
     )
 
@@ -1445,6 +1486,8 @@ def train_one_epoch(
     scale_weight: float = 2.0,
     order_weight: float = 0.5,
     stem_dir_weight: float = 0.5,
+    coverage_weight: float = 0.0,
+    exist_count_weight: float = 0.0,
     render_grad_start_epoch: int = 4,
     **kwargs,
 ) -> Dict[str, float]:
@@ -1463,6 +1506,8 @@ def train_one_epoch(
     total_phytomer_ord_mae = 0.0
     total_phytomer_ord_step_mae = 0.0
     total_stem_dir_loss = 0.0
+    total_coverage_loss = 0.0
+    total_exist_count_loss = 0.0
     total_phy_count_loss = 0.0
     total_dap_loss = 0.0
     total_pred_phy_mean = 0.0
@@ -1515,6 +1560,8 @@ def train_one_epoch(
             scale_weight=scale_weight,
             order_weight=order_weight,
             stem_dir_weight=stem_dir_weight,
+            coverage_weight=coverage_weight,
+            exist_count_weight=exist_count_weight,
             render_grad=render_grad,
         )
         if os.environ.get("FM_SPIKE_DUMP", "0") == "1" and rank == 0:
@@ -1635,6 +1682,8 @@ def train_one_epoch(
         total_phytomer_ord_mae += step_metrics.get("phytomer_ord_mae", 0.0)
         total_phytomer_ord_step_mae += step_metrics.get("phytomer_ord_step_mae", 0.0)
         total_stem_dir_loss += step_metrics.get("stem_dir_loss", 0.0)
+        total_coverage_loss += step_metrics.get("coverage_loss", 0.0)
+        total_exist_count_loss += step_metrics.get("exist_count_loss", 0.0)
         total_phy_count_loss += step_metrics.get("phy_count_loss", 0.0)
         total_dap_loss += step_metrics.get("dap_loss", 0.0)
         total_pred_phy_mean += step_metrics.get("pred_phy_mean", 0.0)
@@ -1659,7 +1708,7 @@ def train_one_epoch(
             print(
                 f"  [Epoch {epoch:02d}] Step {batch_idx+1:03d}/{len(dataloader):03d} | Loss: {step_metrics['loss']:.4f} | "
                 f"[S1 Macro] Phy: {step_metrics.get('phy_count_loss', 0.0):.4f} [P:{step_metrics.get('pred_phy_mean', 0.0):.1f}/G:{step_metrics.get('gt_phy_mean', 0.0):.1f}], DAP: {step_metrics.get('dap_loss', 0.0):.4f} [P:{step_metrics.get('pred_dap_mean', 0.0):.1f}/G:{step_metrics.get('gt_dap_mean', 0.0):.1f}] | "
-                f"[S2 Scaffold] Pos: {step_metrics['phytomer_pos_loss']:.4f}, Roll: {step_metrics.get('phytomer_rot_loss', 0.0):.4f}, Scl: {step_metrics.get('phytomer_scale_loss', 0.0):.4f}, Ord: {step_metrics.get('phytomer_order_loss', 0.0):.4f} (MAE {step_metrics.get('phytomer_ord_mae', 0.0):.2f}, step {step_metrics.get('phytomer_ord_step_mae', 0.0):.2f}), Ext: {step_metrics.get('phytomer_exist_loss', 0.0):.4f} | "
+                f"[S2 Scaffold] Pos: {step_metrics['phytomer_pos_loss']:.4f}, Roll: {step_metrics.get('phytomer_rot_loss', 0.0):.4f}, Scl: {step_metrics.get('phytomer_scale_loss', 0.0):.4f}, Ord: {step_metrics.get('phytomer_order_loss', 0.0):.4f} (MAE {step_metrics.get('phytomer_ord_mae', 0.0):.2f}, step {step_metrics.get('phytomer_ord_step_mae', 0.0):.2f}), Ext: {step_metrics.get('phytomer_exist_loss', 0.0):.4f}, Cov: {step_metrics.get('coverage_loss', 0.0):.4f}, Cnt: {step_metrics.get('exist_count_loss', 0.0):.3f} | "
                 f"[S3 Micro] Vel: {step_metrics['fine_vel_loss']:.4f}, Ext: {step_metrics['fine_exist_loss']:.4f}, Acc: {step_metrics['cls_acc']*100:.1f}% | "
                 f"[S4 Render] {render_str} | "
                 f"fwd/bwd {t_step1-t_step0:.2f}s opt {t_step2-t_step1:.2f}s | "
@@ -1682,6 +1731,8 @@ def train_one_epoch(
         "phytomer_ord_mae": total_phytomer_ord_mae / max(count, 1),
         "phytomer_ord_step_mae": total_phytomer_ord_step_mae / max(count, 1),
         "stem_dir_loss": total_stem_dir_loss / max(count, 1),
+        "coverage_loss": total_coverage_loss / max(count, 1),
+        "exist_count_loss": total_exist_count_loss / max(count, 1),
         "phy_count_loss": total_phy_count_loss / max(count, 1),
         "dap_loss": total_dap_loss / max(count, 1),
         "pred_phy_mean": total_pred_phy_mean / max(count, 1),
@@ -1815,6 +1866,14 @@ def main():
     parser.add_argument("--stage3_geometry", action="store_true",
                         help="Stage 3 generates the child's position (relative to its fixed parent), roll and scale "
                              "in the flow state with the latent (design doc §2.1; GT-substitution ablation 2026-09-14).")
+    parser.add_argument("--multizoom", action="store_true",
+                        help="Feed all four cache zoom levels through the backbone; Stage 2/3 attend over all levels and "
+                             "each node reads its local token from the finest level containing it (design doc §2.7).")
+    parser.add_argument("--coverage_weight", type=float, default=0.0,
+                        help="Weight of the one-sided Chamfer loss GT phytomer centre -> nearest active predicted node "
+                             "(smooth-L1, beta 2 cm). 0 = off. Pulls nodes onto GT phytomers the matcher never pairs.")
+    parser.add_argument("--exist_count_weight", type=float, default=0.0,
+                        help="Weight of |sum sigmoid(exist) - N_gt| / N_gt per sample. 0 = off.")
     parser.add_argument("--latent_norm", action="store_true",
                         help="Flow-match the per-dim standardized VAE latent ((z - mu) / sigma, statistics from the "
                              "training packets) so the latent block is unit variance against the noise.")
@@ -2013,6 +2072,7 @@ def main():
         backbone=args.backbone,
         freeze_backbone=args.freeze_backbone,
         init_phytomer_count=args.init_phytomer_count,
+        multizoom=bool(getattr(args, 'multizoom', False)),
         stage3_geometry=args.stage3_geometry,
     ).to(device)
 
@@ -2225,6 +2285,8 @@ def main():
             scale_weight=args.scale_weight,
             order_weight=args.order_weight,
             stem_dir_weight=args.stem_dir_weight,
+            coverage_weight=args.coverage_weight,
+            exist_count_weight=args.exist_count_weight,
         )
     else:
         resolved_batch_size = int(args.batch_size)
@@ -2352,6 +2414,8 @@ def main():
             scale_weight=args.scale_weight,
             order_weight=args.order_weight,
             stem_dir_weight=args.stem_dir_weight,
+            coverage_weight=args.coverage_weight,
+            exist_count_weight=args.exist_count_weight,
             render_grad_start_epoch=args.render_grad_start_epoch,
             lr_warmup_cb=lr_warmup_cb,
         )
@@ -2373,7 +2437,7 @@ def main():
             print(
                 f"Epoch {epoch:03d} | Loss: {epoch_metrics['loss']:.4f} | "
                 f"[S1 Macro] Phy: {epoch_metrics['phy_count_loss']:.4f} (P:{epoch_metrics['pred_phy_mean']:.1f}/G:{epoch_metrics['gt_phy_mean']:.1f}), DAP: {epoch_metrics.get('dap_loss', 0.0):.4f} (P:{epoch_metrics.get('pred_dap_mean', 0.0):.1f}/G:{epoch_metrics.get('gt_dap_mean', 0.0):.1f}) | "
-                f"[S2 Scaffold] Pos: {epoch_metrics['phytomer_pos_loss']:.4f}, Roll: {epoch_metrics.get('phytomer_rot_loss', 0.0):.4f}, Scl: {epoch_metrics.get('phytomer_scale_loss', 0.0):.4f}, Ord: {epoch_metrics.get('phytomer_order_loss', 0.0):.4f} (MAE {epoch_metrics.get('phytomer_ord_mae', 0.0):.2f}, step {epoch_metrics.get('phytomer_ord_step_mae', 0.0):.2f}), Ext: {epoch_metrics['phytomer_exist_loss']:.4f} | "
+                f"[S2 Scaffold] Pos: {epoch_metrics['phytomer_pos_loss']:.4f}, Roll: {epoch_metrics.get('phytomer_rot_loss', 0.0):.4f}, Scl: {epoch_metrics.get('phytomer_scale_loss', 0.0):.4f}, Ord: {epoch_metrics.get('phytomer_order_loss', 0.0):.4f} (MAE {epoch_metrics.get('phytomer_ord_mae', 0.0):.2f}, step {epoch_metrics.get('phytomer_ord_step_mae', 0.0):.2f}), Ext: {epoch_metrics['phytomer_exist_loss']:.4f}, Cov: {epoch_metrics.get('coverage_loss', 0.0):.4f}, Cnt: {epoch_metrics.get('exist_count_loss', 0.0):.3f} | "
                 f"[S3 Micro] Vel: {epoch_metrics['fine_vel_loss']:.4f}, Ext: {epoch_metrics['fine_exist_loss']:.4f}, Acc: {epoch_metrics['cls_acc']*100:.1f}% | "
                 f"[S4 Render] {render_epoch_str} | "
                 f"VRAM: {max_vram_gb:.1f}/{total_vram_gb:.1f} GB ({vram_pct:.1f}%)"
