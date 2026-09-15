@@ -34,6 +34,11 @@ def main():
     ap.add_argument("--lr_scale", type=float, default=2e-2)
     ap.add_argument("--lr_latent", type=float, default=2e-2)
     ap.add_argument("--out", default="")
+    ap.add_argument("--plant_centered", action="store_true",
+                    help="Render the prediction with the camera centred on its own bounding box (focus_plant), the frame "
+                         "the cached input CHM was rendered in (plant-bbox-centred), instead of the fixed origin window. "
+                         "Measured 2026-09-15: the cached CHM matches a bbox-centred GT render at 73-89% IoU but the "
+                         "origin-window one at only 41-76%.")
     ap.add_argument("--keep_best", action="store_true",
                     help="Return the variables of the step with the lowest INPUT loss (model selection on the input only), "
                          "not the last step -- guards against the divergent plants.")
@@ -94,8 +99,13 @@ def main():
             mesh = renderer.geo_builder.build_mesh_from_part_tensor(parts, device=dev)
             loss = torch.zeros((), device=dev)
             for z, t in tgt.items():
-                pred = renderer.render_batched([mesh], azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, differentiable=True,
-                                               image_size=128, zoom_factor=z, reference_window_size=1.2)[0, 3]
+                if a.plant_centered:
+                    pred = renderer.forward(mesh, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, background="ground",
+                                            focus_plant=True, include_depth=True, differentiable=True, image_size=128,
+                                            zoom_factor=z, reference_window_size=1.2)[3]
+                else:
+                    pred = renderer.render_batched([mesh], azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, differentiable=True,
+                                                   image_size=128, zoom_factor=z, reference_window_size=1.2)[0, 3]
                 canopy = (t > 0.005) | (pred > 0.005)
                 l1 = F.smooth_l1_loss(pred, t, beta=0.02, reduction="none")
                 loss_d = (l1 * canopy).sum() / canopy.sum().clamp(min=1)

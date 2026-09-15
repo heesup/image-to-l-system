@@ -409,6 +409,15 @@ information yet. The standardized-latent and render→latent runs were cancelled
 in their place (`38274747` render fraction 1.0, `38274748` lr 2e-4, both from geometry ep78) — **but the freed GPUs were
 taken at once by other groups' queued jobs on the shared Ada node** (js2552 ×2 running, 4 more pending), so they wait.
 Lesson: on `gpu-6000_ada-h` a cancelled job's GPU does not come back to us; keep runs going until their budget ends.
+**13:50 — the render loss has been comparing against a shifted target.** The cached input CHM (`generate_cache.py`,
+`focus_plant=True`) is framed on the **GT plant's bounding-box centre**, while the training render block
+(`render_batched`, `focus_plant=False` + `reference_window_size`) and every evaluation render frame the plant at the
+**origin**. Measured on eval plants: the cached CHM overlaps a bbox-centred GT render at 73–89% IoU but an origin-framed
+GT render at only 41–76% (DAP 94: 88.6 vs 40.7). So the depth/dice loss in training has never been able to reach 100%
+even for a perfect prediction, its gradient partly pushes the whole plant toward a wrong offset, and the two mature
+plants that regressed under test-time refinement (DAP 89/94) are exactly the large-offset cases. Fix in progress:
+render the prediction in the input's frame (plant-bbox-centred; `--plant_centered` in
+`eval_test_time_refinement.py`, re-running; the training render block needs the GT bbox centre per sample next).
 **13:35 — test-time refinement is the biggest lever found today (results report §11.7).**
 `diffusion_based/eval/eval_test_time_refinement.py`: after sampling, optimise each plant's node positions, scales and
 phytomer latents for 40 Adam steps against the INPUT canopy height map with the training render loss (no GT), keeping
