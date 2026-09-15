@@ -428,7 +428,7 @@ equals `forward(focus_plant=True)` for an off-centre plant. Run: v10 flags + REN
 checkpoint, 10% data, local GPU 0, log `slurm_scripts/logs/20260915/local_sub10_v10_cam.log`, checkpoints
 `diffusion_based/checkpoints/sub10_v10_cam/`. To make room the plateaued unfrozen-backbone run was stopped at ep88
 (strict P 34.3 at ep80; resumable from its ep85 checkpoint with AUTO_RESUME=1). Second strict reading of the other
-variants: w3t0 ep85 34.4, lr 2e-4 ep100 33.0 — every training-side variant sits at 33–35. First reading of `sub10_v10_cam` at ep80: strict P **35.8** (v10 itself was 35.4 at ep80) — ep85 34.0 — the corrected training camera has not moved the plateau after two checkpoints; ep90/95 readings are queued (detached scorer, log in the session scratchpad `cam_readings.log`, JSONs in `slurm_scripts/logs/20260915/run_sub10_v10_cam/`).
+variants: w3t0 ep85 34.4, lr 2e-4 ep100 33.0 — every training-side variant sits at 33–35. First reading of `sub10_v10_cam` at ep80: strict P **35.8** (v10 itself was 35.4 at ep80) — ep85 34.0, ep90 **38.5** (highest single 10% reading so far; noise is ±2, ep95 pending) — ep90/95 readings are queued (detached scorer, log in the session scratchpad `cam_readings.log`, JSONs in `slurm_scripts/logs/20260915/run_sub10_v10_cam/`).
 
 **13:20 — refinement in the input's camera frame: 33.5 → 62.9 strict P, but watch the geometry (results report §11.10).**
 `eval_test_time_refinement.py --input_camera` renders the prediction with the camera that produced the cached input CHM

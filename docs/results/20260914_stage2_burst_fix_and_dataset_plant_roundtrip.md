@@ -396,7 +396,7 @@ v10 ep95에서 Stage 3가 refine한 노드(pos/roll/scale)를 다시 조건으�
 
 같은 사실이 **학습 렌더 블록**에도 적용된다: 학습 중 렌더 손실도 원점 창으로 계산하고 있으므로 §11.8의 창 불일치(겹침 41–76%)를 안고 학습해 왔다. 다음 단계는 학습 렌더도 `centers=`(GT bbox 중심)로 바꿔 다시 학습하는 것이다.
 
-**학습 렌더에 같은 카메라를 넣은 run `sub10_v10_cam` (13:20 시작).** `--render_input_camera 1`(런처 `RENDER_INPUT_CAMERA=1`): 렌더되는 식물마다 GT 메시 bbox 중심을 계산해 `render_batched(centers=)`로 넘긴다(`tests/test_render_input_camera.py`). v10 설정 + 이 옵션, s3geom ep78에서 시작, 10% 데이터, 로컬 GPU. 첫 판독 ep80 엄격 P **35.8** (meanlat 34.8, ALL 78.3) — 같은 시점의 v10 35.4, 다른 변형 32–34.6보다 조금 높지만 아직 잡음 범위(±1–2). ep85 **34.0** (ALL 80.2) — 학습 렌더 창을 맞춰도 두 판독까지는 다른 v10 run과 같은 33–36 구간이다. ep90/95 판독이 자동으로 이어진다.
+**학습 렌더에 같은 카메라를 넣은 run `sub10_v10_cam` (13:20 시작).** `--render_input_camera 1`(런처 `RENDER_INPUT_CAMERA=1`): 렌더되는 식물마다 GT 메시 bbox 중심을 계산해 `render_batched(centers=)`로 넘긴다(`tests/test_render_input_camera.py`). v10 설정 + 이 옵션, s3geom ep78에서 시작, 10% 데이터, 로컬 GPU. 첫 판독 ep80 엄격 P **35.8** (meanlat 34.8, ALL 78.3) — 같은 시점의 v10 35.4, 다른 변형 32–34.6보다 조금 높지만 아직 잡음 범위(±1–2). ep85 **34.0** (ALL 80.2), ep90 **38.5** (meanlat 36.1, ALL 82.3) — ep90은 10% run 전체에서 가장 높은 단일 판독(v10 자체는 33.6–36.0)이지만 판독 잡음이 ±2라 ep95를 봐야 한다.
 
 **전체 데이터로 확장 (14:15).** 10% 프로토콜의 결론(모든 변형이 ~10 epoch 안에 33–36에서 정체, 배포 수치는 정제가 결정)에 따라 정체된 10% 클러스터 job 둘(render-all, lr 2e-4)을 취소하고 그 자리에 **전체 데이터 v10 + 입력 카메라 창** run을 올렸다: job `38275054`, ada-h 2 GPU, s3geom ep78에서 시작, 128 epoch, 체크포인트 `diffusion_based/checkpoints/hierarchical_fm_v10_cam/`. 10% 결과의 일반화 확인이자 정제에 넣을 배포 모델 후보다.
 
