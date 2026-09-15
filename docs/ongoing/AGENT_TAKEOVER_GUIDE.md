@@ -417,9 +417,11 @@ reach 80.8 / 81.3; DAP ≤ 15 unchanged). IoU is still the strict origin-frame 2
 (`docs/results/assets/20260915_test_time_refinement_before_after_input_camera.png`) show a few leaves inflated into
 large flat polygons on 3 of 6 plants: the silhouette/depth loss has no prior on scale or latent, so the optimiser fills
 the silhouette with implausible geometry. The origin-frame version (`..._before_after.png`, 39.8 → 64.3 on the same six)
-keeps leaf shapes. Added `--reg_scale` / `--reg_latent` (squared deviation from the sampled values) and re-running; the
-lesson for the meeting is that silhouette IoU alone is not sufficient and a shape prior is needed in the refinement —
-and the same GT-bbox camera must go into the training render block.
+keeps leaf shapes. **With a shape prior** (`--reg_scale 5 --reg_latent 0.5`, squared deviation from the sampled values)
+the same six plants go 39.6 → 70.4 and the inflated polygons are gone (now the main figure,
+`..._before_after.png`; the two earlier variants are `..._origin_frame.png` and `..._input_camera_noprior.png`).
+The 20-plant strict-protocol run with the prior is in progress. Lesson: silhouette IoU alone is not sufficient, the
+refinement needs a prior on scale/latent — and the same GT-bbox camera must go into the training render block.
 
 **13:00 — the render loss has been comparing against a shifted target.** The cached input CHM (`generate_cache.py`,
 `focus_plant=True`) is framed on the **GT plant's bounding-box centre**, while the training render block
