@@ -189,16 +189,16 @@ keys (Stage 2's under `phytomer_pos_stage2`), the render block renders the refin
 geometry block through pos and scale. A latent-only checkpoint widens on load (latent block kept in `geom_proj` / the
 velocity head; Adam moments widened by `_widen_optimizer_state`). Stage 2 keeps its heads (matching, parents, ordinal,
 existence). Off by default. **A/B** from `hierarchical_fm_v9/hierarchical_fm_epoch_045.pt`: baseline `38257989`
-(cluster, 2 GPU, render 1/6) vs the geometry arm running locally on 1 GPU (`slurm_scripts/logs/local_s3geom_ab.log`,
-`hierarchical_fm_v9_s3geom/`, eval every epoch). Read the per-epoch `[Self-Consistency]` IoU of both; the arm's velocity
+(cluster, 2 GPU, render 1/6) vs the geometry run running locally on 1 GPU (`slurm_scripts/logs/local_s3geom_ab.log`,
+`hierarchical_fm_v9_s3geom/`, eval every epoch). Read the per-epoch `[Self-Consistency]` IoU of both; the run's velocity
 loss starts high (fresh geometry dims, ~12-20) and should fall within the first epochs.
 
-### 0-B.9 Three arms, and what the latent path actually knows (2026-09-14 ~17:30, `b348fd7`)
+### 0-B.9 Three runs, and what the latent path actually knows (2026-09-14 ~17:30, `b348fd7`)
 
-**Arms** (all from `hierarchical_fm_v9/hierarchical_fm_epoch_045.pt`, same recipe, self-consistency IoU on the fixed
+**Runs** (all from `hierarchical_fm_v9/hierarchical_fm_epoch_045.pt`, same recipe, self-consistency IoU on the fixed
 20-plant set every epoch):
 
-| arm | where | log / checkpoints | flag |
+| run | where | log / checkpoints | flag |
 | :--- | :--- | :--- | :--- |
 | baseline (latent-only Stage 3) | cluster `38257989`, 2 GPU | `slurm_scripts/logs/hierarchical_fm_38257989.log`, `hierarchical_fm_v9/` | — |
 | geometry (stopped 10:55 at ep80) | local 1 GPU | `slurm_scripts/logs/local_s3geom_ab2.log`, `hierarchical_fm_v9_s3geom/`, panels `run_local_20260914_164059/` | `STAGE3_GEOMETRY=1` |
@@ -225,28 +225,28 @@ loss starts high (fresh geometry dims, ~12-20) and should fall within the first 
 | 51 | 31.4 | 31.6 (Vel 1.83) | |
 | 51–59 | 31.4 / 30.7 / 33.5 / 33.9 / 29.1 / 32.4 / 32.0 / 31.6 / 32.7 | | |
 
-Epoch-to-epoch spread is ±3 points on the 20-plant set (baseline 26.9 → 33.9 within eight epochs), so read arms by
+Epoch-to-epoch spread is ±3 points on the 20-plant set (baseline 26.9 → 33.9 within eight epochs), so read runs by
 their mean over several epochs, not by one epoch: baseline 46–59 mean 31.4; geometry 47–50 mean 31.3 (4 epochs);
-gt_nodes 46–52 mean 34.0 (7 epochs; baseline 46–52 mean 30.6). Note the baseline itself climbs later: 46–65 mean 31.3, 66–75 mean 34.2 — so the gt_nodes arm reaches at epochs 46–52 what the baseline reaches ~20 epochs later; compare arms at equal epoch index, and expect the plateau to move. Geometry 47–55 mean 31.1 = baseline over the same span. The gt_nodes arm is separating: 39.4 at epoch 49 is the highest any arm has reached (baseline max 33.9 over 20 epochs, geometry max 35.0), its Vel falls steadily (0.169 → 0.150), and this in-training eval samples with Stage 2's own nodes, so it is the deployable output, not the teacher-forced one. Reading: training Stage 3 against clean node conditioning gives the latent path a consistent geometry → shape mapping, and Stage 2's nodes at inference (RMSE 1.7 cm) are close enough to use it. Confirm with the epoch 50 checkpoint (ablation `_latent` R², teacher-forced vs not) before promoting it. Under the ablation protocol
-the geometry arm's P went 27.5 → 26.3 → 29.6 (ep47/48/50; baseline ep50 27.5) and pos←GT 38.3 → 39.4 → 41.7, i.e.
+gt_nodes 46–52 mean 34.0 (7 epochs; baseline 46–52 mean 30.6). Note the baseline itself climbs later: 46–65 mean 31.3, 66–75 mean 34.2 — so the gt_nodes run reaches at epochs 46–52 what the baseline reaches ~20 epochs later; compare runs at equal epoch index, and expect the plateau to move. Geometry 47–55 mean 31.1 = baseline over the same span. The gt_nodes run is separating: 39.4 at epoch 49 is the highest any run has reached (baseline max 33.9 over 20 epochs, geometry max 35.0), its Vel falls steadily (0.169 → 0.150), and this in-training eval samples with Stage 2's own nodes, so it is the deployable output, not the teacher-forced one. Reading: training Stage 3 against clean node conditioning gives the latent path a consistent geometry → shape mapping, and Stage 2's nodes at inference (RMSE 1.7 cm) are close enough to use it. Confirm with the epoch 50 checkpoint (ablation `_latent` R², teacher-forced vs not) before promoting it. Under the ablation protocol
+the geometry run's P went 27.5 → 26.3 → 29.6 (ep47/48/50; baseline ep50 27.5) and pos←GT 38.3 → 39.4 → 41.7, i.e.
 directionally up but inside the noise; its latent spread stayed high at ep50 (0.46 vs GT 0.18, R² −1.27), so the
 noisier latent has not corrected itself as the geometry rows settled.
 | 46 (gt_nodes) | 31.5 | | 32.8 (Vel 0.159 vs baseline 0.169; in-training eval uses Stage 2 nodes) |
 
-The gt_nodes arm was launched with the launcher's default `SAVE_EVERY=5`, so its first checkpoint (for the teacher-forced
-ablation and the latent probe) is epoch 50; the geometry arm saves every epoch. Geometry ep48 under the ablation protocol
+The gt_nodes run was launched with the launcher's default `SAVE_EVERY=5`, so its first checkpoint (for the teacher-forced
+ablation and the latent probe) is epoch 50; the geometry run saves every epoch. Geometry ep48 under the ablation protocol
 (`run_local_20260914_164059/gt_substitution_epoch048.json`): P 26.3, pos←GT 39.4, ALL−pos 33.6, ALL−latent 42.1,
 ALL 77.7 — and a warning: the sampled latent's per-dim spread is **0.42 against the GT's 0.18** (baseline ep50: 0.17),
 RMSE vs GT 7.1 (R² −1.3). The widened flow state is making the latent block noisier while the geometry rows are still
-settling; watch whether it comes back down by epoch 50 before moving the arm to the cluster. The two protocols are not
+settling; watch whether it comes back down by epoch 50 before moving the run to the cluster. The two protocols are not
 comparable with each other (in-training eval: chain topology + training renderer; ablation: greedy match + 256 px
-PyTorch renderer, young plants zoomed 8×) — compare arms within one protocol only.
+PyTorch renderer, young plants zoomed 8×) — compare runs within one protocol only.
 
-Read the table with the training-arm caveat: the gt_nodes arm is *trained* with GT nodes but the in-training eval
+Read the table with the training-run caveat: the gt_nodes run is *trained* with GT nodes but the in-training eval
 samples with Stage 2's nodes (train/test mismatch by design); its meaningful readout is the substitution ablation run
 on its checkpoints, which teacher-forces the sampler automatically (`--teacher_force` is implied by the checkpoint's
-`stage3_gt_nodes`), and the latent probe below. The geometry arm's Vel loss (3.1 → 2.4 at epochs 46–47) is still
-falling; the arm is not readable before ~epoch 50.
+`stage3_gt_nodes`), and the latent probe below. The geometry run's Vel loss (3.1 → 2.4 at epochs 46–47) is still
+falling; the run is not readable before ~epoch 50.
 
 **`--stage3_gt_nodes`** (`STAGE3_GT_NODES=1`): `model.forward(stage3_cond_override=)` / `sample_ode(cond_override=)`
 replace Stage 2's pos/roll/scale by the given tensors for Stage 3's conditioning only (Stage 2's outputs and losses
@@ -303,7 +303,7 @@ with Stage 2's nodes. So (a) node error does starve the latent path: trained on 
 (b) it pays with exposure bias: with Stage 2's own nodes the strict protocol falls to 20.2 (mid-DAP plants 15.7 vs
 baseline 24.8), while the in-training eval (128 px, no zoom) still scores it above the baseline (32.6 vs 29.9 at ep50;
 46–50 mean 34.4 vs 30.4). The two protocols differ in strictness, not in what they measure: 256 px + 8× zoom punishes
-organ misplacement that 128 px hides. **Next arm: scheduled teacher forcing** — GT nodes with probability
+organ misplacement that 128 px hides. **Next run: scheduled teacher forcing** — GT nodes with probability
 `--stage3_gt_nodes_p` per matched node and Gaussian jitter `--stage3_gt_nodes_jitter_cm` on the GT position — to keep
 (a) without (b). Implemented `117f86f` (launcher `STAGE3_GT_NODES_P` / `STAGE3_GT_NODES_JITTER_CM`, smoke-tested) and
 submitted as `low` job **`38273174`** (p 0.5, jitter 1 cm, from epoch 45 into `hierarchical_fm_v9_stf/`). Both `low`
@@ -326,7 +326,7 @@ strict protocol**: P 27.5 → 27.3 between epochs 50 and 80, young plants better
 ceiling from 76 to 67. The 128 px in-training eval rewards something the 256 px protocol does not; the three runs do
 evaluate the same 20 plants (`eval_set.json` identical), so the disagreement is the metric, not the sample. Decisions
 should rest on the strict protocol plus the latent readouts, with the in-training IoU as a trend indicator only.
-(2) **The gt_nodes arm keeps improving on every latent readout**: with GT nodes the latent is worth +9.6 IoU over the
+(2) **The gt_nodes run keeps improving on every latent readout**: with GT nodes the latent is worth +9.6 IoU over the
 mean latent (ep50 +7.8, baseline +2.5), per-node R² 0.187 (ep50 0.115), and its deployable P recovers 20.2 → 23.9 with
 pos←GT already above the baseline (41.2 vs 37.6) — the remaining gap to the baseline's P is exposure bias to its own
 node error, which the scheduled-teacher-forcing job `38273174` targets.
@@ -335,7 +335,7 @@ node error, which the scheduled-teacher-forcing job `38273174` targets.
 in `run_local_20260914_170731/`, `gt_substitution_epoch076.json` in `run_local_20260914_164059/`, `gt_substitution_epoch135.json`
 in `run_38257989/`):
 
-| arm / checkpoint | P (deployable) | pos←GT | ALL−latent | ALL | active/GT | latent R² (GT nodes, vs plant mean) |
+| run / checkpoint | P (deployable) | pos←GT | ALL−latent | ALL | active/GT | latent R² (GT nodes, vs plant mean) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | baseline ep135 | 28.9 | 35.2 | 37.9 | 67.0 | 55/73 | – |
 | geometry ep76 | **33.9** | 42.9 | 45.5 | 79.2 | 63/73 | – (latent std still 0.47) |
@@ -345,10 +345,10 @@ Strict-protocol P over the checkpoints: baseline 27.5 → 27.3 → 28.9 (ep50/80
 existence head at 55/73); geometry 27.5 → 26.3 → 29.6 → 33.9 (ep47/48/50/76, climbing); gt_nodes deployable 20.2 →
 23.9 → 29.4 (ep50/55/70, recovering from the exposure bias, now above the baseline) with the teacher-forced ceiling
 steady at 45–46 and the per-node latent R² doubling again to 0.41. In-training IoU over the same period: baseline peaked
-at 36.2 (76–85) and fell to 29.9 (121–137, several epochs below 25); geometry 32–33; gt_nodes 34. Both arms beat the
-baseline on both protocols now; the geometry arm leads the deployable strict P, the gt_nodes arm leads everything that
+at 36.2 (76–85) and fell to 29.9 (121–137, several epochs below 25); geometry 32–33; gt_nodes 34. Both runs beat the
+baseline on both protocols now; the geometry run leads the deployable strict P, the gt_nodes run leads everything that
 depends on the latent. The baseline job ends at its 24 h limit at 15:53; a dependent continuation (`38274192`, same
-partition, `AUTO_RESUME=1`) was queued behind it, then **replaced (09:55) by the standardized-latent arm `38274201`**
+partition, `AUTO_RESUME=1`) was queued behind it, then **replaced (09:55) by the standardized-latent run `38274201`**
 (`LATENT_NORM=1`, from epoch 45 into `hierarchical_fm_v9_lnorm/`, same 2-GPU slot, starts when the baseline ends):
 the baseline's strict P has been flat at 27–29 for 90 epochs and its checkpoints every 5 epochs already serve as the
 reference, while `--latent_norm` (`d46d8fe`) is the lever the latent diagnostics point at — the flow now matches the
@@ -368,7 +368,7 @@ first; read its latent probe (`scratchpad/latent_probe.py`, R² at t = 0) before
 - The same checkpoint (`hierarchical_latent_fm/hierarchical_fm_epoch_125.pt`), run with its exact code (worktree at
   `870074f`, state dict loads with 0 missing / 0 unexpected; `73edc46` gives 27.5 with 4 random head weights) on
   today's fixed 20-plant set with the same 128 px eval lineage: **24.8%** (DAP ≥ 17: 30.8, 40–75: 34.5, > 60: 37.0,
-  ≤ 15: 0.9; per plant 0–60%). Today's arms on the same 20 plants: baseline ~30, geometry ~32–33, gt_nodes ~34.
+  ≤ 15: 0.9; per plant 0–60%). Today's runs on the same 20 plants: baseline ~30, geometry ~32–33, gt_nodes ~34.
   Script + per-plant JSON: `slurm_scripts/logs/archive_20260914/optionb_ep125_reeval/`.
 - What Option B did have that today's model lacks: its per-organ latent was a **unit-variance N(0, I)** space, so the
   flow loss was not dominated by noise prediction — the exact property whose absence (128D latent, per-dim std ≈ 0.41)
@@ -381,34 +381,34 @@ first; read its latent probe (`scratchpad/latent_probe.py`, R² at t = 0) before
   give compact uniform blobs whose IoU is higher because they cover the plant's centre. Both miss the canopy spread of
   star-shaped plants (DAP 72 / 88). The architecture stays; the latent's variance and per-node content are the levers.
 - **Not better nodes either** (`nodes_cmp.json` there): on the same 7 plants Option B's predicted nodes sit 18.3 cm (nearest
-  GT phytomer RMSE) with a convex hull 4.35× the GT's — scatter, not spread; today's arms 4.5–5.9 cm but hull 0.5–0.7×
-  and only ~25% of GT phytomers have a predicted node within 3 cm (the geometry arm is best: 4.5 cm / 29%). That
+  GT phytomer RMSE) with a convex hull 4.35× the GT's — scatter, not spread; today's runs 4.5–5.9 cm but hull 0.5–0.7×
+  and only ~25% of GT phytomers have a predicted node within 3 cm (the geometry run is best: 4.5 cm / 29%). That
   under-spread is the "pos←GT +10–14 IoU" of the substitution ablation, and it is the next lever after the latent.
-- **10% protocol (10:15, Heesup's proposal)**: every chain arm now trains on a DAP-stratified 10k-plant subset with the
+- **10% protocol (10:15, Heesup's proposal)**: every chain run now trains on a DAP-stratified 10k-plant subset with the
 same 20 eval plants force-included (`--eval_set_file`, matched by prefix) and 20 held-out plants removed from training and
-reported as `[Holdout]` each eval (`--holdout_samples_per_bucket 2`; caveat: arms resumed from epoch 45 saw those plants
+reported as `[Holdout]` each eval (`--holdout_samples_per_bucket 2`; caveat: runs resumed from epoch 45 saw those plants
 during epochs 1–45, so the held-out is "unseen since 45" — a clean held-out needs training from scratch with the
 exclusion). The point: the baseline saw each of its 100k plants 140 times and still plateaued, so data volume is not the
 limit; 10k plants answer "can this structure memorize the data at all?" ten times faster, and the held-out line tells
 whether what it learns transfers. If the 10% runs reach 70–80% on the training plants the bottleneck is
 optimization/scale; if not, it is the structure/loss (the current diagnosis). The winner gets the full data.
-**10:55 — the two local full-data arms were stopped on Heesup's request** (geometry at epoch 80, last checkpoint
+**10:55 — the two local full-data runs were stopped on Heesup's request** (geometry at epoch 80, last checkpoint
 `hierarchical_fm_v9_s3geom/hierarchical_fm_epoch_080.pt`; gt_nodes at epoch 78, last checkpoint
 `hierarchical_fm_v9_gtnodes/hierarchical_fm_epoch_075.pt`; both had answered their questions) and this node's GPU now runs
-the two 10% arms that could not get a cluster GPU: **combination** (`slurm_scripts/logs/local_sub10_combo.log`,
+the two 10% runs that could not get a cluster GPU: **combination** (`slurm_scripts/logs/local_sub10_combo.log`,
 `sub10_combo/`, panels `run_local_20260915_105522/`) and **v10 full** (`local_sub10_v10.log`, `sub10_v10/`,
 `run_local_20260915_105524/`), both from geometry ep78 with `LATENT_NORM=1 RENDER_TO_LATENT=1` (+ `MULTIZOOM=1
 COVERAGE_WEIGHT=1.0 EXIST_COUNT_WEIGHT=0.5` for v10), sharing one Ada GPU. Their cluster copies were cancelled. Heesup
 also opened `jmearlesgrp`'s `gpum` partition (and the association lists `gpuh`, `gpu-a100-h`), but at 10:50 every one of
 those nodes was RAM-blocked by other users' jobs, and a job cannot list several partitions under this association.
-**`low` cannot run our arms now (10:00)**: its GPU nodes have idle A100/H100s but their RAM is fully allocated by other
+**`low` cannot run our runs now (10:00)**: its GPU nodes have idle A100/H100s but their RAM is fully allocated by other
   users' jobs (5–13 GB free per node) and one training needs ~15 GB (6 GB main + 8 workers × 1.1 GB). The two low jobs
-  were cancelled and the three arms chained on the baseline's slot: `38274220` latent_norm (46–80) → `38274221`
+  were cancelled and the three runs chained on the baseline's slot: `38274220` latent_norm (46–80) → `38274221`
   scheduled TF (46–75) → `38274222` render→latent (46–70), ~2 h each at 2 GPUs.
 
-**Node caveat (21:05):** `gpu-10-50`, where both local arms run inside the OnDemand desktop job `38252204`, is
+**Node caveat (21:05):** `gpu-10-50`, where both local runs run inside the OnDemand desktop job `38252204`, is
 `MIXED+DRAIN` since 17:20 (`Reason=Kill task failed (JobId=38249157)`, an automatic SLURM drain). Running jobs are not
-affected and the desktop job has ~36 h left, but an admin reboot to clear the drain would kill both local arms. Both
+affected and the desktop job has ~36 h left, but an admin reboot to clear the drain would kill both local runs. Both
 resume from their checkpoints: geometry saves every epoch (`hierarchical_fm_v9_s3geom/`), gt_nodes every 5
 (`hierarchical_fm_v9_gtnodes/`, next at 55). To move either to the cluster:
 `sbatch --partition=low --account=publicgrp --gres=gpu:a100:2 --time=7-00:00:00 --requeue --export=ALL,AUTO_RESUME=1,STAGE3_GEOMETRY=1,OUTPUT_DIR=diffusion_based/checkpoints/hierarchical_fm_v9_s3geom slurm_scripts/train_hierarchical_flow_matching.sh`
@@ -418,12 +418,12 @@ resume from their checkpoints: geometry saves every epoch (`hierarchical_fm_v9_s
 **What follows.** The render loss is the only per-node image signal that does not pass through the flow loss, and the
 latent rows were detached from it. `--render_to_latent` (`RENDER_TO_LATENT=1`, same commit series) keeps the latent
 block attached in the render block; the smoke run's `FM_RENDER_GRAD_PROBE` shows the render loss on the velocity head's
-latent rows at |g| 0.02–2.7 per step. **Arm 4 submitted 17:45: job `38260124`** (`low`/publicgrp, 2×A100, `--requeue`,
+latent rows at |g| 0.02–2.7 per step. **Run 4 submitted 17:45: job `38260124`** (`low`/publicgrp, 2×A100, `--requeue`,
 `AUTO_RESUME=1 RENDER_TO_LATENT=1`, from epoch 45 into `hierarchical_fm_v9_r2l/`, log
 `slurm_scripts/logs/hierarchical_fm_38260124.log`). Read its per-node latent R² (ablation summary `_latent`) before its IoU. Two
 further levers are cheap and principled if that is not enough: scale the latent to unit variance for the flow (an
 SD-style scale factor; changes the velocity head, so fine-tune from epoch 45) and sample t toward 0 where the
-conditioning matters. The gt_nodes arm answers the other half: if per-node R² rises when the nodes are right, the
+conditioning matters. The gt_nodes run answers the other half: if per-node R² rises when the nodes are right, the
 latent path is starved by node error after all.
 
 ### 0-B.3 Working-tree hygiene
@@ -682,7 +682,7 @@ sbatch slurm_scripts/train_hierarchical_flow_matching.sh
 | **P3** | Epoch-1 sanity after resubmit | Check `slurm_scripts/logs/run_<jobid>/hierarchical_self_consistency_epoch_001.png` (each run's panels sit beside its own `run.log` symlink; they used to overwrite each other under `docs/results/assets`): loss ↓, pred count ~50, ClsAcc rising, no Recovery-skip lines |
 | **P4** | Monitor 6D rotation convergence | Panels epoch 25/50; s_a (petiole len) should track DAP growth |
 | **P5** | Evaluate Bidirectional Chamfer Distance | Add max/mean distance GT→Pred to avoid one-way clustering metric bias |
-| **P6** | Backbone A/B (DINOv2-scale vs frozen arms) | `slurm_scripts/submit_backbone_ablation.sh` — only after single-arm training is stable |
+| **P6** | Backbone A/B (DINOv2-scale vs frozen runs) | `slurm_scripts/submit_backbone_ablation.sh` — only after single-run training is stable |
 
 ---
 
@@ -719,7 +719,7 @@ sbatch slurm_scripts/train_hierarchical_flow_matching.sh
 ├── slurm_scripts/
 │   ├── train_hierarchical_flow_matching.sh       ← launcher; defaults: VAE v3, SLOTS_PER_PHYTOMER=10, BACKBONE_LR_RATIO=0.3
 │   ├── generate_helios_dataset_jobs.sh           ← full pipeline: XML synth + cache (+ pkt/latent) in one pass
-│   └── submit_backbone_ablation.sh               ← A/B dispatcher (DAP-spread arms, sequential chain)
+│   └── submit_backbone_ablation.sh               ← A/B dispatcher (DAP-spread runs, sequential chain)
 ├── dataset/
 │   ├── helios_data/cowpea/                       ← 100,000 XML files (complete)
 │   ├── cache/cowpea_curv26/                      ← 100,000 cached .pt (image+nodes+phytomer_ids, complete)

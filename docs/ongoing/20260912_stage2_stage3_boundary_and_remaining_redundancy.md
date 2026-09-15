@@ -485,7 +485,7 @@ This is worth adopting for three separate reasons. It takes parent coverage from
    mean, with or without GT nodes as conditioning. With GT geometry the predicted latent is worth 2-3 IoU points over
    a constant latent; the GT latent is worth 33-38. Cause consistent with the numbers: the latent's per-dim std
    (≈0.41) is small against unit noise, so the velocity loss is mostly noise prediction and sits at the unconditional
-   floor (~0.16-0.17). Levers, in order: `--render_to_latent` (render loss into the latent block, arm queued), a
+   floor (~0.16-0.17). Levers, in order: `--render_to_latent` (render loss into the latent block, run queued), a
    unit-variance latent scale for the flow, t sampling toward 0. `--stage3_gt_nodes` (teacher forcing) runs as the
    control for "node error starves the latent".
 6. **[IMPLEMENTED 2026-09-15 morning, `--latent_norm` / `LATENT_NORM=1`]** The flow matches the per-dim
@@ -912,10 +912,10 @@ output  nodes + packets -> frozen PhytomerVAE -> assembly -> stem/leaf IK -> Hel
 
 | change | evidence | status |
 | :--- | :--- | :--- |
-| Stage 3 generates child geometry against the fixed parent | position is the first-order error (pos<-GT +10-14 IoU); the geometry arm has the best nodes (4.5 cm, 29% coverage) and strict P 33.9 | `STAGE3_GEOMETRY=1` |
+| Stage 3 generates child geometry against the fixed parent | position is the first-order error (pos<-GT +10-14 IoU); the geometry run has the best nodes (4.5 cm, 29% coverage) and strict P 33.9 | `STAGE3_GEOMETRY=1` |
 | standardized latent | latent carries no per-node information (R^2 ~ 0); per-dim sigma 0.18 buries the flow loss in noise prediction; Option B's one real asset | `LATENT_NORM=1` |
 | render loss into the latent | GT latent is worth +33-38 IoU; the flow loss alone never rewards per-node conditioning | `RENDER_TO_LATENT=1` |
-| clean parent conditioning + jitter | GT-node conditioning lifts latent R^2 to 0.41; pure teacher forcing has exposure bias | parent jitter 1.5 cm / 5% substitution already in the geometry arm |
+| clean parent conditioning + jitter | GT-node conditioning lifts latent R^2 to 0.41; pure teacher forcing has exposure bias | parent jitter 1.5 cm / 5% substitution already in the geometry run |
 | coverage loss + existence calibration | canopy hull 0.5-0.7x GT, only 25% of GT phytomers within 3 cm of a node, 55-64 of 73 active | `COVERAGE_WEIGHT=1.0 EXIST_COUNT_WEIGHT=0.5` (10:05) |
 | multi-zoom node tokens | DAP <= 15 IoU 1-15% while the GT-substituted ceiling is 44-88%: representable, unseen at 1x 128 px | `MULTIZOOM=1` (10:05) |
 
