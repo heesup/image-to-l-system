@@ -916,11 +916,20 @@ output  nodes + packets -> frozen PhytomerVAE -> assembly -> stem/leaf IK -> Hel
 | standardized latent | latent carries no per-node information (R^2 ~ 0); per-dim sigma 0.18 buries the flow loss in noise prediction; Option B's one real asset | `LATENT_NORM=1` |
 | render loss into the latent | GT latent is worth +33-38 IoU; the flow loss alone never rewards per-node conditioning | `RENDER_TO_LATENT=1` |
 | clean parent conditioning + jitter | GT-node conditioning lifts latent R^2 to 0.41; pure teacher forcing has exposure bias | parent jitter 1.5 cm / 5% substitution already in the geometry arm |
-| coverage loss + existence calibration | canopy hull 0.5-0.7x GT, only 25% of GT phytomers within 3 cm of a node, 55-64 of 73 active | to do |
-| multi-zoom node tokens | DAP <= 15 IoU 1-15% while the GT-substituted ceiling is 44-88%: representable, unseen at 1x 128 px | to do |
+| coverage loss + existence calibration | canopy hull 0.5-0.7x GT, only 25% of GT phytomers within 3 cm of a node, 55-64 of 73 active | `COVERAGE_WEIGHT=1.0 EXIST_COUNT_WEIGHT=0.5` (11:40) |
+| multi-zoom node tokens | DAP <= 15 IoU 1-15% while the GT-substituted ceiling is 44-88%: representable, unseen at 1x 128 px | `MULTIZOOM=1` (11:40) |
+
+All six pieces are implemented (commit after `b722a40`): coverage = one-sided Chamfer GT centre -> nearest active node
+(smooth-L1, 2 cm), count = |sum sigmoid(exist) - N_gt| / N_gt, multizoom = the four cache zoom levels through the frozen
+backbone in one batch, level-major tokens with a learned level embedding in Stage 2/3, node-local token from the finest
+crop containing the node. Smoke runs (96 samples, one epoch): Cov 0.03-0.04 (3-4 cm), Cnt 0.6 -> 1.2 (the soft count
+over-counts low-probability slots; the loss pushes them down), multizoom trains and evaluates with 5 new zero-init
+parameters. Cost: four backbone forwards per step (frozen ViT-S at 128 px).
 
 Chain on the 2-GPU slot after the baseline (15:53): `38274220` latent_norm (46-80) -> `38274221` scheduled TF (46-75) ->
 `38274222` render->latent (46-70) -> `38274224` **combination** (geometry ep78 + latent_norm + render->latent, 34 epochs).
+-> **`hfm_v10` (5th, after `38274224`): the full v10** = combination + multizoom + coverage 1.0 + count 0.5, from
+geometry ep78, 34 epochs (`hierarchical_fm_v10/`).
 Judge by the strict 256 px protocol P, node coverage / hull ratio and per-node latent R^2, not the in-training IoU.
 
 ## 3. Proposed next step B: the internode redundancy that's STILL open at the packet level
