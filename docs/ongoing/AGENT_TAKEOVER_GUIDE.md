@@ -201,8 +201,8 @@ loss starts high (fresh geometry dims, ~12-20) and should fall within the first 
 | arm | where | log / checkpoints | flag |
 | :--- | :--- | :--- | :--- |
 | baseline (latent-only Stage 3) | cluster `38257989`, 2 GPU | `slurm_scripts/logs/hierarchical_fm_38257989.log`, `hierarchical_fm_v9/` | — |
-| geometry | local 1 GPU | `slurm_scripts/logs/local_s3geom_ab2.log`, `hierarchical_fm_v9_s3geom/`, panels `run_local_20260914_164059/` | `STAGE3_GEOMETRY=1` |
-| gt_nodes (teacher forcing) | local 1 GPU, started 17:07 | `slurm_scripts/logs/local_gtnodes_ab.log`, `hierarchical_fm_v9_gtnodes/`, panels `run_local_20260914_170731/` | `STAGE3_GT_NODES=1` |
+| geometry (stopped 10:55 at ep80) | local 1 GPU | `slurm_scripts/logs/local_s3geom_ab2.log`, `hierarchical_fm_v9_s3geom/`, panels `run_local_20260914_164059/` | `STAGE3_GEOMETRY=1` |
+| gt_nodes (teacher forcing, stopped 10:55 at ep78) | local 1 GPU, started 17:07 | `slurm_scripts/logs/local_gtnodes_ab.log`, `hierarchical_fm_v9_gtnodes/`, panels `run_local_20260914_170731/` | `STAGE3_GT_NODES=1` |
 | **10% chain** (all: `MAX_TRAIN_SAMPLES=10000 EVAL_SET_FILE=hierarchical_fm_v9/eval_set.json HOLDOUT_PER_BUCKET=2`, six independent 1-GPU jobs on geminigrp `gpu-6000_ada-h` — Heesup: up to 8 high-priority GPUs there — first started 10:32 on gpu-10-54, the rest as GPUs free up (baseline ends 15:53; gpu-10-50 draining with 3 idle GPUs), ~2 min/epoch, 50 epochs each) | `38274493` baseline-on-10% → `38274494` `LATENT_NORM=1` → `38274495` scheduled TF (p 0.5, jitter 1 cm) → `38274496` `RENDER_TO_LATENT=1` → `38274497` combination (geometry ep78 + latent_norm + render→latent) → `38274498` v10 full (+ `MULTIZOOM=1 COVERAGE_WEIGHT=1.0 EXIST_COUNT_WEIGHT=0.5`) | `slurm_scripts/logs/hierarchical_fm_<job>.log`, `diffusion_based/checkpoints/sub10_{base,lnorm,stf,r2l,combo,v10}/` | see §2.7 of the design doc |
 
 | epoch | baseline IoU % | geometry IoU % | gt_nodes IoU % |
@@ -392,6 +392,15 @@ exclusion). The point: the baseline saw each of its 100k plants 140 times and st
 limit; 10k plants answer "can this structure memorize the data at all?" ten times faster, and the held-out line tells
 whether what it learns transfers. If the 10% runs reach 70–80% on the training plants the bottleneck is
 optimization/scale; if not, it is the structure/loss (the current diagnosis). The winner gets the full data.
+**10:55 — the two local full-data arms were stopped on Heesup's request** (geometry at epoch 80, last checkpoint
+`hierarchical_fm_v9_s3geom/hierarchical_fm_epoch_080.pt`; gt_nodes at epoch 78, last checkpoint
+`hierarchical_fm_v9_gtnodes/hierarchical_fm_epoch_075.pt`; both had answered their questions) and this node's GPU now runs
+the two 10% arms that could not get a cluster GPU: **combination** (`slurm_scripts/logs/local_sub10_combo.log`,
+`sub10_combo/`, panels `run_local_20260915_105522/`) and **v10 full** (`local_sub10_v10.log`, `sub10_v10/`,
+`run_local_20260915_105524/`), both from geometry ep78 with `LATENT_NORM=1 RENDER_TO_LATENT=1` (+ `MULTIZOOM=1
+COVERAGE_WEIGHT=1.0 EXIST_COUNT_WEIGHT=0.5` for v10), sharing one Ada GPU. Their cluster copies were cancelled. Heesup
+also opened `jmearlesgrp`'s `gpum` partition (and the association lists `gpuh`, `gpu-a100-h`), but at 10:50 every one of
+those nodes was RAM-blocked by other users' jobs, and a job cannot list several partitions under this association.
 **`low` cannot run our arms now (10:00)**: its GPU nodes have idle A100/H100s but their RAM is fully allocated by other
   users' jobs (5–13 GB free per node) and one training needs ~15 GB (6 GB main + 8 workers × 1.1 GB). The two low jobs
   were cancelled and the three arms chained on the baseline's slot: `38274220` latent_norm (46–80) → `38274221`
