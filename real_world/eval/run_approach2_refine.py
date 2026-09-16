@@ -60,7 +60,8 @@ _ZOOM_TO_CHANNEL = {1.0: 3, 2.0: 7, 4.0: 11, 8.0: 15}
 
 def refine_one(model, pvae, renderer, item, pos0, rot, scale0, lat0, exist, par, parent_idx, M,
                 dev, steps, opt_set, lrs, target_zooms, reg_scale, reg_latent, reg_pos, no_depth_loss,
-                recompute_rot, keep_best, scale_clip_mult=0.0, scale_abs_max=0.0):
+                recompute_rot, keep_best, scale_clip_mult=0.0, scale_abs_max_len=0.0, scale_abs_max_rad=0.0,
+                return_state=False):
     live_m = exist > 0.5
     has_par_m = parent_idx >= 0
     pos = pos0.clone().requires_grad_("pos" in opt_set)
@@ -130,23 +131,41 @@ def refine_one(model, pvae, renderer, item, pos0, rot, scale0, lat0, exist, par,
         if scale_clip_mult > 0:
             with torch.no_grad():
                 scale.clamp_(min=scale0 * (1.0 / scale_clip_mult), max=scale0 * scale_clip_mult)
-        if scale_abs_max > 0:
+        if scale_abs_max_len > 0 or scale_abs_max_rad > 0:
             # 2026-09-16: on the AgML (box-only, no seg mask) source, scale_clip_mult=1.5 -- even 1.1 -- was
             # not enough on 5/6 test plants: it multiplies whatever the (sometimes severely undersized) cold
             # start already was, so a MULTIPLICATIVE bound on a very wrong scale can still land visually large.
-            # This is an ABSOLUTE ceiling (same units as scale0/the packet's own scale field) applied on top,
-            # independent of how small the cold start was. Not yet calibrated against a real organ-size
-            # measurement -- pick a value from inspecting scale0 on a few plants of the source in use, or
-            # tighten until inflation stops on a held-out sample the way 2026-09-15's scale_clip_mult=1.5 was.
+            # These are ABSOLUTE ceilings (FM units, same as scale0/the packet's own scale field), applied on
+            # top, independent of how small the cold start was. Calibrated by directly measuring scale0's three
+            # components ([length, radius, unused]) on live (exist>0.5) organs across 20 AgML cold-start plants:
+            # length in [0.48, 4.12] FM (matches the GT training ceiling of ~4.0 almost exactly), radius in
+            # [-0.11, 0.18] FM -- an order of magnitude smaller, so one scalar cap across both was wrong (the
+            # v1 scaffolding's mistake). The wide, sign-flipping range seen in an earlier informal check
+            # (-2.3 to 2.6) turned out to come from non-existent/padding slots, not live organs, once measured
+            # per-component with a live mask -- so a per-component ceiling, plus reusing phytomer_scale()'s own
+            # magnitude floors (0.25 length / 0.025 radius, diffusion_based/dataset/phytomer_packets.py) as a
+            # floor here too, guards against Adam pushing a live organ's scale negative (a degenerate/mirrored
+            # mesh, a second plausible inflation contributor) without touching the "unused" 3rd column, which
+            # stays tightly clustered near 1.0 regardless (not the inflation channel).
             with torch.no_grad():
-                scale.clamp_(max=scale_abs_max)
+                if scale_abs_max_len > 0:
+                    scale[..., 0].clamp_(min=0.25, max=scale_abs_max_len)
+                if scale_abs_max_rad > 0:
+                    scale[..., 1].clamp_(min=0.025, max=scale_abs_max_rad)
     if keep_best:
         with torch.no_grad():
             pos, scale, lat = best[1], best[2], best[3]
     with torch.no_grad():
         rot_c, par_c = _rot_par(pos, roll_v)
         parts1 = plant_from_nodes(pvae, pos, rot_c, scale, lat, exist, par_c, M)
-    return parts1, float((pos - pos0).norm(dim=-1).mean() * 100), best[4]
+    moved = float((pos - pos0).norm(dim=-1).mean() * 100)
+    if return_state:
+        # the optimized state itself, for callers that need to re-decode it differently -- e.g. an
+        # XML export, which needs the shoot structure plant_from_nodes flattens away
+        # (real_world/dataset/helios_cold_start.part_tensor_with_shoots)
+        return parts1, moved, best[4], (pos.detach(), rot_c.detach(), scale.detach(), lat.detach(),
+                                         exist.detach(), par_c.detach())
+    return parts1, moved, best[4]
 
 
 def main():
@@ -165,12 +184,19 @@ def main():
     ap.add_argument("--weight_decay", type=float, default=1e-4)
     ap.add_argument("--reg_scale", type=float, default=5.0)
     ap.add_argument("--reg_latent", type=float, default=0.5)
-    ap.add_argument("--scale_abs_max", type=float, default=0.0,
-                    help="Hard ABSOLUTE ceiling on scale (same units as the packet's scale field), applied "
-                         "after --scale_clip_mult every step; 0 = off. Unlike the multiplicative clip, this "
-                         "does not scale with how wrong the cold start already was -- added 2026-09-16 after "
-                         "scale_clip_mult alone (even at 1.1x) failed to stop inflation on 5/6 AgML test plants. "
-                         "Not pre-calibrated to a value; inspect scale0 on a few plants of the source in use.")
+    ap.add_argument("--scale_abs_max_len", type=float, default=5.0,
+                    help="Hard ABSOLUTE ceiling on scale's length component (FM units, packet convention), "
+                         "applied after --scale_clip_mult every step; 0 = off. Unlike the multiplicative clip, "
+                         "this does not scale with how wrong the cold start already was -- added 2026-09-16 "
+                         "after scale_clip_mult alone (even at 1.1x) failed to stop inflation on 5/6 AgML test "
+                         "plants. Calibrated 2026-09-16 by measuring scale0 on live (exist>0.5) organs across "
+                         "20 AgML cold-start plants: length ranged [0.48, 4.12] FM units, matching the training "
+                         "GT ceiling (~4.0) almost exactly, so 5.0 gives headroom without allowing far-OOD growth.")
+    ap.add_argument("--scale_abs_max_rad", type=float, default=0.3,
+                    help="Same as --scale_abs_max_len for the radius component -- kept separate because radius's "
+                         "live range ([-0.11, 0.18] FM units, 2026-09-16 measurement) is an order of magnitude "
+                         "smaller than length's; one scalar cap across both components (the original v1 "
+                         "scaffolding) was wrong for this reason.")
     ap.add_argument("--scale_clip_mult", type=float, default=1.5,
                      help="hard multiplicative bound: after each step, clamp scale into "
                           "[sampled_scale/mult, sampled_scale*mult]; 0 = off. 2026-09-15 finding: "
@@ -223,7 +249,7 @@ def main():
             print(f"[{i+1}/{n}] {it['prefix']}: empty sample, skipping"); continue
         parts1, moved, data_loss = refine_one(model, pvae, renderer, it, pos0, rot, scale0, lat0, exist, par, parent_idx, M, dev,
                                     a.steps, opt_set, lrs, target_zooms, a.reg_scale, a.reg_latent, a.reg_pos, a.no_depth_loss,
-                                    a.recompute_rot, a.keep_best, a.scale_clip_mult, a.scale_abs_max)
+                                    a.recompute_rot, a.keep_best, a.scale_clip_mult, a.scale_abs_max_len, a.scale_abs_max_rad)
         print(f"[{i+1}/{n}] {it['prefix']}: pred_dap={pred_dap:.1f} nodes moved {moved:.1f} cm  data_loss={data_loss:.3f}")
 
         for tag, parts in (("before", parts0), ("after", parts1)):
