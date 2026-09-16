@@ -216,7 +216,8 @@ fi
 # preempted/requeued job on a preemptible partition (e.g. `low`) continues
 # instead of restarting; falls back to INIT_CHECKPOINT (or scratch) when none.
 if [ "${AUTO_RESUME:-0}" = "1" ]; then
-    LATEST_CKPT=$(ls -t "${OUTPUT_DIR}"/hierarchical_fm_epoch_*.pt 2>/dev/null | head -1)
+    # newest RAW checkpoint (the <checkpoint>_ema.pt files written with EMA_DECAY carry no optimizer state)
+    LATEST_CKPT=$(ls -t "${OUTPUT_DIR}"/hierarchical_fm_epoch_*.pt 2>/dev/null | grep -v '_ema\.pt$' | head -1)
     if [ -n "${LATEST_CKPT}" ]; then
         INIT_CHECKPOINT="${LATEST_CKPT}"
         RESUME=1
