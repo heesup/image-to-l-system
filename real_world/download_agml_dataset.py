@@ -12,9 +12,13 @@ integrated LED bars, identical 2592x2048 framing, confirmed by inspection 2026-0
 Davis-COWPEAMAGIC plot IDs and a full timestamp, like the Roboflow one — dap_from_timestamp.py's
 parser should extend to these once its regex is checked against the new filename format).
 
-No segmentation masks means the fine-tuned detector will be a plain YOLO11n (not -seg): every
-downstream consumer already has a graceful fallback for that (build_mask_pyramid returns None when
-det.mask is absent and callers fall back to depth-threshold silhouette; see real_plant_crop_utils.py).
+No segmentation masks means the fine-tuned detector will be a plain YOLO11n (not -seg). First test
+(2026-09-16, 6 plants) with no fallback silhouette at all reproduced the project's known "canvas
+inflation" failure on several plants worse than before -- without a real per-plant mask, Approach 2's
+Dice term had only the blurry Depth-Anything pseudo-CHM to threshold against, a much looser target
+than a tight instance mask. Fixed by giving `detect_plants` a bounding-box-rectangle mask fallback
+when the detector has no segmentation output (`bbox_to_mask` in real_plant_crop_utils.py) -- coarser
+than a real mask but still a real silhouette bound, unlike thresholding the pseudo-depth blob.
 
 Other bean/cowpea options in AgML's catalog as of 2026-09-16 (agml.data.public_data_sources()):
   - gemini_pod_detection_2022 (98 img), gemini_leaf_detection_2022 (25 img),
