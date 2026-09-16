@@ -73,7 +73,20 @@ it still costs the optimizer little more than filling a depth blob did. The exis
 (`scale_clip_mult=1.5`) multiplies an already very small cold-start scale, and 1.5x of "very small"
 can still read as "one large flat leaf" against a target this loose.
 
-## 5. Conclusion
+## 5. A tighter clip helps partially, not fully
+
+Re-ran Approach 2 with `--scale_clip_mult 1.1` (vs. the 1.5 default) on the same 6 crops
+(`docs/results/assets/20260916_agml_real_image_test_tightclip.png`): **1 of 6 plants** (DAP 77,
+the smallest cold start) now stays a small, plausible branching structure through refinement
+(nodes moved 0.8 cm, no inflation) — genuinely fixed. The other 5 still inflate into the same flat
+polygons, materially unchanged from `scale_clip_mult=1.5`. So a tighter multiplicative clip *does*
+help, confirming the mechanism, but is not sufficient by itself: 1.1x of an already-very-wrong
+cold-start scale can still land well past the plant's true size for the more severely undersized
+cases. This points toward an **absolute** scale cap (in metres, keyed to typical seedling organ
+size) rather than a multiplicative one (keyed to the cold start's own, sometimes very wrong, scale)
+as the more robust fix — not implemented here.
+
+## 6. Conclusion
 
 The AgML swap itself works cleanly: `gemini_plant_detection_2022` is a legitimate, well-matched
 real cowpea bounding-box source (same rig, same project, no licensing friction), the conversion and
