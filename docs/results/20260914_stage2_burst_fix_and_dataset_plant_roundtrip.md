@@ -428,6 +428,13 @@ GT 치환 표(전체 데이터 ep95 raw; 괄호는 10% v10 ep95): P 35.9 (33.6) 
 
 **렌더 손실 비율 커리큘럼 (09:45, 사용자 제안).** 학습 중 렌더 손실은 배치의 1/6만 보고 있는데, 이걸 학습이 진행되며 점점 키우면(`--render_fraction_final`, `--render_fraction_ramp_epochs`; 런처 `RENDER_FRACTION_FINAL`/`RENDER_FRACTION_RAMP_EPOCHS`) latent로 가는 렌더 gradient가 후반부에 강해질 것이라는 아이디어. 구현해서 10% 프로토콜로 0.167 → 0.5(15 epoch에 걸쳐, s3geom ep78 재개 직후부터)를 테스트 중이다(`sub10_v10_rampR`, 대기열). 다만 렌더는 이미 1/6에서 step 시간의 70%를 차지하므로(2026-09-09 프로파일), 비율을 올리면 epoch당 시간이 비례해서 늘어난다 — 신호량은 늘지만 "정보 자체가 이미지에 없다"는 구조적 병목이면 도움이 안 될 수 있다(아래 진단 참고).
 
+**진단: per-node 시각 conditioning은 죽어있지 않다 (10:05).** latent를 만드는 `PhytomerFlowMatchingDecoder.phytomer_projector`(zero-init residual MLP로 DINOv2 패치 특징을 노드별로 bilinear 샘플링)를 직접 뜯어봤다.
+
+- `fusion[-1]`(zero-init된 마지막 레이어) weight norm = **7.74** — 0에서 크게 벗어나 있다(첫 레이어 norm 13.79와 같은 자릿수). 학습이 이 경로를 그냥 방치한 게 아니라 실제로 키웠다.
+- 같은 식물 안에서 활성 노드들 사이의 특징 표준편차(cross-node std) ≈ **0.055**, 전체 특징 표준편차 ≈ 0.15 — 즉 노드 간 차이가 전체 스케일의 약 1/3만큼 존재한다. 노드별 conditioning이 상수로 붕괴된 것은 아니다.
+
+즉 "이미지 특징을 애초에 못 읽는다"는 가설은 기각된다 — projector는 노드마다 다른 신호를 만들어내고 있다. 그렇다면 R²≈0의 원인은 architecture가 아니라 **그 신호를 latent로 바꾸는 학습 목표(약한 flow-matching 손실 + 1/6만 보는 렌더 손실)가 그 신호를 latent 예측에 제대로 쓰도록 못 밀어붙인다** 쪽일 가능성이 높다. 렌더 비율 커리큘럼(위)이 이 가설에 대한 직접적인 검증이 된다: 신호가 있는데 못 쓰는 거라면 렌더 비율을 늘리는 게 통해야 하고, 그래도 안 바뀌면 latent 전용 conditioning 경로(별도 cross-attention/직접 latent 회귀 보조 손실)가 다음 단계다.
+
 **GT 치환 + 정제 (20:30, 전체 데이터 ep95 raw; `eval_gt_substitution_ablation.py --refine`).** 매칭된 노드에 GT 값을 넣은 뒤 같은 정제(기본 설정)를 걸면:
 
 | 변형 | 정제 전 | 정제 후 |
