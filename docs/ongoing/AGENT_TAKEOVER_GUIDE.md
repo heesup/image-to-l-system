@@ -417,7 +417,7 @@ optimizer post-step hook (`WeightEMA` in the trainer, `tests/test_weight_ema.py`
 `hierarchical_fm_epoch_NNN_ema.pt` next to every checkpoint with the same layout, so every eval script loads it
 unchanged; the EMA state also rides inside the raw checkpoint (`ema_state_dict`) for resume. Job `38279147`
 (`--dependency=afterany:38275054`, same OUTPUT_DIR, AUTO_RESUME) takes over the lineage the moment `38275054` ends:
-plan is to `scancel 38275054` right after its ep90 checkpoint is saved so nothing is lost. A detached loop scores each
+`38275054` was cancelled at 17:14 right after its ep90 checkpoint was saved and `38279147` resumed from that checkpoint at 17:15 (`EMA: decay 0.999 per step`), so the first EMA files are `hierarchical_fm_epoch_095_ema.pt` onward. A detached loop scores each
 `_ema.pt` (strict reading with `--tag ema` + default refinement; log `full_ema_readings.log` in the session scratchpad,
 JSONs in `slurm_scripts/logs/20260915/run_38275054/`). Raw-checkpoint readings so far: ep80 27.5 (refined 64.6),
 ep85 14.0 (refined 53.3).
