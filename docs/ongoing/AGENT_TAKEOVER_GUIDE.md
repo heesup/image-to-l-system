@@ -499,6 +499,16 @@ advancing mid-epoch-106 with no error. Killed (SIGTERM then SIGKILL on the survi
 foreground eval/refinement script on this local GPU while a local training run is live; the detached scorer loop
 (`cnt2_readings2.sh`, mostly idle/sleeping between checkpoints) is fine to keep running alongside it.
 
+**10:35 — stalled a SECOND time, at the identical step (Epoch 106 Step 625/3128), this time with no competing
+process on the GPU** (verified: only the training process held GPU compute, 104%% CPU on the main thread in `R`
+state -- genuinely spinning, not blocked in a driver/IO wait -- so this was not the same GPU-contention cause as
+the first stall). `py-spy` is not installed, so the exact hang site is unknown; killed and restarted again
+(`AUTO_RESUME` from ep105, log `slurm_scripts/logs/20260916/local_v10_cam_cnt2_full_r3.log`). Because the resume
+always restarts partway through the SAME epoch on the SAME (likely seeded) data order, a third stall at the same
+step would point to one specific batch/sample under `EXIST_COUNT_WEIGHT=2.0`'s render loss (e.g. a batch where a
+plant's existence collapses toward all-off, producing a degenerate empty mesh) rather than environment noise --
+worth installing `py-spy` and dumping the stack before restarting again if it recurs.
+
 **13:30 — training render loss now has the same camera option; run `sub10_v10_cam` launched (results report §11.10).**
 `--render_input_camera 1` (launcher `RENDER_INPUT_CAMERA=1`, commit `d492e01`): for every rendered plant the training
 loss now frames the prediction on the bbox centre of that plant's GT mesh (decoded from the batch `nodes` with
