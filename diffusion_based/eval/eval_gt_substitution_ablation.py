@@ -143,9 +143,9 @@ def main():
 
         from diffusion_based.eval.eval_test_time_refinement import refine_plant
 
-        refine_ns = SimpleNamespace(steps=a.refine_steps, lr_pos=3e-3, lr_scale=2e-2, lr_latent=2e-2, lr_roll=2e-2, reg_scale=5.0, reg_latent=0.5,
+        refine_ns = SimpleNamespace(steps=a.refine_steps, lr_pos=3e-3, lr_scale=2e-2, lr_latent=2e-2, lr_roll=2e-2, lr_exist=3e-2, reg_scale=5.0, reg_latent=0.5,
 
-                                    keep_best=True, target_zooms="1,2,4,8", plant_centered=False, recompute_rot=False)
+                                    reg_exist=1.0, keep_best=True, target_zooms="1,2,4,8", plant_centered=False, recompute_rot=False)
 
     variants = ["P", "pos", "topo", "rot", "scale", "latent", "prune",
                 "pos+topo", "pos+rot", "pos+scale", "pos+latent",

@@ -27,38 +27,71 @@ from diffusion_based.eval.eval_hierarchical_self_consistency import decode_predi
 from diffusion_based.eval.eval_gt_substitution_ablation import plant_from_nodes, render_depth, score
 
 
-def refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, scale0, lat0, exist, parent_idx, live_m, has_par_m, opt_set, a):
-    """Test-time refinement of one plant: Adam on node positions / scales / latents (and roll with --recompute_rot)
-    against the INPUT canopy height map channels (no ground truth), rendered in the input's camera frame.
+def refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, scale0, lat0, exist, parent_idx, live_m, has_par_m, opt_set, a, exist_prob0=None):
+    """Test-time refinement of one plant: Adam on node positions / scales / latents / existence / roll against the
+    INPUT canopy height map channels (no ground truth), rendered in the input's camera frame.
+
+    "roll" in opt_set optimises the twist angle around a FOREVER-FROZEN forward axis (derived once from pos0, the
+    same fixed axis+parent_pos the default pos/scale/latent-only refinement already uses) -- NOT `--recompute_rot`'s
+    axis, which re-derives the forward axis from the CURRENT (moving) node positions every step and measured worse
+    even with pos/scale/latent alone (2026-09-16: 33.5 -> 60.0 vs the frozen default's 67.6): re-deriving the axis
+    from a position that is itself being optimised compounds into a rough, unstable loss landscape. Freezing the
+    axis (and parent_pos, exactly as the default already does for position) removes that coupling so roll is a
+    small, independent search around a fixed frame. `--recompute_rot` is kept only as a slower legacy comparison
+    and is ignored whenever "roll" is requested.
+
+    "exist" in opt_set optimises each node's existence continuously: a sigmoid-parameterised probability (init from
+    `exist_prob0`, the model's own PRE-threshold sigmoid output -- not the >0.5 hard mask in `exist`, which cannot
+    be corrected once baked in, see 2026-09-15's --exist_thresh finding) multiplies that node's scale, so a
+    suppressed (false-positive) node shrinks to near-zero size and a promoted (false-negative, previously masked
+    out) node grows to full size -- both fully differentiable through the same render loss, instead of the boolean
+    `cls>0 & exist>0.5` gate inside plant_from_nodes (which has no gradient and can only ever narrow the node set
+    plant_from_nodes was handed, never revive a node the sampler masked off). A quadratic penalty toward
+    `exist_prob0` (a.reg_exist) keeps this from turning on every candidate slot.
+
     `a` carries steps, lr_*, reg_*, keep_best, target_zooms, plant_centered, recompute_rot (argparse namespace or
-    any object with those attributes). Returns (pos, scale, lat, roll, rot, parent_pos) of the refined plant."""
+    any object with those attributes). Returns (pos, scale, lat, roll, rot, parent_pos, final_input_loss, exist)."""
     dev = images.device
     # variables
     pos = pos0.clone().requires_grad_("pos" in opt_set); scale = scale0.clone().requires_grad_("scale" in opt_set); lat = lat0.clone().requires_grad_("latent" in opt_set)
     roll_v = roll.clone().requires_grad_("roll" in opt_set)
-    if "roll" in opt_set and not a.recompute_rot:
-        raise SystemExit("roll in --opt needs --recompute_rot")
+    fwd0 = derive_forward(pos0, parent_idx) if ("roll" in opt_set or a.recompute_rot) else None
+
+    exist_logit = None
+    if "exist" in opt_set:
+        assert exist_prob0 is not None, "exist in --opt needs exist_prob0 (the model's pre-threshold existence probability)"
+        exist_logit = torch.logit(exist_prob0.clamp(1e-3, 1 - 1e-3)).clone().requires_grad_(True)
 
     def _rot_par(pos_c, roll_c):
-        if not a.recompute_rot:
-            return rot, par
-        R = roll_to_matrix(derive_forward(pos_c, parent_idx), roll_c)
-        par_c = torch.where(has_par_m.unsqueeze(-1), pos_c[parent_idx.clamp(min=0)],
-                            torch.where(live_m.unsqueeze(-1), torch.zeros_like(pos_c), pos_c))
-        return matrix_to_rot6d(R), par_c
+        if "roll" in opt_set:
+            R = roll_to_matrix(fwd0, roll_c)   # frozen axis (derived once from pos0), never re-derived from moving pos_c
+            return matrix_to_rot6d(R), par     # parent_pos frozen too, matching the default pos-only path
+        if a.recompute_rot:
+            R = roll_to_matrix(derive_forward(pos_c, parent_idx), roll_c)
+            par_c = torch.where(has_par_m.unsqueeze(-1), pos_c[parent_idx.clamp(min=0)],
+                                torch.where(live_m.unsqueeze(-1), torch.zeros_like(pos_c), pos_c))
+            return matrix_to_rot6d(R), par_c
+        return rot, par
     params = [{"params": [pos], "lr": a.lr_pos}] if "pos" in opt_set else []
     if "scale" in opt_set: params.append({"params": [scale], "lr": a.lr_scale})
     if "latent" in opt_set: params.append({"params": [lat], "lr": a.lr_latent})
     if "roll" in opt_set: params.append({"params": [roll_v], "lr": a.lr_roll})
+    if "exist" in opt_set: params.append({"params": [exist_logit], "lr": a.lr_exist})
     opt = torch.optim.Adam(params)
     # input CHM at the two training zooms (cache channels 3 and 7)
     _zi = {1.0: 3, 2.0: 7, 4.0: 11, 8.0: 15}
     tgt = {float(z): images[0, _zi[float(z)]] for z in a.target_zooms.split(",") if images.shape[1] > _zi[float(z)]}
-    best = (float("inf"), pos0.clone(), scale0.clone(), lat0.clone(), roll.clone())
+    best = (float("inf"), pos0.clone(), scale0.clone(), lat0.clone(), roll.clone(), (exist_logit.detach().clone() if exist_logit is not None else None))
     for step in range(a.steps + (1 if a.keep_best else 0)):
         opt.zero_grad()
         rot_c, par_c = _rot_par(pos, roll_v)
-        parts = plant_from_nodes(pvae, pos, rot_c, scale, lat, exist, par_c, M)
+        if exist_logit is not None:
+            exist_p = torch.sigmoid(exist_logit)
+            scale_eff = scale * exist_p.clamp(min=1e-3).unsqueeze(-1)   # near-zero size, not a hard gate -- keeps gradients
+            exist_gate = torch.ones_like(exist_p)                       # let size alone decide visibility inside plant_from_nodes
+        else:
+            exist_p = None; scale_eff = scale; exist_gate = exist
+        parts = plant_from_nodes(pvae, pos, rot_c, scale_eff, lat, exist_gate, par_c, M)
         if parts.shape[0] == 0:
             break
         mesh = renderer.geo_builder.build_mesh_from_part_tensor(parts, device=dev)
@@ -82,18 +115,27 @@ def refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, sca
             loss = loss + a.reg_scale * ((scale - scale0) ** 2).mean()
         if a.reg_latent > 0:
             loss = loss + a.reg_latent * ((lat - lat0) ** 2).mean()
+        if exist_p is not None and a.reg_exist > 0:
+            loss = loss + a.reg_exist * ((exist_p - exist_prob0) ** 2).mean()
         if a.keep_best and float(loss) < best[0]:
-            best = (float(loss), pos.detach().clone(), scale.detach().clone(), lat.detach().clone(), roll_v.detach().clone())
+            best = (float(loss), pos.detach().clone(), scale.detach().clone(), lat.detach().clone(), roll_v.detach().clone(),
+                    (exist_logit.detach().clone() if exist_logit is not None else None))
         if step == a.steps:
             break
         loss.backward(); opt.step()
     if a.keep_best:
         with torch.no_grad():
             pos, scale, lat, roll_v = best[1], best[2], best[3], best[4]
+            if exist_logit is not None:
+                exist_logit = best[5]
     with torch.no_grad():
         rot_c, par_c = _rot_par(pos, roll_v)
+        if exist_logit is not None:
+            exist_p_final = torch.sigmoid(exist_logit)
+            scale = scale * exist_p_final.unsqueeze(-1)
+            exist = (exist_p_final > 0.5).float()
     final_loss = best[0] if a.keep_best else float(loss)
-    return pos.detach(), scale.detach(), lat.detach(), roll_v.detach(), rot_c, par_c, final_loss
+    return pos.detach(), scale.detach(), lat.detach(), roll_v.detach(), rot_c, par_c, final_loss, exist.detach() if torch.is_tensor(exist) else exist
 
 
 def main():
@@ -101,7 +143,7 @@ def main():
     ap.add_argument("--checkpoint", required=True)
     ap.add_argument("--eval_set", default="diffusion_based/checkpoints/hierarchical_fm_v9/eval_set.json")
     ap.add_argument("--steps", type=int, default=40)
-    ap.add_argument("--opt", default="pos,scale,latent", help="comma list from pos,scale,latent")
+    ap.add_argument("--opt", default="pos,scale,latent", help="comma list from pos,scale,latent,roll,exist (roll/exist: see refine_plant docstring)")
     ap.add_argument("--lr_pos", type=float, default=3e-3)
     ap.add_argument("--lr_scale", type=float, default=2e-2)
     ap.add_argument("--lr_latent", type=float, default=2e-2)
@@ -120,8 +162,10 @@ def main():
     ap.add_argument("--exist_thresh", type=float, default=0.5, help="node existence threshold applied to the sampled existence probabilities (default 0.5; the trained models activate ~60 of 73 GT nodes at 0.5, so a lower threshold adds nodes for the refinement to place)")
     ap.add_argument("--multi_start", action="store_true", help="refine twice, from the sampled latent and from the DAP-spanning mean latent, and keep the start with the lower final input loss")
     ap.add_argument("--init_mean_latent", action="store_true", help="start the refinement from the training-set mean latent (the model's latent_mu buffer) instead of the flow-sampled latent; on full data the sampled latent scored 6-7 points below the mean latent")
-    ap.add_argument("--recompute_rot", action="store_true", help="re-derive each node's rotation (forward axis from the CURRENT parent->node segment, plus roll) and parent position inside the loop instead of freezing them at the sampled node positions; the topology (parent lookup) stays the one chained once from the sampled positions. Required for roll in --opt.")
+    ap.add_argument("--recompute_rot", action="store_true", help="LEGACY, underperforms: re-derive each node's rotation from the CURRENT (moving) parent->node segment every step, instead of the frozen axis refine_plant uses by default and for --opt roll. Ignored whenever roll is in --opt.")
     ap.add_argument("--lr_roll", type=float, default=2e-2)
+    ap.add_argument("--lr_exist", type=float, default=3e-2)
+    ap.add_argument("--reg_exist", type=float, default=1.0, help="penalty weight on (existence_prob - sampled existence_prob)^2, keeps refinement from turning on every candidate slot")
     ap.add_argument("--reg_scale", type=float, default=5.0, help="penalty weight on (scale - sampled scale)^2, keeps leaves from inflating to fill the silhouette")
     ap.add_argument("--reg_latent", type=float, default=0.5, help="penalty weight on mean (latent - sampled latent)^2")
     ap.add_argument("--keep_best", action="store_true",
@@ -185,8 +229,8 @@ def main():
             tok = model.image_encoder(images); clue = model.probe_pred_dap(tok)
             co0 = model.coarse_stage(tok, capacity_mode="pred_phyto", pred_dap=clue); K = int(co0["active_k"]); co = model.coarse_stage(tok, active_k=K, pred_dap=clue)
             so = model.sample_ode(images=images, daps=None, num_steps=20, vae=ovae, phytomer_vae=pvae)
-            pos0 = so["phytomer_pos"][0].float(); exist = so["phytomer_existence"][0].float(); roll = so["phytomer_roll"][0].float()
-            exist = (exist > a.exist_thresh).float()
+            pos0 = so["phytomer_pos"][0].float(); exist_prob0 = so["phytomer_existence"][0].float(); roll = so["phytomer_roll"][0].float()
+            exist = (exist_prob0 > a.exist_thresh).float()
             ordn = co["phytomer_ordinal"][0].float(); base = co["phytomer_base_logits"][0].float()
             scale0 = (so.get("phytomer_scale") if so.get("phytomer_scale") is not None else co.get("phytomer_scale"))[0].float(); lat0 = so["pred_latent"][0].float()
             if a.init_mean_latent:
@@ -199,15 +243,15 @@ def main():
             live_m = exist > 0.5; has_par_m = parent_idx >= 0
             parts0 = plant_from_nodes(pvae, pos0, rot, scale0, lat0, exist, par, M)
             iou0, _ = score(render_depth(renderer, parts0, zoom, dev), gt_depth)
-        pos, scale, lat, roll_v, rot_c, par_c, loss_a = refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, scale0, lat0, exist, parent_idx, live_m, has_par_m, opt_set, a)
+        pos, scale, lat, roll_v, rot_c, par_c, loss_a, exist_after = refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, scale0, lat0, exist, parent_idx, live_m, has_par_m, opt_set, a, exist_prob0=exist_prob0)
         if a.multi_start:
             # second start from the DAP-spanning mean latent; keep whichever start ends with the lower INPUT loss
             lat_m = mean_lat.reshape(1, -1).expand_as(lat0).clone()
-            out_b = refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, scale0, lat_m, exist, parent_idx, live_m, has_par_m, opt_set, a)
+            out_b = refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, scale0, lat_m, exist, parent_idx, live_m, has_par_m, opt_set, a, exist_prob0=exist_prob0)
             if out_b[6] < loss_a:
-                pos, scale, lat, roll_v, rot_c, par_c, _ = out_b
+                pos, scale, lat, roll_v, rot_c, par_c, _, exist_after = out_b
         with torch.no_grad():
-            parts1 = plant_from_nodes(pvae, pos, rot_c, scale, lat, exist, par_c, M)
+            parts1 = plant_from_nodes(pvae, pos, rot_c, scale, lat, exist_after, par_c, M)
             iou1, _ = score(render_depth(renderer, parts1, zoom, dev), gt_depth)
             moved = float((pos - pos0).norm(dim=-1).mean() * 100)
             if a.save_renders:
@@ -223,8 +267,11 @@ def main():
                         os.path.join(a.save_renders, f"{i}_{name_}.png"))
                 json.dump({"index": i, "dap": dap, "iou_before": iou0, "iou_after": iou1, "jpeg": ds.samples[i].get("jpeg")},
                           open(os.path.join(a.save_renders, f"{i}_meta.json"), "w"))
-        rows.append({"index": i, "dap": dap, "iou_before": iou0, "iou_after": iou1, "mean_node_move_cm": moved})
-        print(f"idx {i:6d} DAP {dap:3d} IoU {iou0*100:5.1f} -> {iou1*100:5.1f}  (nodes moved {moved:.1f} cm)", flush=True)
+        n_before, n_after = int((exist > 0.5).sum()), int((exist_after > 0.5).sum())
+        rows.append({"index": i, "dap": dap, "iou_before": iou0, "iou_after": iou1, "mean_node_move_cm": moved,
+                    "n_nodes_before": n_before, "n_nodes_after": n_after})
+        extra = f"  nodes {n_before:>3d} -> {n_after:>3d}" if "exist" in opt_set else ""
+        print(f"idx {i:6d} DAP {dap:3d} IoU {iou0*100:5.1f} -> {iou1*100:5.1f}  (nodes moved {moved:.1f} cm){extra}", flush=True)
     b = np.array([r["iou_before"] for r in rows]); c = np.array([r["iou_after"] for r in rows]); d = np.array([r["dap"] for r in rows])
     print(f"MEAN over {len(rows)} plants: {b.mean()*100:.1f} -> {c.mean()*100:.1f}  (DAP>15: {b[d>15].mean()*100:.1f} -> {c[d>15].mean()*100:.1f}) | opt={a.opt} steps={a.steps}")
     if a.out:

@@ -191,7 +191,7 @@ echo "Per-GPU VRAM: ${VRAM_MB} MiB | Batch Mode: ${BATCH_ARG} (Target VRAM: ${TA
 echo "Phytomer Capacity: 512 phytomers x ${SLOTS_PER_PHYTOMER:-10} slots/phytomer"
 echo "Render gate: fast warmup bypass (epochs 1-3) -> active at epoch ${RENDER_GRAD_START_EPOCH:-11}"
 echo "Eval cadence: every ${EVAL_EVERY:-1} epochs OR every ${EVAL_MIN_INTERVAL_MINUTES:-30} min (time fallback)"
-echo "Render fraction: ${RENDER_FRACTION:-0.167} of batch per step (batch-relative; 2-scale pyramid 1x/2x — profiling 2026-09-09: render was 70% of step time)"
+echo "Render fraction: ${RENDER_FRACTION:-0.167} of batch per step (batch-relative; 2-scale pyramid 1x/2x — profiling 2026-09-09: render was 70% of step time)${RENDER_FRACTION_FINAL:+ -> ramping to ${RENDER_FRACTION_FINAL} over ${RENDER_FRACTION_RAMP_EPOCHS:-0} epochs}"
 echo "Flow granularity: ${FLOW_GRANULARITY:-phytomer} (hybrid decoupled: 128D VAE latent flow + Stage 2 3D scaffold)"
 echo "Phytomer VAE: ${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt}"
 echo "Pkt cache dir: ${PKT_CACHE_DIR:-dataset/cache/cowpea_curv26_pkt_v9} (missing samples fall back to on-the-fly) | PHYTOMER_TERMINAL_LAST=${PHYTOMER_TERMINAL_LAST}"
@@ -271,6 +271,7 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     --silhouette_weight 1.0 \
     --render_fraction "${RENDER_FRACTION:-0.167}" \
     --render_grad_start_epoch "${RENDER_GRAD_START_EPOCH:-11}" \
+    ${RENDER_FRACTION_FINAL:+--render_fraction_final "${RENDER_FRACTION_FINAL}" --render_fraction_ramp_epochs "${RENDER_FRACTION_RAMP_EPOCHS:-20}"} \
     --scale_weight "${SCALE_WEIGHT:-1.0}" \
     --save_every "${SAVE_EVERY}" \
     --eval_every "${EVAL_EVERY:-1}" \

@@ -1556,12 +1556,21 @@ def train_one_epoch(
     coverage_weight: float = 0.0,
     exist_count_weight: float = 0.0,
     render_grad_start_epoch: int = 4,
+    render_fraction_final: Optional[float] = None,
+    render_fraction_ramp_epochs: int = 0,
     **kwargs,
 ) -> Dict[str, float]:
     model.train()
     # Render-gradient epoch gate: skip render pass during initial warmup (epochs < render_grad_start_epoch);
     # from render_grad_start_epoch onwards, full differentiable optical grounding is engaged.
     render_grad = bool(epoch >= render_grad_start_epoch)
+    # Optional render-fraction curriculum (--render_fraction_final / --render_fraction_ramp_epochs, 2026-09-16):
+    # linearly ramp the fraction of the batch rendered per step from render_fraction up to render_fraction_final
+    # over render_fraction_ramp_epochs, starting the count at render_grad_start_epoch (before that render_grad is
+    # False anyway). Disabled (flat render_fraction) unless render_fraction_final is set.
+    if render_grad and render_fraction_final is not None and render_fraction_ramp_epochs > 0:
+        t = min(1.0, max(0.0, (epoch - render_grad_start_epoch) / float(render_fraction_ramp_epochs)))
+        render_fraction = render_fraction + t * (render_fraction_final - render_fraction)
     # Optional per-step LR warmup callback (set by main(); scales optimizer lrs linearly)
     lr_warmup_cb = kwargs.pop("lr_warmup_cb", None)
     total_loss = 0.0
@@ -1970,7 +1979,17 @@ def main():
                         help="Weight of the geometry block's velocity MSE next to the latent block's (--stage3_geometry).")
     parser.add_argument("--parent_substitution", type=float, default=0.05,
                         help="Stage 3 (parent, self) conditioning: fraction of nodes whose fixed parent is replaced by another matched node's GT position (the chain's parent-recovery failure rate once the ordinal works)")
-    parser.add_argument("--render_fraction", type=float, default=1.0 / 6.0, help="Fraction of the batch rendered differentiably per step (batch-relative: n_render = round(B * fraction), clamped [1, B]). 1/6 restores the per-sample photometric visit rate of the 2026-09-07 runs; 1.0 renders the full batch (requires small batch — check VRAM).")
+    parser.add_argument("--render_fraction", type=float, default=1.0 / 6.0, help="Fraction of the batch rendered differentiably per step (batch-relative: n_render = round(B * fraction), clamped [1, B]). 1/6 restores the per-sample photometric visit rate of the 2026-09-07 runs; 1.0 renders the full batch (requires small batch — check VRAM). Starting value of the curriculum when --render_fraction_ramp_epochs > 0.")
+    parser.add_argument("--render_fraction_final", type=float, default=None,
+                        help="If set together with --render_fraction_ramp_epochs > 0: the render fraction is linearly ramped from "
+                             "--render_fraction up to this value over that many epochs, starting at --render_grad_start_epoch. "
+                             "Rationale (2026-09-16): the render loss only touches --render_fraction of the batch and is the only "
+                             "channel that ties Stage 3's phytomer latent to per-node image content (latent probe R^2 ~ 0), but "
+                             "raising it for the WHOLE run multiplies step time (profiling: render was ~70%% of step time at 1/6); "
+                             "ramping keeps early epochs cheap (positions/existence still settling on the direct losses) and only "
+                             "pays the extra render cost once training has something worth rendering more of.")
+    parser.add_argument("--render_fraction_ramp_epochs", type=int, default=0,
+                        help="Epochs over which to ramp render_fraction -> render_fraction_final (0 = no ramp, flat --render_fraction throughout).")
     parser.add_argument("--ema_decay", type=float, default=0.0,
                         help="EMA decay of the model weights per optimizer step (0 = off). ~0.999 for 1000 steps/epoch, "
                              "~0.995 for 200. Saves <checkpoint>_ema.pt next to every checkpoint, same layout, for evaluation.")
@@ -2559,6 +2578,8 @@ def main():
             coverage_weight=args.coverage_weight,
             exist_count_weight=args.exist_count_weight,
             render_grad_start_epoch=args.render_grad_start_epoch,
+            render_fraction_final=args.render_fraction_final,
+            render_fraction_ramp_epochs=args.render_fraction_ramp_epochs,
             lr_warmup_cb=lr_warmup_cb,
         )
         lr_scheduler.step()
