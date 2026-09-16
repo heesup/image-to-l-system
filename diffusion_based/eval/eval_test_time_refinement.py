@@ -27,6 +27,74 @@ from diffusion_based.eval.eval_hierarchical_self_consistency import decode_predi
 from diffusion_based.eval.eval_gt_substitution_ablation import plant_from_nodes, render_depth, score
 
 
+def refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, scale0, lat0, exist, parent_idx, live_m, has_par_m, opt_set, a):
+    """Test-time refinement of one plant: Adam on node positions / scales / latents (and roll with --recompute_rot)
+    against the INPUT canopy height map channels (no ground truth), rendered in the input's camera frame.
+    `a` carries steps, lr_*, reg_*, keep_best, target_zooms, plant_centered, recompute_rot (argparse namespace or
+    any object with those attributes). Returns (pos, scale, lat, roll, rot, parent_pos) of the refined plant."""
+    dev = images.device
+    # variables
+    pos = pos0.clone().requires_grad_("pos" in opt_set); scale = scale0.clone().requires_grad_("scale" in opt_set); lat = lat0.clone().requires_grad_("latent" in opt_set)
+    roll_v = roll.clone().requires_grad_("roll" in opt_set)
+    if "roll" in opt_set and not a.recompute_rot:
+        raise SystemExit("roll in --opt needs --recompute_rot")
+
+    def _rot_par(pos_c, roll_c):
+        if not a.recompute_rot:
+            return rot, par
+        R = roll_to_matrix(derive_forward(pos_c, parent_idx), roll_c)
+        par_c = torch.where(has_par_m.unsqueeze(-1), pos_c[parent_idx.clamp(min=0)],
+                            torch.where(live_m.unsqueeze(-1), torch.zeros_like(pos_c), pos_c))
+        return matrix_to_rot6d(R), par_c
+    params = [{"params": [pos], "lr": a.lr_pos}] if "pos" in opt_set else []
+    if "scale" in opt_set: params.append({"params": [scale], "lr": a.lr_scale})
+    if "latent" in opt_set: params.append({"params": [lat], "lr": a.lr_latent})
+    if "roll" in opt_set: params.append({"params": [roll_v], "lr": a.lr_roll})
+    opt = torch.optim.Adam(params)
+    # input CHM at the two training zooms (cache channels 3 and 7)
+    _zi = {1.0: 3, 2.0: 7, 4.0: 11, 8.0: 15}
+    tgt = {float(z): images[0, _zi[float(z)]] for z in a.target_zooms.split(",") if images.shape[1] > _zi[float(z)]}
+    best = (float("inf"), pos0.clone(), scale0.clone(), lat0.clone(), roll.clone())
+    for step in range(a.steps + (1 if a.keep_best else 0)):
+        opt.zero_grad()
+        rot_c, par_c = _rot_par(pos, roll_v)
+        parts = plant_from_nodes(pvae, pos, rot_c, scale, lat, exist, par_c, M)
+        if parts.shape[0] == 0:
+            break
+        mesh = renderer.geo_builder.build_mesh_from_part_tensor(parts, device=dev)
+        loss = torch.zeros((), device=dev)
+        for z, t in tgt.items():
+            if a.plant_centered:
+                pred = renderer.forward(mesh, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, background="ground",
+                                        focus_plant=True, include_depth=True, differentiable=True, image_size=128,
+                                        zoom_factor=z, reference_window_size=1.2)[3]
+            else:
+                pred = renderer.render_batched([mesh], azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, differentiable=True,
+                                               image_size=128, zoom_factor=z, reference_window_size=1.2,
+                                               centers=([gt_center] if gt_center is not None else None))[0, 3]
+            canopy = (t > 0.005) | (pred > 0.005)
+            l1 = F.smooth_l1_loss(pred, t, beta=0.02, reduction="none")
+            loss_d = (l1 * canopy).sum() / canopy.sum().clamp(min=1)
+            pm = torch.sigmoid((pred - 0.005) * 100.0); gm = (t > 0.005).float()
+            dice = 1.0 - (2.0 * (pm * gm).sum() + 1e-4) / (pm.sum() + gm.sum() + 1e-4)
+            loss = loss + 0.5 * loss_d + 1.0 * dice
+        if a.reg_scale > 0:
+            loss = loss + a.reg_scale * ((scale - scale0) ** 2).mean()
+        if a.reg_latent > 0:
+            loss = loss + a.reg_latent * ((lat - lat0) ** 2).mean()
+        if a.keep_best and float(loss) < best[0]:
+            best = (float(loss), pos.detach().clone(), scale.detach().clone(), lat.detach().clone(), roll_v.detach().clone())
+        if step == a.steps:
+            break
+        loss.backward(); opt.step()
+    if a.keep_best:
+        with torch.no_grad():
+            pos, scale, lat, roll_v = best[1], best[2], best[3], best[4]
+    with torch.no_grad():
+        rot_c, par_c = _rot_par(pos, roll_v)
+    return pos.detach(), scale.detach(), lat.detach(), roll_v.detach(), rot_c, par_c
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", required=True)
@@ -129,65 +197,8 @@ def main():
             live_m = exist > 0.5; has_par_m = parent_idx >= 0
             parts0 = plant_from_nodes(pvae, pos0, rot, scale0, lat0, exist, par, M)
             iou0, _ = score(render_depth(renderer, parts0, zoom, dev), gt_depth)
-        # variables
-        pos = pos0.clone().requires_grad_("pos" in opt_set); scale = scale0.clone().requires_grad_("scale" in opt_set); lat = lat0.clone().requires_grad_("latent" in opt_set)
-        roll_v = roll.clone().requires_grad_("roll" in opt_set)
-        if "roll" in opt_set and not a.recompute_rot:
-            raise SystemExit("roll in --opt needs --recompute_rot")
-
-        def _rot_par(pos_c, roll_c):
-            if not a.recompute_rot:
-                return rot, par
-            R = roll_to_matrix(derive_forward(pos_c, parent_idx), roll_c)
-            par_c = torch.where(has_par_m.unsqueeze(-1), pos_c[parent_idx.clamp(min=0)],
-                                torch.where(live_m.unsqueeze(-1), torch.zeros_like(pos_c), pos_c))
-            return matrix_to_rot6d(R), par_c
-        params = [{"params": [pos], "lr": a.lr_pos}] if "pos" in opt_set else []
-        if "scale" in opt_set: params.append({"params": [scale], "lr": a.lr_scale})
-        if "latent" in opt_set: params.append({"params": [lat], "lr": a.lr_latent})
-        if "roll" in opt_set: params.append({"params": [roll_v], "lr": a.lr_roll})
-        opt = torch.optim.Adam(params)
-        # input CHM at the two training zooms (cache channels 3 and 7)
-        _zi = {1.0: 3, 2.0: 7, 4.0: 11, 8.0: 15}
-        tgt = {float(z): images[0, _zi[float(z)]] for z in a.target_zooms.split(",") if images.shape[1] > _zi[float(z)]}
-        best = (float("inf"), pos0.clone(), scale0.clone(), lat0.clone(), roll.clone())
-        for step in range(a.steps + (1 if a.keep_best else 0)):
-            opt.zero_grad()
-            rot_c, par_c = _rot_par(pos, roll_v)
-            parts = plant_from_nodes(pvae, pos, rot_c, scale, lat, exist, par_c, M)
-            if parts.shape[0] == 0:
-                break
-            mesh = renderer.geo_builder.build_mesh_from_part_tensor(parts, device=dev)
-            loss = torch.zeros((), device=dev)
-            for z, t in tgt.items():
-                if a.plant_centered:
-                    pred = renderer.forward(mesh, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, background="ground",
-                                            focus_plant=True, include_depth=True, differentiable=True, image_size=128,
-                                            zoom_factor=z, reference_window_size=1.2)[3]
-                else:
-                    pred = renderer.render_batched([mesh], azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, differentiable=True,
-                                                   image_size=128, zoom_factor=z, reference_window_size=1.2,
-                                                   centers=([gt_center] if gt_center is not None else None))[0, 3]
-                canopy = (t > 0.005) | (pred > 0.005)
-                l1 = F.smooth_l1_loss(pred, t, beta=0.02, reduction="none")
-                loss_d = (l1 * canopy).sum() / canopy.sum().clamp(min=1)
-                pm = torch.sigmoid((pred - 0.005) * 100.0); gm = (t > 0.005).float()
-                dice = 1.0 - (2.0 * (pm * gm).sum() + 1e-4) / (pm.sum() + gm.sum() + 1e-4)
-                loss = loss + 0.5 * loss_d + 1.0 * dice
-            if a.reg_scale > 0:
-                loss = loss + a.reg_scale * ((scale - scale0) ** 2).mean()
-            if a.reg_latent > 0:
-                loss = loss + a.reg_latent * ((lat - lat0) ** 2).mean()
-            if a.keep_best and float(loss) < best[0]:
-                best = (float(loss), pos.detach().clone(), scale.detach().clone(), lat.detach().clone(), roll_v.detach().clone())
-            if step == a.steps:
-                break
-            loss.backward(); opt.step()
-        if a.keep_best:
-            with torch.no_grad():
-                pos, scale, lat, roll_v = best[1], best[2], best[3], best[4]
+        pos, scale, lat, roll_v, rot_c, par_c = refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, scale0, lat0, exist, parent_idx, live_m, has_par_m, opt_set, a)
         with torch.no_grad():
-            rot_c, par_c = _rot_par(pos, roll_v)
             parts1 = plant_from_nodes(pvae, pos, rot_c, scale, lat, exist, par_c, M)
             iou1, _ = score(render_depth(renderer, parts1, zoom, dev), gt_depth)
             moved = float((pos - pos0).norm(dim=-1).mean() * 100)

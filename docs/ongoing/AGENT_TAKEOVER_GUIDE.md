@@ -409,6 +409,14 @@ information yet. The standardized-latent and render→latent runs were cancelled
 in their place (`38274747` render fraction 1.0, `38274748` lr 2e-4, both from geometry ep78) — **but the freed GPUs were
 taken at once by other groups' queued jobs on the shared Ada node** (js2552 ×2 running, 4 more pending), so they wait.
 Lesson: on `gpu-6000_ada-h` a cancelled job's GPU does not come back to us; keep runs going until their budget ends.
+**20:30 — refinement on GT-substituted variants: the gap inside refinement is the latent, not the nodes (results report §11.10).**
+`eval_gt_substitution_ablation.py --refine P,pos,rot,pos+rot,scale,ALL-latent,ALL` (calls
+`eval_test_time_refinement.refine_plant`, the loop factored out of the script; default run re-verified 36.1 → 65.7).
+Full-data ep95 raw: P 37.8 → 65.1 refined; GT pos 67.1, GT rot 65.6, GT pos+rot 67.5, GT scale 67.1, ALL-latent 68.6,
+ALL 77.0 (78.6 unrefined). GT node geometry on the matched nodes adds only 3.5 points after refinement; the GT latent
+adds 10 — the top-view CHM does not constrain leaf shape/orientation enough for the optimiser to find it. Young plants
+are the exception (P+refine 26.9 vs ALL+refine 59.0): there the nodes are the bottleneck.
+
 **19:20 — second full-data run, local: existence-count weight 2.0 (`hierarchical_fm_v10_cam_cnt2`).**
 Every inference-side lever is now exhausted (steps, learning rates, prior strength, rotation/roll, zoom targets,
 mean latent, existence threshold) and the remaining error is the network's existence deficit (~60 of 73 GT nodes

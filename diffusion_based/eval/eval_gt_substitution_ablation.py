@@ -92,6 +92,9 @@ def main():
     ap.add_argument("--no_teacher_force", action="store_true",
                     help="Sample with Stage 2's own nodes even for a --stage3_gt_nodes checkpoint (the deployable protocol).")
     ap.add_argument("--tag", default="", help="Suffix for the output JSON name (e.g. 'tf' / 'notf').")
+    ap.add_argument("--refine", default="", help="comma list of variants to ALSO run through test-time refinement (eval_test_time_refinement.refine_plant, "
+                                                  "default settings: input camera, prior 5/0.5, four zoom targets, keep_best); reported as '<variant>+refine'")
+    ap.add_argument("--refine_steps", type=int, default=40)
     ap.add_argument("--self_cond_passes", type=int, default=1,
                     help="Sample N times, feeding each pass's refined nodes (pos/roll/scale) back as Stage 3's conditioning "
                          "for the next (2-pass self-conditioning; needs a --stage3_geometry checkpoint to change anything).")
@@ -129,6 +132,20 @@ def main():
     idxs = json.load(open(es_path))["indices"]
     out_dir = a.out_dir or os.path.dirname(ckpt_path)
     os.makedirs(out_dir, exist_ok=True)
+
+    refine_list = [x for x in a.refine.split(",") if x]
+
+    refine_ns = None
+
+    if refine_list:
+
+        from types import SimpleNamespace
+
+        from diffusion_based.eval.eval_test_time_refinement import refine_plant
+
+        refine_ns = SimpleNamespace(steps=a.refine_steps, lr_pos=3e-3, lr_scale=2e-2, lr_latent=2e-2, lr_roll=2e-2, reg_scale=5.0, reg_latent=0.5,
+
+                                    keep_best=True, target_zooms="1,2,4,8", plant_centered=False, recompute_rot=False)
 
     variants = ["P", "pos", "topo", "rot", "scale", "latent", "prune",
                 "pos+topo", "pos+rot", "pos+scale", "pos+latent",
@@ -231,7 +248,7 @@ def main():
                 lat_err["pred_std"].append(pl.std(0)); lat_err["gt_std"].append(gl.std(0))
             matched = torch.zeros(K, dtype=torch.bool, device=dev); matched[src] = True
 
-            def build(sub):
+            def build_vars(sub):
                 pos, roll, ordn, base, scale, lat, ex = p_pos.clone(), p_roll.clone(), p_ord.clone(), p_base.clone(), p_scale.clone(), p_lat.clone(), p_exist.clone()
                 if "pos" in sub: pos[src] = g_pos[j]
                 if "topo" in sub: ordn[src] = g_depth[j]; base[src] = torch.where(g_depth[j] == 0, 8.0, -8.0)
@@ -242,6 +259,10 @@ def main():
                 rot, par = reconstruct_phytomer_rot(pos.unsqueeze(0), roll.unsqueeze(0), ordn.unsqueeze(0), base.unsqueeze(0), exist=(ex > 0.5).float().unsqueeze(0))
                 rot, par = rot[0].float(), par[0].float()
                 if "rot" in sub: rot[src] = g_refs[j]
+                return pos, rot, scale, lat, ex, par, roll
+
+            def build(sub):
+                pos, rot, scale, lat, ex, par, _ = build_vars(sub)
                 return plant_from_nodes(pvae, pos, rot, scale, lat, ex, par, M)
 
             row = {"index": i, "dap": dap, "K": K, "n_active": int((p_exist > 0.5).sum()), "n_gt": int(g_pos.shape[0]), "n_matched": int(src.numel())}
@@ -250,6 +271,19 @@ def main():
                 parts = build(sub)
                 iou, mae = score(render_depth(renderer, parts, zoom, dev), gt_depth_img)
                 row[v] = iou; row[v + "_mae"] = mae
+            if refine_list:
+                gt_center = None
+                if gt_parts.shape[0] > 0:
+                    gv = renderer.geo_builder.build_mesh_from_part_tensor(gt_parts, device=dev)["vertices"]
+                    gt_center = 0.5 * (gv.min(0).values + gv.max(0).values) if gv.shape[0] > 0 else None
+                for v in refine_list:
+                    pos_, rot_, scale_, lat_, ex_, par_, roll_ = build_vars(subset(v))
+                    with torch.enable_grad():
+                        pos_, scale_, lat_, _, rot_, par_ = refine_plant(renderer, pvae, M, images, gt_center, pos_, rot_, par_, roll_, scale_, lat_, ex_,
+                                                                          None, None, None, {"pos", "scale", "latent"}, refine_ns)
+                    parts = plant_from_nodes(pvae, pos_, rot_, scale_, lat_, ex_, par_, M)
+                    iou, mae = score(render_depth(renderer, parts, zoom, dev), gt_depth_img)
+                    row[v + "+refine"] = iou; row[v + "+refine_mae"] = mae
             rows.append(row)
             print(f"  DAP {dap:>3} K {K:>3} active {row['n_active']:>3} gt {row['n_gt']:>3} matched {row['n_matched']:>3} | " +
                   " ".join(f"{v} {row[v]*100:5.1f}" for v in ("P", "pos", "ALL")), flush=True)
@@ -257,7 +291,7 @@ def main():
     print("\n=== mean silhouette IoU (%) / depth MAE (cm) over", len(rows), "samples")
     print(f"{'variant':<11}{'IoU':>7}{'MAE':>7}   {'young<=15':>10}{'mid':>7}{'old>60':>8}")
     summary = {}
-    for v in variants:
+    for v in list(variants) + [v_ + "+refine" for v_ in refine_list]:
         ious = np.array([r[v] for r in rows]); maes = np.array([r[v + "_mae"] for r in rows]); daps = np.array([r["dap"] for r in rows])
         yb, mb, ob = daps <= 15, (daps > 15) & (daps <= 60), daps > 60
         summary[v] = {"iou": float(ious.mean()), "mae_cm": float(maes.mean() * 100),
