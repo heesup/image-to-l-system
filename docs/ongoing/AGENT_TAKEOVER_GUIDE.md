@@ -434,7 +434,19 @@ active) plus node error; lowering the threshold only adds false positives. The A
 RAM), so the free local GPU runs a full-data v10 + input camera + EMA lineage with `EXIST_COUNT_WEIGHT=2.0` (v10 used
 0.5), from the s3geom ep78 checkpoint, 1 GPU (~30 min/epoch), log
 `slurm_scripts/logs/20260915/local_v10_cam_cnt2_full.log`, checkpoints `diffusion_based/checkpoints/hierarchical_fm_v10_cam_cnt2/`.
-Read it against the cluster lineage (`38279147`) at matching epochs with the strict protocol and the refinement. First reading ep80 (2 epochs in): raw strict P 32.8 (meanlat 33.8, ALL 68.6), refined 35.0 → 64.9 — level with the cluster lineage at the same stage (cluster ep100 raw refined 34.9 → 64.8). ep85: raw refined 35.8 → 64.3, EMA P 33.0 / refined 63.5 — ep90: raw 34.9 / EMA 34.5, refined 63.9 / 65.8 — three checkpoints in, the doubled count weight has not changed the level (main lineage at the same stage: 35–39 / 65–68). ep95: EMA 36.6, refined 64.0 (raw in `cnt2_readings.log`) — still within the main lineage's band; stop it after ep100 if unchanged.
+
+
+**10:15 — `sub10_v10_rampR` (the render-fraction curriculum) launched via `srun --jobid=38340946 --overlap` into
+Heesup's own OnDemand desktop job's GPU allocation on `gpu-10-54`, at Heesup's instruction** (the desktop session
+holds 1 GPU / 32 CPU / 64 GB that a normal `sbatch` can't see as free since the node's GRES accounting already
+shows all 4 GPUs allocated node-wide; `srun --jobid=<job>` attaches a new step to an ALREADY-GRANTED allocation,
+which only the job's own owner can do -- this only works because 38340946 belongs to this account). Redirected
+from the pending `sbatch` job `38341387` (cancelled to avoid a duplicate run once a normal slot freed up).
+Log `slurm_scripts/logs/20260916/sub10_v10_rampR_srun.log`, checkpoints `diffusion_based/checkpoints/sub10_v10_rampR/`,
+`RENDER_GRAD_START_EPOCH=79` so the 0.167->0.5 ramp begins at this run's very first render-active epoch. The other
+queued job (`hfm_s10_v10rexist`, render_to_exist test) stays in the normal sbatch queue -- the desktop GPU is now
+busy with this run, so stacking a second training step on the same single GPU would risk the same contention stall
+`cnt2` hit earlier today.Read it against the cluster lineage (`38279147`) at matching epochs with the strict protocol and the refinement. First reading ep80 (2 epochs in): raw strict P 32.8 (meanlat 33.8, ALL 68.6), refined 35.0 → 64.9 — level with the cluster lineage at the same stage (cluster ep100 raw refined 34.9 → 64.8). ep85: raw refined 35.8 → 64.3, EMA P 33.0 / refined 63.5 — ep90: raw 34.9 / EMA 34.5, refined 63.9 / 65.8 — three checkpoints in, the doubled count weight has not changed the level (main lineage at the same stage: 35–39 / 65–68). ep95: EMA 36.6, refined 64.0 (raw in `cnt2_readings.log`) — still within the main lineage's band; stop it after ep100 if unchanged.
 
 **17:20 — refinement from the mean latent reaches the same 66.5 for both models (results report §11.10).**
 `eval_test_time_refinement.py --init_mean_latent` starts from the mean GT phytomer latent of 300 random training
