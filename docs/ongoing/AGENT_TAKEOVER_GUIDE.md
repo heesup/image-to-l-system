@@ -409,6 +409,15 @@ information yet. The standardized-latent and render→latent runs were cancelled
 in their place (`38274747` render fraction 1.0, `38274748` lr 2e-4, both from geometry ep78) — **but the freed GPUs were
 taken at once by other groups' queued jobs on the shared Ada node** (js2552 ×2 running, 4 more pending), so they wait.
 Lesson: on `gpu-6000_ada-h` a cancelled job's GPU does not come back to us; keep runs going until their budget ends.
+**17:20 — refinement from the mean latent reaches the same 66.5 for both models (results report §11.10).**
+`eval_test_time_refinement.py --init_mean_latent` starts from the mean GT phytomer latent of 300 random training
+plants across all growth stages (not the model's `latent_mu` buffer, which is gathered from the first plants in
+dataset order and starts at 9–12%): 10% v10 ep95 36.1 → 66.5 (sampled-latent start 67.6), full-data v10_cam ep90
+raw 35.5 → 66.5 (sampled start 57.3). So the flow-sampled latent adds nothing over the mean once refinement runs,
+and a checkpoint whose sampled latent is poor loses nothing. Deployable pipeline = Stage 2 nodes + mean latent +
+render refinement; the network's real contribution is node positions, existence and topology, which is where the
+remaining error (existence 60/73, node error 4–6 cm) lives.
+
 **16:30 — EMA weights for evaluation; full run continues as `38279147` with `EMA_DECAY=0.999`.**
 The full-data run's ep85 checkpoint scored strict P 14.0 while ep80 scored 27.5 and the in-training holdout went
 32.5 → 15.0 → 37.6 over epochs 84–86: checkpoints land on whatever state the last epoch left, and on full data the
