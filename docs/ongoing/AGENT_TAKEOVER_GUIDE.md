@@ -415,7 +415,7 @@ Readings over ep95–125 (strict P raw / EMA → refined): 35.9/35.1 → 66.3/64
 noisily (EMA 35 → 38), the refined level is flat at 65–68. ep128: raw 38.1 / EMA 37.7, refined 67.0 / 67.0. Since the
 slot on gpu-10-54 would otherwise go to other groups, the lineage continues (`AUTO_RESUME` from ep128, `EPOCHS=160`,
 same flags, EMA restored from the checkpoint) under job `38332343`, log `slurm_scripts/logs/20260916/hierarchical_fm_38332343.log` (the first attempt, `38332310`, resumed from `hierarchical_fm_epoch_128_ema.pt` because the launcher's AUTO_RESUME took the newest `hierarchical_fm_epoch_*.pt`, which the EMA files now match — no optimizer state, fresh warm-up; cancelled after 3 min, launcher fixed with `grep -v '_ema\.pt$'`, commit `ce8f150`);
-a detached loop scores its EMA files ep130–160 (`full_ema_readings2.log` in the session scratchpad).
+a detached loop scores its EMA files ep130–160 (`full_ema_readings2.log` in the session scratchpad). ep130 EMA: 37.5, refined 66.0.
 
 **20:30 — refinement on GT-substituted variants: the gap inside refinement is the latent, not the nodes (results report §11.10).**
 `eval_gt_substitution_ablation.py --refine P,pos,rot,pos+rot,scale,ALL-latent,ALL` (calls
