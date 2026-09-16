@@ -409,6 +409,14 @@ information yet. The standardized-latent and render→latent runs were cancelled
 in their place (`38274747` render fraction 1.0, `38274748` lr 2e-4, both from geometry ep78) — **but the freed GPUs were
 taken at once by other groups' queued jobs on the shared Ada node** (js2552 ×2 running, 4 more pending), so they wait.
 Lesson: on `gpu-6000_ada-h` a cancelled job's GPU does not come back to us; keep runs going until their budget ends.
+**2026-09-16 02:40 — full-data lineage reached ep128 (job `38279147` COMPLETED, 9 h 25 min); continued to ep160 as `38332310`.**
+Readings over ep95–125 (strict P raw / EMA → refined): 35.9/35.1 → 66.3/64.7, 34.5/35.1 → 64.8/66.2, 37.4/36.8 → 66.2/66.8,
+38.3/39.0 → 64.6/65.9, 35.4/35.9 → 65.4/66.7, 36.3/37.3 → 67.9/67.1, 34.3/38.3 → 66.8/67.6. Raw P drifts up slowly and
+noisily (EMA 35 → 38), the refined level is flat at 65–68. The ep128 raw and EMA files are being scored. Since the
+slot on gpu-10-54 would otherwise go to other groups, the lineage continues (`AUTO_RESUME` from ep128, `EPOCHS=160`,
+same flags, EMA restored from the checkpoint) under job `38332310`, log `slurm_scripts/logs/20260916/hierarchical_fm_38332310.log`;
+a detached loop scores its EMA files ep130–160 (`full_ema_readings2.log` in the session scratchpad).
+
 **20:30 — refinement on GT-substituted variants: the gap inside refinement is the latent, not the nodes (results report §11.10).**
 `eval_gt_substitution_ablation.py --refine P,pos,rot,pos+rot,scale,ALL-latent,ALL` (calls
 `eval_test_time_refinement.refine_plant`, the loop factored out of the script; default run re-verified 36.1 → 65.7).
