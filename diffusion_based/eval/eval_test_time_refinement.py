@@ -48,6 +48,7 @@ def main():
     ap.add_argument("--save_renders", default="", help="folder: save gt / before / after top-view renders (256 px PNG) per plant")
     ap.add_argument("--only", default="", help="comma-separated plant indices to process (default: the whole eval set)")
     ap.add_argument("--target_zooms", default="1,2,4,8", help="comma list of cache zoom levels (1,2,4,8) whose depth channels are the refinement targets; the 4x/8x levels add signal for plants that are only a few pixels wide at 1x/2x")
+    ap.add_argument("--exist_thresh", type=float, default=0.5, help="node existence threshold applied to the sampled existence probabilities (default 0.5; the trained models activate ~60 of 73 GT nodes at 0.5, so a lower threshold adds nodes for the refinement to place)")
     ap.add_argument("--init_mean_latent", action="store_true", help="start the refinement from the training-set mean latent (the model's latent_mu buffer) instead of the flow-sampled latent; on full data the sampled latent scored 6-7 points below the mean latent")
     ap.add_argument("--recompute_rot", action="store_true", help="re-derive each node's rotation (forward axis from the CURRENT parent->node segment, plus roll) and parent position inside the loop instead of freezing them at the sampled node positions; the topology (parent lookup) stays the one chained once from the sampled positions. Required for roll in --opt.")
     ap.add_argument("--lr_roll", type=float, default=2e-2)
@@ -115,6 +116,7 @@ def main():
             co0 = model.coarse_stage(tok, capacity_mode="pred_phyto", pred_dap=clue); K = int(co0["active_k"]); co = model.coarse_stage(tok, active_k=K, pred_dap=clue)
             so = model.sample_ode(images=images, daps=None, num_steps=20, vae=ovae, phytomer_vae=pvae)
             pos0 = so["phytomer_pos"][0].float(); exist = so["phytomer_existence"][0].float(); roll = so["phytomer_roll"][0].float()
+            exist = (exist > a.exist_thresh).float()
             ordn = co["phytomer_ordinal"][0].float(); base = co["phytomer_base_logits"][0].float()
             scale0 = (so.get("phytomer_scale") if so.get("phytomer_scale") is not None else co.get("phytomer_scale"))[0].float(); lat0 = so["pred_latent"][0].float()
             if a.init_mean_latent:

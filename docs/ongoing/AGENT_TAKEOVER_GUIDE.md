@@ -416,7 +416,7 @@ dataset order and starts at 9–12%): 10% v10 ep95 36.1 → 66.5 (sampled-latent
 raw 35.5 → 66.5 (sampled start 57.3). So the flow-sampled latent adds nothing over the mean once refinement runs,
 and a checkpoint whose sampled latent is poor loses nothing. Deployable pipeline = Stage 2 nodes + mean latent +
 render refinement; the network's real contribution is node positions, existence and topology, which is where the
-remaining error (existence 60/73, node error 4–6 cm) lives.
+remaining error (existence 60/73, node error 4–6 cm) lives. Lowering the existence threshold at inference does not help (`--exist_thresh` 0.3: 65.3, 0.4: 64.2 vs 67.6 at 0.5): the extra nodes are false positives the refinement cannot switch off, so the existence deficit is a training-side problem.
 
 **16:30 — EMA weights for evaluation; full run continues as `38279147` with `EMA_DECAY=0.999`.**
 The full-data run's ep85 checkpoint scored strict P 14.0 while ep80 scored 27.5 and the in-training holdout went
