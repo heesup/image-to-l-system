@@ -169,7 +169,7 @@ def main():
     ap.add_argument("--recompute_rot", action="store_true", help="LEGACY, underperforms: re-derive each node's rotation from the CURRENT (moving) parent->node segment every step, instead of the frozen axis refine_plant uses by default and for --opt roll. Ignored whenever roll is in --opt.")
     ap.add_argument("--lr_roll", type=float, default=2e-2)
     ap.add_argument("--lr_exist", type=float, default=3e-2)
-    ap.add_argument("--reg_exist", type=float, default=1.0, help="penalty weight on (existence_prob - sampled existence_prob)^2, keeps refinement from turning on every candidate slot")
+    ap.add_argument("--reg_exist", type=float, default=0.3, help="penalty weight on (existence_prob - sampled existence_prob)^2, keeps refinement from turning on every candidate slot")
     ap.add_argument("--reg_scale", type=float, default=5.0, help="penalty weight on (scale - sampled scale)^2, keeps leaves from inflating to fill the silhouette")
     ap.add_argument("--reg_latent", type=float, default=0.5, help="penalty weight on mean (latent - sampled latent)^2")
     ap.add_argument("--keep_best", action="store_true",
