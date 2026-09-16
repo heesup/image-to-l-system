@@ -420,7 +420,7 @@ unchanged; the EMA state also rides inside the raw checkpoint (`ema_state_dict`)
 `38275054` was cancelled at 17:14 right after its ep90 checkpoint was saved and `38279147` resumed from that checkpoint at 17:15 (`EMA: decay 0.999 per step`), so the first EMA files are `hierarchical_fm_epoch_095_ema.pt` onward. A detached loop scores each
 `_ema.pt` (strict reading with `--tag ema` + default refinement; log `full_ema_readings.log` in the session scratchpad,
 JSONs in `slurm_scripts/logs/20260915/run_38275054/`). Raw-checkpoint readings so far: ep80 27.5 (refined 64.6),
-ep85 14.0 (refined 53.3).
+ep85 14.0 (refined 53.3), ep90 28.9 (meanlat 35.9; on full data the sampled latent trails the mean latent by 6–7 points at every reading).
 
 **14:15 — scale-up phase: full-data v10 + input-camera run `38275054` on gpu-6000_ada-h (2 GPUs, 96 GB, 24 h).**
 The 10% protocol has done its job: every 10% variant converges within ~10 epochs and plateaus at strict P 33–36
