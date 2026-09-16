@@ -41,9 +41,14 @@ def _sample_name(plant_type: str, dap: int, seed: int, genotype: str = "") -> st
     return f"{plant_type}{gt_suffix}_dap{dap:03d}_seed{seed:02d}_caz000_h1.0_se045_saz180"
 
 
-def _complete(target_dir: str, name: str) -> bool:
-    return os.path.exists(os.path.join(target_dir, f"{name}_0000_rad.jpeg")) and \
-        os.path.exists(os.path.join(target_dir, f"{name}_0000_plant_0000.xml"))
+def _complete(target_dir: str, name: str, renderer: str = "radiation") -> bool:
+    """Is this sample already generated? The rendered image only counts when the chosen renderer
+    actually produces one -- `--renderer none` writes the structure XML alone (used when the plant is
+    wanted as geometry rather than as a training image, e.g. real_world/dataset/helios_cold_start.py),
+    and requiring a .jpeg there would re-run a ~20 s growth simulation on every call."""
+    if renderer not in ("none", "vis") and not os.path.exists(os.path.join(target_dir, f"{name}_0000_rad.jpeg")):
+        return False
+    return os.path.exists(os.path.join(target_dir, f"{name}_0000_plant_0000.xml"))
 
 
 def render_one(job_args):
@@ -51,7 +56,7 @@ def render_one(job_args):
     species_dir = os.path.join(output_dir, plant_type)
     name = _sample_name(plant_type, dap, seed, genotype)
     
-    if not overwrite and _complete(species_dir, name):
+    if not overwrite and _complete(species_dir, name, renderer):
         return {"plant_type": plant_type, "genotype": genotype, "dap": dap, "seed": seed, "status": "skip", "elapsed": 0.0}
 
     # Isolated temporary rendering folder per worker under <output_dir>/tmp/job_<id>/
@@ -96,7 +101,7 @@ def render_one(job_args):
         if result.returncode == 0:
             rad = os.path.join(gen_dir, f"{name}_0000_rad.jpeg")
             xml = os.path.join(gen_dir, f"{name}_0000_plant_0000.xml")
-            if (renderer == "vis" or os.path.exists(rad)) and os.path.exists(xml):
+            if (renderer in ("vis", "none") or os.path.exists(rad)) and os.path.exists(xml):
                 os.makedirs(species_dir, exist_ok=True)
                 for suffix in ("_0000_rad.jpeg", "_0000_vis.jpeg", "_0000_plant_0000.xml",
                                "_0000_masks.json", "_0000_camera.json", "_0000_params.json", "_0000_boxes.txt"):

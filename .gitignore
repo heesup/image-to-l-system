@@ -61,3 +61,13 @@ agent_temp/
 # Per-run training artifacts: self-consistency panels and the run.log symlink
 # live in slurm_scripts/logs/run_<jobid>/ beside each run's own log.
 slurm_scripts/logs/
+
+# Real-world (Roboflow) data + secrets — never commit the API key or downloaded imagery
+real_world/.env
+real_world/data/
+real_world/detector/runs/
+real_world/eval/output/
+*.env
+
+# Scratch images and ad-hoc debug output
+tmp/

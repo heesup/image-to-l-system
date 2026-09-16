@@ -1034,3 +1034,30 @@ def emit_part_tensor_with_shoot_meta(
                     rows.append(mirror.unsqueeze(0).cpu())
 
     return torch.cat(rows, dim=0)
+
+
+def part_tensor_with_shoots(phytomer_vae, pos, rot, scale, latent, exist, parent_pos, M,
+                             shoot_id, phytomer_idx) -> torch.Tensor:
+    """Decode nodes -> 14D part tensor the way the renderer does, but KEEPING shoot structure.
+
+    `plant_from_nodes` (diffusion_based/eval/eval_gt_substitution_ablation.py) flattens the kept
+    slots straight into rows, which is all the differentiable renderer needs. Anything exporting to
+    Helios XML needs more: `PartTensorTo40DConverter` rebuilds shoots by scanning rows in order and
+    splitting on ORGAN_SHOOT_META, so a flattened tensor exports every branch chained into one shoot
+    (see emit_part_tensor_with_shoot_meta above for the measured cost). This wraps that decode and
+    emits through it instead.
+
+    `shoot_id` / `phytomer_idx` come from `chain_phytomers`, which callers already run for topology.
+    """
+    # local imports: hierarchical_part_flow_matching imports this module, so a module-level import
+    # of apply_ref_for_flow would be circular.
+    from diffusion_based.models.hierarchical_part_flow_matching import apply_ref_for_flow
+
+    K = pos.shape[0]
+    out = phytomer_vae.decode(latent)
+    recon = denormalize_packet_scales(out["recon_packets"], scale)
+    pk = assemble_packets(recon, rot, parent_pos=parent_pos, centers=pos)
+    abs_pk = apply_ref_for_flow(pk.reshape(1, K, M, 26), pos.unsqueeze(0), rot.unsqueeze(0))[0]
+    cls = out["cls_logits"].reshape(K, M, 13).argmax(-1)
+    presence = (cls > 0) & (exist > 0.5).unsqueeze(-1)
+    return emit_part_tensor_with_shoot_meta(abs_pk, presence, pos, rot, shoot_id, phytomer_idx)

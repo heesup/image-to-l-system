@@ -346,7 +346,14 @@ class PartTensorTo40DConverter:
                 out_40d[idx, T_COL_EXISTENCE] = 1.0
                 out_40d[idx, T_COL_RESERVED] = 0.0
 
-                # Invert base rotation
+                # Invert base rotation. A shoot can arrive with no internode at all when the caller's
+                # plant is sparse -- a phytomer whose slot-0 internode failed the class filter still
+                # gets a SHOOT_META row from chain_phytomers/emit_part_tensor_with_shoot_meta. There
+                # is no frame to invert then, so the base rotation stays at zero rather than raising
+                # (IndexError on shoots[curr_sid][0], hit 2026-09-16 exporting a network cold start
+                # that reconstructed only 8 organs).
+                if not shoots[curr_sid]:
+                    continue
                 first_inode = shoots[curr_sid][0]
                 R_first = part_info[first_inode]["R"]
                 if curr_sid == 0:
@@ -655,7 +662,17 @@ class PartTensorTo40DConverter:
             shoot_row[T_COL_SHOOT_ID] = 0.0
             shoot_row[T_COL_PARENT_SHOOT_ID] = -1.0
             shoot_row[T_COL_ORGAN_TYPE] = float(ORGAN_SHOOT_META)
-            shoot_row[T_COL_SHOOT_TYPE] = 0.0  # unifoliate
+            # Read the shoot type off the data instead of assuming unifoliate. The XML writer caps a
+            # unifoliate shoot's petioles at one <leaf> each (`max_leaves = 1 if "unifoliate" in
+            # stl_str else 3`, plant_organ_array.py), so hard-coding 0 here silently dropped two of
+            # every three leaflets on any plant reaching this branch -- which is every plant decoded
+            # through phytomer packets, since packets carry organs but no shoot metadata. Measured on
+            # a Helios cowpea: 101 leaves survived the packet/VAE round trip intact and then left the
+            # writer as 34, one per petiole. More leaves than petioles means the petioles are
+            # carrying leaflets, i.e. trifoliate.
+            n_leaf = int((ot_all == ORGAN_LEAF).sum())
+            n_pet = int((ot_all == ORGAN_PETIOLE).sum())
+            shoot_row[T_COL_SHOOT_TYPE] = 1.0 if n_leaf > n_pet else 0.0
             shoot_row[T_COL_EXISTENCE] = 1.0
 
             # Dynamically align shoot yaw with petiole 0 heading
