@@ -8,7 +8,7 @@ using Matryoshka power-of-2 nested queries.
 
 import math
 import os
-from typing import Dict, Optional, Tuple, List
+from typing import Callable, Dict, Optional, Tuple, List
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -1769,6 +1769,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         vae: Optional[nn.Module] = None,
         phytomer_vae: Optional[nn.Module] = None,
         cond_override: Optional[Dict[str, torch.Tensor]] = None,
+        guidance_fn: Optional[Callable] = None,
     ) -> Dict[str, torch.Tensor]:
         """2nd-Order Heun Predictor-Corrector ODE Sampling.
 
@@ -1783,6 +1784,21 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         flow_granularity='phytomer': integrates the (B, K, 12+D) per-phytomer vector
         [base | rot | latent]; the refined phytomer rot is the reference frame for
         the relative packet (Option 1). `phytomer_vae` decodes the latent part.
+
+        guidance_fn (2026-09-16, flow_granularity='phytomer' only): optional per-step hook for
+        Diffusion-Posterior-Sampling-style reconstruction guidance -- steering the ODE trajectory
+        toward the input image DURING sampling (via gradients of a differentiable-render loss),
+        rather than the post-hoc Adam refinement of the FINAL sampled output that
+        eval_test_time_refinement.refine_plant already does. It does not touch the trained
+        weights (that would be a separate, unrolled-meta-training extension: differentiate a few
+        steps of refine_plant-style inner-loop optimization back into Stage 3's parameters,
+        MAML-style -- not implemented here). Called as
+        `v_1 = guidance_fn(model=self, x=x, v1=v_1, t=t_curr, dt=dt, step=step,
+        forward_kwargs=forward_kwargs, chain_parent_pos=chain_parent_pos)`
+        once per ODE step, in place of the network's own `v_1`; returning the unmodified `v1` makes
+        this a no-op (identical to guidance_fn=None). Left as a hook rather than an inline
+        implementation here because the guidance loss needs a renderer, a target image and a
+        frozen VAE -- eval-time dependencies this model class does not otherwise import.
         """
         B = images.shape[0]
         device = images.device
@@ -1871,6 +1887,9 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             else:
                 out_1 = self.fine_stage(noisy_fine_nodes=x, timesteps=t_tensor, **forward_kwargs)
             v_1 = out_1["pred_velocity"]
+            if guidance_fn is not None and self.flow_granularity == "phytomer":
+                v_1 = guidance_fn(model=self, x=x, v1=v_1, t=t_curr, dt=dt, step=step,
+                                  forward_kwargs=forward_kwargs, chain_parent_pos=chain_parent_pos)
 
             # Predictor step (Euler)
             x_pred = x + v_1 * dt
