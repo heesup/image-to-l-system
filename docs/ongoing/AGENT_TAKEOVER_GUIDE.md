@@ -509,6 +509,21 @@ step would point to one specific batch/sample under `EXIST_COUNT_WEIGHT=2.0`'s r
 plant's existence collapses toward all-off, producing a degenerate empty mesh) rather than environment noise --
 worth installing `py-spy` and dumping the stack before restarting again if it recurs.
 
+**11:19 -- stalled a THIRD time, at the identical step (Epoch 106 Step 625/3128), after ~19 min with no log
+advance while the main thread stayed at ~104%% CPU.** `py-spy` (installed after the second stall) needs ptrace
+permission this environment does not grant (`Permission Denied` even with `sudo -n`), so the exact hang site is
+still unknown. Three stalls at the EXACT same step across three independent restarts, always resuming from the
+same ep105 checkpoint into epoch 106, is strong evidence it is a specific batch (deterministic epoch-seeded
+dataloader order) that hangs under `EXIST_COUNT_WEIGHT=2.0`'s render loss -- plausibly a plant whose existence
+collapses toward all-off under the doubled count penalty, producing a degenerate near-empty mesh that some part
+of the differentiable-render path (nvdiffrast context, or a divide-by-near-zero-area triangle) spins on, rather
+than environment noise. **Retired the run rather than restart a fourth time**: this experiment's actual question
+(does doubling the existence-count weight move the plateau) was already answered by its five completed readings
+(ep80-105, strict P 32.6-36.6, refined 63.4-66.6 raw and EMA -- indistinguishable from the main v10/v10_cam
+lineage), so a fourth restart into a known reproducible hang was not worth the wall-clock cost. If this
+existence-count-weight direction is revisited, worth checking the render block for a guard against a batch where
+every phytomer's existence probability collapses near zero before touching this again.
+
 **13:30 — training render loss now has the same camera option; run `sub10_v10_cam` launched (results report §11.10).**
 `--render_input_camera 1` (launcher `RENDER_INPUT_CAMERA=1`, commit `d492e01`): for every rendered plant the training
 loss now frames the prediction on the bbox centre of that plant's GT mesh (decoded from the batch `nodes` with
