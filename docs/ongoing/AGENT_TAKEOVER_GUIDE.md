@@ -409,6 +409,15 @@ information yet. The standardized-latent and render→latent runs were cancelled
 in their place (`38274747` render fraction 1.0, `38274748` lr 2e-4, both from geometry ep78) — **but the freed GPUs were
 taken at once by other groups' queued jobs on the shared Ada node** (js2552 ×2 running, 4 more pending), so they wait.
 Lesson: on `gpu-6000_ada-h` a cancelled job's GPU does not come back to us; keep runs going until their budget ends.
+**19:20 — second full-data run, local: existence-count weight 2.0 (`hierarchical_fm_v10_cam_cnt2`).**
+Every inference-side lever is now exhausted (steps, learning rates, prior strength, rotation/roll, zoom targets,
+mean latent, existence threshold) and the remaining error is the network's existence deficit (~60 of 73 GT nodes
+active) plus node error; lowering the threshold only adds false positives. The Ada and A100 nodes are full (CPUs and
+RAM), so the free local GPU runs a full-data v10 + input camera + EMA lineage with `EXIST_COUNT_WEIGHT=2.0` (v10 used
+0.5), from the s3geom ep78 checkpoint, 1 GPU (~30 min/epoch), log
+`slurm_scripts/logs/20260915/local_v10_cam_cnt2_full.log`, checkpoints `diffusion_based/checkpoints/hierarchical_fm_v10_cam_cnt2/`.
+Read it against the cluster lineage (`38279147`) at matching epochs with the strict protocol and the refinement.
+
 **17:20 — refinement from the mean latent reaches the same 66.5 for both models (results report §11.10).**
 `eval_test_time_refinement.py --init_mean_latent` starts from the mean GT phytomer latent of 300 random training
 plants across all growth stages (not the model's `latent_mu` buffer, which is gathered from the first plants in
