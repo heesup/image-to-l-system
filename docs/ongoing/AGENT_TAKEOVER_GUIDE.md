@@ -416,7 +416,7 @@ active) plus node error; lowering the threshold only adds false positives. The A
 RAM), so the free local GPU runs a full-data v10 + input camera + EMA lineage with `EXIST_COUNT_WEIGHT=2.0` (v10 used
 0.5), from the s3geom ep78 checkpoint, 1 GPU (~30 min/epoch), log
 `slurm_scripts/logs/20260915/local_v10_cam_cnt2_full.log`, checkpoints `diffusion_based/checkpoints/hierarchical_fm_v10_cam_cnt2/`.
-Read it against the cluster lineage (`38279147`) at matching epochs with the strict protocol and the refinement.
+Read it against the cluster lineage (`38279147`) at matching epochs with the strict protocol and the refinement. First reading ep80 (2 epochs in): raw strict P 32.8 (meanlat 33.8, ALL 68.6), refined 35.0 → 64.9 — level with the cluster lineage at the same stage (cluster ep100 raw refined 34.9 → 64.8).
 
 **17:20 — refinement from the mean latent reaches the same 66.5 for both models (results report §11.10).**
 `eval_test_time_refinement.py --init_mean_latent` starts from the mean GT phytomer latent of 300 random training
