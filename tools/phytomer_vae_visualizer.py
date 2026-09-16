@@ -1,6 +1,6 @@
-"""PhytomerVAE-64 latent visualizer (Gradio web app).
+"""PhytomerVAE latent visualizer (Gradio web app).
 
-PCA latent cloud (2D clickable + 3D rotatable) + 64D latent sliders -> decode
+PCA latent cloud (2D clickable + 3D rotatable) + latent sliders -> decode
 -> place into world frame (reference frame) -> HeliosPyTorchRenderer RGB + depth.
 
 Data: precomputed by tools/precompute_phytomer_latent_pca.py into
@@ -10,7 +10,7 @@ centers, packets, dap, meta.json).
 Usage (workspace root):
     .../bin/python tools/phytomer_vae_visualizer.py \
         --cache dataset/cache/phytomer_gui_cache \
-        --ckpt diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt \
+        --ckpt diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt \
         --server-name 0.0.0.0 --server-port 7860
 """
 
@@ -147,6 +147,13 @@ class PhytomerVisualizer:
         # the sorted tuple of categories present in the packet.
         self.combo_ids, self.combo_names = self._compute_combos()
 
+        # Reproductive-organ flags per packet (slots 5-9: peduncle + repro1-4).
+        ot = self.packets[:, :, :FM_OT_END].argmax(-1)  # (P, 10)
+        repro = ot[:, 5:10]
+        self.has_flower = ((repro == 9) | (repro == 10)).any(1).numpy()
+        self.has_fruit = (repro == 11).any(1).numpy()
+        self.has_repro = (self.has_flower | self.has_fruit)
+
         # 2D scatter image (matplotlib) + pixel->point mapping.
         self._pca2d_img, self._pca2d_ax = self._render_pca2d("combo", "viridis")
 
@@ -181,11 +188,42 @@ class PhytomerVisualizer:
             return self.presence.float().sum(dim=1).numpy()
         if color_by == "combo":
             return self.combo_ids
+        if color_by == "has_flower":
+            return self.has_flower
+        if color_by == "has_fruit":
+            return self.has_fruit
+        if color_by == "repro":
+            return self.has_repro
         return np.zeros(self.n)
 
-    def _render_pca2d(self, color_by: str, cmap: str):
-        proj = self.proj2d.numpy()
-        cvals = self._color_values(color_by)
+    _BOOL_MODES = ("has_flower", "has_fruit", "repro")
+    _BOOL_TITLES = {"has_flower": "flower", "has_fruit": "fruit", "repro": "flower/fruit"}
+    _BOOL_FLAGS = {"has_flower": "has_flower", "has_fruit": "has_fruit", "repro": "has_repro"}
+
+    def _visible_mask(self, flower_only: bool, fruit_only: bool) -> np.ndarray:
+        """Packets to draw in the scatter: union of the checked organ filters."""
+        if not flower_only and not fruit_only:
+            return np.ones(self.n, dtype=bool)
+        m = np.zeros(self.n, dtype=bool)
+        if flower_only:
+            m |= self.has_flower
+        if fruit_only:
+            m |= self.has_fruit
+        return m
+
+    def _set_pca2d(self, color_by: str, cmap: str,
+                   flower_only: bool = False, fruit_only: bool = False) -> np.ndarray:
+        """Re-render the 2D scatter and refresh the stored axes (click mapping)."""
+        self._pca2d_img, self._pca2d_ax = self._render_pca2d(
+            color_by, cmap, flower_only, fruit_only)
+        return self._pca2d_img
+
+    def _render_pca2d(self, color_by: str, cmap: str,
+                      flower_only: bool = False, fruit_only: bool = False):
+        vis = self._visible_mask(flower_only, fruit_only)
+        self._vis = np.nonzero(vis)[0]
+        proj = self.proj2d.numpy()[vis]
+        cvals = self._color_values(color_by)[vis]
         evr = self.meta["pca_evr"]
         fig, ax = plt.subplots(figsize=(7, 7), dpi=100)
         fig.patch.set_facecolor("#10131a")
@@ -218,6 +256,18 @@ class PhytomerVisualizer:
             ax.legend(markerscale=4, fontsize=6, loc="upper left",
                       facecolor="#161a22", edgecolor="#3a4150",
                       labelcolor="#ced4da", ncol=2)
+        elif color_by in self._BOOL_MODES:
+            # Two-tone: no (blue, drawn first) / yes (orange, on top).
+            m = cvals.astype(bool)
+            title = self._BOOL_TITLES[color_by]
+            full = getattr(self, self._BOOL_FLAGS[color_by])
+            ax.scatter(proj[~m, 0], proj[~m, 1], s=3, c="#4dabf7", alpha=0.5,
+                       label=f"no {title}")
+            ax.scatter(proj[m, 0], proj[m, 1], s=3, c="#ff6b2d", alpha=0.9,
+                       label=f"has {title} ({full.sum():,} / {full.mean()*100:.1f}% of all)")
+            ax.legend(markerscale=4, fontsize=8, loc="upper left",
+                      facecolor="#161a22", edgecolor="#3a4150",
+                      labelcolor="#ced4da")
         else:
             ax.scatter(proj[:, 0], proj[:, 1], s=3, c="#4dabf7", alpha=0.7)
         ax.set_xlabel(f"PC1 ({evr[0]*100:.1f}%)", color="#ced4da")
@@ -225,7 +275,7 @@ class PhytomerVisualizer:
         ax.tick_params(colors="#ced4da")
         for spine in ax.spines.values():
             spine.set_color("#3a4150")
-        ax.set_title(f"PCA 2D latent cloud ({self.n:,} packets) — click a point",
+        ax.set_title(f"PCA 2D latent cloud ({self._vis.size:,} packets) — click a point",
                      color="#ced4da", fontsize=11)
         fig.tight_layout()
         fig.canvas.draw()
@@ -234,11 +284,12 @@ class PhytomerVisualizer:
         return img, ax
 
     def _pca2d_click_to_idx(self, x_px: int, y_px: int) -> int:
-        """Maps matplotlib image pixel coords -> nearest packet index.
+        """Maps matplotlib image pixel coords -> nearest VISIBLE packet index.
 
         The image is the full figure canvas (origin top-left). The axes occupy
         a fractional sub-rectangle of the figure (get_position), with the axes
-        origin at bottom-left.
+        origin at bottom-left. The result is a global packet index (into the
+        filtered subset currently drawn).
         """
         h, w = self._pca2d_img.shape[:2]
         ax = self._pca2d_ax
@@ -248,14 +299,17 @@ class PhytomerVisualizer:
         fy = (1.0 - y_px / h - pos.y0) / pos.height
         x = xlim[0] + fx * (xlim[1] - xlim[0])
         y = ylim[0] + fy * (ylim[1] - ylim[0])
-        proj = self.proj2d.numpy()
+        proj = self.proj2d.numpy()[self._vis]
         d = (proj[:, 0] - x) ** 2 + (proj[:, 1] - y) ** 2
-        return int(d.argmin())
+        return int(self._vis[d.argmin()])
 
     # ------------------------------------------------------------- PCA 3D
-    def _scatter3d(self, color_by: str, colorscale: str) -> go.Figure:
-        proj = self.proj3d.numpy()
-        cvals = self._color_values(color_by)
+    def _scatter3d(self, color_by: str, colorscale: str,
+                   flower_only: bool = False, fruit_only: bool = False) -> go.Figure:
+        vis = self._visible_mask(flower_only, fruit_only)
+        self._vis = np.nonzero(vis)[0]
+        proj = self.proj3d.numpy()[vis]
+        cvals = self._color_values(color_by)[vis]
         evr = self.meta["pca_evr"]
         fig = go.Figure()
         if color_by == "combo":
@@ -272,9 +326,27 @@ class PhytomerVisualizer:
                     mode="markers", name="+".join(self.combo_names[k]),
                     marker=dict(size=2.5, color=f"rgb({rgb[0]},{rgb[1]},{rgb[2]})",
                                 opacity=0.7),
-                    customdata=np.nonzero(mask)[0],
+                    customdata=self._vis[np.nonzero(mask)[0]],
                     hovertemplate="idx %{customdata}<extra></extra>",
                 ))
+        elif color_by in self._BOOL_MODES:
+            m = cvals.astype(bool)
+            title = self._BOOL_TITLES[color_by]
+            full = getattr(self, self._BOOL_FLAGS[color_by])
+            fig.add_trace(go.Scatter3d(
+                x=proj[~m, 0], y=proj[~m, 1], z=proj[~m, 2],
+                mode="markers", name=f"no {title}",
+                marker=dict(size=2.5, color="#4dabf7", opacity=0.5),
+                customdata=self._vis[np.nonzero(~m)[0]],
+                hovertemplate="idx %{customdata}<extra></extra>",
+            ))
+            fig.add_trace(go.Scatter3d(
+                x=proj[m, 0], y=proj[m, 1], z=proj[m, 2],
+                mode="markers", name=f"has {title} ({full.sum():,} / {full.mean()*100:.1f}%)",
+                marker=dict(size=2.5, color="#ff6b2d", opacity=0.9),
+                customdata=self._vis[np.nonzero(m)[0]],
+                hovertemplate="idx %{customdata}<extra></extra>",
+            ))
         else:
             if color_by == "dap":
                 cmin, cmax, ctitle = 0.0, 100.0, "DAP"
@@ -291,7 +363,7 @@ class PhytomerVisualizer:
                     colorbar=dict(title=ctitle, thickness=10),
                     opacity=0.7,
                 ),
-                customdata=np.arange(self.n),
+                customdata=self._vis,
                 hovertemplate="idx %{customdata}<extra></extra>",
             ))
         fig.update_layout(
@@ -324,27 +396,27 @@ class PhytomerVisualizer:
 
     # ------------------------------------------------- PC / slider mapping
     def _z_from_pc(self, alphas: np.ndarray) -> np.ndarray:
-        """PC slider values (n_pc,) -> full z (64,)."""
+        """PC slider values (n_pc,) -> full z (latent_dim,)."""
         return self.pc_mean + np.asarray(alphas, dtype=np.float32) @ self.pc_comps
 
     def _pc_from_z(self, z: np.ndarray) -> np.ndarray:
-        """Full z (64,) -> PC scores (n_pc,) by projection."""
+        """Full z (latent_dim,) -> PC scores (n_pc,) by projection."""
         return (np.asarray(z, dtype=np.float32) - self.pc_mean) @ self.pc_comps.T
 
     def _sliders_out(self, z: np.ndarray):
-        """z (64,) -> [64 variance-ordered raw values] + [n_pc scores]."""
+        """z (latent_dim,) -> [D variance-ordered raw values] + [n_pc scores]."""
         z = np.asarray(z, dtype=np.float32)
         pc = np.clip(self._pc_from_z(z), self.pc_lo, self.pc_hi)
         return [float(z[i]) for i in self.dim_order] + [float(a) for a in pc]
 
     def _z_from_ordered(self, values) -> np.ndarray:
-        """Variance-ordered raw slider values -> z (64,)."""
+        """Variance-ordered raw slider values -> z (latent_dim,)."""
         z = np.zeros(self.latent_dim, dtype=np.float32)
         z[self.dim_order] = np.asarray(values, dtype=np.float32)
         return z
 
     def _decode(self, z: np.ndarray, ref_mode: str, ref_idx: int):
-        """z (64,) -> (relative packet, presence, center, ref_rot6d).
+        """z (latent_dim,) -> (relative packet, presence, center, ref_rot6d).
 
         The structural VAE decodes ZEROED base columns; slot bases are then
         deterministically reconstructed from the petiole geometry via
@@ -565,9 +637,9 @@ def build_app(viz: PhytomerVisualizer):
     slider_hi = viz.slider_hi.tolist()
     z_mean = meta["z_mean"]
 
-    with gr.Blocks(theme=gr.themes.Base(primary_hue="green"), title="PhytomerVAE-64 Visualizer") as demo:
+    with gr.Blocks(theme=gr.themes.Base(primary_hue="green"), title=f"PhytomerVAE-{viz.latent_dim} Visualizer") as demo:
         gr.Markdown(
-            f"# PhytomerVAE-64 Latent Visualizer\n"
+            f"# PhytomerVAE-{viz.latent_dim} Latent Visualizer\n"
             f"**{viz.n:,} packets** · PCA evr {meta['pca_evr'][0]*100:.1f}/{meta['pca_evr'][1]*100:.1f}/{meta['pca_evr'][2]*100:.1f}%"
         )
         with gr.Row():
@@ -581,16 +653,22 @@ def build_app(viz: PhytomerVisualizer):
                         pca3d = gr.Plot(value=viz._scatter3d("combo", "Viridis"))
                 with gr.Row():
                     color_by = gr.Radio(
-                        ["combo", "slots", "dap", "none"], value="combo", label="Color by")
+                        ["combo", "slots", "dap", "has_flower", "has_fruit", "repro", "none"],
+                        value="combo", label="Color by")
                     colorscale = gr.Dropdown(
                         ["Viridis", "Plasma", "Turbo", "Cividis", "Jet"],
                         value="Viridis", label="Colorscale")
+                with gr.Row():
+                    flower_chk = gr.Checkbox(label="has flower", value=False)
+                    fruit_chk = gr.Checkbox(label="has fruit", value=False)
+                gr.Markdown("*Filter checkboxes: show only packets with that organ "
+                            "(either, when both are checked).*")
                 with gr.Row():
                     load_idx = gr.Number(value=0, precision=0, label="Load packet idx")
                     btn_load = gr.Button("Load", variant="secondary")
                 status = gr.Markdown("Click a point in the PCA 2D cloud (or enter an index).")
 
-            # ---------------- center: 64D sliders ----------------
+            # ---------------- center: latent sliders ----------------
             with gr.Column(scale=4):
                 with gr.Row():
                     btn_random = gr.Button("Random z ~ N(0,I)", variant="primary")
@@ -616,7 +694,7 @@ def build_app(viz: PhytomerVisualizer):
                     )
                     for k in range(viz.n_pc)
                 ]
-                with gr.Accordion("Raw 64D (sorted by measured shape influence)", open=False):
+                with gr.Accordion(f"Raw {viz.latent_dim}D (sorted by measured shape influence)", open=False):
                     sliders = [
                         gr.Slider(
                             minimum=slider_lo[i], maximum=slider_hi[i],
@@ -645,12 +723,18 @@ def build_app(viz: PhytomerVisualizer):
         click_outs = slider_outs + [load_idx, ref_idx, status]
         pca2d_img.select(viz.on_pca2d_click, None, click_outs)
         btn_load.click(viz.on_load_idx, load_idx, click_outs)
-        color_by.change(
-            lambda cb, cs: viz._render_pca2d(cb, cs.lower())[0], [color_by, colorscale], pca2d_img)
-        colorscale.change(
-            lambda cb, cs: viz._render_pca2d(cb, cs.lower())[0], [color_by, colorscale], pca2d_img)
-        color_by.change(lambda cb, cs: viz._scatter3d(cb, cs), [color_by, colorscale], pca3d)
-        colorscale.change(lambda cb, cs: viz._scatter3d(cb, cs), [color_by, colorscale], pca3d)
+
+        def _refresh_pca2d(cb, cs, fo, fr):
+            return viz._set_pca2d(cb, cs.lower(), fo, fr)
+
+        def _refresh_pca3d(cb, cs, fo, fr):
+            return viz._scatter3d(cb, cs, fo, fr)
+
+        for src in (color_by, colorscale, flower_chk, fruit_chk):
+            src.change(_refresh_pca2d, [color_by, colorscale, flower_chk, fruit_chk],
+                       pca2d_img)
+            src.change(_refresh_pca3d, [color_by, colorscale, flower_chk, fruit_chk],
+                       pca3d)
 
         btn_random.click(viz.on_random, None, slider_outs)
         btn_reset.click(viz.on_reset, None, slider_outs)
@@ -685,15 +769,22 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cache", type=str, default="dataset/cache/phytomer_gui_cache")
     parser.add_argument("--ckpt", type=str,
-                        default="diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt")
+                        default="diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt")
     parser.add_argument("--server-name", type=str, default="0.0.0.0")
     parser.add_argument("--server-port", type=int, default=7860)
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--share", action="store_true")
     args = parser.parse_args()
 
+    # The VAE's slot semantics depend on the packet convention it was trained
+    # on: `_tl` checkpoints expect terminal-last packets (same convention as
+    # the eval scripts).
+    os.environ.setdefault(
+        "PHYTOMER_TERMINAL_LAST",
+        "1" if "_tl" in os.path.basename(os.path.dirname(args.ckpt)) else "0")
+
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
+    print(f"Device: {device} (PHYTOMER_TERMINAL_LAST={os.environ['PHYTOMER_TERMINAL_LAST']})")
     viz = PhytomerVisualizer(args.cache, args.ckpt, device)
     demo = build_app(viz)
     demo.launch(
