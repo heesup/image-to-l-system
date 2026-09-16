@@ -92,7 +92,8 @@ def refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, sca
             pos, scale, lat, roll_v = best[1], best[2], best[3], best[4]
     with torch.no_grad():
         rot_c, par_c = _rot_par(pos, roll_v)
-    return pos.detach(), scale.detach(), lat.detach(), roll_v.detach(), rot_c, par_c
+    final_loss = best[0] if a.keep_best else float(loss)
+    return pos.detach(), scale.detach(), lat.detach(), roll_v.detach(), rot_c, par_c, final_loss
 
 
 def main():
@@ -117,6 +118,7 @@ def main():
     ap.add_argument("--only", default="", help="comma-separated plant indices to process (default: the whole eval set)")
     ap.add_argument("--target_zooms", default="1,2,4,8", help="comma list of cache zoom levels (1,2,4,8) whose depth channels are the refinement targets; the 4x/8x levels add signal for plants that are only a few pixels wide at 1x/2x")
     ap.add_argument("--exist_thresh", type=float, default=0.5, help="node existence threshold applied to the sampled existence probabilities (default 0.5; the trained models activate ~60 of 73 GT nodes at 0.5, so a lower threshold adds nodes for the refinement to place)")
+    ap.add_argument("--multi_start", action="store_true", help="refine twice, from the sampled latent and from the DAP-spanning mean latent, and keep the start with the lower final input loss")
     ap.add_argument("--init_mean_latent", action="store_true", help="start the refinement from the training-set mean latent (the model's latent_mu buffer) instead of the flow-sampled latent; on full data the sampled latent scored 6-7 points below the mean latent")
     ap.add_argument("--recompute_rot", action="store_true", help="re-derive each node's rotation (forward axis from the CURRENT parent->node segment, plus roll) and parent position inside the loop instead of freezing them at the sampled node positions; the topology (parent lookup) stays the one chained once from the sampled positions. Required for roll in --opt.")
     ap.add_argument("--lr_roll", type=float, default=2e-2)
@@ -155,7 +157,7 @@ def main():
     opt_set = set(a.opt.split(","))
     rows = []
     mean_lat = None
-    if a.init_mean_latent:
+    if a.init_mean_latent or a.multi_start:
         # Mean GT phytomer latent over 300 random training plants (eval plants excluded), spanning all growth
         # stages. NOT the model's latent_mu buffer: that one is gathered from the first plants in dataset order
         # (one growth stage), and starting from it scored 9-12% before refinement against 34-36% for a
@@ -197,7 +199,13 @@ def main():
             live_m = exist > 0.5; has_par_m = parent_idx >= 0
             parts0 = plant_from_nodes(pvae, pos0, rot, scale0, lat0, exist, par, M)
             iou0, _ = score(render_depth(renderer, parts0, zoom, dev), gt_depth)
-        pos, scale, lat, roll_v, rot_c, par_c = refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, scale0, lat0, exist, parent_idx, live_m, has_par_m, opt_set, a)
+        pos, scale, lat, roll_v, rot_c, par_c, loss_a = refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, scale0, lat0, exist, parent_idx, live_m, has_par_m, opt_set, a)
+        if a.multi_start:
+            # second start from the DAP-spanning mean latent; keep whichever start ends with the lower INPUT loss
+            lat_m = mean_lat.reshape(1, -1).expand_as(lat0).clone()
+            out_b = refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, scale0, lat_m, exist, parent_idx, live_m, has_par_m, opt_set, a)
+            if out_b[6] < loss_a:
+                pos, scale, lat, roll_v, rot_c, par_c, _ = out_b
         with torch.no_grad():
             parts1 = plant_from_nodes(pvae, pos, rot_c, scale, lat, exist, par_c, M)
             iou1, _ = score(render_depth(renderer, parts1, zoom, dev), gt_depth)

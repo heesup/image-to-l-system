@@ -279,7 +279,7 @@ def main():
                 for v in refine_list:
                     pos_, rot_, scale_, lat_, ex_, par_, roll_ = build_vars(subset(v))
                     with torch.enable_grad():
-                        pos_, scale_, lat_, _, rot_, par_ = refine_plant(renderer, pvae, M, images, gt_center, pos_, rot_, par_, roll_, scale_, lat_, ex_,
+                        pos_, scale_, lat_, _, rot_, par_, _ = refine_plant(renderer, pvae, M, images, gt_center, pos_, rot_, par_, roll_, scale_, lat_, ex_,
                                                                           None, None, None, {"pos", "scale", "latent"}, refine_ns)
                     parts = plant_from_nodes(pvae, pos_, rot_, scale_, lat_, ex_, par_, M)
                     iou, mae = score(render_depth(renderer, parts, zoom, dev), gt_depth_img)
