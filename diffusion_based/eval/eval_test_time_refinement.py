@@ -85,6 +85,22 @@ def main():
         idxs = [int(x) for x in a.only.split(",")]
     opt_set = set(a.opt.split(","))
     rows = []
+    mean_lat = None
+    if a.init_mean_latent:
+        # Mean GT phytomer latent over 300 random training plants (eval plants excluded), spanning all growth
+        # stages. NOT the model's latent_mu buffer: that one is gathered from the first plants in dataset order
+        # (one growth stage), and starting from it scored 9-12% before refinement against 34-36% for a
+        # DAP-spanning mean (2026-09-15).
+        g = torch.Generator().manual_seed(0); pool = [j for j in torch.randperm(len(ds), generator=g).tolist() if j not in set(idxs)][:300]
+        lat_sum, lat_n = None, 0
+        with torch.no_grad():
+            for j in pool:
+                pk = ds[j].get("pkt")
+                if pk is None: continue
+                l_ = pvae.encode(pvae.pack_input(pk["packets"].to(dev).float(), pk["presence"].to(dev)))[0].float()
+                lat_sum = l_.sum(0) if lat_sum is None else lat_sum + l_.sum(0); lat_n += l_.shape[0]
+        mean_lat = lat_sum / max(lat_n, 1)
+        print(f"init_mean_latent: mean over {lat_n} phytomers from {len(pool)} training plants", flush=True)
     for i in idxs:
         it = ds[i]; images = it["image"].unsqueeze(0).to(dev); dap = int(it["dap"].item()); zoom = 8.0 if dap <= 15 else 1.0
         nodes = it["nodes"].to(dev); exist_gt = it["existence_mask"].to(dev)
@@ -102,9 +118,7 @@ def main():
             ordn = co["phytomer_ordinal"][0].float(); base = co["phytomer_base_logits"][0].float()
             scale0 = (so.get("phytomer_scale") if so.get("phytomer_scale") is not None else co.get("phytomer_scale"))[0].float(); lat0 = so["pred_latent"][0].float()
             if a.init_mean_latent:
-                if not model.latent_norm_active():
-                    raise SystemExit("--init_mean_latent needs a checkpoint trained with latent_norm (latent_mu buffer)")
-                lat0 = model.latent_mu.float().reshape(1, -1).expand_as(lat0).clone()
+                lat0 = mean_lat.reshape(1, -1).expand_as(lat0).clone()
             rot, par = reconstruct_phytomer_rot(pos0.unsqueeze(0), roll.unsqueeze(0), ordn.unsqueeze(0), base.unsqueeze(0), exist=(exist > 0.5).float().unsqueeze(0))
             rot, par = rot[0].float(), par[0].float()
             # topology chained once from the sampled positions (discrete, non-differentiable); the rotation and
