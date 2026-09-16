@@ -446,7 +446,16 @@ Log `slurm_scripts/logs/20260916/sub10_v10_rampR_srun.log`, checkpoints `diffusi
 `RENDER_GRAD_START_EPOCH=79` so the 0.167->0.5 ramp begins at this run's very first render-active epoch. The other
 queued job (`hfm_s10_v10rexist`, render_to_exist test) stays in the normal sbatch queue -- the desktop GPU is now
 busy with this run, so stacking a second training step on the same single GPU would risk the same contention stall
-`cnt2` hit earlier today.Read it against the cluster lineage (`38279147`) at matching epochs with the strict protocol and the refinement. First reading ep80 (2 epochs in): raw strict P 32.8 (meanlat 33.8, ALL 68.6), refined 35.0 → 64.9 — level with the cluster lineage at the same stage (cluster ep100 raw refined 34.9 → 64.8). ep85: raw refined 35.8 → 64.3, EMA P 33.0 / refined 63.5 — ep90: raw 34.9 / EMA 34.5, refined 63.9 / 65.8 — three checkpoints in, the doubled count weight has not changed the level (main lineage at the same stage: 35–39 / 65–68). ep95: EMA 36.6, refined 64.0 (raw in `cnt2_readings.log`) — still within the main lineage's band; stop it after ep100 if unchanged.
+`cnt2` hit earlier today.
+
+**10:20 — second one stacked on anyway, on Heesup's instruction after checking nvidia-smi directly (`srun_bash 38340946` + `nvidia-smi`): the RTX 6000 Ada card has 49 GB, `rampR` alone was only using 9 GB.** `sub10_v10_rexist`
+(`--render_to_exist`, the other queued job, `38341780` cancelled) launched the same way, `srun --jobid=38340946 --overlap --gres=gpu:1`,
+log `slurm_scripts/logs/20260916/sub10_v10_rexist_srun.log`, checkpoints `diffusion_based/checkpoints/sub10_v10_rexist/`.
+Confirmed safe via `srun --jobid=38340946 --overlap nvidia-smi`: 17.9 GB / 49.1 GB used with both running, 98% compute
+utilization (the two processes time-slice the SM, so each trains somewhat slower than alone, but this is a throughput
+cost, not a stability risk the way the earlier 24 GB-card memory pressure was). Three processes now share
+`gpu-10-54`'s one physical GPU inside job `38340946`'s allocation: the desktop session itself (near-idle), `rampR`,
+and `rexist`.Read it against the cluster lineage (`38279147`) at matching epochs with the strict protocol and the refinement. First reading ep80 (2 epochs in): raw strict P 32.8 (meanlat 33.8, ALL 68.6), refined 35.0 → 64.9 — level with the cluster lineage at the same stage (cluster ep100 raw refined 34.9 → 64.8). ep85: raw refined 35.8 → 64.3, EMA P 33.0 / refined 63.5 — ep90: raw 34.9 / EMA 34.5, refined 63.9 / 65.8 — three checkpoints in, the doubled count weight has not changed the level (main lineage at the same stage: 35–39 / 65–68). ep95: EMA 36.6, refined 64.0 (raw in `cnt2_readings.log`) — still within the main lineage's band; stop it after ep100 if unchanged.
 
 **17:20 — refinement from the mean latent reaches the same 66.5 for both models (results report §11.10).**
 `eval_test_time_refinement.py --init_mean_latent` starts from the mean GT phytomer latent of 300 random training
