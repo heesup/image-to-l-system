@@ -147,6 +147,7 @@ def forward_backward_step(
     stage3_gt_nodes_p: float = 1.0,
     stage3_gt_nodes_jitter_m: float = 0.0,
     render_to_latent: bool = False,
+    render_to_exist: bool = False,
     t0_frac: float = 0.0,
     capacity_schedule: Optional[Dict[str, float]] = None,
     flow_granularity: str = "organ",
@@ -1155,7 +1156,20 @@ def forward_backward_step(
                     cls_logits_b = cls_logits_all[b_idx].reshape(-1, 13)
                     keep = cls_logits_b.argmax(-1) > 0
                     part_14d = decode_fm(flat_abs[keep])
-                    exist_b = torch.sigmoid(_re[real_b]).reshape(-1)[keep].detach()
+                    exist_b = torch.sigmoid(_re[real_b]).reshape(-1)[keep]
+                    if not render_to_exist:
+                        # Default: existence is supervised by loss_phytomer_exist (direct BCE against the GT
+                        # match) alone; the alpha channel this feeds (build_mesh_from_part_tensor(existence=...),
+                        # already alpha-composited against the background for both rgb and depth) is used to
+                        # RENDER but not to TRAIN existence. --render_to_exist keeps it attached, mirroring
+                        # --render_to_latent: the render loss can then also push existence directly, which risks
+                        # a degenerate shortcut symmetric to the leaf-inflation bug --reg_scale/--reg_latent guard
+                        # against in refine_plant (2026-09-16) -- suppressing an organ that genuinely exists but
+                        # currently renders badly (wrong latent/scale) can lower the render loss even though the
+                        # organ should stay on, so watch the printed Ext P/G (predicted/GT active count) for the
+                        # predicted count drifting below GT when this is on. `_re` already carries a [-5,5]
+                        # gradient clamp hook (registered above) shared with every other consumer of `_re`.
+                        exist_b = exist_b.detach()
                     probs = F.softmax(cls_logits_b, dim=-1)[keep]
                 elif vae is not None:
                     part_14d, probs = vae.decode_to_part_tensor(_rz[real_b])
@@ -1344,6 +1358,7 @@ def probe_optimal_batch_size(
     stage3_gt_nodes_p: float = 1.0,
     stage3_gt_nodes_jitter_m: float = 0.0,
     render_to_latent: bool = False,
+    render_to_exist: bool = False,
     t0_frac: float = 0.0,
     flow_granularity: str = "organ",
     phytomer_vae: Optional[nn.Module] = None,
@@ -1414,6 +1429,7 @@ def probe_optimal_batch_size(
         stage3_gt_nodes_p=stage3_gt_nodes_p,
         stage3_gt_nodes_jitter_m=stage3_gt_nodes_jitter_m,
         render_to_latent=render_to_latent,
+        render_to_exist=render_to_exist,
         t0_frac=t0_frac,
         flow_granularity=flow_granularity,
         phytomer_vae=phytomer_vae,
@@ -1543,6 +1559,7 @@ def train_one_epoch(
     stage3_gt_nodes_p: float = 1.0,
     stage3_gt_nodes_jitter_m: float = 0.0,
     render_to_latent: bool = False,
+    render_to_exist: bool = False,
     t0_frac: float = 0.0,
     capacity_warmup_epochs: int = 0,
     capacity_full_epochs: int = 0,
@@ -1630,6 +1647,7 @@ def train_one_epoch(
             stage3_gt_nodes_p=stage3_gt_nodes_p,
             stage3_gt_nodes_jitter_m=stage3_gt_nodes_jitter_m,
             render_to_latent=render_to_latent,
+            render_to_exist=render_to_exist,
             t0_frac=t0_frac,
             flow_granularity=flow_granularity,
             phytomer_vae=phytomer_vae,
@@ -1966,6 +1984,13 @@ def main():
     parser.add_argument("--render_to_latent", action="store_true",
                         help="Let the render loss back-propagate into Stage 3's latent block (default: latent rows are "
                              "detached in the render block, only the flow loss trains them).")
+    parser.add_argument("--render_to_exist", action="store_true",
+                        help="Let the render loss also back-propagate into per-organ existence (default: the phytomer "
+                             "render path detaches the alpha it feeds build_mesh_from_part_tensor(existence=...), so "
+                             "only loss_phytomer_exist (direct BCE against the GT match) trains it). Watch the printed "
+                             "Ext P/G (predicted/GT active count) for the predicted count drifting below GT: unlike "
+                             "position/latent, suppressing an organ is a free way for gradient descent to lower the "
+                             "render loss on a badly-rendered-for-other-reasons node instead of fixing it.")
     parser.add_argument("--stage3_gt_nodes_p", type=float, default=1.0,
                         help="With --stage3_gt_nodes: probability per matched node of conditioning on the GT node "
                              "(else Stage 2's prediction). 1.0 = pure teacher forcing.")
@@ -2414,6 +2439,7 @@ def main():
             stage3_gt_nodes_p=args.stage3_gt_nodes_p,
             stage3_gt_nodes_jitter_m=args.stage3_gt_nodes_jitter_cm / 100.0,
             render_to_latent=args.render_to_latent,
+            render_to_exist=args.render_to_exist,
             t0_frac=args.t0_frac,
             flow_granularity=args.flow_granularity,
             phytomer_vae=phytomer_vae,
@@ -2565,6 +2591,7 @@ def main():
             stage3_gt_nodes_p=args.stage3_gt_nodes_p,
             stage3_gt_nodes_jitter_m=args.stage3_gt_nodes_jitter_cm / 100.0,
             render_to_latent=args.render_to_latent,
+            render_to_exist=args.render_to_exist,
             t0_frac=args.t0_frac,
             capacity_warmup_epochs=args.capacity_warmup_epochs,
             capacity_full_epochs=args.capacity_full_epochs,
