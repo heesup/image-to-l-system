@@ -92,6 +92,52 @@ actual packing (`denormalize_packet_scales`) risks clamping something that was n
 or missing the axis that actually is. Left for whoever next revisits this to check that convention
 first.
 
+## 6.5. Calibrating and applying the absolute scale cap
+
+Follow-up the same day, prompted by a direct question about what "checking the scale field
+packing convention" actually requires: `scale0` (`phytomer_scale`, the Stage-3 flow ODE's
+`geom[..., 5:8]` slice, see `geometry_from_flow` in
+`diffusion_based/models/hierarchical_part_flow_matching.py`) is in FM units, `metres =
+FM_units / SCALE_SCALE(50)`, three components `[length, radius, unused]`. Measured it directly
+on cold-start (`sample_ode`, before any refinement) predictions for 20 AgML plants
+(`/tmp/.../diag_scale0.py`, not checked in — a one-off), split by whether the node is live
+(`exist > 0.5`) or a padding slot:
+
+| | length (FM / cm) | radius (FM / cm) | unused (FM / cm) |
+|---|---|---|---|
+| **live nodes** (47) | 0.48–4.12 / 1.0–8.2cm, 0% negative | -0.11–0.18 / ~0, small | 0.85–1.12, near-constant |
+| **all slots incl. padding** (202) | -1.95–4.12, 24% negative | -1.67–1.48, 34% negative | -1.66–2.13, 28% negative |
+
+Two findings this settles:
+
+1. **Live organs' cold-start scale is not the problem.** Length's live-node max (4.12 FM) lands
+   almost exactly on the training GT ceiling (~4.0 FM, per the `scale_head`'s own comment) — the
+   network is predicting in-distribution values on these real crops. The earlier informal check
+   that reported "-2.3 to 2.6" (§5) must have pooled in non-existent/padding slots, or measured
+   after refinement's Adam step had already moved `scale` — this run's all-slots range (-1.95 to
+   4.12) matches that figure closely, live-only does not.
+2. **A single scalar cap across all three components was the wrong shape.** Radius's live range
+   is an order of magnitude smaller than length's, so one `--scale_abs_max` value can only ever
+   be right for one of the two.
+
+Fix: replaced the single-scalar `--scale_abs_max` scaffolding in `run_approach2_refine.py` with
+`--scale_abs_max_len` (default 5.0 FM / 10cm) and `--scale_abs_max_rad` (default 0.3 FM / 0.6cm),
+clamped per-component after every Adam step, together with a floor at `phytomer_scale()`'s own
+existing magnitude floors (0.25 / 0.025 FM) to stop refinement from driving a live organ's scale
+negative — a second plausible inflation contributor, since `denormalize_packet_scales` multiplies
+every organ in the packet by this one row linearly, so a sign flip changes the whole phytomer's
+geometry, not just its size.
+
+Re-ran Approach 2 on the same 6 AgML plants as §4–5 with the new defaults
+(`docs/results/assets/20260916_agml_real_image_test_scale_abs_max_calibrated.png`): **6 of 6
+plants stay small and plant-shaped through refinement — no flat-polygon inflation on any of
+them**, up from 1/6 with the best multiplicative-clip attempt (`scale_clip_mult=1.1`, §5). Node
+positions barely move under this setting (`nodes moved 0.0cm` on all 6, one decimal place) —
+refinement is doing essentially all of its work through scale/latent against the loose
+bounding-box mask target, not repositioning nodes; whether that undersells the achievable fit
+against a real mask (as opposed to a bbox) is untested, since this source still has no real
+segmentation output (§1, §2).
+
 ## 6. Conclusion
 
 The AgML swap itself works cleanly: `gemini_plant_detection_2022` is a legitimate, well-matched

@@ -10,7 +10,45 @@ This directory tracks **only actively running work** for the **Image-to-L-System
 
 ---
 
-## 🚨 CURRENT SYSTEM STATE (2026-09-14 ~11:30 PDT, Claude Code handover)
+## 🚨 CURRENT SYSTEM STATE (2026-09-16, Claude Code handover)
+
+Read this section first; the 2026-09-14 table below it is the previous state, still accurate for
+anything this section does not contradict.
+
+### Synthetic track — plateaued, and the plateau is the finding
+
+| Component | Status | Details |
+| :--- | :---: | :--- |
+| **Raw model quality** | 🟡 PLATEAU | Strict-protocol P sits at **33–39** no matter what. Every training lever tried over 2026-09-15/16 — Stage 3 geometry, teacher forcing, latent normalisation, multizoom, node-token window, existence-count weight, render-to-latent, render-to-exist, a render-fraction curriculum, 10% vs 100% of the data — lands in that band. Treat this as an architecture/information limit, not a tuning problem, until something structural changes. |
+| **Test-time refinement** | 🟢 THE LEVER | 40 AdamW steps on node positions / scales / latents against the input CHM lifts the same checkpoints to **P 67–68** (`eval_test_time_refinement.py`, defaults now `--input_camera`, `reg_scale 5`, `reg_latent 0.5`, four zoom targets). This is the largest single gain found and it needs no retraining. |
+| **Guided sampling** | 🔴 NOT WORTH IT | DPS-style render guidance inside the ODE (`eval_guided_sampling.py`, `guidance_fn` hook in `sample_ode`) is roughly neutral alone (35.2 → 37.3 at `--guide_start_frac 0.5`) and actively **hurts** when chained into refinement (63.2 vs 67.6). The two mechanisms interfere; do not combine them without a new idea. |
+| **Best lineage** | 🟢 | `hierarchical_fm_v10_cam/` — full data + input camera + EMA. ep160 raw 38.7 / refined **68.3**, the best numbers to date. |
+
+### Real-image track — the pipeline runs end to end; the reconstructions are not yet usable
+
+**Be blunt with yourself here: no real-image reconstruction has been shown to be geometrically
+correct.** What exists is plumbing that works and a set of well-localised reasons it does not.
+
+| Component | Status | Details |
+| :--- | :---: | :--- |
+| **Plant detection** | 🟢 WORKS | AgML `gemini_plant_detection_2022` box detector mAP50 **0.975**; Roboflow `t4_plant_weed_seg` instance-segmentation detector mAP50 0.844 plant / 0.612 weed. Detection is not the bottleneck. |
+| **Whole-frame multi-plant pipeline** | 🟢 RUNS | `real_world/eval/run_multiplant_scene.py`: frame → detections → plot metres → Helios `params.json` → per-plant XML → model state → differentiable-renderer refinement → XML → one rendered plot. Follows the `Image2PlantArchitecture_v2` params.json convention. |
+| **Helios XML export fidelity** | 🟢 FIXED | Exports now match the source structurally (leaves 76/77, 100/101, 160/161, 130/131; shoots 5/5, 8/8, 12/12, 10/10). Previously a packet-decoded plant exported as ONE unifoliate shoot, which cost two of every three leaflets — see `results/20260916_multiplant_scene_pipeline.md` §7. |
+| **Network cold start on real crops** | 🔴 BROKEN | Collapses: 14 of 20 AgML crops sampled a **single live phytomer**; on the Roboflow frame two plants came back with 8 and 38 organs. Refinement cannot fix what is not there (nodes move 0.0–1.0 cm). |
+| **Refinement on real crops** | 🔴 INFLATES | Against a loose target it grows leaves rather than fitting them: leaf scale max 0.0865 → **0.208–0.221** (2.4–2.6x) on the AgML frame. The per-component absolute cap (`--scale_abs_max_len/_rad`, calibrated 2026-09-16) stops the flat-polygon failure but bounds the phytomer scale `s_a`, not realized organ size. |
+| **Does a real mask fix it?** | 🔴 NO | On the Roboflow frame (real instance masks, a much tighter Dice target) the Helios-init data losses are **0.76–3.03**, i.e. WORSE than the AgML bbox-target numbers (0.58–0.67). That confirms the AgML numbers were inflation filling a loose target, and that fit quality on real images is genuinely poor. |
+| **Pixel → metre scale** | 🟡 ASSUMED | The rover camera has no intrinsics here; only its 1.5 m height is known. `--plot_width_m` (default 1.3, the Davis plot width) sets the scene's absolute scale by assumption. |
+
+**Where to start next on this track** (in the order most likely to matter):
+1. The cold start, not the refiner. A single-phytomer sample on a real crop is a domain-gap failure
+   of Stages 1–2; the Helios DAP-only procedural cold start (`real_world/dataset/helios_cold_start.py`)
+   exists as an alternative and gives 150–450 organs, but its refined fit is still poor.
+2. Bound realized organ size, not `s_a`, so refinement cannot inflate leaves regardless of target.
+3. Only then revisit the cold-start comparison, on the segmentation-mask source.
+
+---
+
+## Previous system state (2026-09-14 ~11:30 PDT, Claude Code handover)
 
 | Component | Status | Details |
 | :--- | :---: | :--- |
@@ -33,6 +71,9 @@ This directory tracks **only actively running work** for the **Image-to-L-System
 | Document | Purpose |
 | :--- | :--- |
 | **[20260912_stage2_stage3_boundary_and_remaining_redundancy.md](20260912_stage2_stage3_boundary_and_remaining_redundancy.md)** | **Primary record (read §5 first):** §0 status, §1.9.2 gradient-burst root cause + ablation, §2.1-2.3 Stage 2/3 boundary redesign, §2.4-2.5 round-trip + stem IK, **§2.6 dataset-plant round-trip (chaining, branch points, leaf IK)**, §6 commit log |
+| **[`docs/results/20260916_multiplant_scene_pipeline.md`](../results/20260916_multiplant_scene_pipeline.md)** | **2026-09-16, real-image track:** whole-frame multi-plant reconstruction (detection → Helios params.json → per-plant XML → model state → refinement → plot render), the Helios-procedural cold start, the per-component scale cap calibration, and §7's XML-export bug (two of every three leaflets dropped) with its fix |
+| **[`docs/results/20260916_agml_dataset_swap_real_image_test.md`](../results/20260916_agml_dataset_swap_real_image_test.md)** | 2026-09-16: swapping the real-image source from Roboflow to AgML, the stronger detector, and why box-only sources break the plausibility priors |
+| **[`docs/results/20260915_real_image_first_test.md`](../results/20260915_real_image_first_test.md)** | 2026-09-15: the first real-image pass — Roboflow segmentation detector, rover-margin cropping, Depth Anything pseudo-CHM, the canvas-inflation diagnosis |
 | **[AGENT_TAKEOVER_GUIDE.md](AGENT_TAKEOVER_GUIDE.md)** | Master handover; §0-A is the 2026-09-14 state, later sections are the 2026-09-11 state where not contradicted |
 | **[`docs/results/20260914_stage2_burst_fix_and_dataset_plant_roundtrip.md`](../results/20260914_stage2_burst_fix_and_dataset_plant_roundtrip.md)** | 2026-09-14 report: burst fix, dataset-plant round-trip, figures, training state (Korean) |
 | [20260911_takeover_grad_norm_fix_roundtrip_diagnosis_10slot_restore.md](20260911_takeover_grad_norm_fix_roundtrip_diagnosis_10slot_restore.md) | 2026-09-11: grad-norm deadlock fix, 10-slot contract restore, first round-trip collapse diagnosis |
