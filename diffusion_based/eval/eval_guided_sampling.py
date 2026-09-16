@@ -29,8 +29,10 @@ from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 from diffusion_based.models.plant_organ_array import NUM_ORGAN_TYPES
 from diffusion_based.dataset.phytomer_roll import roll_to_matrix
 from diffusion_based.dataset.phytomer_packets import matrix_to_rot6d
+from diffusion_based.dataset.phytomer_topology import chain_phytomers
 from diffusion_based.eval.eval_hierarchical_self_consistency import decode_predictions_to_part_tensor
 from diffusion_based.eval.eval_gt_substitution_ablation import plant_from_nodes, render_depth, score
+from diffusion_based.eval.eval_test_time_refinement import refine_plant
 
 _ZI = {1.0: 3, 2.0: 7, 4.0: 11, 8.0: 15}
 
@@ -98,6 +100,12 @@ def main():
     ap.add_argument("--guide_scale", type=float, default=2.0)
     ap.add_argument("--guide_start_frac", type=float, default=0.0, help="skip guidance before this fraction of the ODE (t < guide_start_frac)")
     ap.add_argument("--target_zooms", default="1,2,4,8")
+    ap.add_argument("--then_refine", action="store_true",
+                    help="also run the standard post-hoc refinement (eval_test_time_refinement.refine_plant, "
+                         "default settings: pos/scale/latent, input camera, reg 5/0.5, 40 steps) on top of the "
+                         "GUIDED sample, to test whether a better-guided starting point beats plain-sample-then-"
+                         "refine (2026-09-16 best: strict P 35.8 -> 67.6 on 10% v10)")
+    ap.add_argument("--refine_steps", type=int, default=40)
     ap.add_argument("--out", default="")
     a = ap.parse_args()
     dev = torch.device("cuda:0")
@@ -172,11 +180,31 @@ def main():
             parts1 = plant_from_nodes(pvae, pos1, rot1, scale1, lat1, exist1, par1, M)
             iou1, _ = score(render_depth(renderer, parts1, zoom, dev), gt_depth)
         moved = float((pos1 - pos0[: pos1.shape[0]]).norm(dim=-1).mean() * 100) if pos1.shape[0] == pos0.shape[0] else float("nan")
-        rows.append({"index": i, "dap": dap, "iou_plain": iou0, "iou_guided": iou1})
-        print(f"idx {i:6d} DAP {dap:3d} IoU {iou0*100:5.1f} -> {iou1*100:5.1f}  (nodes moved {moved:.1f} cm)", flush=True)
+        row = {"index": i, "dap": dap, "iou_plain": iou0, "iou_guided": iou1}
+        extra = ""
+        if a.then_refine:
+            from types import SimpleNamespace
+            parent_idx, _, _ = chain_phytomers(pos1, ordinal=ordn[: pos1.shape[0]], is_base=(base[: pos1.shape[0]] > 0).float(),
+                                               exist=(exist1 > 0.5).float())
+            live_m = exist1 > 0.5; has_par_m = parent_idx >= 0
+            refine_ns = SimpleNamespace(steps=a.refine_steps, lr_pos=3e-3, lr_scale=2e-2, lr_latent=2e-2, lr_roll=2e-2, lr_exist=3e-2,
+                                        reg_scale=5.0, reg_latent=0.5, reg_exist=0.3, keep_best=True, target_zooms=",".join(str(z) for z in zooms),
+                                        plant_centered=False, recompute_rot=False)
+            pos2, scale2, lat2, _, rot2, par2, _, exist2 = refine_plant(renderer, pvae, M, images, gt_center, pos1, rot1, par1, roll1, scale1, lat1,
+                                                                 exist1, parent_idx, live_m, has_par_m, {"pos", "scale", "latent"}, refine_ns)
+            with torch.no_grad():
+                parts2 = plant_from_nodes(pvae, pos2, rot2, scale2, lat2, exist2, par2, M)
+                iou2, _ = score(render_depth(renderer, parts2, zoom, dev), gt_depth)
+            row["iou_guided_then_refined"] = iou2
+            extra = f" -> refined {iou2*100:5.1f}"
+        rows.append(row)
+        print(f"idx {i:6d} DAP {dap:3d} IoU {iou0*100:5.1f} -> {iou1*100:5.1f}{extra}  (nodes moved {moved:.1f} cm)", flush=True)
     b = np.array([r["iou_plain"] for r in rows]); c = np.array([r["iou_guided"] for r in rows]); d = np.array([r["dap"] for r in rows])
     print(f"MEAN over {len(rows)} plants: {b.mean()*100:.1f} -> {c.mean()*100:.1f}  (DAP>15: {b[d>15].mean()*100:.1f} -> {c[d>15].mean()*100:.1f}) | "
           f"guide_scale={a.guide_scale} steps={a.num_steps}")
+    if a.then_refine:
+        e = np.array([r["iou_guided_then_refined"] for r in rows])
+        print(f"MEAN guided->refined: {e.mean()*100:.1f}  (DAP>15: {e[d>15].mean()*100:.1f}) | refine_steps={a.refine_steps}")
     if a.out:
         os.makedirs(os.path.dirname(a.out), exist_ok=True)
         json.dump({"checkpoint": a.checkpoint, "guide_scale": a.guide_scale, "rows": rows}, open(a.out, "w"), indent=1)

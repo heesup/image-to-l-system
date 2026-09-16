@@ -59,14 +59,19 @@ def refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, sca
     any object with those attributes). Returns (pos, scale, lat, roll, rot, parent_pos, final_input_loss, exist)."""
     dev = images.device
     # variables
-    pos = pos0.clone().requires_grad_("pos" in opt_set); scale = scale0.clone().requires_grad_("scale" in opt_set); lat = lat0.clone().requires_grad_("latent" in opt_set)
-    roll_v = roll.clone().requires_grad_("roll" in opt_set)
+    # .detach() before .clone(): pos0/scale0/lat0/roll are always meant as plain values to start the search
+    # from, but a caller may hand in a tensor that is still attached to an active autograd graph (e.g.
+    # eval_guided_sampling.py's guided sample_ode() output, read out mid-graph) -- requires_grad_() below
+    # would fail on a non-leaf tensor otherwise ("you can only change requires_grad flags of leaf variables").
+    pos = pos0.detach().clone().requires_grad_("pos" in opt_set); scale = scale0.detach().clone().requires_grad_("scale" in opt_set)
+    lat = lat0.detach().clone().requires_grad_("latent" in opt_set)
+    roll_v = roll.detach().clone().requires_grad_("roll" in opt_set)
     fwd0 = derive_forward(pos0, parent_idx) if ("roll" in opt_set or a.recompute_rot) else None
 
     exist_logit = None
     if "exist" in opt_set:
         assert exist_prob0 is not None, "exist in --opt needs exist_prob0 (the model's pre-threshold existence probability)"
-        exist_logit = torch.logit(exist_prob0.clamp(1e-3, 1 - 1e-3)).clone().requires_grad_(True)
+        exist_logit = torch.logit(exist_prob0.detach().clamp(1e-3, 1 - 1e-3)).clone().requires_grad_(True)
 
     def _rot_par(pos_c, roll_c):
         if "roll" in opt_set:
