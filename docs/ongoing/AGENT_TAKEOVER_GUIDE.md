@@ -440,7 +440,7 @@ RAM), so the free local GPU runs a full-data v10 + input camera + EMA lineage wi
 Heesup's own OnDemand desktop job's GPU allocation on `gpu-10-54`, at Heesup's instruction** (the desktop session
 holds 1 GPU / 32 CPU / 64 GB that a normal `sbatch` can't see as free since the node's GRES accounting already
 shows all 4 GPUs allocated node-wide; `srun --jobid=<job>` attaches a new step to an ALREADY-GRANTED allocation,
-which only the job's own owner can do -- this only works because 38340946 belongs to this account). Redirected
+which only the job's own owner can do -- this only works because 38340946 belongs to this account). First readings: ep80 31.2, ep85 32.9, ep90 **38.0** (rising, though single-checkpoint spikes have reverted before -- watch the next few). Redirected
 from the pending `sbatch` job `38341387` (cancelled to avoid a duplicate run once a normal slot freed up).
 Log `slurm_scripts/logs/20260916/sub10_v10_rampR_srun.log`, checkpoints `diffusion_based/checkpoints/sub10_v10_rampR/`,
 `RENDER_GRAD_START_EPOCH=79` so the 0.167->0.5 ramp begins at this run's very first render-active epoch. The other
