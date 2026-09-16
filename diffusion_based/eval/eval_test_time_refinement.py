@@ -42,12 +42,18 @@ def refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, sca
 
     "exist" in opt_set optimises each node's existence continuously: a sigmoid-parameterised probability (init from
     `exist_prob0`, the model's own PRE-threshold sigmoid output -- not the >0.5 hard mask in `exist`, which cannot
-    be corrected once baked in, see 2026-09-15's --exist_thresh finding) multiplies that node's scale, so a
-    suppressed (false-positive) node shrinks to near-zero size and a promoted (false-negative, previously masked
-    out) node grows to full size -- both fully differentiable through the same render loss, instead of the boolean
-    `cls>0 & exist>0.5` gate inside plant_from_nodes (which has no gradient and can only ever narrow the node set
-    plant_from_nodes was handed, never revive a node the sampler masked off). A quadratic penalty toward
-    `exist_prob0` (a.reg_exist) keeps this from turning on every candidate slot.
+    be corrected once baked in, see 2026-09-15's --exist_thresh finding) is passed as a per-organ ALPHA to
+    build_mesh_from_part_tensor(existence=...) -- the renderer's own soft-existence channel, already alpha-composited
+    against the background for both rgb and depth (helios_pytorch_renderer), and already used this way (normally
+    with existence.detach()) by the training render block. A suppressed (false-positive) node fades toward the
+    background depth/silhouette at its pixels and a promoted (false-negative, previously masked out) node fades in
+    -- both fully differentiable through the render loss. This replaces two things: the boolean `cls>0 & exist>0.5`
+    row gate inside plant_from_nodes (no gradient, and can only ever narrow the node set, never revive a masked-off
+    one -- plant_from_nodes(soft_exist=True) instead keeps every cls>0 row and returns a matching per-row alpha),
+    and a first attempt (2026-09-16, dropped) that multiplied the node's SCALE by the probability instead: that
+    is a real geometry change with its own depth footprint, not a fade, and does not handle occlusion between
+    overlapping organs the way alpha compositing does. A quadratic penalty toward `exist_prob0` (a.reg_exist)
+    keeps this from turning on every candidate slot.
 
     `a` carries steps, lr_*, reg_*, keep_best, target_zooms, plant_centered, recompute_rot (argparse namespace or
     any object with those attributes). Returns (pos, scale, lat, roll, rot, parent_pos, final_input_loss, exist)."""
@@ -87,14 +93,13 @@ def refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, sca
         rot_c, par_c = _rot_par(pos, roll_v)
         if exist_logit is not None:
             exist_p = torch.sigmoid(exist_logit)
-            scale_eff = scale * exist_p.clamp(min=1e-3).unsqueeze(-1)   # near-zero size, not a hard gate -- keeps gradients
-            exist_gate = torch.ones_like(exist_p)                       # let size alone decide visibility inside plant_from_nodes
+            parts, alpha = plant_from_nodes(pvae, pos, rot_c, scale, lat, exist_p, par_c, M, soft_exist=True)
         else:
-            exist_p = None; scale_eff = scale; exist_gate = exist
-        parts = plant_from_nodes(pvae, pos, rot_c, scale_eff, lat, exist_gate, par_c, M)
+            exist_p = None; alpha = None
+            parts = plant_from_nodes(pvae, pos, rot_c, scale, lat, exist, par_c, M)
         if parts.shape[0] == 0:
             break
-        mesh = renderer.geo_builder.build_mesh_from_part_tensor(parts, device=dev)
+        mesh = renderer.geo_builder.build_mesh_from_part_tensor(parts, existence=alpha, device=dev)
         loss = torch.zeros((), device=dev)
         for z, t in tgt.items():
             if a.plant_centered:
@@ -131,9 +136,8 @@ def refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, sca
     with torch.no_grad():
         rot_c, par_c = _rot_par(pos, roll_v)
         if exist_logit is not None:
-            exist_p_final = torch.sigmoid(exist_logit)
-            scale = scale * exist_p_final.unsqueeze(-1)
-            exist = (exist_p_final > 0.5).float()
+            exist = (torch.sigmoid(exist_logit) > 0.5).float()   # final materialisation is a crisp in/out decision;
+            # scale is returned unmodified -- alpha only faded the RENDER during the search, it never touched shape
     final_loss = best[0] if a.keep_best else float(loss)
     return pos.detach(), scale.detach(), lat.detach(), roll_v.detach(), rot_c, par_c, final_loss, exist.detach() if torch.is_tensor(exist) else exist
 

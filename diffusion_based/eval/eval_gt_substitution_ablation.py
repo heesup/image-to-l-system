@@ -68,14 +68,36 @@ def score(pred_depth, gt_depth):
     return inter / max(union, 1), mae
 
 
-def plant_from_nodes(phytomer_vae, pos, rot, scale, latent, exist, parent_pos, M):
-    """The training render block's decode: latent -> packets -> assembled 14D parts (K nodes, hard gates)."""
+def plant_from_nodes(phytomer_vae, pos, rot, scale, latent, exist, parent_pos, M, soft_exist=False):
+    """The training render block's decode: latent -> packets -> assembled 14D parts.
+
+    soft_exist=False (default): `exist` is a hard 0/1 (or thresholded) per-phytomer mask; organs of non-existent
+    phytomers are dropped from the returned row set entirely (the K*M -> row-count reduction has no gradient
+    through `exist`). Every other caller of this function uses this mode, unchanged.
+
+    soft_exist=True: `exist` is a CONTINUOUS per-phytomer probability in [0, 1] (e.g. the model's pre-threshold
+    sigmoid output, or a value being optimised). No row is dropped by existence (only cls>0 still filters); instead
+    a matching per-row alpha tensor is returned for build_mesh_from_part_tensor(existence=alpha) -- the renderer's
+    own soft-existence alpha channel (helios_pytorch_geometry.build_mesh_from_part_tensor's `existence` argument,
+    already alpha-composited against the background for both rgb and depth in helios_pytorch_renderer, and already
+    used this way -- normally with existence.detach() for training stability -- by the training render block).
+    That is the differentiable, physically-meaningful way to fade an organ in or out: it blends toward the
+    background depth/silhouette at that pixel, not a `scale *= exist_prob` shrink (tried first, 2026-09-16,
+    then dropped: shrinking is a real geometric change with its own depth footprint, not a fade, and does not
+    correctly handle occlusion between overlapping organs the way alpha compositing does).
+    Returns (parts, alpha) instead of parts alone when soft_exist=True.
+    """
     K = pos.shape[0]
     out = phytomer_vae.decode(latent)
     recon = denormalize_packet_scales(out["recon_packets"], scale)
     pk = assemble_packets(recon, rot, parent_pos=parent_pos, centers=pos)
     abs_pk = apply_ref_for_flow(pk.reshape(1, K, M, 26), pos.unsqueeze(0), rot.unsqueeze(0))[0]   # (K, M, 26)
     cls = out["cls_logits"].reshape(K, M, 13).argmax(-1)
+    if soft_exist:
+        keep = cls > 0
+        parts = decode_fm(abs_pk.reshape(-1, 26)[keep.reshape(-1)])
+        alpha = exist.unsqueeze(-1).expand(K, M).reshape(-1)[keep.reshape(-1)]
+        return parts, alpha
     keep = (cls > 0) & (exist > 0.5).unsqueeze(-1)
     return decode_fm(abs_pk.reshape(-1, 26)[keep.reshape(-1)])
 
