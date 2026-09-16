@@ -84,7 +84,13 @@ help, confirming the mechanism, but is not sufficient by itself: 1.1x of an alre
 cold-start scale can still land well past the plant's true size for the more severely undersized
 cases. This points toward an **absolute** scale cap (in metres, keyed to typical seedling organ
 size) rather than a multiplicative one (keyed to the cold start's own, sometimes very wrong, scale)
-as the more robust fix — not implemented here.
+as the more robust fix. Scaffolded as `--scale_abs_max` in `run_approach2_refine.py` (off by
+default) but **not calibrated or re-tested**: a quick check of `scale0` across 4 AgML cold-start
+plants found it ranging from about -2.3 to 2.6, i.e. this field is not simply "organ size in
+metres" the way the name suggests -- picking a naive positive ceiling without understanding its
+actual packing (`denormalize_packet_scales`) risks clamping something that was never the problem,
+or missing the axis that actually is. Left for whoever next revisits this to check that convention
+first.
 
 ## 6. Conclusion
 
