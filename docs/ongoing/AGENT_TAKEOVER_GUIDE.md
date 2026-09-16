@@ -468,6 +468,16 @@ the s3geom ep78 checkpoint, `EVAL_SET_FILE` + `HOLDOUT_PER_BUCKET=2`, `SAVE_EVER
 It is the generalisation check of the 10% findings and the candidate deployable model for refinement. Full-run readings
 (detached scorer, JSONs in `slurm_scripts/logs/20260915/run_38275054/`): ep80 strict P 27.5, meanlat 34.4, ALL 79.6, refined 31.3 → 64.6 (~15–18 min/epoch). The two local 10% runs were stopped at 15:20 (`sub10_v10_cam` ep100, `sub10_v10_w3t0` ep113; both plateaued, checkpoints kept) so the local GPU serves evaluations; a second detached loop runs the default test-time refinement on every full-run checkpoint after its strict reading (log `full_refine.log` in the session scratchpad).
 
+**09:58 (2026-09-16) — the local `cnt2` run stalled for ~20+ min (all worker processes near-0%% CPU, GPU util 39%%
+while still holding ~20 GB) after several `eval_test_time_refinement.py` test invocations ran back-to-back on the
+same GPU alongside it.** Likely GPU-context/DDP-heartbeat contention from stacking a live 1-GPU torchrun training
+job with concurrent foreground eval processes on the same card, not a code bug -- the training log simply stopped
+advancing mid-epoch-106 with no error. Killed (SIGTERM then SIGKILL on the surviving worker) and restarted with
+`AUTO_RESUME=1 FORCE_BATCH_SIZE=auto` from the ep105 checkpoint (log
+`slurm_scripts/logs/20260916/local_v10_cam_cnt2_full_r2.log`). Going forward: avoid running more than one
+foreground eval/refinement script on this local GPU while a local training run is live; the detached scorer loop
+(`cnt2_readings2.sh`, mostly idle/sleeping between checkpoints) is fine to keep running alongside it.
+
 **13:30 — training render loss now has the same camera option; run `sub10_v10_cam` launched (results report §11.10).**
 `--render_input_camera 1` (launcher `RENDER_INPUT_CAMERA=1`, commit `d492e01`): for every rendered plant the training
 loss now frames the prediction on the bbox centre of that plant's GT mesh (decoded from the batch `nodes` with
