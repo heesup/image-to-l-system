@@ -48,6 +48,7 @@ def main():
     ap.add_argument("--save_renders", default="", help="folder: save gt / before / after top-view renders (256 px PNG) per plant")
     ap.add_argument("--only", default="", help="comma-separated plant indices to process (default: the whole eval set)")
     ap.add_argument("--target_zooms", default="1,2,4,8", help="comma list of cache zoom levels (1,2,4,8) whose depth channels are the refinement targets; the 4x/8x levels add signal for plants that are only a few pixels wide at 1x/2x")
+    ap.add_argument("--init_mean_latent", action="store_true", help="start the refinement from the training-set mean latent (the model's latent_mu buffer) instead of the flow-sampled latent; on full data the sampled latent scored 6-7 points below the mean latent")
     ap.add_argument("--recompute_rot", action="store_true", help="re-derive each node's rotation (forward axis from the CURRENT parent->node segment, plus roll) and parent position inside the loop instead of freezing them at the sampled node positions; the topology (parent lookup) stays the one chained once from the sampled positions. Required for roll in --opt.")
     ap.add_argument("--lr_roll", type=float, default=2e-2)
     ap.add_argument("--reg_scale", type=float, default=5.0, help="penalty weight on (scale - sampled scale)^2, keeps leaves from inflating to fill the silhouette")
@@ -100,6 +101,10 @@ def main():
             pos0 = so["phytomer_pos"][0].float(); exist = so["phytomer_existence"][0].float(); roll = so["phytomer_roll"][0].float()
             ordn = co["phytomer_ordinal"][0].float(); base = co["phytomer_base_logits"][0].float()
             scale0 = (so.get("phytomer_scale") if so.get("phytomer_scale") is not None else co.get("phytomer_scale"))[0].float(); lat0 = so["pred_latent"][0].float()
+            if a.init_mean_latent:
+                if not model.latent_norm_active():
+                    raise SystemExit("--init_mean_latent needs a checkpoint trained with latent_norm (latent_mu buffer)")
+                lat0 = model.latent_mu.float().reshape(1, -1).expand_as(lat0).clone()
             rot, par = reconstruct_phytomer_rot(pos0.unsqueeze(0), roll.unsqueeze(0), ordn.unsqueeze(0), base.unsqueeze(0), exist=(exist > 0.5).float().unsqueeze(0))
             rot, par = rot[0].float(), par[0].float()
             # topology chained once from the sampled positions (discrete, non-differentiable); the rotation and
