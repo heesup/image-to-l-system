@@ -39,10 +39,10 @@ flowchart LR
 
 | Component | Status | Key Files |
 |-----------|--------|-----------|
-| **26D Organ Encoding** | ✅ Production | [plant_organ_array.py](file:///home/lion397/codes/image-to-l-system/diffusion_based/models/plant_organ_array.py) — 512 slots × 26D |
+| **26D Organ Encoding** | ✅ Production | [plant_organ_array.py](file:///home/lion397/codes/image-to-l-system/plant_recon/models/plant_organ_array.py) — 512 slots × 26D |
 | **100K Dataset Synthesis** | ✅ Complete | 10,000 XMLs (100 seeds × DAP 1–100) → `dataset/helios_data/cowpea/` |
 | **GPU Tensor Sharding** | ✅ Complete | 100K `.pt` shards → `dataset/helios_data/cowpea_shard/` |
-| **Helios C++ ↔ PyTorch Alignment** | ✅ 0.00 mm error | [helios_pytorch_geometry.py](file:///home/lion397/codes/image-to-l-system/diffusion_based/models/helios_pytorch_geometry.py) — gravitropic curvature, child shoot frames |
+| **Helios C++ ↔ PyTorch Alignment** | ✅ 0.00 mm error | [helios_pytorch_geometry.py](file:///home/lion397/codes/image-to-l-system/plant_recon/models/helios_pytorch_geometry.py) — gravitropic curvature, child shoot frames |
 | **XML Round-Trip Fidelity** | ✅ 100% lossless | 100/100 samples, 200K+ tags, 0.000000 mm vertex error |
 | **COCO Internode Masking** | ✅ Fixed | `main.cpp` → `"shoot"` mapped to Category ID 0 |
 | **Multi-Arch CUDA Fatbin** | ✅ All GPUs | `nvdiffrast` compiled for sm_70/75/80/86/89/90+PTX |
@@ -86,9 +86,9 @@ Dim     25: Phyllotactic angle / 180.0
 |------|------|--------|
 | `canonical_cowpea_dit_large.py` | **232M DiT-Large** (ViT-16L + Decoder-12L, max_slots=4096) | 232.43M |
 | `canonical_cowpea_dit.py` | 73M DiT (60 epoch baseline, superseded) | 73M |
-| [`helios_pytorch_geometry.py`](../../../diffusion_based/models/helios_pytorch_geometry.py) | 16D/26D → 3D mesh builder; fully vectorized `torch.bmm` GPU assembly + `extract_part_tensor()` FK bridge | — |
-| [`helios_pytorch_renderer.py`](../../../diffusion_based/models/helios_pytorch_renderer.py) | Multi-modal nvdiffrast GPU rasterizer (RGB + CHM Depth + Mask + Semantic); `render_organ_array()` deprecated | — |
-| [`plant_organ_array.py`](../../../diffusion_based/models/plant_organ_array.py) | 40D organ array: XML ↔ 40D ↔ 16D unification; `to_part_tensor()`, `to_xml_string()`, `from_xml_file()` | — |
+| [`helios_pytorch_geometry.py`](../../../plant_recon/models/helios_pytorch_geometry.py) | 16D/26D → 3D mesh builder; fully vectorized `torch.bmm` GPU assembly + `extract_part_tensor()` FK bridge | — |
+| [`helios_pytorch_renderer.py`](../../../plant_recon/models/helios_pytorch_renderer.py) | Multi-modal nvdiffrast GPU rasterizer (RGB + CHM Depth + Mask + Semantic); `render_organ_array()` deprecated | — |
+| [`plant_organ_array.py`](../../../plant_recon/models/plant_organ_array.py) | 40D organ array: XML ↔ 40D ↔ 16D unification; `to_part_tensor()`, `to_xml_string()`, `from_xml_file()` | — |
 | ~~helios_xml_parser.py~~ | ~~Helios XML → OrganNode3D legacy parser~~ | ❌ **Deleted 2026-08-25** |
 
 ### Dataset
@@ -98,7 +98,7 @@ Dim     25: Phyllotactic angle / 180.0
 | `cowpea_shard_dataset.py` | `PlantShardDataset` — streaming shard loader + dynamic collation |
 | `generate_tensor_shards.py` | Phase 2 engine: XML → GPU render → 26D `.pt` shards |
 | [`canonical_cowpea_dataset.py`](../../../archive/dataset_scripts/canonical_cowpea_dataset.py) | Legacy 15K individual `.pt` dataset (superseded by shards) |
-| [`part_array_dataset.py`](../../../diffusion_based/dataset/part_array_dataset.py) | 26D node layout definition & normalization |
+| [`part_array_dataset.py`](../../../plant_recon/dataset/part_array_dataset.py) | 26D node layout definition & normalization |
 
 ### Training
 
@@ -115,7 +115,7 @@ Dim     25: Phyllotactic angle / 180.0
 | [`eval_cowpea_dit_100k.py`](../../../archive/eval_scripts/eval_cowpea_dit_100k.py) | 232M lifespan 6-column benchmark |
 | [`eval_canonical_cowpea_flow_matching.py`](../../../archive/eval_scripts/eval_canonical_cowpea_flow_matching.py) | 73M DAP-specific evaluation |
 | [`eval_pure_noise_flow_matching.py`](../../../archive/eval_scripts/eval_pure_noise_flow_matching.py) | Pure noise → generation quality |
-| [`metrics.py`](../../../diffusion_based/eval/metrics.py) | Masked SSIM, FG-IoU, Chamfer Distance |
+| [`metrics.py`](../../../plant_recon/eval/metrics.py) | Masked SSIM, FG-IoU, Chamfer Distance |
 
 ### SLURM & Infrastructure
 
@@ -128,7 +128,7 @@ Dim     25: Phyllotactic angle / 180.0
 
 | File | Role |
 |------|------|
-| [`main.cpp (syntheticdata_generation)`](../../../Digital-Crops/projects/syntheticdata_generation/main.cpp) | COCO mask export + XML synthesis |
+| [`main.cpp (syntheticdata_generation)`](../../../submodules/Digital-Crops/projects/syntheticdata_generation/main.cpp) | COCO mask export + XML synthesis |
 | `render_xml/main.cpp` | Lightweight XML → image visualizer |
 
 ---
@@ -214,11 +214,11 @@ Covers Helios renderer handover (Aug 11), plant organ arrays (Aug 12), refactori
 ### docs/todo/15_loss_reduction_strategies.md
 - [15_loss_reduction_strategies.md](../../archive/todo/15_loss_reduction_strategies.md) references "40 parameters per node" and "40D typed-array model". The strategy framework is still valuable but dimension references are wrong.
 
-### docs/results/15_strategies_benchmark_report.md
+### docs/experiments/15-strategies-benchmark/15-strategies-benchmark.md
 - [15_strategies_benchmark_report.md](../../experiments/15-strategies-benchmark/15-strategies-benchmark.md) header states "14D Part Assembly" benchmarks. Still useful as historical reference but no longer represents the active pipeline.
 
-### diffusion_based/README.md & README_TECHNICAL.md
-- [`diffusion_based/README.md`](../../../diffusion_based/README.md) and [`diffusion_based/README_TECHNICAL.md`](../../../diffusion_based/README_TECHNICAL.md) — likely describe earlier pipeline versions.
+### plant_recon/README.md & README_TECHNICAL.md
+- [`plant_recon/README.md`](../../../plant_recon/README.md) and [`plant_recon/README_TECHNICAL.md`](../../../plant_recon/README_TECHNICAL.md) — likely describe earlier pipeline versions.
 
 ---
 
@@ -230,7 +230,7 @@ Covers Helios renderer handover (Aug 11), plant organ arrays (Aug 12), refactori
 3. **Rewrite `docs/todo/roadmap.md`** — new roadmap around 26D, 232M, multi-species
 
 ### After Training Completes
-4. **Run full lifespan evaluation**: `python diffusion_based/eval/eval_cowpea_dit_100k.py`
+4. **Run full lifespan evaluation**: `python plant_recon/eval/eval_cowpea_dit_100k.py`
 5. **Archive 08/21 and 08/22 ongoing docs to `docs/done/`** — dataset pipeline is complete
 6. **Move stale todo docs to `docs/archived/todo/`**
 
@@ -245,7 +245,7 @@ Covers Helios renderer handover (Aug 11), plant organ arrays (Aug 12), refactori
 
 ```
 image-to-l-system/
-├── diffusion_based/
+├── plant_recon/
 │   ├── models/
 │   │   ├── canonical_cowpea_dit_large.py   # 232M DiT-Large architecture
 │   │   ├── plant_organ_array.py            # 26D organ array core
@@ -268,7 +268,7 @@ image-to-l-system/
 ├── slurm_scripts/
 │   ├── train_cowpea_dit_h100_ddp.sh         # ★ Active: DDP training launcher
 │   └── generate_helios_dataset_jobs.sh      # Master pipeline orchestrator
-├── Digital-Crops/                           # Helios C++ submodule
+├── submodules/Digital-Crops/                           # Helios C++ submodule
 │   └── projects/
 │       ├── syntheticdata_generation/        # COCO mask + XML synthesis
 │       └── render_xml/                      # Standalone XML viewer

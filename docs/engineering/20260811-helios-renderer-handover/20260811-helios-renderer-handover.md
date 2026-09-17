@@ -50,13 +50,13 @@ Helios Differentiable Pipeline ─────┤    • Use case: GT Benchmarks
 ### Track Details
 
 * **Track A: `DifferentiableHeliosXMLRenderer`**
-  - **Source File**: `diffusion_based/models/legacy/helios_geometry_legacy.py`
-  - **Import Entrypoint**: `from diffusion_based.models.differentiable_pipeline import DifferentiableHeliosXMLRenderer, build_helios_geometry_from_xml`
+  - **Source File**: `plant_recon/models/legacy/helios_geometry_legacy.py`
+  - **Import Entrypoint**: `from plant_recon.models.differentiable_pipeline import DifferentiableHeliosXMLRenderer, build_helios_geometry_from_xml`
   - **Functionality**: Reconstructs exact 3D geometry objects (`HeliosPlantGeometry`: `tubes`, `leaflets`, `ellipsoids`) directly from XML and passes them to `HeliosGeometryRasterizer.render_torch_geometry()`.
   - **Differentiability**: Fully differentiable with respect to organ colors, scales, visibility, and camera rasterization parameters.
 
 * **Track B: `DifferentiableHeliosRenderer`**
-  - **Source Files**: `diffusion_based/models/differentiable_pipeline.py` & `diffusion_based/models/helios_geometry.py`
+  - **Source Files**: `plant_recon/models/differentiable_pipeline.py` & `plant_recon/models/helios_geometry.py`
   - **Functionality**: Accepts continuous PyTorch Tensors `nodes: (B, N, 25)` without disk XML. Executes `nodes_to_geometry_torch()` to build PyTorch mesh tensors dynamically.
   - **Differentiability**: Fully differentiable from output pixels all the way back to the input node vector array.
 
@@ -94,7 +94,7 @@ Helios Differentiable Pipeline ─────┤    • Use case: GT Benchmarks
 
 ### 4.1 Exact Leaflet Orientation Matrix in the Parser
 
-In `diffusion_based/models/helios_xml_parser.py`, the parser now computes the full C++-style rotation chain for each leaflet and stores it as `leaf['R_matrix']`:
+In `plant_recon/models/helios_xml_parser.py`, the parser now computes the full C++-style rotation chain for each leaflet and stores it as `leaf['R_matrix']`:
 
 1. **roll** about local x-axis
 2. **-pitch** about local y-axis
@@ -106,11 +106,11 @@ This matrix is copied into `OrganNode3D.R_matrix` when leaf nodes are created.
 
 ### 4.2 25D-Aware `nodes_to_geometry_torch`
 
-`diffusion_based/models/helios_geometry.py` detects `D >= 25`, reshapes channels `5:14` into a `(B, N, 3, 3)` rotation matrix, and uses it directly for leaf rendering instead of reconstructing a frame from `direction + roll`. Non-leaf organs still use the first column as the direction vector.
+`plant_recon/models/helios_geometry.py` detects `D >= 25`, reshapes channels `5:14` into a `(B, N, 3, 3)` rotation matrix, and uses it directly for leaf rendering instead of reconstructing a frame from `direction + roll`. Non-leaf organs still use the first column as the direction vector.
 
 ### 4.3 GraphDiffuser3D now outputs 25D
 
-`diffusion_based/models/graph_diffuser_3d.py`:
+`plant_recon/models/graph_diffuser_3d.py`:
 
 * Default `node_dim` changed from `22` to `25`.
 * The prediction head now outputs 25 channels.
@@ -118,7 +118,7 @@ This matrix is copied into `OrganNode3D.R_matrix` when leaf nodes are created.
 
 ### 4.4 XML ↔ Organ-Node Round-Trip
 
-`diffusion_based/models/helios_xml_parser.py` now provides:
+`plant_recon/models/helios_xml_parser.py` now provides:
 
 * `organ_nodes_to_xml(nodes, base_position, plant_age, plant_id)` — serializes a flat `OrganNode3D` list back to byte-identical Helios XML.
 * `verify_xml_round_trip(xml_path)` — parses, serializes, and checks both **text_equal** and **semantic_equal**.
@@ -130,17 +130,17 @@ All XML fixtures under `notebooks/output_dap*/` pass round-trip verification wit
 
 ## 5. Relevant Code Files & Entry Points
 
-1. `diffusion_based/models/differentiable_pipeline.py`
+1. `plant_recon/models/differentiable_pipeline.py`
    - `DifferentiableHeliosRenderer` (Track B) and re-exports for Track A.
-2. `diffusion_based/models/helios_geometry.py`
+2. `plant_recon/models/helios_geometry.py`
    - `nodes_to_geometry_torch()`, `_leaflet_local_mesh_torch()`, `_leaflet_local_mesh()`, `HeliosPlantGeometry.get_geometry_tensors()`.
-3. `diffusion_based/models/helios_xml_parser.py`
+3. `plant_recon/models/helios_xml_parser.py`
    - `HeliosXMLParser`, `OrganNode3D.to_vec()` / `from_vec()`, `organ_nodes_to_xml()`, `verify_xml_round_trip()`, `extract_xml_tag_coverage()`.
-4. `diffusion_based/models/legacy/helios_geometry_legacy.py`
+4. `plant_recon/models/legacy/helios_geometry_legacy.py`
    - XML-native geometry construction (`build_helios_geometry_from_xml`).
-5. `diffusion_based/models/helios_rasterizer_3d.py`
+5. `plant_recon/models/helios_rasterizer_3d.py`
    - PyTorch 3D Geometry Rasterizer.
-6. `diffusion_based/models/graph_diffuser_3d.py`
+6. `plant_recon/models/graph_diffuser_3d.py`
    - 25D 3D graph diffusion model.
 7. `notebooks/compare_track_a_b.py`
    - Quick Track A vs Track B comparison script.
@@ -163,15 +163,15 @@ python notebooks/run_dap_multi_benchmark_with_track_a.py --daps 10 50 90 --skip-
 
 # XML round-trip verification
 python - <<'PY'
-from diffusion_based.models.helios_xml_parser import verify_xml_round_trip
+from plant_recon.models.helios_xml_parser import verify_xml_round_trip
 print(verify_xml_round_trip('notebooks/output_dap_benchmark/dap50_gt_0000_plant_0000.xml'))
 PY
 
 # 25D GraphDiffuser3D integration test
 python - <<'PY'
-from diffusion_based.models.graph_diffuser_3d import PlantGraphDiffuser3D
-from diffusion_based.models.differentiable_pipeline import DifferentiableHeliosRenderer
-from diffusion_based.models.helios_rasterizer_3d import HeliosGeometryRasterizer
+from plant_recon.models.graph_diffuser_3d import PlantGraphDiffuser3D
+from plant_recon.models.differentiable_pipeline import DifferentiableHeliosRenderer
+from plant_recon.models.helios_rasterizer_3d import HeliosGeometryRasterizer
 import torch
 model = PlantGraphDiffuser3D(node_dim=25).cuda()
 rast = HeliosGeometryRasterizer(image_size=256).cuda()
@@ -190,7 +190,7 @@ PY
 
 ## 7. Training Pipeline Update (Completed 2026-08-11)
 
-The 3D graph diffusion training script (`diffusion_based/training/train_diffusion_3d.py`) and the dataset loader (`dataset/helios_dataset.py`) now support the 25D organ-node representation end-to-end.
+The 3D graph diffusion training script (`plant_recon/training/train_diffusion_3d.py`) and the dataset loader (`dataset/helios_dataset.py`) now support the 25D organ-node representation end-to-end.
 
 ### Key changes
 
@@ -208,7 +208,7 @@ The 3D graph diffusion training script (`diffusion_based/training/train_diffusio
 ```bash
 # 25D non-render forward/backward
 python - <<'PY'
-from diffusion_based.training.train_diffusion_3d import train_3d_diffusion
+from plant_recon.training.train_diffusion_3d import train_3d_diffusion
 train_3d_diffusion(
     data_dir='/home/lion397/codes/image-to-l-system/notebooks/output_dap_benchmark',
     num_epochs=1, batch_size=1, save_path='/tmp/opencode/smoke_25d.pt',
@@ -217,7 +217,7 @@ PY
 
 # 25D + differentiable render loss
 python - <<'PY'
-from diffusion_based.training.train_diffusion_3d import train_3d_diffusion
+from plant_recon.training.train_diffusion_3d import train_3d_diffusion
 train_3d_diffusion(
     data_dir='/home/lion397/codes/image-to-l-system/notebooks/output_dap_benchmark',
     num_epochs=1, batch_size=1, save_path='/tmp/opencode/smoke_25d_render.pt',

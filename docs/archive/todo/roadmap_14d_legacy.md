@@ -11,16 +11,16 @@ status: archived
 
 1. **Finish 14D precompute cache**
    - Location: `dataset/helios_data_14d_cache/`
-   - Script: `diffusion_based/dataset/precompute_part_tensors.py`
+   - Script: `plant_recon/dataset/precompute_part_tensors.py`
    - Status: in progress; skips existing files on restart.
 
 2. **Train 14D flow-matching model end-to-end**
-   - Script: `diffusion_based/training/train_part_flow_matching.py`
+   - Script: `plant_recon/training/train_part_flow_matching.py`
    - Dataset: `PartArrayDataset` with `cache_dir` pointing to precomputed cache.
    - Target: 50 epochs, max_nodes=2048, image_size=128.
 
 3. **Generate honest 14D report figures**
-   - Script: `diffusion_based/eval/generate_14d_report.py`
+   - Script: `plant_recon/eval/generate_14d_report.py`
    - Outputs: `docs/results/assets/fig3..fig7`
    - All numbers come from real 14D direct-optimization runs; no aspirational learned-method metrics.
 
@@ -36,18 +36,18 @@ status: archived
      - +2 explicit dims: `petiole_curvature(1)`, `peduncle_curvature(1)`
      - Total: 16D, masked by organ type during loss/normalization.
    - Files to touch:
-     - `diffusion_based/models/plant_organ_array.py` (column constants)
-     - `diffusion_based/models/helios_pytorch_geometry.py` (extract curvature during mesh build)
-     - `diffusion_based/models/helios_pytorch_renderer.py` (curved tube rendering)
-     - `diffusion_based/models/part_assembly_to_xml.py` (write real curvature values)
-     - `diffusion_based/models/part_flow_matching.py` (input/output dim 14 -> 16)
-     - `diffusion_based/dataset/part_array_dataset.py` (normalize curvature dims)
-     - `diffusion_based/dataset/precompute_part_tensors.py` (regenerate cache)
+     - `plant_recon/models/plant_organ_array.py` (column constants)
+     - `plant_recon/models/helios_pytorch_geometry.py` (extract curvature during mesh build)
+     - `plant_recon/models/helios_pytorch_renderer.py` (curved tube rendering)
+     - `plant_recon/models/part_assembly_to_xml.py` (write real curvature values)
+     - `plant_recon/models/part_flow_matching.py` (input/output dim 14 -> 16)
+     - `plant_recon/dataset/part_array_dataset.py` (normalize curvature dims)
+     - `plant_recon/dataset/precompute_part_tensors.py` (regenerate cache)
    - Decision: keep 14D for now; revisit after baseline 14D model is trained and evaluated.
 
 ## Done
 
-- Migrated 40D model/training/dataset code to `diffusion_based/*/legacy/`.
+- Migrated 40D model/training/dataset code to `plant_recon/*/legacy/`.
 - Removed active 40D imports from the main benchmark/report pipeline.
 - Added 14D-only report script (`generate_14d_report.py`).
 - Fixed dataset to compute 14D tensor once and render from it (no double full-mesh build).

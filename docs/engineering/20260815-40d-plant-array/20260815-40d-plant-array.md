@@ -101,7 +101,7 @@ When converting the 40D Plant Organ Array to a latent vector $z \in \mathbb{R}^{
 ## 4. Empirical Verification & Helios Benchmark
 
 Visual rendering equivalence and XML round-trip fidelity are verified in:
-- [`docs/results/assets/fig_40d_helios_render_comparison.png`](assets/fig_40d_helios_render_comparison.png)
+- [`docs/engineering/20260815-40d-plant-array/assets/fig_40d_helios_render_comparison.png`](assets/fig_40d_helios_render_comparison.png)
 
 ```
 Test Results:

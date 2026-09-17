@@ -8,7 +8,7 @@ status: done
 # Hand-off Document: PyTorch Differentiable Renderer vs Ground Truth C++ Helios Pixel-to-Pixel Matching
 
 ## 1. Executive Summary & Goal
-The objective of this task is to align the **PyTorch Differentiable Renderer** (`HeliosPlantGeometryTorch` & `HeliosGeometryRasterizer` in `diffusion_based/models/`) with **Ground Truth C++ Helios** outputs across growth benchmarks (DAP 10, DAP 50, DAP 90) so that organ masks (Leaves, Stems, Flowers, Pods) achieve **exact pixel-to-pixel matching**.
+The objective of this task is to align the **PyTorch Differentiable Renderer** (`HeliosPlantGeometryTorch` & `HeliosGeometryRasterizer` in `plant_recon/models/`) with **Ground Truth C++ Helios** outputs across growth benchmarks (DAP 10, DAP 50, DAP 90) so that organ masks (Leaves, Stems, Flowers, Pods) achieve **exact pixel-to-pixel matching**.
 
 ---
 
@@ -16,7 +16,7 @@ The objective of this task is to align the **PyTorch Differentiable Renderer** (
 
 ### 2.1 Leaf Scale Factor (`current_leaf_scale_factor`)
 - **Root Cause**: Young plant leaves (DAP 10) in C++ Helios use `<current_leaf_scale_factor>` (e.g. `0.65`) stored under `<petiole>` XML tags to scale leaves down during early phenological stages. `helios_geometry.py` was ignoring this factor, causing PyTorch leaves to render **1.54x oversized**.
-- **Fix Applied** (`diffusion_based/models/helios_geometry.py`):
+- **Fix Applied** (`plant_recon/models/helios_geometry.py`):
   ```python
   leaf_scale = leaf.get("scale", 0.0) * leaf.get("scale_factor", 1.0)
   ```
@@ -24,7 +24,7 @@ The objective of this task is to align the **PyTorch Differentiable Renderer** (
 ### 2.2 Ghost Petiole Cumulative Phyllotactic Angle (`PlantArchitecture.cpp` L1085-L1110)
 - **Root Cause**: When a phytomer has no explicit petioles, C++ Helios creates a "ghost petiole" reference vector and applies a cumulative phyllotactic rotation:
   $$\text{cumulative\_rotation} = \text{parent\_node\_index} \times \text{phyllotactic\_angle}$$
-- **Fix Applied** (`diffusion_based/models/helios_geometry.py`):
+- **Fix Applied** (`plant_recon/models/helios_geometry.py`):
   Added cumulative Rodrigues rotation for ghost petiole axes on child shoots and internodes:
   ```python
   ghost = np.cross(parent_internode_axis, np.array([0.0, 0.0, 1.0]))
@@ -48,8 +48,8 @@ The objective of this task is to align the **PyTorch Differentiable Renderer** (
 ## 3. Key Files & Working Test Scripts
 
 ### Core Implementation Files
-1. `diffusion_based/models/helios_geometry.py`: 3D Forward Kinematics (FK) and XML parsing.
-2. `diffusion_based/models/helios_rasterizer_3d.py`: PyTorch differentiable rasterizer.
+1. `plant_recon/models/helios_geometry.py`: 3D Forward Kinematics (FK) and XML parsing.
+2. `plant_recon/models/helios_rasterizer_3d.py`: PyTorch differentiable rasterizer.
 
 ### Benchmark & Diagnostic Scripts (in Artifacts Scratch Directory)
 - `compare_pixel_match.py` (archived to `archive/scratch/`, Aug-25 cleanup): Quantitative multi-organ IoU/Dice evaluator.

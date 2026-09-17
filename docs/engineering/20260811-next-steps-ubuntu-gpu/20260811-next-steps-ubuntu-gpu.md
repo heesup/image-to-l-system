@@ -32,16 +32,16 @@ status: done
 
 ## 2. Prepare the Helios Dataset
 
-The repo no longer includes the `Digital-Crops` submodule. On the Ubuntu machine you must regenerate or copy the Helios dataset:
+The repo no longer includes the `submodules/Digital-Crops` submodule. On the Ubuntu machine you must regenerate or copy the Helios dataset:
 
 1. **Option A — Regenerate locally**:
    - Build/obtain the Helios generation binary at:
-     `Digital-Crops/projects/syntheticdata_generation/build/main`
+     `submodules/Digital-Crops/projects/syntheticdata_generation/build/main`
    - Run the generator (adjust paths for Linux):
      ```bash
      python -m dataset.generate_helios_dataset \
-       --helios_binary Digital-Crops/projects/syntheticdata_generation/build/main \
-       --output Digital-Crops/projects/syntheticdata_generation/build/output \
+       --helios_binary submodules/Digital-Crops/projects/syntheticdata_generation/build/main \
+       --output submodules/Digital-Crops/projects/syntheticdata_generation/build/output \
        --dap_values 5 10 15 20 25 30 35 40 45 50 55 60 \
        --seeds 0 1 2 3 4 \
        --renderer vis \
@@ -49,14 +49,14 @@ The repo no longer includes the `Digital-Crops` submodule. On the Ubuntu machine
      ```
 
 2. **Option B — Copy from macOS**:
-   - Copy `Digital-Crops/projects/syntheticdata_generation/build/output/` from the macOS machine.
+   - Copy `submodules/Digital-Crops/projects/syntheticdata_generation/build/output/` from the macOS machine.
    - This directory is git-ignored; place it in the same relative path.
 
 3. **Verify the dataset**:
    ```bash
    python -c "
    from dataset.helios_dataset import HeliosPlantDataset
-   ds = HeliosPlantDataset('Digital-Crops/projects/syntheticdata_generation/build/output', max_nodes=2048)
+   ds = HeliosPlantDataset('submodules/Digital-Crops/projects/syntheticdata_generation/build/output', max_nodes=2048)
    print('samples:', len(ds))
    print('node counts:', [(s['dap'].item()*90, s['num_nodes'].item()) for s in ds][:5])
    "
@@ -74,12 +74,12 @@ The macOS run only reached a few epochs; the full model needs 100–500 epochs.
 
 2. **If the GPU has ≥16 GB VRAM**, increase batch size for faster training:
    ```bash
-   python -m diffusion_based.training.train_diffusion_3d \
+   python -m plant_recon.training.train_diffusion_3d \
      --epochs 200 --batch_size 4 --max_nodes 2048 --lr 3e-4 \
-     --helios_data_root Digital-Crops/projects/syntheticdata_generation/build/output \
+     --helios_data_root submodules/Digital-Crops/projects/syntheticdata_generation/build/output \
      --num_samples 100 --pretrain_existence_epochs 10 \
-     --save_path diffusion_based/checkpoints/diffusion_model_3d_200ep.pt \
-     --best_save_path diffusion_based/checkpoints/best_3d_model_200ep.pt
+     --save_path outputs/checkpoints/diffusion_model_3d_200ep.pt \
+     --best_save_path outputs/checkpoints/best_3d_model_200ep.pt
    ```
 
 3. **Monitor loss**:
@@ -94,16 +94,16 @@ After ~20–50 epochs, check whether the model predicts reasonable node counts:
 
 ```bash
 python -c "
-from diffusion_based.models.graph_diffuser_3d import PlantGraphDiffuser3D
+from plant_recon.models.graph_diffuser_3d import PlantGraphDiffuser3D
 from dataset.helios_dataset import HeliosPlantDataset
 import torch
 
 device = 'cuda'
 model = PlantGraphDiffuser3D(max_nodes=2048, node_dim=15).to(device)
-model.load_state_dict(torch.load('diffusion_based/checkpoints/best_3d_model_200ep.pt', map_location=device)['model'])
+model.load_state_dict(torch.load('outputs/checkpoints/best_3d_model_200ep.pt', map_location=device)['model'])
 model.eval()
 
-ds = HeliosPlantDataset('Digital-Crops/projects/syntheticdata_generation/build/output', max_nodes=2048)
+ds = HeliosPlantDataset('submodules/Digital-Crops/projects/syntheticdata_generation/build/output', max_nodes=2048)
 s = ds[0]
 img = s['image'].unsqueeze(0).to(device)
 dap = s['dap'].unsqueeze(0).to(device)
@@ -126,20 +126,20 @@ After training, generate reconstructions on real Helios images:
 
 ```bash
 python -c "
-from diffusion_based.eval.visualize_diffusion_3d import run_inference_on_real_image
+from plant_recon.eval.visualize_diffusion_3d import run_inference_on_real_image
 run_inference_on_real_image(
-    jpeg_path='Digital-Crops/projects/syntheticdata_generation/build/output/cowpea_0000_vis.jpeg',
-    xml_path='Digital-Crops/projects/syntheticdata_generation/build/output/cowpea_0000_plant_0000.xml',
+    jpeg_path='submodules/Digital-Crops/projects/syntheticdata_generation/build/output/cowpea_0000_vis.jpeg',
+    xml_path='submodules/Digital-Crops/projects/syntheticdata_generation/build/output/cowpea_0000_plant_0000.xml',
     dap=5,
     steps=50,
     existence_threshold=0.3,
     max_nodes=2048,
-    save_path='diffusion_based/plots/real_dap5_200ep.png'
+    save_path='plant_recon/plots/real_dap5_200ep.png'
 )
 "
 ```
 
-Open `diffusion_based/plots/real_dap5_200ep.png` and compare to the ground truth.
+Open `plant_recon/plots/real_dap5_200ep.png` and compare to the ground truth.
 
 ## 6. Likely Issues to Debug on GPU
 

@@ -10,7 +10,7 @@ status: done
 > **Date**: 2026-08-23  
 > **Author**: Antigravity AI  
 > **Status**: Verified & Operational (Helios C++ XML Alignment, Internode Mask Export, 100% Round-Trip Fidelity)  
-> **Figure Asset**: `docs/results/assets/fig_helios_xml_vs_differentiable_render_alignment.png`
+> **Figure Asset**: `docs/engineering/20260823-diff-renderer-helios-alignment/assets/fig_helios_xml_vs_differentiable_render_alignment.png`
 
 ---
 
@@ -19,7 +19,7 @@ status: done
 To ensure end-to-end mathematical consistency between the ground-truth Helios C++ simulation raytracer, standalone XML re-rendering, and the GPU PyTorch differentiable renderer (`HeliosPyTorchRenderer`), we completed a comprehensive audit and resolution of geometric discrepancies, segmentation mask alignment, and XML round-trip accuracy:
 
 1. **Kinematic Alignment**: Resolved branching and sprawling divergence in PyTorch differentiable rendering by dynamically feeding sample-specific gravitropic curvature ($\approx -600^\circ/\text{m}$ for cowpea vines), properly passing parent shoot attachment orientation frames (`node_info['petiole_axes']`), and accumulating sequential phytomer orientations.
-2. **COCO Internode Segmentation Export**: Identified that Helios C++ tags internode stem primitives as `"shoot"` in `PlantArchitecture.cpp`. Updated `Digital-Crops/projects/syntheticdata_generation/main.cpp` to export `"shoot"` as Category ID `0`, ensuring full skeleton masks in `_masks.json`.
+2. **COCO Internode Segmentation Export**: Identified that Helios C++ tags internode stem primitives as `"shoot"` in `PlantArchitecture.cpp`. Updated `submodules/Digital-Crops/projects/syntheticdata_generation/main.cpp` to export `"shoot"` as Category ID `0`, ensuring full skeleton masks in `_masks.json`.
 3. **Python Silhouette Mask Threshold Fix**: Fixed mask generation threshold in Python from `type_buf > 0` to `type_buf >= 0`, restoring all stem/internode pixels (Organ `0`) that were previously masked out against background (`-1`).
 4. **100% Lossless XML Round-Trip Verification**: Benchmarked 100 plant samples spanning all growth stages (DAP 10–90). Achieved **100.00% exact text identity**, **$0.00$ numeric parameter error**, and **$0.000000\text{ mm}$ 3D vertex deviation**.
 5. **Renderer Hardcoding Audit**: Catalogued all remaining approximations and constants across material optics, geometry resolutions, and kinematics heuristics.
@@ -43,7 +43,7 @@ To ensure end-to-end mathematical consistency between the ground-truth Helios C+
 
 ### 3.1 Kinematics & Negative Gravitropic Curvature
 * **Issue**: Cowpea is a crawling vine species with strong negative gravitropic curvature (sampled between $-800^\circ/\text{m}$ and $-400^\circ/\text{m}$). The PyTorch renderer previously fell back to a hardcoded $+200.0^\circ/\text{m}$ upright curvature, causing mature plants (DAP 35, DAP 70) to bend into narrow upward cones rather than sprawling along the soil.
-* **Fix in [`diffusion_based/models/helios_pytorch_geometry.py`](file:///home/lion397/codes/image-to-l-system/diffusion_based/models/helios_pytorch_geometry.py)**:
+* **Fix in [`plant_recon/models/helios_pytorch_geometry.py`](file:///home/lion397/codes/image-to-l-system/plant_recon/models/helios_pytorch_geometry.py)**:
   - Added dynamic `gravitropic_curvature: Optional[float] = None` to `build_mesh_from_organ_array`.
   - Automatically loads the exact sampled curvature from `_params.json` metadata (defaulting to $-600.0^\circ/\text{m}$ for cowpea).
   - Preserved parent petiole axis orientation vectors `node_info['petiole_axes'] = pet_axes_stored` so secondary branches correctly inherit 3D spatial azimuths.
@@ -51,7 +51,7 @@ To ensure end-to-end mathematical consistency between the ground-truth Helios C+
 
 ### 3.2 Internode Primitive Labeling in Helios C++
 * **Issue**: Helios `PlantArchitecture.cpp` sets primitive label `"object_label" = "shoot"` for stem internode tubes. However, `main.cpp` line 2210 previously only searched for `"internode"`, resulting in 0 matches and completely omitting bare stems from `_masks.json` and `_boxes.txt`.
-* **Fix in [`Digital-Crops/projects/syntheticdata_generation/main.cpp`](file:///home/lion397/codes/image-to-l-system/Digital-Crops/projects/syntheticdata_generation/main.cpp#L2210)**:
+* **Fix in [`submodules/Digital-Crops/projects/syntheticdata_generation/main.cpp`](file:///home/lion397/codes/image-to-l-system/submodules/Digital-Crops/projects/syntheticdata_generation/main.cpp#L2210)**:
   ```cpp
   // Class IDs aligned with Python OrganNode3D enum:
   // 0=internode (shoot in PlantArchitecture), 1=petiole, 2=leaf, 3=floral_bud, 4=flower, 5=pod
@@ -136,7 +136,7 @@ The distributed training launcher for the 232M Flow Matching DiT-Large model is 
   ```bash
   sbatch slurm_scripts/train_cowpea_dit_h100_ddp.sh
   ```
-- **Logging & Monitoring**: Automatic multi-GPU synchronization via `torchrun`, local checkpointing to `diffusion_based/checkpoints/fm/`, and real-time loss tracking via W&B.
+- **Logging & Monitoring**: Automatic multi-GPU synchronization via `torchrun`, local checkpointing to `outputs/checkpoints/fm/`, and real-time loss tracking via W&B.
 
 ### 6.1 Early Training Telemetry (Step 50)
 
@@ -157,8 +157,8 @@ Epoch 01 [00050/01557] | Step Loss: 16940.7227 (v: 0.7762, count: 16939.9473) | 
 
 | File | Change |
 | :--- | :--- |
-| [`helios_pytorch_geometry.py`](../../../diffusion_based/models/helios_pytorch_geometry.py) | Added `gravitropic_curvature: Optional[float]` parameter to `build_mesh_from_organ_array`; species-aware default ($-600°/\text{m}$ for cowpea); replaced hardcoded `200.0` with `eff_gravitropic_curvature` |
-| [`main.cpp`](../../../Digital-Crops/projects/syntheticdata_generation/main.cpp) | Added `"shoot"` label to COCO mask export organ list with Category ID `0` |
+| [`helios_pytorch_geometry.py`](../../../plant_recon/models/helios_pytorch_geometry.py) | Added `gravitropic_curvature: Optional[float]` parameter to `build_mesh_from_organ_array`; species-aware default ($-600°/\text{m}$ for cowpea); replaced hardcoded `200.0` with `eff_gravitropic_curvature` |
+| [`main.cpp`](../../../submodules/Digital-Crops/projects/syntheticdata_generation/main.cpp) | Added `"shoot"` label to COCO mask export organ list with Category ID `0` |
 | [`test_helios_xml_render.py`](../../../archive/scratch/test_helios_xml_render.py) | 5-column comparison script: GT RGB, Helios C++ XML re-render (radiation), Helios mask, PyTorch render, PyTorch mask; reads per-sample `gravitropic_curvature` from `_params.json`; fixed `type_buf >= 0` threshold |
 
 ### 7.2 Files Created

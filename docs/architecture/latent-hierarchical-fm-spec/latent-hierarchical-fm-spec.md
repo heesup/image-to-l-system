@@ -86,7 +86,7 @@ Here is the exact operational mechanism:
 
 ## 3. Empirical Verification of Pretrained OrganLatentVAE
 
-Before proceeding with pipeline integration, `OrganLatentVAE` was trained and rigorously benchmarked on 210,452 physical plant organs from the cowpea dataset using [`diffusion_based/eval/benchmark_organ_vae_roundtrip.py`](file:///home/lion397/codes/image-to-l-system/diffusion_based/eval/benchmark_organ_vae_roundtrip.py):
+Before proceeding with pipeline integration, `OrganLatentVAE` was trained and rigorously benchmarked on 210,452 physical plant organs from the cowpea dataset using [`plant_recon/eval/benchmark_organ_vae_roundtrip.py`](file:///home/lion397/codes/image-to-l-system/plant_recon/eval/benchmark_organ_vae_roundtrip.py):
 
 | Metric | Raw Geometry (Previous) | OrganLatentVAE (16D Latent) |
 | :--- | :---: | :---: |
@@ -144,14 +144,14 @@ flowchart TD
 
 ## 5. Detailed Component Changes
 
-### 5.1. `diffusion_based/models/organ_latent_vae.py`
+### 5.1. `plant_recon/models/organ_latent_vae.py`
 Add unified batch conversion utilities:
 - `decode_to_part_tensor(z: torch.Tensor, existence: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]`:
   - Decodes $(B, N, 16)$ latent vectors.
   - Unpacks base position (scaled by $1/20$), rotation (6D), scale (scaled by $1/50$), and curvature (scaled by $60$).
   - Returns `(part_14d, organ_probs)` ready for instant ingestion by `HeliosPlantGeometryBuilder`.
 
-### 5.2. `diffusion_based/models/hierarchical_part_flow_matching.py`
+### 5.2. `plant_recon/models/hierarchical_part_flow_matching.py`
 - Modify `node_dim` parameter:
   - Default `node_dim: int = 16` (formerly `GEOM_NODE_DIM = 13`).
 - `FineBotanicalFlowMatchingDecoder`:
@@ -164,14 +164,14 @@ Add unified batch conversion utilities:
     $$\hat{z}_{k+1} = z_k + \frac{\Delta t}{2} \left( v_\theta(z_k, t_k) + v_\theta(z_k + \Delta t \, v_\theta(z_k, t_k), t_{k+1}) \right)$$
   - Pass final $\hat{z}_1$ to `vae.decode()` to obtain clean 3D physical geometries without needle artifacts.
 
-### 5.3. `diffusion_based/training/hierarchical_hungarian_matcher.py`
+### 5.3. `plant_recon/training/hierarchical_hungarian_matcher.py`
 - Adapt Stage 2 fine intra-cluster matching cost:
   $$C_{ij} = \lambda_{\text{cls}} \left( -\log P_i(c_j) \right) + \lambda_{\text{latent}} \|\hat{z}_{1, i} - z_{\text{tgt}, j}\|_1$$
   where $z_{\text{tgt}, j} = \text{vae.encode}(x_j)[0] \in \mathbb{R}^{16}$.
 - Provides sub-millisecond assignment that matches organs based on both geometric topology and latent botanical identity.
 
-### 5.4. `diffusion_based/training/train_hierarchical_flow_matching.py`
-- Add `--organ_vae_checkpoint` CLI argument (defaults to `diffusion_based/checkpoints/organ_vae/organ_latent_vae_best.pt`).
+### 5.4. `plant_recon/training/train_hierarchical_flow_matching.py`
+- Add `--organ_vae_checkpoint` CLI argument (defaults to `outputs/checkpoints/organ_vae/organ_latent_vae_best.pt`).
 - Initialize and freeze `vae = OrganLatentVAE(latent_dim=16, hidden_dim=256).to(device)`. Set `vae.eval()` and `requires_grad=False`.
 - For each batch:
   1. Encode active physical organs (classes $\ge 3$) to $z_1 = \text{vae.encode}(nodes)[0]$.
@@ -183,9 +183,9 @@ Add unified batch conversion utilities:
   7. Compute multi-scale Depth, Soft Dice, and Cosine losses, backpropagating through frozen VAE weights directly into $v_\theta$.
 
 ### 5.5. `slurm_scripts/train_hierarchical_flow_matching.sh`
-- Add `--organ_vae_checkpoint diffusion_based/checkpoints/organ_vae/organ_latent_vae_best.pt`.
+- Add `--organ_vae_checkpoint outputs/checkpoints/organ_vae/organ_latent_vae_best.pt`.
 - Add `--node_dim 16`.
-- Direct checkpoint destination to `diffusion_based/checkpoints/hierarchical_latent_fm/`.
+- Direct checkpoint destination to `outputs/checkpoints/hierarchical_latent_fm/`.
 
 ---
 

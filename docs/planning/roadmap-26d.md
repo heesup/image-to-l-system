@@ -43,7 +43,7 @@ status: planned
 ## Phase 3: VLM-Scaffold-DiT Architecture & Training (In Progress)
 
 - [x] **Unified Multi-Modal VLM-Scaffold-DiT Architecture**:
-  - [x] Shared Pretrained Vision Backbone (DINOv3 ViT-B/14, 768-dim embeddings, `diffusion_based/models/vlm_vision_tower.py`)
+  - [x] Shared Pretrained Vision Backbone (DINOv3 ViT-B/14, 768-dim embeddings, `plant_recon/models/vlm_vision_tower.py`)
   - [x] Global Token ➔ Multi-Task Macro Phenotyping Heads (`[DAP, Height, Radius, Active_Count]`)
   - [x] Dynamic Fibonacci Botanical Scaffold Generator ($x_{\text{scaffold}}$ with phyllotactic petiole/leaf nodes)
   - [x] Spatial Patch Tokens $(B, L_v, 768)$ ➔ DiT Decoder Cross-Attention for fine geometric detail reconstruction

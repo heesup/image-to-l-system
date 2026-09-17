@@ -8,8 +8,8 @@ status: planned
 # Task: Accelerate XML Deserialization & Forward Kinematics (FK) Pipeline
 
 > **Status**: Proposed / High-Priority Optimization  
-> **Target Components**: [`diffusion_based/models/helios_pytorch_geometry.py`](../../diffusion_based/models/helios_pytorch_geometry.py) (`extract_part_tensor`), [`diffusion_based/models/plant_organ_array.py`](../../diffusion_based/models/plant_organ_array.py) (`from_xml_file`)  
-> **Related Figure**: [`docs/results/assets/fig1_helios_vs_torch_rendering_benchmark.png`](../experiments/15-strategies-benchmark/assets/fig1_helios_vs_torch_rendering_benchmark.png)
+> **Target Components**: [`plant_recon/models/helios_pytorch_geometry.py`](../../plant_recon/models/helios_pytorch_geometry.py) (`extract_part_tensor`), [`plant_recon/models/plant_organ_array.py`](../../plant_recon/models/plant_organ_array.py) (`from_xml_file`)  
+> **Related Figure**: [`docs/experiments/15-strategies-benchmark/assets/fig1_helios_vs_torch_rendering_benchmark.png`](../experiments/15-strategies-benchmark/assets/fig1_helios_vs_torch_rendering_benchmark.png)
 
 ---
 
@@ -99,7 +99,7 @@ $$\mathbf{R}_{k} = \mathbf{R}_{k-1} \cdot \Delta \mathbf{R}(\theta_{\text{pitch}
 - [ ] **Task 3: Implement Strategy D (Sidecar caching)**:
   - Add `cache_part_tensor=True` flag to `PlantOrganArray.from_xml_file()`.
 - [ ] **Task 4 (Stretch Goal): Fast C++ pybind11 Bridge**:
-  - Create a standalone header-only XML-to-14D extractor inside `Digital-Crops/` or `diffusion_based/csrc/`.
+  - Create a standalone header-only XML-to-14D extractor inside `submodules/Digital-Crops/` or `plant_recon/csrc/`.
 
 ---
 

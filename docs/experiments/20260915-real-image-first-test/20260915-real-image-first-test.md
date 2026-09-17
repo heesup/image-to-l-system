@@ -10,7 +10,7 @@ status: done
 **Date**: September 15, 2026
 **Data**: Roboflow `gemini-breeding-eqsam/t4_plant_weed_seg` v1 (159 real nadir tunnel-cart
 images, classes `plant`/`weed`, cowpea)
-**Checkpoint**: `diffusion_based/checkpoints/hierarchical_fm_v10_cam/hierarchical_fm_epoch_085.pt`
+**Checkpoint**: `outputs/checkpoints/hierarchical_fm_v10_cam/hierarchical_fm_epoch_085.pt`
 (the current full-data v10_cam lineage) + `phytomer_vae_v9_tl_rw4_20k`
 
 ## 1. What this tests
@@ -22,28 +22,28 @@ plants rendered from a fixed synthetic nadir drone camera. This is the first tim
 has been pointed at real, rover-captured cowpea images, following the plan in
 `/home/lion397/.claude/plans/i-wan-to-make-glistening-globe.md`.
 
-## 2. New code (`real_world/`)
+## 2. New code (`use_cases/real_world/`)
 
-- **Phase A** `real_world/download_roboflow_dataset.py` — downloads the Roboflow export; the
-  API key lives only in the untracked `real_world/.env`.
-- **Phase B** `real_world/detector/train_yolo_detector.py` + `slurm_scripts/train_real_plant_detector.sh`
+- **Phase A** `use_cases/real_world/download_roboflow_dataset.py` — downloads the Roboflow export; the
+  API key lives only in the untracked `use_cases/real_world/.env`.
+- **Phase B** `use_cases/real_world/detector/train_yolo_detector.py` + `slurm_scripts/train_real_plant_detector.sh`
   — fine-tunes YOLO11n-seg on the 159-image export (80 train / 22 valid / 57 test) to localize
   individual plants and separate them from weeds. Trained locally (111 epochs, early-stopped),
-  weights + curves at `slurm_scripts/logs/20260915/real_plant_detector/`:
+  weights + curves at `outputs/logs/20260915/real_plant_detector/`:
 
   | class | Box P | Box R | Box mAP50 | Box mAP50-95 | Mask mAP50 |
   |---|---:|---:|---:|---:|---:|
   | plant | 0.848 | 0.793 | 0.844 | 0.633 | 0.850 |
   | weed | 0.681 | 0.550 | 0.612 | 0.361 | 0.625 |
 
-- **Phase C** `real_world/dataset/real_plant_crop_utils.py` (rover-margin crop, detection,
+- **Phase C** `use_cases/real_world/dataset/real_plant_crop_utils.py` (rover-margin crop, detection,
   16-channel zoom-pyramid builder, mask-pyramid builder) and
-  `real_world/dataset/depth_anything_calib.py` (Depth Anything V2 pseudo-CHM).
-- **Phase D** `real_world/dataset/real_field_dataset.py` — one item per detected plant crop.
-- **Phase E/F** `real_world/eval/run_approach1_cold.py` (cold forward generation) and
+  `use_cases/real_world/dataset/depth_anything_calib.py` (Depth Anything V2 pseudo-CHM).
+- **Phase D** `use_cases/real_world/dataset/real_field_dataset.py` — one item per detected plant crop.
+- **Phase E/F** `use_cases/real_world/eval/run_approach1_cold.py` (cold forward generation) and
   `run_approach2_refine.py` (AdamW test-time refinement against the real crop, forked from
-  `diffusion_based/eval/eval_test_time_refinement.py`).
-- **Phase G** `real_world/eval/figure_real_vs_synthetic.py` (+ shared `real_world/eval/viz_utils.py`
+  `plant_recon/eval/eval_test_time_refinement.py`).
+- **Phase G** `use_cases/real_world/eval/figure_real_vs_synthetic.py` (+ shared `use_cases/real_world/eval/viz_utils.py`
   for depth/mask colorization) — the comparison figure below, RGB and depth per stage, plus the
   real crop's own segmentation mask (the actual Dice-loss foreground target).
 
@@ -68,7 +68,7 @@ has been pointed at real, rover-captured cowpea images, following the plan in
 ![Real vs. predicted comparison, RGB + depth per stage, plus the real crop's segmentation mask](assets/20260915_real_image_first_test_approach1_vs_approach2.png)
 
 Each stage shows RGB *and* the rendered CHM-depth channel (fixed 0-0.5 m color scale across
-every panel, `real_world/eval/viz_utils.py`) — the real crop's own pseudo-depth (Depth Anything
+every panel, `use_cases/real_world/eval/viz_utils.py`) — the real crop's own pseudo-depth (Depth Anything
 V2, column b) is included for the same reason: a degenerate flat prediction shows up as a
 near-uniform color patch instead of being auto-scaled to look textured. Column (c) adds the real
 crop's own YOLO-seg segmentation mask at zoom 1x — the actual Dice-loss foreground target
@@ -112,7 +112,7 @@ hypotheses along the way:
    pseudo-depth term as the culprit): **still inflated.**
 4. Tested `reg_scale=40, lr_scale=5e-3` (8x/4x the synthetic defaults): **still inflated.**
 5. **Root cause, found by inspecting `denormalize_packet_scales()`
-   (`diffusion_based/dataset/phytomer_packets.py:280`)**: the one `scale` value optimized per
+   (`plant_recon/dataset/phytomer_packets.py:280`)**: the one `scale` value optimized per
    phytomer multiplies *every* organ in that phytomer's packet (internode, petiole, all 3
    leaflets, peduncle, all 4 repro organs) by the same factor, linearly. Leaf **area** therefore
    grows quadratically with `scale`, while `reg_scale`'s penalty is only quadratic in the raw
@@ -190,7 +190,7 @@ ever starts. Two ways to actually add organs:
 
 ### 6.3 Use a DAP estimate from the capture timestamp (planted ~late May)?
 
-Implemented and tested — `real_world/dataset/dap_from_timestamp.py` decodes the nanosecond epoch
+Implemented and tested — `use_cases/real_world/dataset/dap_from_timestamp.py` decodes the nanosecond epoch
 timestamp embedded in every Roboflow filename (confirmed: `...1687286498964934887_jpg...` →
 2023-06-20 18:41:38 UTC, matching that file's own date prefix, and present even on the few files
 without one) and computes `DAP = capture_date - planted_date`. `sample_ode`'s existing `daps=`

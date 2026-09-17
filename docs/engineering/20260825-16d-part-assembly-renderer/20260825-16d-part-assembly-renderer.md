@@ -72,7 +72,7 @@ XML  →  40D TypedArray  →  16D Part Tensor  →  GPU Mesh (V, F)  →  Multi
 - 40D tensor: dispatches to `extract_part_tensor()` (FK computation)
 - 94D tensor: converts to 40D first via `from_legacy_tensor()`
 
-### [DELETED] `diffusion_based/models/helios_xml_parser.py`
+### [DELETED] `plant_recon/models/helios_xml_parser.py`
 - 1,632-line legacy `OrganNode3D`-based parser (`organ_nodes_to_xml()`)
 - Superseded entirely by `PlantOrganArray`
 - Callers in `scripts/` migrated to `arr.to_xml_string()` and `PlantOrganArray.from_xml_file()`
@@ -114,7 +114,7 @@ Higher-fidelity mesh = better gradient signal for Direct Optimization; rasteriza
 
 `focus_plant=True` auto-fits the camera frustum to the plant bounding sphere — matches Helios C++ `--focus-plant`.
 
-Figure: [`docs/results/assets/fig8_multimodal_depth_mask.png`](../../experiments/15-strategies-benchmark/assets/fig8_multimodal_depth_mask.png)
+Figure: [`docs/experiments/15-strategies-benchmark/assets/fig8_multimodal_depth_mask.png`](../../experiments/15-strategies-benchmark/assets/fig8_multimodal_depth_mask.png)
 
 ---
 
@@ -132,12 +132,12 @@ Figure: [`docs/results/assets/fig8_multimodal_depth_mask.png`](../../experiments
 
 ## 7. Helios C++ Submodule Changes
 
-### `Digital-Crops/libs/Helios` (branch: `fix/xml-roundtrip-invariance`)
+### `submodules/Digital-Crops/libs/Helios` (branch: `fix/xml-roundtrip-invariance`)
 - **Peduncle roll**: Now sampled once and stored per phytomer; previously re-sampled every frame causing flower/pod drift.
 - **Inflorescence reload**: Fruit geometry loaded at `base_fruit_scale`, then `setInflorescenceScaleFraction()` applied — idempotent XML reload.
 - **Ground collision pruning**: Lateral shoots cleanly pruned via `deletePhytomer()`.
 
-### `Digital-Crops/projects/syntheticdata_generation`
+### `submodules/Digital-Crops/projects/syntheticdata_generation`
 - `--no-ground` / `--ground-occlusion 0`: Shifts ground plane below minimum plant vertex Z to avoid Z-fighting.
 - `--ground-clipping 1`: Enables `pruneGroundCollisions()` during plant growth.
 - XML plant base position preserved correctly when loading multi-plant plot XMLs.

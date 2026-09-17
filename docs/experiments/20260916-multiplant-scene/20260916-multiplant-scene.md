@@ -8,7 +8,7 @@ status: done
 # Whole-Frame Multi-Plant Reconstruction
 
 **Date**: September 16, 2026
-**Follows**: `docs/results/20260916_agml_dataset_swap_real_image_test.md` (single-crop AgML testing)
+**Follows**: `docs/experiments/20260916-agml-dataset-swap/20260916-agml-dataset-swap.md` (single-crop AgML testing)
 **Request**: real rover frames carry several plants at once, and that multi-plant frame — not an
 isolated crop — is the input the project actually targets. Find the plants by object detection or
 instance segmentation, build a rough plant architecture from the estimated DAP with Helios, estimate
@@ -26,13 +26,13 @@ Two conventions were reused rather than reinvented:
   format) and `masks.json`. There a VLM writes that config from a drone image; here object detection
   supplies the plant count and positions instead.
 - **This repo's own synthetic-data generator** is the same binary
-  (`Digital-Crops/projects/syntheticdata_generation/build/main`) that produced the training set, and
+  (`submodules/Digital-Crops/projects/syntheticdata_generation/build/main`) that produced the training set, and
   it accepts a bare `--dap N` with `--renderer none` to grow one procedural plant with no image
   conditioning at all (~20 s per plant at DAP 60, XML only).
 
 ## 2. New code
 
-- `real_world/dataset/helios_cold_start.py` — `generate_helios_xml(dap, seed)` (cached on disk by
+- `use_cases/real_world/dataset/helios_cold_start.py` — `generate_helios_xml(dap, seed)` (cached on disk by
   species/DAP/seed) and `helios_state_from_xml()`, which walks the training set's own conversion
   chain (XML → 14D part tensor → 26D FM nodes → 10-slot packets → `phytomer_scale` + `PhytomerVAE`
   latent) to produce exactly the `(pos, rot, scale, latent, exist, parent)` state that
@@ -40,7 +40,7 @@ Two conventions were reused rather than reinvented:
   `PHYTOMER_TERMINAL_LAST=1` is set at import: the v9 packet cache the checkpoints train against was
   built with `terminal_leaflet_last=True`, and `build_phytomer_packets` reads that as a process-level
   env var, so the slot layout would otherwise not match the VAE the latents come from.
-- `real_world/eval/run_multiplant_scene.py` — the end-to-end script: frame → detections → plot
+- `use_cases/real_world/eval/run_multiplant_scene.py` — the end-to-end script: frame → detections → plot
   coordinates → `params.json` → Helios growth → per-plant state → refinement → refined XML →
   `params.json` rebuilt with those XMLs → one rendered plot.
 
@@ -95,12 +95,12 @@ scale negative.
 Re-running the six AgML plants of the previous report with these defaults:
 **6 of 6 stay small and plant-shaped through refinement, no flat-polygon inflation** — up from 1/6
 with the best multiplicative-clip attempt (`scale_clip_mult=1.1`). Figure:
-`docs/results/assets/20260916_agml_real_image_test_scale_abs_max_calibrated.png`.
+`docs/archive/unreferenced-assets/20260916_agml_real_image_test_scale_abs_max_calibrated.png`.
 
 ## 5. First whole-frame run, and why its headline number is not a win
 
 One AgML frame (`..._camA_000055.jpg`, 4 plants detected, DAP 25 assumed), both cold starts refined
-against each plant's own crop. Figure: `docs/results/assets/20260916_multiplant_scene.png`.
+against each plant's own crop. Figure: `docs/archive/unreferenced-assets/20260916_multiplant_scene.png`.
 
 | plant | Helios init: organs / moved / data loss | network init: organs / moved / data loss |
 |---|---|---|
@@ -165,7 +165,7 @@ The packet/VAE round trip is clean; the loss was entirely in the export. Cause c
    phytomer emitted one leaflet instead of three. 101 → 34, one per petiole.
 
 **The repo already had the answer, and the real mistake was bypassing it.** Step 1 above is by design,
-and `emit_part_tensor_with_shoot_meta` (`diffusion_based/dataset/phytomer_packets.py`) exists
+and `emit_part_tensor_with_shoot_meta` (`plant_recon/dataset/phytomer_packets.py`) exists
 precisely to undo it — its docstring records the cost of not using it (94.1% → 16.5% foreground IoU
 when the shoot-meta rows are the only thing missing), and `eval_phytomer_vae_helios_roundtrip.py`
 already exported through it. Exporting `plant_from_nodes`'s output — the renderer's decode, which

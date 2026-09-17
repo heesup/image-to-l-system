@@ -23,7 +23,7 @@ The organ class IDs are intentionally aligned with the existing Python `OrganNod
 ## 1. C++ Ground Truth mask export
 
 ### Current state
-`Digital-Crops/projects/syntheticdata_generation/main.cpp` exports COCO masks for only:
+`submodules/Digital-Crops/projects/syntheticdata_generation/main.cpp` exports COCO masks for only:
 - `0`: plant
 - `1`: flower
 - `2`: pod
@@ -58,15 +58,15 @@ Replace the class list with the organ-level list aligned to the Python enum.
 The hand-off document claims `helios_geometry.py` multiplies leaf scale by `current_leaf_scale_factor`. That multiplication is not currently present in any file.
 
 ### Implementation
-- In `diffusion_based/models/helios_geometry.py` `_reconstruct_shoot_geometry_exact`:
+- In `plant_recon/models/helios_geometry.py` `_reconstruct_shoot_geometry_exact`:
   ```python
   leaf_scale = leaf.get("scale", 0.0) * leaf.get("scale_factor", 1.0)
   ```
-- In `diffusion_based/models/helios_xml_parser.py` `Phytomer3D.get_organ_nodes`:
+- In `plant_recon/models/helios_xml_parser.py` `Phytomer3D.get_organ_nodes`:
   ```python
   lnode.length = leaf.get('scale', 0.0) * leaf.get('scale_factor', 1.0)
   ```
-- In `diffusion_based/models/helios_geometry.py` `_leaflet_from_node`: apply the node's `scale_factor` if present.
+- In `plant_recon/models/helios_geometry.py` `_leaflet_from_node`: apply the node's `scale_factor` if present.
 
 ---
 
@@ -77,8 +77,8 @@ When a phytomer has no explicit petiole geometry, C++ creates a ghost petiole pe
 
 ### Implementation
 Add the cumulative ghost-petiole rotation in both reconstruction paths:
-- `diffusion_based/models/helios_geometry.py` `_reconstruct_shoot_geometry_exact`
-- `diffusion_based/models/helios_xml_parser.py` `_compute_internode_orientation`
+- `plant_recon/models/helios_geometry.py` `_reconstruct_shoot_geometry_exact`
+- `plant_recon/models/helios_xml_parser.py` `_compute_internode_orientation`
 
 ```python
 if no explicit petiole axis available:
@@ -136,9 +136,9 @@ For grid indices `i ∈ [0, Nx]`, `j ∈ [0, Ny]`:
 8. Translate to leaf base.
 
 ### Files to update
-- `diffusion_based/models/helios_geometry.py`: replace `_leaflet_local_mesh`.
-- `diffusion_based/models/helios_rasterizer_3d.py`: update hard-coded `leaf_faces`.
-- `diffusion_based/models/helios_xml_parser.py`: parse leaf prototype parameters if present in XML.
+- `plant_recon/models/helios_geometry.py`: replace `_leaflet_local_mesh`.
+- `plant_recon/models/helios_rasterizer_3d.py`: update hard-coded `leaf_faces`.
+- `plant_recon/models/helios_xml_parser.py`: parse leaf prototype parameters if present in XML.
 
 ---
 

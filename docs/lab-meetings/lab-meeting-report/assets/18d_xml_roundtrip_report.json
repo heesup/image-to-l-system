@@ -1,6 +1,6 @@
 {
   "xml_original": "/home/lion397/codes/image-to-l-system/notebooks/output_dap30_verification/dap30_gt_seed42_0000_plant_0000.xml",
-  "xml_roundtrip": "/home/lion397/codes/image-to-l-system/diffusion_based/docs/report1_backprop_vs_difffusion/images/_test_roundtrip.xml",
+  "xml_roundtrip": "/home/lion397/codes/image-to-l-system/plant_recon/docs/report1_backprop_vs_difffusion/images/_test_roundtrip.xml",
   "n_nodes_original": 455,
   "n_nodes_roundtrip": 380,
   "overall_mae_18d": 1.3980698097783386,

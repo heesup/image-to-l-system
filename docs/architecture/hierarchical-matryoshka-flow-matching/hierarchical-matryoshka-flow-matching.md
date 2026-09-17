@@ -140,12 +140,12 @@ To reflect this hierarchical branching structure while maintaining sub-50ms infe
 ## 6. Implementation Plan & File Structure
 
 1. **Model Backbone**:
-   * [`diffusion_based/models/hierarchical_part_flow_matching.py`](file:///home/lion397/codes/image-to-l-system/diffusion_based/models/hierarchical_part_flow_matching.py)
+   * [`plant_recon/models/hierarchical_part_flow_matching.py`](file:///home/lion397/codes/image-to-l-system/plant_recon/models/hierarchical_part_flow_matching.py)
    * Implements `CoarseSkeletalTransformer`, `FineBotanicalFlowMatchingDecoder`, `HierarchicalPartFlowMatchingModel`.
 2. **Hierarchical Hungarian Matcher**:
-   * [`diffusion_based/training/hierarchical_hungarian_matcher.py`](file:///home/lion397/codes/image-to-l-system/diffusion_based/training/hierarchical_hungarian_matcher.py)
+   * [`plant_recon/training/hierarchical_hungarian_matcher.py`](file:///home/lion397/codes/image-to-l-system/plant_recon/training/hierarchical_hungarian_matcher.py)
 3. **Training Engine**:
-   * [`diffusion_based/training/train_hierarchical_flow_matching.py`](file:///home/lion397/codes/image-to-l-system/diffusion_based/training/train_hierarchical_flow_matching.py)
+   * [`plant_recon/training/train_hierarchical_flow_matching.py`](file:///home/lion397/codes/image-to-l-system/plant_recon/training/train_hierarchical_flow_matching.py)
 4. **SLURM Cluster Launcher**:
    * [`slurm_scripts/train_hierarchical_flow_matching.sh`](file:///home/lion397/codes/image-to-l-system/slurm_scripts/train_hierarchical_flow_matching.sh)
 5. **Automated Verification**:
@@ -183,7 +183,7 @@ This architecture guarantees that optical drone photography directly guides 3D b
 ## 8. In-Loop Differentiable Loss Implementation & Training Status
 
 ### 8.1 Active In-Loop Training Integration
-Rather than confining differentiable rendering to test-time evaluation, the renderer is embedded directly into the inner training loop (`forward_backward_step` in `diffusion_based/training/train_hierarchical_flow_matching.py`):
+Rather than confining differentiable rendering to test-time evaluation, the renderer is embedded directly into the inner training loop (`forward_backward_step` in `plant_recon/training/train_hierarchical_flow_matching.py`):
 1. **1-Step Analytical Clean Projection**: $\hat{x}_1 = x_t + (1 - t) v_\theta$ is computed directly for each training step without ODE iteration.
 2. **Sub-Batch Execution ($B_{\text{render}} = \min(B, 4)$)**: Evaluates differentiable rasterization on 4 samples per GPU per step. On dual H100 NVL GPUs, this provides 8 multi-view optical grounding gradients per step within 50 ms overhead.
 3. **Dense CHM Depth Loss ($\lambda_{\text{depth}} = 0.5$)**: Huber loss ($\beta = 0.02\,\text{m}$) computed over all canopy pixels between rendered depth $\hat{D}$ and the drone orthomosaic CHM channel $D_{\text{GT}}$.

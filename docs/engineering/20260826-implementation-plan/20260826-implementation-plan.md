@@ -69,17 +69,17 @@ Delete existing 94D FK code (~600 lines).
 
 Switch from `build_mesh_from_organ_array` → `build_mesh_from_part_tensor(arr.to_part_tensor())`:
 
-#### [MODIFY] `diffusion_based/training/train_cowpea_dit_100k_ddp.py` (L137)
-#### [MODIFY] `diffusion_based/training/train_cowpea_dit_100k.py` (L114)  
-#### [MODIFY] `diffusion_based/training/train_cowpea_vlm_scaffold_dit_ddp.py` (L172)
-#### [MODIFY] `diffusion_based/dataset/generate_tensor_shards.py` (L177)
-#### [MODIFY] `diffusion_based/models/helios_pytorch_renderer.py` (L742, L752)
+#### [MODIFY] `plant_recon/training/train_cowpea_dit_100k_ddp.py` (L137)
+#### [MODIFY] `plant_recon/training/train_cowpea_dit_100k.py` (L114)  
+#### [MODIFY] `plant_recon/training/train_cowpea_vlm_scaffold_dit_ddp.py` (L172)
+#### [MODIFY] `plant_recon/dataset/generate_tensor_shards.py` (L177)
+#### [MODIFY] `plant_recon/models/helios_pytorch_renderer.py` (L742, L752)
 #### [MODIFY] `scripts/run_cowpea_dap10_direct_opt_full.py` (L134, L272)
 #### [MODIFY] `scripts/verify_40d_helios_render_comparison.py` (L107)
 #### [MODIFY] `scripts/debug_larger_plant.py` (L46)
 #### [MODIFY] `scripts/minimal_direct_opt_depth_chamfer_demo.py` (L137, L153, L196)
 #### [MODIFY] `scripts/debug_side_view_render.py` (L47)
-#### [MODIFY] `diffusion_based/eval/` — Active evaluation scripts
+#### [MODIFY] `plant_recon/eval/` — Active evaluation scripts
 
 Do not touch files in `archive/`.
 
@@ -107,7 +107,7 @@ Do not touch files in `archive/`.
 
 ### Automated
 ```bash
-conda run -n digital-crops python diffusion_based/eval/generate_multimodal_outputs.py
+conda run -n digital-crops python plant_recon/eval/generate_multimodal_outputs.py
 ```
 — Confirm render outputs are identical to (or better than) current outputs
 

@@ -127,9 +127,9 @@ The bug manifests on the *second* reload: `main_old` writes an incorrect `leaf_s
 
 | File | What changed |
 |---|---|
-| [`PlantArchitecture.h`](../../../Digital-Crops/libs/Helios/plugins/plantarchitecture/include/PlantArchitecture.h) | Add `peduncle_roll` field to `Phytomer` |
-| [`InputOutput.cpp`](../../../Digital-Crops/libs/Helios/plugins/plantarchitecture/src/InputOutput.cpp) | Restore `leaf_size_max`; assign perturbation vectors; use XML `leaves_per_petiole`; persist peduncle scalars; fix fruit double-scaling; clear `floral_buds` when absent |
-| [`PlantArchitecture.cpp`](../../../Digital-Crops/libs/Helios/plugins/plantarchitecture/src/PlantArchitecture.cpp) | Wire `peduncle_roll` through `updateInflorescence`; fix `pruneGroundCollisions` to call `deletePhytomer()` |
+| [`PlantArchitecture.h`](../../../submodules/Digital-Crops/libs/Helios/plugins/plantarchitecture/include/PlantArchitecture.h) | Add `peduncle_roll` field to `Phytomer` |
+| [`InputOutput.cpp`](../../../submodules/Digital-Crops/libs/Helios/plugins/plantarchitecture/src/InputOutput.cpp) | Restore `leaf_size_max`; assign perturbation vectors; use XML `leaves_per_petiole`; persist peduncle scalars; fix fruit double-scaling; clear `floral_buds` when absent |
+| [`PlantArchitecture.cpp`](../../../submodules/Digital-Crops/libs/Helios/plugins/plantarchitecture/src/PlantArchitecture.cpp) | Wire `peduncle_roll` through `updateInflorescence`; fix `pruneGroundCollisions` to call `deletePhytomer()` |
 
 **3 files · +96 / −20 lines**
 

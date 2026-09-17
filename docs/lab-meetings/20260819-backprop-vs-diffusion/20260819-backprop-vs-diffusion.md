@@ -8,7 +8,7 @@ status: done
 # Lab Meeting Report: 3D Plant Architecture Inverse Reconstruction & Optimization
 **Topic:** Direct Backpropagation vs. 3D Diffusion Models for Image-to-L-System Parameter Fitting  
 **Date:** August 11, 2026  
-**Report Directory:** `/home/lion397/codes/image-to-l-system/diffusion_based/docs/report1_backprop_vs_difffusion/`  
+**Report Directory:** `/home/lion397/codes/image-to-l-system/plant_recon/docs/report1_backprop_vs_difffusion/`  
 **Document File:** `lab_meeting_report.md`  
 
 ---
@@ -94,7 +94,7 @@ To validate renderer fidelity and efficiency across plant growth stages, we benc
 
 ## 2.2 19D Plant Organ Node Parameterization
 
-Each plant organ node $i \in \{1, \dots, N\}$ in our codebase (`diffusion_based/models/helios_xml_parser.py`) is serialized into a **19-dimensional feature vector** $\mathbf{n}_i \in \mathbb{R}^{19}$:
+Each plant organ node $i \in \{1, \dots, N\}$ in our codebase (`plant_recon/models/helios_xml_parser.py`) is serialized into a **19-dimensional feature vector** $\mathbf{n}_i \in \mathbb{R}^{19}$:
 
 $$\mathbf{n}_i = \left[ x, y, z, L, r, d_x, d_y, d_z, c_0, c_1, c_2, c_3, c_4, c_5, \text{shoot\_id}, \text{phytomer\_idx}, \text{existence}, r_{head}, p_{idx} \right]$$
 

@@ -8,7 +8,7 @@ status: done
 # 2026-09-14 Stage 2 Gradient Burst Resolution & Dataset Plant Helios Roundtrip Report
 
 > **Session Date**: 2026-09-13 ~ 2026-09-14 (PDT)  
-> **Relevant Runs**: Local v9 run (`slurm_scripts/logs/local_v9_run2.log` → `local_v9_run2b.log`, checkpoint `diffusion_based/checkpoints/hierarchical_fm_v9_local2/`), cluster queue jobs `38249632` / `38250275` (`low` / `publicgrp`)  
+> **Relevant Runs**: Local v9 run (`outputs/logs/local_v9_run2.log` → `local_v9_run2b.log`, checkpoint `outputs/checkpoints/hierarchical_fm_v9_local2/`), cluster queue jobs `38249632` / `38250275` (`low` / `publicgrp`)  
 > **Detailed Record**: [`docs/handovers/20260912-stage2-stage3-boundary/20260912-stage2-stage3-boundary.md`](../../handovers/20260912-stage2-stage3-boundary/20260912-stage2-stage3-boundary.md) §1.9.2 (burst), §2.4-2.6 (roundtrip)  
 > **Commits**: `a524816` (final LayerNorm + fp32 self-attention), `ea7bb58` (ablation documentation), `0472284` (dataset plant roundtrip fix), `3fc48b7`
 
@@ -42,7 +42,7 @@ Two major issues have been successfully closed:
 
 ### 2.3 Implementation & Results
 
-`diffusion_based/models/hierarchical_part_flow_matching.py`: `nn.TransformerDecoder(..., norm=LayerNorm)` (`FM_DECODER_FINAL_NORM`, default 1), fp32 self-attention blocks (`FM_SELFATTN_FP32`, default 1). As a secondary guard, canary triggers skip problematic steps (`d543540`).
+`plant_recon/models/hierarchical_part_flow_matching.py`: `nn.TransformerDecoder(..., norm=LayerNorm)` (`FM_DECODER_FINAL_NORM`, default 1), fp32 self-attention blocks (`FM_SELFATTN_FP32`, default 1). As a secondary guard, canary triggers skip problematic steps (`d543540`).
 
 Restarted v9 run (v9 cache/VAE, batch 48, lr 1e-4, render loss from Epoch 11): 0 canaries over Epochs 1–15, loss descended 74 $\to$ 20.0, self-consistency IoU improved 19.5 $\to$ 31.9%, node RMSE 1.8 cm.
 
@@ -52,7 +52,7 @@ Restarted v9 run (v9 cache/VAE, batch 48, lr 1e-4, render loss from Epoch 11): 0
 
 ### 3.1 Background
 
-Investigated why the Helios column in `docs/results/assets/fig12_phytomer_10slot_helios_roundtrip.png` performed poorly and why 45° views looked distorted. The panel lacked GT 45° reference views, and the Helios column preceded shoot splitting fixes and stem IK. Using `eval_phytomer_10slot_assembly_views.py`, evaluated **dataset plants** (`cowpea_dap015/040/075_seed00_..._plant_0000.xml`) by plotting GT meshes alongside 10-slot assembly under identical camera perspectives (nadir, 45°, GT mesh bounds).
+Investigated why the Helios column in `docs/experiments/20260914-stage2-burst-fix-roundtrip/assets/fig12_phytomer_10slot_helios_roundtrip.png` performed poorly and why 45° views looked distorted. The panel lacked GT 45° reference views, and the Helios column preceded shoot splitting fixes and stem IK. Using `eval_phytomer_10slot_assembly_views.py`, evaluated **dataset plants** (`cowpea_dap015/040/075_seed00_..._plant_0000.xml`) by plotting GT meshes alongside 10-slot assembly under identical camera perspectives (nadir, 45°, GT mesh bounds).
 
 Assembly was confirmed accurate (RGB MAE 0.0002~0.003 vs GT mesh across both views). The 45° appearance accurately represents true plant morphology.
 
@@ -72,7 +72,7 @@ VAE roundtrip closely matched the packet path. The requirement "VAE roundtrip $\
 
 **(2) `gt_parent_links` branch point heuristic ("closest node in another shoot below current node") was wrong for 1/3 of lateral shoots in dataset plants** (66.2% of 272, 58% for DAP 60+). Because this function generates training targets for parent conditioning, depth ordinals, and step losses, all previous runs trained on corrupted targets. Because lateral internodes originate at branch points (0.2~0.9 cm from parent node center, vs 1~3 cm to others), parents are now resolved via decoded slot-0 bases: `gt_parent_links(..., internode_base=)` $\implies$ 97.8% accuracy.
 
-**(3) Converter leaf pitch/yaw/roll angles were hardcoded constants** (pitch 2.54, roll −15, yaw +10/0/−10). Accurate for synthetic prototypes, but deviated by 10~18° mean on dataset plants. In `diffusion_based/models/part_tensor_leaf_ik.py`: forward kinematics returns per-leaf local frames (petiole tip azimuth, petiole/internode tip elevation, roll sign, organ type) and inverts $R_{\text{leaf}} = R_z(\text{azimuth}) R_z(\text{yaw}) R_y(-\text{pitch}) R_x(\text{roll})$ in closed form. Lateral leaflets (3 DOF) solve exactly (0.00° error); terminal leaflets (1 DOF) solve pitch; cotyledons solve pitch+roll. Runs after stem IK in `assemble_part_tensor_to_xml`.
+**(3) Converter leaf pitch/yaw/roll angles were hardcoded constants** (pitch 2.54, roll −15, yaw +10/0/−10). Accurate for synthetic prototypes, but deviated by 10~18° mean on dataset plants. In `plant_recon/models/part_tensor_leaf_ik.py`: forward kinematics returns per-leaf local frames (petiole tip azimuth, petiole/internode tip elevation, roll sign, organ type) and inverts $R_{\text{leaf}} = R_z(\text{azimuth}) R_z(\text{yaw}) R_y(-\text{pitch}) R_x(\text{roll})$ in closed form. Lateral leaflets (3 DOF) solve exactly (0.00° error); terminal leaflets (1 DOF) solve pitch; cotyledons solve pitch+roll. Runs after stem IK in `assemble_part_tensor_to_xml`.
 
 ### 3.4 Post-Remediation Results
 
@@ -160,7 +160,7 @@ Evaluation revealed Stage 3 latents did not condition strongly on input images:
 ## 8. Test-Time Refinement: Analysis-by-Synthesis Breakthrough
 
 ### 8.1 Concept and Validation
-Implemented `diffusion_based/eval/eval_test_time_refinement.py`: Optimizes node positions, scales, and phytomer latents for 40 AdamW steps directly against the input Canopy Height Model (CHM) using render losses (no GT labels required at inference).
+Implemented `plant_recon/eval/eval_test_time_refinement.py`: Optimizes node positions, scales, and phytomer latents for 40 AdamW steps directly against the input Canopy Height Model (CHM) using render losses (no GT labels required at inference).
 
 ### 8.2 Input Camera Alignment (`--input_camera`)
 Identified coordinate window mismatch: cache CHMs were centered on GT bounding boxes (`focus_plant=True`), whereas rendering evaluated from the origin. Aligning the virtual camera to match input acquisition bounds doubled optimization efficiency.

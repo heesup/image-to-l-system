@@ -24,7 +24,7 @@ holds. Reading the code alongside it adds four facts that change where the next 
 
 ### 1.1 The network never sees the CHM channel
 
-`DINORayEncoder.forward` (`diffusion_based/models/dinov2_ray_encoder.py`, line 164 onward) takes
+`DINORayEncoder.forward` (`plant_recon/models/dinov2_ray_encoder.py`, line 164 onward) takes
 channels 0:3 of the input at every zoom level. The depth channel is only ever a render-loss target
 during training and refinement. Consequences:
 
@@ -49,7 +49,7 @@ plant, so the ground footprint varies from 7 mm at DAP 5 to 1.3 m at DAP 90.
 The cache's zoom pyramid is a **fixed ground window**: 1.2 m at zoom 1×, then 0.6 / 0.3 / 0.15 m,
 centred on the plant's 3D bbox centre, camera 5 m above it
 (`compute_focus_plant_camera`, `reference_window_size` branch, `helios_pytorch_renderer.py`
-line 119). The real-image crop utility (`real_world/dataset/real_plant_crop_utils.py`,
+line 119). The real-image crop utility (`use_cases/real_world/dataset/real_plant_crop_utils.py`,
 `build_pyramid_16ch`) instead uses **1.2 × the detector bbox** as the zoom-1× window. Its comment
 says this "matches generate_cache.py's zoom-1x window == 1.2x the plant's own extent", which is
 not what the cache does. So on a real crop every plant fills about 80% of the zoom-1× frame,
@@ -146,7 +146,7 @@ DAP probe's prediction. The comparison isolates appearance from every other diff
 `eval_test_time_refinement.py` with its defaults (40 steps, input camera, four zoom targets,
 scale/latent priors). The flat baseline was re-scored in the same session so both runs share code
 and flags: 38.1 / 66.3 against the 38.7 / 68.3 recorded this morning, i.e. within the ODE-sampling
-noise. Run folder: `slurm_scripts/logs/20260916/helios_eval_crops/` (`ttr_ep160ema_{flat,helios}.json`,
+noise. Run folder: `outputs/logs/20260916/helios_eval_crops/` (`ttr_ep160ema_{flat,helios}.json`,
 `compare.md`, `summary.json`, per-plant `panels/`, the Helios runs under `helios/`).
 
 **Framing check passed.** All 20 plants keep the identity orientation (each flip loses 25 points or

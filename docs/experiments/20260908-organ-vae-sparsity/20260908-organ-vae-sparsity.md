@@ -9,8 +9,8 @@ status: done
 
 **Date**: September 8, 2026
 **Status**: Verified (all numbers measured from live data, zero synthetic/mock values)
-**Figure**: [`docs/results/assets/fig_organ_vae_sparsity_gradient_balance.png`](assets/fig_organ_vae_sparsity_gradient_balance.png)
-**Measured Summary**: [`docs/results/assets/fig_organ_vae_sparsity_gradient_balance.json`](assets/fig_organ_vae_sparsity_gradient_balance.json)
+**Figure**: [`docs/experiments/20260908-organ-vae-sparsity/assets/fig_organ_vae_sparsity_gradient_balance.png`](assets/fig_organ_vae_sparsity_gradient_balance.png)
+**Measured Summary**: [`docs/experiments/20260908-organ-vae-sparsity/assets/fig_organ_vae_sparsity_gradient_balance.json`](assets/fig_organ_vae_sparsity_gradient_balance.json)
 **Generator Script**: `scripts/generate_fig_vae_sparsity_gradient_balance.py`
 
 ---
@@ -27,7 +27,7 @@ The Option B specification (`ongoing/20260907_latent_hierarchical_flow_matching_
 | :--- | :--- |
 | Corpus | `dataset/cache/cowpea_curv26/` — 10,000 Helios Cowpea 26D shard samples |
 | Stratified scan | 600 randomly-sampled shards (seed 0) → **184,859 physical organs** (classes ≥ 3, i.e. `INTERNODE` … `BUD_ABORTED`) |
-| Gradient probe | $dL/dz$ evaluated at the Flow Matching prior $z_0 \sim \mathcal{N}(0, I)$ through the **frozen** decoder of `diffusion_based/checkpoints/organ_vae/organ_latent_vae_best.pt`, using the exact composite decode loss (cls CE + base + rot + log-space scale + curv, `organ_latent_vae.py::compute_loss` weights) |
+| Gradient probe | $dL/dz$ evaluated at the Flow Matching prior $z_0 \sim \mathcal{N}(0, I)$ through the **frozen** decoder of `outputs/checkpoints/organ_vae/organ_latent_vae_best.pt`, using the exact composite decode loss (cls CE + base + rot + log-space scale + curv, `organ_latent_vae.py::compute_loss` weights) |
 | Raw-space gradient baseline | Per-channel gradient RMS at the mean predictor = $2\sigma$ per channel ( SmoothL1/MSE regression target variance) |
 | Latent manifold | PCA (lowrank) of encoded $\mu$ vectors + silhouette scoring on 8k subsample |
 
@@ -94,10 +94,10 @@ Per-channel gradient RMS ($2\sigma$, FM-encoded units):
 
 | Artifact | Path |
 | :--- | :--- |
-| Figure (A–D panels) | `docs/results/assets/fig_organ_vae_sparsity_gradient_balance.png` |
-| Measured summary JSON | `docs/results/assets/fig_organ_vae_sparsity_gradient_balance.json` |
+| Figure (A–D panels) | `docs/experiments/20260908-organ-vae-sparsity/assets/fig_organ_vae_sparsity_gradient_balance.png` |
+| Measured summary JSON | `docs/experiments/20260908-organ-vae-sparsity/assets/fig_organ_vae_sparsity_gradient_balance.json` |
 | Generator | `scripts/generate_fig_vae_sparsity_gradient_balance.py` |
-| VAE checkpoint | `diffusion_based/checkpoints/organ_vae/organ_latent_vae_best.pt` |
+| VAE checkpoint | `outputs/checkpoints/organ_vae/organ_latent_vae_best.pt` |
 | Corpus | `dataset/cache/cowpea_curv26/` (10,000 shards) |
 
 ```bash

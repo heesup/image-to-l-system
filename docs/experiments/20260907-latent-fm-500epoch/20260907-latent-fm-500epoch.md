@@ -11,7 +11,7 @@ status: done
 **Date**: September 7, 2026  
 **Status**: Completed & Verified  
 **Target Repository**: `image-to-l-system`  
-**Associated Checkpoint**: `diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_500.pt`  
+**Associated Checkpoint**: `outputs/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_500.pt`  
 **Cluster Run**: Job `38143585` (COMPLETED on 4× NVIDIA RTX 6000 Ada Generation, 192 GB total VRAM)
 
 ---
@@ -164,12 +164,12 @@ Following detailed inspection of checkpoints, four critical corrections were imp
 
 | File | Changes Made |
 | :--- | :--- |
-| [`diffusion_based/models/organ_latent_vae.py`](../../../diffusion_based/models/organ_latent_vae.py) | Added `decode_to_part_tensor()` for differentiable batch conversion from 16D latents to 14D part tensors and class probabilities. |
-| [`diffusion_based/models/hierarchical_part_flow_matching.py`](../../../diffusion_based/models/hierarchical_part_flow_matching.py) | Transitioned Stage 2 to 16D latent velocity field, added 1D existence head, dynamic sigmoid organ budgeting with $+35\%$ margin and minimum budget of 14. |
-| [`diffusion_based/models/helios_pytorch_geometry.py`](../../../diffusion_based/models/helios_pytorch_geometry.py) | Added physical canopy bounding guards ($r_{xy} < 0.60\text{ m}$), scale clamping for flowers ($\le 3.5\text{ cm}$), pods ($\le 18\text{ cm}$), and leaves ($\le 25\text{ cm}$). |
-| [`diffusion_based/eval/eval_hierarchical_self_consistency.py`](../../../diffusion_based/eval/eval_hierarchical_self_consistency.py) | Corrected camera alignment (`focus_plant=False`), added adaptive zoom ($8.0\times$) for seedlings, and integrated frozen VAE decoding. |
-| [`diffusion_based/training/train_hierarchical_flow_matching.py`](../../../diffusion_based/training/train_hierarchical_flow_matching.py) | Integrated frozen VAE in-loop rendering, weighted BCE (`pos_weight=12.0`), and canopy-masked SmoothL1 depth loss. |
-| [`diffusion_based/training/hierarchical_hungarian_matcher.py`](../../../diffusion_based/training/hierarchical_hungarian_matcher.py) | Added 16D latent cost matrix support for Stage 2 intra-cluster assignment. |
+| [`plant_recon/models/organ_latent_vae.py`](../../../plant_recon/models/organ_latent_vae.py) | Added `decode_to_part_tensor()` for differentiable batch conversion from 16D latents to 14D part tensors and class probabilities. |
+| [`plant_recon/models/hierarchical_part_flow_matching.py`](../../../plant_recon/models/hierarchical_part_flow_matching.py) | Transitioned Stage 2 to 16D latent velocity field, added 1D existence head, dynamic sigmoid organ budgeting with $+35\%$ margin and minimum budget of 14. |
+| [`plant_recon/models/helios_pytorch_geometry.py`](../../../plant_recon/models/helios_pytorch_geometry.py) | Added physical canopy bounding guards ($r_{xy} < 0.60\text{ m}$), scale clamping for flowers ($\le 3.5\text{ cm}$), pods ($\le 18\text{ cm}$), and leaves ($\le 25\text{ cm}$). |
+| [`plant_recon/eval/eval_hierarchical_self_consistency.py`](../../../plant_recon/eval/eval_hierarchical_self_consistency.py) | Corrected camera alignment (`focus_plant=False`), added adaptive zoom ($8.0\times$) for seedlings, and integrated frozen VAE decoding. |
+| [`plant_recon/training/train_hierarchical_flow_matching.py`](../../../plant_recon/training/train_hierarchical_flow_matching.py) | Integrated frozen VAE in-loop rendering, weighted BCE (`pos_weight=12.0`), and canopy-masked SmoothL1 depth loss. |
+| [`plant_recon/training/hierarchical_hungarian_matcher.py`](../../../plant_recon/training/hierarchical_hungarian_matcher.py) | Added 16D latent cost matrix support for Stage 2 intra-cluster assignment. |
 | [`slurm_scripts/train_hierarchical_flow_matching.sh`](../../../slurm_scripts/train_hierarchical_flow_matching.sh) | Configured 4× RTX 6000 Ada SLURM environment for 16D latent training. |
 
 ---

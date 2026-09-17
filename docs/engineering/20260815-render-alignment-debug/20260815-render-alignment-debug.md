@@ -17,7 +17,7 @@ Verify that the new Python differentiable renderer (`HeliosGeometryRasterizer`) 
 
 ## 2. Method
 
-- **Input XML**: `Digital-Crops/projects/syntheticdata_generation/build/output/plot_0000_plant_0000.xml`
+- **Input XML**: `submodules/Digital-Crops/projects/syntheticdata_generation/build/output/plot_0000_plant_0000.xml`
 - **Reference image**: `plot_0000_vis.jpeg` (Helios C++ visualizer, 1920×1080)
 - **Python renderers**:
   1. Render from explicit XML-derived geometry (`build_helios_geometry_from_xml`)

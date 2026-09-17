@@ -87,20 +87,20 @@ graph TD
 ## 4. Proposed File Changes
 
 ### [Component 1: Dataset & Layout]
-#### [MODIFY] [part_array_dataset.py](file:///home/lion397/codes/image-to-l-system/diffusion_based/dataset/part_array_dataset.py)
+#### [MODIFY] [part_array_dataset.py](file:///home/lion397/codes/image-to-l-system/plant_recon/dataset/part_array_dataset.py)
 - `encode_fm` / `decode_fm`:
   - Reorganize FM node layout from 26D (with one-hot) to **13D pure geometry** `[base(3), rot6d(6), scale(3), curv(1)]`.
   - `target_type_labels`: Return integer class labels (`torch.long`) of shape `(N,)` separately.
 
 ### [Component 2: Models]
-#### [MODIFY] [part_flow_matching.py](file:///home/lion397/codes/image-to-l-system/diffusion_based/models/part_flow_matching.py)
+#### [MODIFY] [part_flow_matching.py](file:///home/lion397/codes/image-to-l-system/plant_recon/models/part_flow_matching.py)
 - Reduce default `node_dim` from 26 to 13.
 - Add **`type_classifier_head` (13-class logits)** alongside `velocity_head` (13D) at decoder output.
 - Add `dap_embed` conditioning layer.
 - Update `forward()` to return `{"pred_velocity": (B, N, 13), "pred_type_logits": (B, N, 13)}`.
 
 ### [Component 3: Loss & Training]
-#### [NEW] `diffusion_based/training/hungarian_matcher.py`
+#### [NEW] `plant_recon/training/hungarian_matcher.py`
 - Implement DETR-style `PartHungarianMatcher`.
 - GPU-CPU tensor optimization and batch bipartite matching.
 #### [MODIFY] `train_part_flow_matching.py`
@@ -109,7 +109,7 @@ graph TD
 - Apply active-slot loss normalization.
 
 ### [Component 4: Evaluation & Visualization]
-#### [MODIFY] [`fm_visualization.py`](../../../diffusion_based/training/fm_visualization.py)
+#### [MODIFY] [`fm_visualization.py`](../../../plant_recon/training/fm_visualization.py)
 - Support separate decoding of geometry velocity integration and type logit `softmax/argmax`.
 - Support DAP-specific (10, 50, 90) slot activation and visualization.
 

@@ -30,13 +30,13 @@ Picking up from the previous takeover doc's instruction ("PhytomerVAE MUST be re
 
 ## 2. PhytomerVAE v8: hybrid coarse (48D) + per-slot residual (10×8D) latent
 
-Full design rationale and code are in `diffusion_based/models/phytomer_vae.py`'s module docstring (edit this doc, not that one, if the rationale needs updating — the code docstring is the source of truth). Summary:
+Full design rationale and code are in `plant_recon/models/phytomer_vae.py`'s module docstring (edit this doc, not that one, if the rationale needs updating — the code docstring is the source of truth). Summary:
 
 - `z[:48]` — shared "coarse" channel: class, base (always zero, deterministic), scale, curvature. Encoded/decoded exactly as the old single-latent design was.
 - `z[48:128]` — 10 independent 8D "residual" channels, one per organ slot, dedicated to that slot's rotation only. Each is encoded directly from that slot's own raw rot6d (not pooled away by the shared trunk) and decoded by a shared-weight per-slot head conditioned on `[coarse | that slot's residual]`.
 - Token-count win preserved: residual channels widen the *same* per-phytomer token; Stage 3 still sees K tokens, not 8K.
 
-**Measured** (`eval_phytomer_vae_packet_fidelity.py`, no Helios, checkpoint `diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt`, 60 epochs / 208s on a single TITAN RTX):
+**Measured** (`eval_phytomer_vae_packet_fidelity.py`, no Helios, checkpoint `outputs/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt`, 60 epochs / 208s on a single TITAN RTX):
 
 | Role | DAP10 | DAP50 | DAP90 |
 |---|---:|---:|---:|
@@ -154,4 +154,4 @@ The density-weighted variant (approximating adaptive/uncertainty weighting by re
 f554d2a refactor(train): make the gradient safety net canary-only, not a soft clipper
 ```
 
-Checkpoint lineage: `diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt` is the current accepted PhytomerVAE. `dataset/cache/cowpea_curv26_pkt/` is fully regenerated at `pkt_version=6` (100,000/100,000 files, `keys` present, verified). No hierarchical FM training has been launched beyond the 6-epoch local smoke test in `diffusion_based/checkpoints/fm_smoke_test/` — a real training run is still pending, and per this doc's §6, should wait for the rotation-head decision so it isn't immediately obsoleted by an architecture change.
+Checkpoint lineage: `outputs/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt` is the current accepted PhytomerVAE. `dataset/cache/cowpea_curv26_pkt/` is fully regenerated at `pkt_version=6` (100,000/100,000 files, `keys` present, verified). No hierarchical FM training has been launched beyond the 6-epoch local smoke test in `outputs/checkpoints/fm_smoke_test/` — a real training run is still pending, and per this doc's §6, should wait for the rotation-head decision so it isn't immediately obsoleted by an architecture change.

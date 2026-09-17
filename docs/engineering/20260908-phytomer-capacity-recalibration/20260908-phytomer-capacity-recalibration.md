@@ -8,7 +8,7 @@ status: active
 # Node Capacity Recalibration & Predicted-Phytomer Dynamic Slicing (2026-09-08)
 
 **Status**: Implemented + tested (CPU smoke tests + gradient audit PASS) — updated after evening full rescan
-**Scope**: `diffusion_based/models/hierarchical_part_flow_matching.py`, `training/train_hierarchical_flow_matching.py`, `training/hierarchical_hungarian_matcher.py`, new `dataset/dap_bucket_sampler.py`, new `tools/calibrate_phytomer_capacity.py`
+**Scope**: `plant_recon/models/hierarchical_part_flow_matching.py`, `training/train_hierarchical_flow_matching.py`, `training/hierarchical_hungarian_matcher.py`, new `dataset/dap_bucket_sampler.py`, new `tools/calibrate_phytomer_capacity.py`
 
 ---
 
@@ -272,7 +272,7 @@ grounded in the three completed runs' evidence:
 sbatch slurm_scripts/train_hierarchical_flow_matching.sh  # with:
 #   --dap_buckets 8 --capacity_warmup_epochs 50 --capacity_full_epochs 150
 #   --eval_every 25 --lr 3e-4   (backbone auto: 3e-4 × 0.15 = 4.5e-5 ≈ 3e-5 target)
-#   --init_checkpoint diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_500.pt
+#   --init_checkpoint outputs/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_500.pt
 #   (warm-start optional: warm-start risks inheriting the skewed-dataset bias;
 #    if warm-starting, halve all lrs for the first 25 epochs)
 ```

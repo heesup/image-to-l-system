@@ -46,8 +46,8 @@ Target plant: 3 organs
 Experiment B2: Chamfer pulls leaf outward
   Initial petiole pitch: 10.0°  ->  Final: 60.0°
   Initial Chamfer: 303.47 mm  ->  Final: 0.07 mm
-Saved figure: docs/results/assets/minimal_direct_opt_depth_chamfer_demo.png
-Saved metrics JSON: docs/results/assets/minimal_direct_opt_depth_chamfer_demo.json
+Saved figure: docs/experiments/minimal-direct-opt-chamfer/assets/minimal_direct_opt_depth_chamfer_demo.png
+Saved metrics JSON: docs/experiments/minimal-direct-opt-chamfer/assets/minimal_direct_opt_depth_chamfer_demo.json
 Demo complete.
 ```
 

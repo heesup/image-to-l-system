@@ -11,10 +11,10 @@ status: done
 - **Author**: Antigravity Autonomous Agent (Pair programming with Heesup Yun)
 - **Status**: Completed & Verified across DAP 10, DAP 50, and DAP 90
 - **Key Artifacts**:
-  - Core Converter: `diffusion_based/models/part_tensor_to_40d.py`
-  - Lifecycle Evaluator: `diffusion_based/eval/eval_13d_xml_organ_masks.py`
-  - Multi-Modal Comparison: `docs/results/assets/fig10_helios_per_organ_mask_comparison.png`
-  - Pipeline Debug View: `docs/results/assets/fig11_xml_reconstruction_pipeline_debug.png`
+  - Core Converter: `plant_recon/models/part_tensor_to_40d.py`
+  - Lifecycle Evaluator: `plant_recon/eval/eval_13d_xml_organ_masks.py`
+  - Multi-Modal Comparison: `docs/handovers/agent-takeover-guide/assets/fig10_helios_per_organ_mask_comparison.png`
+  - Pipeline Debug View: `docs/archive/unreferenced-assets/fig11_xml_reconstruction_pipeline_debug.png`
 
 ---
 
@@ -102,24 +102,24 @@ $$\theta = \text{atan2}(\mathbf{u} \cdot (\mathbf{p}_1 \times \mathbf{p}_2), \ma
 
 ## 4. Visual Confirmation & Assets
 
-- **Figure 10** (`docs/results/assets/fig10_helios_per_organ_mask_comparison.png`):
+- **Figure 10** (`docs/handovers/agent-takeover-guide/assets/fig10_helios_per_organ_mask_comparison.png`):
   Comprehensive multi-modal comparison across DAP 10, DAP 50, and DAP 90 showing Ground Truth Raytrace RGB, COCO Organ Masks, Raytrace Depth, Reconstructed 13D XML Raytrace RGB, Reconstructed Organ Masks, Reconstructed Depth, and PyTorch 13D Differentiable Renders.
-- **Figure 11** (`docs/results/assets/fig11_xml_reconstruction_pipeline_debug.png`):
+- **Figure 11** (`docs/archive/unreferenced-assets/fig11_xml_reconstruction_pipeline_debug.png`):
   Detailed 13D to XML pipeline architectural diagram and debug validation.
 
 ---
 
 ## 5. Summary of Modified Files
 
-1. `diffusion_based/models/part_tensor_to_40d.py`:
+1. `plant_recon/models/part_tensor_to_40d.py`:
    - Full closed-form Shoot Base IK (`solve_helios_shoot_base`).
    - Phytomer lookahead for `bud_state` and reproductive organ assembly.
    - Dynamic pitch extraction from $R_{2, 0}$ and dynamic scale extraction from $s_x$.
    - Analytical peduncle pitch and azimuth.
-2. `diffusion_based/eval/eval_13d_xml_organ_masks.py`:
+2. `plant_recon/eval/eval_13d_xml_organ_masks.py`:
    - Multi-modal evaluation benchmark across DAP 10, 50, 90.
    - Per-organ COCO mask extraction, Depth PSNR, and Figure 10 generation.
-3. `diffusion_based/models/plant_organ_array.py`:
+3. `plant_recon/models/plant_organ_array.py`:
    - XML parsing and serialization fixes for peduncle and inflorescence tags.
-4. `diffusion_based/models/part_assembly_to_xml.py`:
+4. `plant_recon/models/part_assembly_to_xml.py`:
    - Bridge updates for 14D part tensor assembly.

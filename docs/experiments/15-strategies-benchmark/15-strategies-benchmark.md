@@ -16,7 +16,7 @@ This report presents the rigorous empirical validation of the **15 Loss-Reductio
 
 ## 🏛️ 14D Part Representation & Autonomous Assembly Architecture
 
-> **Note:** The active pipeline is now **14D-only**. The 40D typed-array model, training scripts, and benchmark entry points have been moved to `diffusion_based/*/legacy/`. They are kept for reference but are no longer part of the main training or evaluation workflow.
+> **Note:** The active pipeline is now **14D-only**. The 40D typed-array model, training scripts, and benchmark entry points have been moved to `plant_recon/*/legacy/`. They are kept for reference but are no longer part of the main training or evaluation workflow.
 
 ```mermaid
 flowchart TD
@@ -94,7 +94,7 @@ $$\mathbf{p}_i = [\text{OrganType}_i, \mathbf{b}_i^{(x, y, z)}, \mathbf{r}_i^{(0
 > [!NOTE]
 > SSIM values here are **raw full-image SSIM** (legacy, background-biased).
 > New evaluation results use **Masked SSIM (mSSIM)** restricted to foreground union pixels.
-> See [`diffusion_based/eval/metrics.py`](../../../diffusion_based/eval/metrics.py).
+> See [`plant_recon/eval/metrics.py`](../../../plant_recon/eval/metrics.py).
 
 | Growth Stage | Organ Count ($N$) | Triangles | 14D Direct vs 40D Tree MAE | 14D Direct vs 40D Tree SSIM | 14D Direct vs Helios GT SSIM |
 | :--- | :---: | :---: | :---: | :---: | :---: |
@@ -191,7 +191,7 @@ $$\mathbf{p}_i = [\text{OrganType}_i, \mathbf{b}_i^{(x, y, z)}, \mathbf{r}_i^{(0
    - Raw SSIM over full 512×512 images is dominated by the ~80% background pixels — a blank rendering can score **SSIM > 0.7** simply by matching the Helios ground color.
    - **Masked SSIM (mSSIM)** is computed only over the union of foreground pixels in prediction and target, eliminating background bias.
    - **Foreground IoU** directly measures silhouette accuracy: a blank prediction scores **IoU = 0.0** (not 0.7).
-   - See [`diffusion_based/eval/metrics.py`](../../../diffusion_based/eval/metrics.py) for full implementation.
+   - See [`plant_recon/eval/metrics.py`](../../../plant_recon/eval/metrics.py) for full implementation.
 
 ---
 
@@ -199,21 +199,21 @@ $$\mathbf{p}_i = [\text{OrganType}_i, \mathbf{b}_i^{(x, y, z)}, \mathbf{r}_i^{(0
 
 * **Run Unit Tests (XML Roundtrip, Mesh Vertex Diff, Render Identity)**:
   ```bash
-  python tests/unit/test_14d_part_representation.py Digital-Crops/projects/syntheticdata_generation/build/output
+  python tests/unit/test_14d_part_representation.py submodules/Digital-Crops/projects/syntheticdata_generation/build/output
   ```
 * **Run 14D Part Renderer Comparison Multi-DAP Evaluation**:
   ```bash
-  python diffusion_based/eval/generate_14d_render_comparison.py
+  python plant_recon/eval/generate_14d_render_comparison.py
   ```
 * **Run Rendering Speed Benchmark (Fig 1)**:
   ```bash
-  python diffusion_based/eval/benchmark_helios_vs_torch_renderer.py
+  python plant_recon/eval/benchmark_helios_vs_torch_renderer.py
   ```
 * **Regenerate Diagnostic Figures 3-7 (mSSIM + FG-IoU + Depth)**:
   ```bash
-  python diffusion_based/eval/generate_14d_report.py
+  python plant_recon/eval/generate_14d_report.py
   ```
 * **Legacy 40D 15-Strategy Benchmark (moved to `legacy/`, kept for reference)**:
   ```bash
-  python diffusion_based/eval/legacy/run_deep_15_benchmark_40d.py --mode report
+  python plant_recon/eval/legacy/run_deep_15_benchmark_40d.py --mode report
   ```

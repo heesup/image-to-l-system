@@ -127,7 +127,7 @@ PyTorch Differentiable Soft Render Module for 3D Cylinders + 3D Cordate Leaf Pol
 ### Component 4: Dataset Generation Script
 
 #### [NEW] `generate_helios_dataset.py`
-Python orchestration script calling `/Users/lion397/codes/l-systems-gnn/Digital-Crops/projects/syntheticdata_generation/build/main`:
+Python orchestration script calling `/Users/lion397/codes/l-systems-gnn/submodules/Digital-Crops/projects/syntheticdata_generation/build/main`:
 - Varies DAP from 5 to 60 (step size 5).
 - Generates 20 random seeds per DAP (total 240+ dataset pairs).
 - Commands used: `./main --radiation false --vis --focus-plant -n "cowpea" --dap <DAP> -s <SEED>`
@@ -139,15 +139,15 @@ Python orchestration script calling `/Users/lion397/codes/l-systems-gnn/Digital-
 ### Automated Tests
 1. **Helios XML Parser Test**:
    Verify node extraction from `cowpea_0000_plant_0000.xml`:
-   `python -c "from dataset.helios_xml_parser import parse_helios_xml; res = parse_helios_xml('Digital-Crops/projects/syntheticdata_generation/build/output/cowpea_0000_plant_0000.xml'); print(res['nodes'].shape)"`
+   `python -c "from dataset.helios_xml_parser import parse_helios_xml; res = parse_helios_xml('submodules/Digital-Crops/projects/syntheticdata_generation/build/output/cowpea_0000_plant_0000.xml'); print(res['nodes'].shape)"`
 
 2. **Differentiable Renderer Test**:
    Verify autograd backward pass through differentiable soft renderer:
-   `python -c "from diffusion_based.models.differentiable_renderer_3d import DifferentiablePlantRenderer3D; import torch; r = DifferentiablePlantRenderer3D(); nodes = torch.randn(2, 32, 15, requires_grad=True); img = r(nodes); img.sum().backward(); print(nodes.grad is not None)"`
+   `python -c "from plant_recon.models.differentiable_renderer_3d import DifferentiablePlantRenderer3D; import torch; r = DifferentiablePlantRenderer3D(); nodes = torch.randn(2, 32, 15, requires_grad=True); img = r(nodes); img.sum().backward(); print(nodes.grad is not None)"`
 
 3. **Full Training Verification**:
    Run training for 10 epochs to confirm convergence:
-   `python -m diffusion_based.training.train_diffusion_3d --epochs 10 --batch_size 4`
+   `python -m plant_recon.training.train_diffusion_3d --epochs 10 --batch_size 4`
 
 ### Visual Verification
 - Run `visualize_diffusion_3d.py` on real `cowpea_0000_vis.jpeg` to inspect 3D reconstructed stem-leaf organ topology against ground-truth XML.

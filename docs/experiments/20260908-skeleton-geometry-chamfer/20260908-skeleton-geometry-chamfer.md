@@ -8,8 +8,8 @@ status: done
 # Epoch 050 Botanical Skeleton Geometry & Metric Analysis
 
 **Date:** 2026-09-08 (~18:40 PDT)  
-**Evaluated Artifact:** `docs/results/assets/hierarchical_self_consistency_epoch_050.png`  
-**Checkpoint:** `diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_050.pt`  
+**Evaluated Artifact:** `docs/experiments/20260907-latent-fm-500epoch/assets/hierarchical_self_consistency_epoch_050.png`  
+**Checkpoint:** `outputs/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_050.pt`  
 **Author:** Antigravity Autonomous Agent (Pair programming with Heesup Yun)  
 
 ---

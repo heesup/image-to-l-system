@@ -25,6 +25,7 @@ _System design documents, mathematical specifications, and camera geometry_
 
 - [Cascaded Design Space Analysis (2026-09-08)](architecture/cascaded-design-space-analysis/cascaded-design-space-analysis.md)
 - [Current Architecture (2026-09-10)](architecture/current-architecture/current-architecture.md)
+- [Repository Structure & Code Map (2026-09-16)](architecture/code-structure/code-structure.md)
 - [Hierarchical Matryoshka Flow Matching (2026-09-06)](architecture/hierarchical-matryoshka-flow-matching/hierarchical-matryoshka-flow-matching.md)
 - [Latent Hierarchical Fm Spec (2026-09-07)](architecture/latent-hierarchical-fm-spec/latent-hierarchical-fm-spec.md)
 - [Projection Angle & Camera Geometry Explanation](architecture/projection-angle-explanation/projection-angle-explanation.md)

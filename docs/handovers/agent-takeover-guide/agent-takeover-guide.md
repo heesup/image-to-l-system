@@ -11,38 +11,45 @@ status: active
 **Primary Author/Agent:** Antigravity Autonomous Agent → **Claude Code** (since 2026-09-14; pair programming with Heesup Yun)  
 **Environment:** Linux, Python 3.10+, Mamba (`mamba activate digital-crops`), CUDA, PyTorch, `nvdiffrast`, Helios C++ OptiX Raytracer.
 
+> **2026-09-16 repository restructure:** the package formerly at `diffusion_based/` is now
+> `plant_recon/`; checkpoints moved to `outputs/checkpoints/`, job logs to `outputs/logs/`,
+> wandb to `outputs/wandb/`, the real-image track to `use_cases/real_world/`, Digital-Crops to
+> `submodules/Digital-Crops/`, and the VLM track to `archive/lm_based/`. Paths in this guide
+> have been bulk-updated accordingly; see
+> [`docs/architecture/code-structure/code-structure.md`](../architecture/code-structure/code-structure.md).
+
 > **Takeover for Claude Code (2026-09-14):** this guide is the handover doc. Claude Code session
 > memory additionally lives outside the repo at `~/.claude/projects/-home-lion397-codes-image-to-l-system/memory/*.md`
 > (launcher layout, terminology, run-log conventions, HPC partition rules, VAE round-trip rules).
-> Read §0-B first (live handover state), then `docs/ongoing/README.md` (status dashboard) and
-> `docs/ongoing/20260912_stage2_stage3_boundary_and_remaining_redundancy.md` (§5 reading order).  
+> Read §0-B first (live handover state), then `docs/handovers/current-status.md` (status dashboard) and
+> `docs/handovers/20260912-stage2-stage3-boundary/20260912-stage2-stage3-boundary.md` (§5 reading order).  
 
 ---
 
 
 ## 0-A. State as of 2026-09-13 (read this first; supersedes the older sections where they disagree)
 
-The full record is `docs/ongoing/20260912_stage2_stage3_boundary_and_remaining_redundancy.md`
-(§0 status, §1.9.2 the training blocker, §2.4-2.5 the round-trip, §2.6 the dataset-plant round-trip, §5 reading order, §6 commit log); the 2026-09-14 report is `docs/results/20260914_stage2_burst_fix_and_dataset_plant_roundtrip.md`.
+The full record is `docs/handovers/20260912-stage2-stage3-boundary/20260912-stage2-stage3-boundary.md`
+(§0 status, §1.9.2 the training blocker, §2.4-2.5 the round-trip, §2.6 the dataset-plant round-trip, §5 reading order, §6 commit log); the 2026-09-14 report is `docs/experiments/20260914-stage2-burst-fix-roundtrip/20260914-stage2-burst-fix-roundtrip.md`.
 
-**Round-trip (the "very important" requirement): solved.** `docs/results/assets/fig14_phytomer_vae_helios_roundtrip.png`
+**Round-trip (the "very important" requirement): solved.** `docs/experiments/20260914-stage2-burst-fix-roundtrip/assets/fig14_phytomer_vae_helios_roundtrip.png`
 reads IK-only 99.9 / 99.6 / 97.7% and VAE round-trip **93.7 / 98.3 / 95.8%** FG IoU (DAP 10 / 50 / 90; regenerated
 2026-09-14 with the leaf inverse, previously 95.7 / 99.5 / 96.7 and 92.2 / 98.4 / 95.7); on 2026-09-12 morning it was 81.4 / 90.2 / 79.3. Three fixes, all landed and on by default:
 - leaflet emit order (the XML converter assigns leaf yaw by encounter order and reads only the scale; the terminal
   leaflet is identified per node, `phytomer_packets.terminal_leaflet_is_slot2`), and leaf size is one scalar per node
   (1 : 1 : 10/9) re-imposed in `assemble_packets`;
-- **stem inverse kinematics** in the export (`diffusion_based/models/part_tensor_stem_ik.py`, run by
+- **stem inverse kinematics** in the export (`plant_recon/models/part_tensor_stem_ik.py`, run by
   `assemble_part_tensor_to_xml`; `PART_TENSOR_STEM_IK=0` gives the old analytical export). Helios rebuilds a shoot by FK
   from per-node angles; the solver makes that FK land on the predicted nodes. This, not VAE fidelity, was the ceiling
   (the identity export went 94.2 -> 99.6% at DAP 50);
-- a better VAE, `diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/` (128D = 48 + 10x8, `--rot-weight 4`, 20,000
+- a better VAE, `outputs/checkpoints/phytomer_vae_v9_tl_rw4_20k/` (128D = 48 + 10x8, `--rot-weight 4`, 20,000
   files, terminal-last packets). The eval scripts default to it and set `PHYTOMER_TERMINAL_LAST=1` for any `_tl`
   checkpoint. The *legacy* `_unreferenced/phytomer_9slot_roundtrip_comparison.png` is the old soft-rasterizer pipeline;
   ignore it.
 
 **Dataset plants (2026-09-14, design doc §2.6).** fig14 above is measured on the exact_gt trio, which is generated with
 the converter's own default angles; on dataset plants (DAP 15/40/75 in the regenerated
-`docs/results/assets/fig12_phytomer_10slot_helios_roundtrip.png`, script `diffusion_based/eval/eval_phytomer_10slot_assembly_views.py`)
+`docs/experiments/20260914-stage2-burst-fix-roundtrip/assets/fig12_phytomer_10slot_helios_roundtrip.png`, script `plant_recon/eval/eval_phytomer_10slot_assembly_views.py`)
 the export alone read 81.8 / 92.2 / 54.6% and the VAE added nothing. Fixed, all on by default: `chain_phytomers` no longer
 requires a parent below its child (drooping laterals were cut; cycles are now broken at their most expensive edge, and
 `root_own_shoot=True` keeps the cotyledon node as shoot 0); `gt_parent_links(..., internode_base=)` resolves a lateral's
@@ -52,12 +59,12 @@ FK's leaf rotation per leaf (`PART_TENSOR_LEAF_IK=0` disables). Packet path on t
 
 **VAE / cache lineage.** Every FM checkpoint so far read its Stage-3 target latents from a packet cache stamped with a VAE's latents. Since 2026-09-14 that coupling is gone: `train_hierarchical_flow_matching.py` encodes the target latent on the fly from the cached packets with the VAE the run loads, so `dataset/cache/cowpea_curv26_pkt_v9/` (pkt_version 7, terminal-last) and `cowpea_curv26_pkt/` (pkt_version 6, bottom-to-top) hold only packets/presence/centers/refs/keys and are VAE-independent. What still binds VAE ↔ cache is the packet ORDER (terminal-last vs bottom-to-top), via `PHYTOMER_TERMINAL_LAST`. So: bump `PKT_VERSION` and regenerate ONLY when the packet format changes; to swap the VAE, point `PHYTOMER_VAE_CHECKPOINT` at it (or `TRAIN_VAE=1` in the launcher) with `PKT_VERSION` matching its packets. The old standalone launchers `slurm_scripts/train_phytomer_vae.sh` and `generate_phytomer_packets_jobs.sh` are folded into `train_hierarchical_flow_matching.sh` (`TRAIN_VAE=1`) and `generate_helios_dataset_jobs.sh` (`--packets-only`), and now live under `archive/slurm_scripts/`.
 
-**Training: the Stage 2 gradient burst is FIXED (2026-09-14).** Root cause: the coarse `nn.TransformerDecoder` (`norm_first=True`) had no final norm, so its raw residual stream (magnitude ~1e3 late in training) went into the bf16 phytomer self-attention as query/key/value; on a frozen burst state the backward amplified the gradient ~6000x on every batch. A final LayerNorm (`FM_DECODER_FINAL_NORM`, default on) gives 0/8 burst steps vs 8/8; fp32 self-attention (`FM_SELFATTN_FP32`, default on) is a partial mitigation kept as well. The v9 run restarted from scratch with both (`slurm_scripts/logs/local_v9_run2.log`, epochs 1-15, 0 canary hits; continued on 2026-09-14 10:30 from epoch 15 as cluster job `38252603` (geminigrp, 2 GPUs, log `hierarchical_fm_38252603.log`, checkpoints `hierarchical_fm_v9/`) with the §2.6 topology targets; the launcher's defaults are now the v9 recipe, and the queued `low`-partition jobs 38249632 / 38250275 pick up the current code when they start). The history below is kept for the record. It recurred at epoch 27-28 in two runs that
+**Training: the Stage 2 gradient burst is FIXED (2026-09-14).** Root cause: the coarse `nn.TransformerDecoder` (`norm_first=True`) had no final norm, so its raw residual stream (magnitude ~1e3 late in training) went into the bf16 phytomer self-attention as query/key/value; on a frozen burst state the backward amplified the gradient ~6000x on every batch. A final LayerNorm (`FM_DECODER_FINAL_NORM`, default on) gives 0/8 burst steps vs 8/8; fp32 self-attention (`FM_SELFATTN_FP32`, default on) is a partial mitigation kept as well. The v9 run restarted from scratch with both (`outputs/logs/local_v9_run2.log`, epochs 1-15, 0 canary hits; continued on 2026-09-14 10:30 from epoch 15 as cluster job `38252603` (geminigrp, 2 GPUs, log `hierarchical_fm_38252603.log`, checkpoints `hierarchical_fm_v9/`) with the §2.6 topology targets; the launcher's defaults are now the v9 recipe, and the queued `low`-partition jobs 38249632 / 38250275 pick up the current code when they start). The history below is kept for the record. It recurred at epoch 27-28 in two runs that
 differ in seed and learning rate (`38240479` at 1e-4, `38242849` at 5e-5, both resumed from the same lineage) at the
 same steps, and `DistributedSampler` is seeded by epoch only, so those runs saw the same batches. Refuted: weight decay,
 decoder token collapse (`FM_ACT_PROBE=1`), a 512-sample subset replay. Live: a full-dataset replay of epochs 26-28 from
 `hierarchical_fm_depth_ord/hierarchical_fm_epoch_025.pt` with `FM_SPIKE_DUMP=1` (names the samples on Stage 2 loss
-spikes and on the first canary) -- running locally (`slurm_scripts/logs/local_replay_full.log`, slow) and queued on the
+spikes and on the first canary) -- running locally (`outputs/logs/local_replay_full.log`, slow) and queued on the
 cluster as `38243735` behind the group's GPU quota. The lineage's checkpoints: epoch 15 in `hierarchical_fm_render_on/`,
 epochs 20 and 25 in `hierarchical_fm_depth_ord/`. Use `LR=1e-4`, `FORCE_BATCH_SIZE=48`, `RENDER_GRAD_START_EPOCH=11`,
 `RENDER_FRACTION=0.03` (and `SEED`).
@@ -101,16 +108,16 @@ Two commits, `main` == `origin/main`:
 
 - Job `38252603` (batch 48/GPU, the validated v9 recipe; ~6.7 GB/49 GB VRAM, ~20% GPU util, **32 min/epoch**) was
   cancelled at ~11:15 and replaced by **`38252937`** (`gpu-6000_ada-h`, gpu-10-54, 24 h, log
-  `slurm_scripts/logs/hierarchical_fm_38252937.log`): `FORCE_BATCH_SIZE=auto NUM_WORKERS=8`, resume
+  `outputs/logs/hierarchical_fm_38252937.log`): `FORCE_BATCH_SIZE=auto NUM_WORKERS=8`, resume
   (`INIT_CHECKPOINT=.../hierarchical_fm_v9_local2/hierarchical_fm_epoch_015.pt RESUME=1`) → resumed at **epoch 16**,
-  output `diffusion_based/checkpoints/hierarchical_fm_v9/`, same LR 1e-4 / seed 1234 / render-from-11 / save-every-5.
+  output `outputs/checkpoints/hierarchical_fm_v9/`, same LR 1e-4 / seed 1234 / render-from-11 / save-every-5.
 - The VRAM probe (`probe_optimal_batch_size`) tuned **256 per GPU** (global 512; est peak 29.4 GB). Its `max_batch`
   is hardcoded to 256 in `train_hierarchical_flow_matching.py`; without the cap it would have picked ~392.
 - **Finding (measured, not guessed):** step time went **2.2 s → ~18 s** (prof: backward 1.3→11.2 s, render
   0.65→5.27 s — roughly linear in batch), while steps/epoch fell only 1044→200. Net: **~55–60 min/epoch, WORSE than
   the 32 min/epoch at batch 48**. Backward scaling is slightly superlinear (8.6× for 5.3× batch).
 - **Uncommitted changes backing the experiment** (commit or revert them):
-  - `diffusion_based/training/train_hierarchical_flow_matching.py`: new `--num_workers` arg (default 4);
+  - `plant_recon/training/train_hierarchical_flow_matching.py`: new `--num_workers` arg (default 4);
     both DataLoaders now use `num_workers=args.num_workers, prefetch_factor=4, persistent_workers=True`.
   - `slurm_scripts/train_hierarchical_flow_matching.sh`: passes `--num_workers "${NUM_WORKERS:-8}"`.
 - **Recommendation for the next agent:** wall-clock favours the small batch. Either (a) cancel 38252937 and
@@ -177,14 +184,14 @@ code, `AUTO_RESUME` from `hierarchical_fm_v9/hierarchical_fm_epoch_025.pt`.
 
 ### 0-B.7 GT-substitution ablation: node position is the first-order error (2026-09-14 ~15:50, epoch 40)
 
-`diffusion_based/eval/eval_gt_substitution_ablation.py` (run dir: `gt_substitution_epochNNN.json`): every predicted node
+`plant_recon/eval/eval_gt_substitution_ablation.py` (run dir: `gt_substitution_epochNNN.json`): every predicted node
 matched to a GT phytomer, one quantity of the matched nodes replaced by ground truth, re-rendered, silhouette IoU against
 the GT render, 20 plants of the fixed eval set. P 24.8% → pos←GT 42.3 → ALL (pos+topo+rot+scale+latent) 82.1;
 leave-one-out from ALL: −pos 30.6, −rot 49.1, −latent 47.5, −scale 61.6, −topo 82.1. Position first, then rotation
 and latent (−33 each when the rest is right), then scale; the ordinal head costs nothing given the rest; the predicted
 node SET (missing / spurious, 0.5 gate) is the last 18 points; seedlings (DAP ≤ 15) are at 2.5% as predicted. This is
 the evidence for §2.1's remaining piece -- child position/roll/scale generated in Stage 3 relative to the fixed parent
--- with position first. Details: `docs/results/20260914_stage2_burst_fix_and_dataset_plant_roundtrip.md` §7.
+-- with position first. Details: `docs/experiments/20260914-stage2-burst-fix-roundtrip/20260914-stage2-burst-fix-roundtrip.md` §7.
 
 ### 0-B.8 Stage 3 geometry implemented, A/B in flight (2026-09-14 ~16:10, `abdbaf1`)
 
@@ -196,7 +203,7 @@ keys (Stage 2's under `phytomer_pos_stage2`), the render block renders the refin
 geometry block through pos and scale. A latent-only checkpoint widens on load (latent block kept in `geom_proj` / the
 velocity head; Adam moments widened by `_widen_optimizer_state`). Stage 2 keeps its heads (matching, parents, ordinal,
 existence). Off by default. **A/B** from `hierarchical_fm_v9/hierarchical_fm_epoch_045.pt`: baseline `38257989`
-(cluster, 2 GPU, render 1/6) vs the geometry run running locally on 1 GPU (`slurm_scripts/logs/local_s3geom_ab.log`,
+(cluster, 2 GPU, render 1/6) vs the geometry run running locally on 1 GPU (`outputs/logs/local_s3geom_ab.log`,
 `hierarchical_fm_v9_s3geom/`, eval every epoch). Read the per-epoch `[Self-Consistency]` IoU of both; the run's velocity
 loss starts high (fresh geometry dims, ~12-20) and should fall within the first epochs.
 
@@ -207,10 +214,10 @@ loss starts high (fresh geometry dims, ~12-20) and should fall within the first 
 
 | run | where | log / checkpoints | flag |
 | :--- | :--- | :--- | :--- |
-| baseline (latent-only Stage 3) | cluster `38257989`, 2 GPU | `slurm_scripts/logs/hierarchical_fm_38257989.log`, `hierarchical_fm_v9/` | — |
-| geometry (stopped 10:55 at ep80) | local 1 GPU | `slurm_scripts/logs/local_s3geom_ab2.log`, `hierarchical_fm_v9_s3geom/`, panels `run_local_20260914_164059/` | `STAGE3_GEOMETRY=1` |
-| gt_nodes (teacher forcing, stopped 10:55 at ep78) | local 1 GPU, started 17:07 | `slurm_scripts/logs/local_gtnodes_ab.log`, `hierarchical_fm_v9_gtnodes/`, panels `run_local_20260914_170731/` | `STAGE3_GT_NODES=1` |
-| **10% chain** (all: `MAX_TRAIN_SAMPLES=10000 EVAL_SET_FILE=hierarchical_fm_v9/eval_set.json HOLDOUT_PER_BUCKET=2`, six independent 1-GPU jobs on geminigrp `gpu-6000_ada-h` — Heesup: up to 8 high-priority GPUs there — first started 10:32 on gpu-10-54, the rest as GPUs free up (baseline ends 15:53; gpu-10-50 draining with 3 idle GPUs), ~2 min/epoch, 50 epochs each) | `38274493` baseline-on-10% → `38274494` `LATENT_NORM=1` → `38274495` scheduled TF (p 0.5, jitter 1 cm) → `38274496` `RENDER_TO_LATENT=1` → `38274497` combination (geometry ep78 + latent_norm + render→latent) → `38274498` v10 full (+ `MULTIZOOM=1 COVERAGE_WEIGHT=1.0 EXIST_COUNT_WEIGHT=0.5`) | `slurm_scripts/logs/hierarchical_fm_<job>.log`, `diffusion_based/checkpoints/sub10_{base,lnorm,stf,r2l,combo,v10}/` | see §2.7 of the design doc |
+| baseline (latent-only Stage 3) | cluster `38257989`, 2 GPU | `outputs/logs/hierarchical_fm_38257989.log`, `hierarchical_fm_v9/` | — |
+| geometry (stopped 10:55 at ep80) | local 1 GPU | `outputs/logs/local_s3geom_ab2.log`, `hierarchical_fm_v9_s3geom/`, panels `run_local_20260914_164059/` | `STAGE3_GEOMETRY=1` |
+| gt_nodes (teacher forcing, stopped 10:55 at ep78) | local 1 GPU, started 17:07 | `outputs/logs/local_gtnodes_ab.log`, `hierarchical_fm_v9_gtnodes/`, panels `run_local_20260914_170731/` | `STAGE3_GT_NODES=1` |
+| **10% chain** (all: `MAX_TRAIN_SAMPLES=10000 EVAL_SET_FILE=hierarchical_fm_v9/eval_set.json HOLDOUT_PER_BUCKET=2`, six independent 1-GPU jobs on geminigrp `gpu-6000_ada-h` — Heesup: up to 8 high-priority GPUs there — first started 10:32 on gpu-10-54, the rest as GPUs free up (baseline ends 15:53; gpu-10-50 draining with 3 idle GPUs), ~2 min/epoch, 50 epochs each) | `38274493` baseline-on-10% → `38274494` `LATENT_NORM=1` → `38274495` scheduled TF (p 0.5, jitter 1 cm) → `38274496` `RENDER_TO_LATENT=1` → `38274497` combination (geometry ep78 + latent_norm + render→latent) → `38274498` v10 full (+ `MULTIZOOM=1 COVERAGE_WEIGHT=1.0 EXIST_COUNT_WEIGHT=0.5`) | `outputs/logs/hierarchical_fm_<job>.log`, `outputs/checkpoints/sub10_{base,lnorm,stf,r2l,combo,v10}/` | see §2.7 of the design doc |
 
 | epoch | baseline IoU % | geometry IoU % | gt_nodes IoU % |
 | :---: | :---: | :---: | :---: |
@@ -365,7 +372,7 @@ first; read its latent probe (`scratchpad/latent_probe.py`, R² at t = 0) before
 `38273174` still queued at 09:55 (16 h; low's GPU nodes are held by other users' multi-day jobs).
 
 **Why the 2026-09-07/08 "45.4%" panel is not a bar to beat (2026-09-15 09:20).** Heesup asked whether
-`docs/results/assets/20260907/hierarchical_self_consistency_epoch_125.png` (Option B, organ-level 16D latent, job
+`docs/experiments/20260907-latent-fm-500epoch/assets/hierarchical_self_consistency_epoch_125.png` (Option B, organ-level 16D latent, job
 `38145444`, epoch 125) was a coincidence and whether to go back to it. Measured, not argued:
 
 - That number was the mean over the **first 4 plants of one random batch** (DAP 17/42/72/49, no seedlings; the eval of
@@ -376,12 +383,12 @@ first; read its latent probe (`scratchpad/latent_probe.py`, R² at t = 0) before
   `870074f`, state dict loads with 0 missing / 0 unexpected; `73edc46` gives 27.5 with 4 random head weights) on
   today's fixed 20-plant set with the same 128 px eval lineage: **24.8%** (DAP ≥ 17: 30.8, 40–75: 34.5, > 60: 37.0,
   ≤ 15: 0.9; per plant 0–60%). Today's runs on the same 20 plants: baseline ~30, geometry ~32–33, gt_nodes ~34.
-  Script + per-plant JSON: `slurm_scripts/logs/archive_20260914/optionb_ep125_reeval/`.
+  Script + per-plant JSON: `outputs/logs/archive_20260914/optionb_ep125_reeval/`.
 - What Option B did have that today's model lacks: its per-organ latent was a **unit-variance N(0, I)** space, so the
   flow loss was not dominated by noise prediction — the exact property whose absence (128D latent, per-dim std ≈ 0.41)
   explains why today's Stage 3 latent carries no per-node image information. That is the piece to port (the pending
   unit-variance latent scale for the flow), not the architecture.
-- **Same-plant visual comparison** (`docs/results/assets/20260915_optionb_vs_today_same_plants.png`, results report §10):
+- **Same-plant visual comparison** (`docs/archive/unreferenced-assets/20260915_optionb_vs_today_same_plants.png`, results report §10):
   on 7 mature plants Option B 38.3 vs baseline 42.0 / geometry 43.1 / gt_nodes 42.9 mean IoU. Heesup's impression that
   Option B *looks* closer to the input is real and explained: it generated organs one by one (spread canopy, visible
   stems and flowers, but floating organs and over-long stems), while today's phytomer packets with a mean-like latent
@@ -402,7 +409,7 @@ optimization/scale; if not, it is the structure/loss (the current diagnosis). Th
 **10:55 — the two local full-data runs were stopped on Heesup's request** (geometry at epoch 80, last checkpoint
 `hierarchical_fm_v9_s3geom/hierarchical_fm_epoch_080.pt`; gt_nodes at epoch 78, last checkpoint
 `hierarchical_fm_v9_gtnodes/hierarchical_fm_epoch_075.pt`; both had answered their questions) and this node's GPU now runs
-the two 10% runs that could not get a cluster GPU: **combination** (`slurm_scripts/logs/local_sub10_combo.log`,
+the two 10% runs that could not get a cluster GPU: **combination** (`outputs/logs/local_sub10_combo.log`,
 `sub10_combo/`, panels `run_local_20260915_105522/`) and **v10 full** (`local_sub10_v10.log`, `sub10_v10/`,
 `run_local_20260915_105524/`), both from geometry ep78 with `LATENT_NORM=1 RENDER_TO_LATENT=1` (+ `MULTIZOOM=1
 COVERAGE_WEIGHT=1.0 EXIST_COUNT_WEIGHT=0.5` for v10), sharing one Ada GPU. Their cluster copies were cancelled. Heesup
@@ -421,7 +428,7 @@ Readings over ep95–125 (strict P raw / EMA → refined): 35.9/35.1 → 66.3/64
 38.3/39.0 → 64.6/65.9, 35.4/35.9 → 65.4/66.7, 36.3/37.3 → 67.9/67.1, 34.3/38.3 → 66.8/67.6. Raw P drifts up slowly and
 noisily (EMA 35 → 38), the refined level is flat at 65–68. ep128: raw 38.1 / EMA 37.7, refined 67.0 / 67.0. Since the
 slot on gpu-10-54 would otherwise go to other groups, the lineage continues (`AUTO_RESUME` from ep128, `EPOCHS=160`,
-same flags, EMA restored from the checkpoint) under job `38332343`, log `slurm_scripts/logs/20260916/hierarchical_fm_38332343.log` (the first attempt, `38332310`, resumed from `hierarchical_fm_epoch_128_ema.pt` because the launcher's AUTO_RESUME took the newest `hierarchical_fm_epoch_*.pt`, which the EMA files now match — no optimizer state, fresh warm-up; cancelled after 3 min, launcher fixed with `grep -v '_ema\.pt$'`, commit `ce8f150`);
+same flags, EMA restored from the checkpoint) under job `38332343`, log `outputs/logs/20260916/hierarchical_fm_38332343.log` (the first attempt, `38332310`, resumed from `hierarchical_fm_epoch_128_ema.pt` because the launcher's AUTO_RESUME took the newest `hierarchical_fm_epoch_*.pt`, which the EMA files now match — no optimizer state, fresh warm-up; cancelled after 3 min, launcher fixed with `grep -v '_ema\.pt$'`, commit `ce8f150`);
 a detached loop scores its EMA files ep130–160 (`full_ema_readings2.log` in the session scratchpad). ep130 EMA: 37.5, refined 66.0; ep135 EMA: 35.9, refined 64.9; ep140 EMA: 37.3, refined 65.5; ep145 EMA: 38.3, refined 65.7; ep150 EMA: 36.5, refined 63.8 — flat at 35-38 / 64-66 since ep135. Job `38332343` is still running (ep154 at 09:11 on 2026-09-16); ep140/145/150 EMA readings recovered from JSON on disk (37.3/65.5, 38.3/65.7, 36.5/63.8 -- flat). The detached scorer loops and the local `cnt2` run died when the session restarted around 09:00.
 
 **09:15 relaunch note:** the local machine turned out to be a different node than before -- a single TITAN RTX with 24 GB VRAM, not the ~49 GB Ada card the earlier local runs profiled against (`Per-GPU VRAM: 49140 MiB` in the old logs). Resuming `cnt2` with the old fixed `--batch_size 48` OOM'd immediately; relaunched with `FORCE_BATCH_SIZE=auto` (runtime VRAM probe) instead, which is now the way to resume any local run whose original node is unknown. Both scorer loops were restarted from the first unscored epoch: `full_ema_readings3.sh` (full lineage, ep155/160) and `cnt2_readings2.sh` (cnt2, ep110 onward).
@@ -440,7 +447,7 @@ mean latent, existence threshold) and the remaining error is the network's exist
 active) plus node error; lowering the threshold only adds false positives. The Ada and A100 nodes are full (CPUs and
 RAM), so the free local GPU runs a full-data v10 + input camera + EMA lineage with `EXIST_COUNT_WEIGHT=2.0` (v10 used
 0.5), from the s3geom ep78 checkpoint, 1 GPU (~30 min/epoch), log
-`slurm_scripts/logs/20260915/local_v10_cam_cnt2_full.log`, checkpoints `diffusion_based/checkpoints/hierarchical_fm_v10_cam_cnt2/`.
+`outputs/logs/20260915/local_v10_cam_cnt2_full.log`, checkpoints `outputs/checkpoints/hierarchical_fm_v10_cam_cnt2/`.
 
 
 **10:15 — `sub10_v10_rampR` (the render-fraction curriculum) launched via `srun --jobid=38340946 --overlap` into
@@ -449,7 +456,7 @@ holds 1 GPU / 32 CPU / 64 GB that a normal `sbatch` can't see as free since the 
 shows all 4 GPUs allocated node-wide; `srun --jobid=<job>` attaches a new step to an ALREADY-GRANTED allocation,
 which only the job's own owner can do -- this only works because 38340946 belongs to this account). Readings: ep80 31.2, ep85 32.9, ep90 38.0, ep95 **35.4** (the ep90 spike reverted, as flagged -- back in the usual 31-38 noise band, no clear lift over the flat 0.167 baseline yet). Redirected
 from the pending `sbatch` job `38341387` (cancelled to avoid a duplicate run once a normal slot freed up).
-Log `slurm_scripts/logs/20260916/sub10_v10_rampR_srun.log`, checkpoints `diffusion_based/checkpoints/sub10_v10_rampR/`,
+Log `outputs/logs/20260916/sub10_v10_rampR_srun.log`, checkpoints `outputs/checkpoints/sub10_v10_rampR/`,
 `RENDER_GRAD_START_EPOCH=79` so the 0.167->0.5 ramp begins at this run's very first render-active epoch. The other
 queued job (`hfm_s10_v10rexist`, render_to_exist test) stays in the normal sbatch queue -- the desktop GPU is now
 busy with this run, so stacking a second training step on the same single GPU would risk the same contention stall
@@ -457,7 +464,7 @@ busy with this run, so stacking a second training step on the same single GPU wo
 
 **10:20 — second one stacked on anyway, on Heesup's instruction after checking nvidia-smi directly (`srun_bash 38340946` + `nvidia-smi`): the RTX 6000 Ada card has 49 GB, `rampR` alone was only using 9 GB.** `sub10_v10_rexist`
 (`--render_to_exist`, the other queued job, `38341780` cancelled) launched the same way, `srun --jobid=38340946 --overlap --gres=gpu:1`,
-log `slurm_scripts/logs/20260916/sub10_v10_rexist_srun.log`, checkpoints `diffusion_based/checkpoints/sub10_v10_rexist/`.
+log `outputs/logs/20260916/sub10_v10_rexist_srun.log`, checkpoints `outputs/checkpoints/sub10_v10_rexist/`.
 Confirmed safe via `srun --jobid=38340946 --overlap nvidia-smi`: 17.9 GB / 49.1 GB used with both running, 98% compute
 utilization (the two processes time-slice the SM, so each trains somewhat slower than alone, but this is a throughput
 cost, not a stability risk the way the earlier 24 GB-card memory pressure was). Three processes now share
@@ -483,7 +490,7 @@ unchanged; the EMA state also rides inside the raw checkpoint (`ema_state_dict`)
 (`--dependency=afterany:38275054`, same OUTPUT_DIR, AUTO_RESUME) takes over the lineage the moment `38275054` ends:
 `38275054` was cancelled at 17:14 right after its ep90 checkpoint was saved and `38279147` resumed from that checkpoint at 17:15 (`EMA: decay 0.999 per step`), so the first EMA files are `hierarchical_fm_epoch_095_ema.pt` onward. A detached loop scores each
 `_ema.pt` (strict reading with `--tag ema` + default refinement; log `full_ema_readings.log` in the session scratchpad,
-JSONs in `slurm_scripts/logs/20260915/run_38275054/`). Raw-checkpoint readings so far: ep80 27.5 (refined 64.6),
+JSONs in `outputs/logs/20260915/run_38275054/`). Raw-checkpoint readings so far: ep80 27.5 (refined 64.6),
 ep85 14.0 (refined 53.3), ep90 28.9 (meanlat 35.9), **ep95 35.9** (meanlat 35.2; refined 36.7 → 66.3) — the full-data model has caught up with the 10% v10 (35.8 → 67.6) and its sampled latent with the mean latent. EMA ep95: 35.1, refined 36.0 → 64.7 (only ~4 epochs of averaging so far). ep100: raw 34.5, EMA 35.1 (refined 66.2). The full-data lineage sits at strict P 34.5–35.9 / refined 64.7–66.3 over ep95–100 — the same plateau as the 10% runs, so 10× data does not move it. ep105: raw 37.4 / EMA 36.8, refined 66.2 / 66.8. ep110: raw 38.3 / **EMA 39.0** (best strict P of any run so far, still climbing slowly on full data), refined 64.6 / 65.9 (refined level unchanged). ep115: raw 35.4 / EMA 35.9, refined 65.4 / 66.7 — the ep110 high was partly noise; the lineage sits at 35–39 before and 65–67 after refinement. ep120: raw 36.3 / EMA 37.3, refined **67.9** / 67.1 (best refined reading of the lineage). ep125: raw 34.3 / EMA 38.3, refined 66.8 / 67.6. The run ends at ep128 (EPOCHS=128); its last EMA file is scored by the same loop.
 
 **14:15 — scale-up phase: full-data v10 + input-camera run `38275054` on gpu-6000_ada-h (2 GPUs, 96 GB, 24 h).**
@@ -492,9 +499,9 @@ The 10% protocol has done its job: every 10% variant converges within ~10 epochs
 number is now set by test-time refinement (67.6–69.1). So the two plateaued 10% cluster jobs (38274747 render-all,
 38274748 lr 2e-4) were cancelled and their slot given to the full-data run: v10 flags + `RENDER_INPUT_CAMERA=1`, from
 the s3geom ep78 checkpoint, `EVAL_SET_FILE` + `HOLDOUT_PER_BUCKET=2`, `SAVE_EVERY=5`, 128 epochs, output
-`diffusion_based/checkpoints/hierarchical_fm_v10_cam/`, log `slurm_scripts/logs/20260915/hierarchical_fm_38275054.log`.
+`outputs/checkpoints/hierarchical_fm_v10_cam/`, log `outputs/logs/20260915/hierarchical_fm_38275054.log`.
 It is the generalisation check of the 10% findings and the candidate deployable model for refinement. Full-run readings
-(detached scorer, JSONs in `slurm_scripts/logs/20260915/run_38275054/`): ep80 strict P 27.5, meanlat 34.4, ALL 79.6, refined 31.3 → 64.6 (~15–18 min/epoch). The two local 10% runs were stopped at 15:20 (`sub10_v10_cam` ep100, `sub10_v10_w3t0` ep113; both plateaued, checkpoints kept) so the local GPU serves evaluations; a second detached loop runs the default test-time refinement on every full-run checkpoint after its strict reading (log `full_refine.log` in the session scratchpad).
+(detached scorer, JSONs in `outputs/logs/20260915/run_38275054/`): ep80 strict P 27.5, meanlat 34.4, ALL 79.6, refined 31.3 → 64.6 (~15–18 min/epoch). The two local 10% runs were stopped at 15:20 (`sub10_v10_cam` ep100, `sub10_v10_w3t0` ep113; both plateaued, checkpoints kept) so the local GPU serves evaluations; a second detached loop runs the default test-time refinement on every full-run checkpoint after its strict reading (log `full_refine.log` in the session scratchpad).
 
 **09:58 (2026-09-16) — the local `cnt2` run stalled for ~20+ min (all worker processes near-0%% CPU, GPU util 39%%
 while still holding ~20 GB) after several `eval_test_time_refinement.py` test invocations ran back-to-back on the
@@ -502,7 +509,7 @@ same GPU alongside it.** Likely GPU-context/DDP-heartbeat contention from stacki
 job with concurrent foreground eval processes on the same card, not a code bug -- the training log simply stopped
 advancing mid-epoch-106 with no error. Killed (SIGTERM then SIGKILL on the surviving worker) and restarted with
 `AUTO_RESUME=1 FORCE_BATCH_SIZE=auto` from the ep105 checkpoint (log
-`slurm_scripts/logs/20260916/local_v10_cam_cnt2_full_r2.log`). Going forward: avoid running more than one
+`outputs/logs/20260916/local_v10_cam_cnt2_full_r2.log`). Going forward: avoid running more than one
 foreground eval/refinement script on this local GPU while a local training run is live; the detached scorer loop
 (`cnt2_readings2.sh`, mostly idle/sleeping between checkpoints) is fine to keep running alongside it.
 
@@ -510,7 +517,7 @@ foreground eval/refinement script on this local GPU while a local training run i
 process on the GPU** (verified: only the training process held GPU compute, 104%% CPU on the main thread in `R`
 state -- genuinely spinning, not blocked in a driver/IO wait -- so this was not the same GPU-contention cause as
 the first stall). `py-spy` is not installed, so the exact hang site is unknown; killed and restarted again
-(`AUTO_RESUME` from ep105, log `slurm_scripts/logs/20260916/local_v10_cam_cnt2_full_r3.log`). Because the resume
+(`AUTO_RESUME` from ep105, log `outputs/logs/20260916/local_v10_cam_cnt2_full_r3.log`). Because the resume
 always restarts partway through the SAME epoch on the SAME (likely seeded) data order, a third stall at the same
 step would point to one specific batch/sample under `EXIST_COUNT_WEIGHT=2.0`'s render loss (e.g. a batch where a
 plant's existence collapses toward all-off, producing a degenerate empty mesh) rather than environment noise --
@@ -537,10 +544,10 @@ loss now frames the prediction on the bbox centre of that plant's GT mesh (decod
 `ehsc.decode_predictions_to_part_tensor`, mesh built under no_grad, passed as `render_batched(centers=)`), i.e. the
 camera generate_cache used for the input CHM. `tests/test_render_input_camera.py` checks the centred batched render
 equals `forward(focus_plant=True)` for an off-centre plant. Run: v10 flags + RENDER_INPUT_CAMERA=1 from the s3geom ep78
-checkpoint, 10% data, local GPU 0, log `slurm_scripts/logs/20260915/local_sub10_v10_cam.log`, checkpoints
-`diffusion_based/checkpoints/sub10_v10_cam/`. To make room the plateaued unfrozen-backbone run was stopped at ep88
+checkpoint, 10% data, local GPU 0, log `outputs/logs/20260915/local_sub10_v10_cam.log`, checkpoints
+`outputs/checkpoints/sub10_v10_cam/`. To make room the plateaued unfrozen-backbone run was stopped at ep88
 (strict P 34.3 at ep80; resumable from its ep85 checkpoint with AUTO_RESUME=1). Second strict reading of the other
-variants: w3t0 ep85 34.4, lr 2e-4 ep100 33.0 — every training-side variant sits at 33–35. First reading of `sub10_v10_cam` at ep80: strict P **35.8** (v10 itself was 35.4 at ep80) — ep85 34.0, ep90 38.5, ep95 34.6, ep100 34.8 (mean 35.5 = v10's 35.0; the corrected training camera does not move the 10% plateau) — ep90/95 readings are queued (detached scorer, log in the session scratchpad `cam_readings.log`, JSONs in `slurm_scripts/logs/20260915/run_sub10_v10_cam/`).
+variants: w3t0 ep85 34.4, lr 2e-4 ep100 33.0 — every training-side variant sits at 33–35. First reading of `sub10_v10_cam` at ep80: strict P **35.8** (v10 itself was 35.4 at ep80) — ep85 34.0, ep90 38.5, ep95 34.6, ep100 34.8 (mean 35.5 = v10's 35.0; the corrected training camera does not move the 10% plateau) — ep90/95 readings are queued (detached scorer, log in the session scratchpad `cam_readings.log`, JSONs in `outputs/logs/20260915/run_sub10_v10_cam/`).
 
 **13:20 — refinement in the input's camera frame: 33.5 → 62.9 strict P, but watch the geometry (results report §11.10).**
 `eval_test_time_refinement.py --input_camera` renders the prediction with the camera that produced the cached input CHM
@@ -566,23 +573,23 @@ plants that regressed under test-time refinement (DAP 89/94) are exactly the lar
 render the prediction in the input's frame (plant-bbox-centred; `--plant_centered` in
 `eval_test_time_refinement.py`, re-running; the training render block needs the GT bbox centre per sample next).
 **12:55 — test-time refinement is the biggest lever found today (results report §11.7).**
-`diffusion_based/eval/eval_test_time_refinement.py`: after sampling, optimise each plant's node positions, scales and
+`plant_recon/eval/eval_test_time_refinement.py`: after sampling, optimise each plant's node positions, scales and
 phytomer latents for 40 Adam steps against the INPUT canopy height map with the training render loss (no GT), keeping
 the step with the lowest input loss (`--keep_best`). v10 ep95 on the 20 eval plants, strict 256 px protocol: **34.9 →
 46.9** (DAP > 15: 38.2 → 51.2); pos+scale alone +9.8, latent alone +7.8. Every training-side lever plateaued at 35, so
 this — analysis-by-synthesis at inference — is the path to "rendering close to the original": the renderer recovers
 per-node information the network does not read from the image. Follow-ups running: 80 steps, and the same on the
 full-data baseline ep135 (model-agnostic check). Self-conditioning re-sampling (`--self_cond_passes`) gave nothing.
-**12:45 — `slurm_scripts/logs/` is now organized by start date** (Heesup: "Can't tell which one is the latest"): one folder
-per day, `slurm_scripts/logs/YYYYMMDD/`, holding that day's job logs, local-run logs, `run_*` panel folders (with a
-relative `run.log` link) and evaluation folders. Paths quoted earlier in this guide as `slurm_scripts/logs/<x>` now live
+**12:45 — `outputs/logs/` is now organized by start date** (Heesup: "Can't tell which one is the latest"): one folder
+per day, `outputs/logs/YYYYMMDD/`, holding that day's job logs, local-run logs, `run_*` panel folders (with a
+relative `run.log` link) and evaluation folders. Paths quoted earlier in this guide as `outputs/logs/<x>` now live
 under the date folder of their run (9/14 items under `20260914/`, 9/15 under `20260915/`). The launcher writes new run
 folders into today's folder; `tools/organize_logs.py --apply` files anything left at the top level once it has been
-quiet for 20 minutes (live runs are never moved). `slurm_scripts/logs/README.md` describes the layout.
+quiet for 20 minutes (live runs are never moved). `outputs/logs/README.md` describes the layout.
 **12:25 — fourth reading and the current set.** Four readings put v10 full at a strict P mean of 35.0, the combination
 at 33.5, scheduled TF at 28.0 and baseline-on-10% at 27.0 (results report §11.4); nothing rises further on 10k plants.
 The combination run was stopped on this node at epoch 95 (v10 is its superset) and the **v10 + unfrozen backbone** variant
-started in its place (`slurm_scripts/logs/local_sub10_v10_unfreeze.log`, `sub10_v10_unfreeze/`, `FREEZE_BACKBONE=0`,
+started in its place (`outputs/logs/local_sub10_v10_unfreeze.log`, `sub10_v10_unfreeze/`, `FREEZE_BACKBONE=0`,
 backbone lr ratio 0.3), testing whether node precision is capped by the frozen DINOv2 features. On the cluster:
 scheduled TF (`38274495`, to ep95), v10 render-every-sample (`38274747`, ep80: 34.4 after 2 epochs), v10 lr 2e-4
 (`38274748`, started 12:05). The 10% baseline finished its budget at epoch 95.
@@ -596,7 +603,7 @@ scheduled TF (`38274495`, to ep95), v10 render-every-sample (`38274747`, ep80: 3
 affected and the desktop job has ~36 h left, but an admin reboot to clear the drain would kill both local runs. Both
 resume from their checkpoints: geometry saves every epoch (`hierarchical_fm_v9_s3geom/`), gt_nodes every 5
 (`hierarchical_fm_v9_gtnodes/`, next at 55). To move either to the cluster:
-`sbatch --partition=low --account=publicgrp --gres=gpu:a100:2 --time=7-00:00:00 --requeue --export=ALL,AUTO_RESUME=1,STAGE3_GEOMETRY=1,OUTPUT_DIR=diffusion_based/checkpoints/hierarchical_fm_v9_s3geom slurm_scripts/train_hierarchical_flow_matching.sh`
+`sbatch --partition=low --account=publicgrp --gres=gpu:a100:2 --time=7-00:00:00 --requeue --export=ALL,AUTO_RESUME=1,STAGE3_GEOMETRY=1,OUTPUT_DIR=outputs/checkpoints/hierarchical_fm_v9_s3geom slurm_scripts/train_hierarchical_flow_matching.sh`
 (gt_nodes: `STAGE3_GT_NODES=1,OUTPUT_DIR=…_gtnodes` instead). The baseline `38257989` ends at its 24 h limit 2026-09-15 ~15:53
 — resubmit with `AUTO_RESUME=1` into `hierarchical_fm_v9/` before then.
 
@@ -605,7 +612,7 @@ latent rows were detached from it. `--render_to_latent` (`RENDER_TO_LATENT=1`, s
 block attached in the render block; the smoke run's `FM_RENDER_GRAD_PROBE` shows the render loss on the velocity head's
 latent rows at |g| 0.02–2.7 per step. **Run 4 submitted 17:45: job `38260124`** (`low`/publicgrp, 2×A100, `--requeue`,
 `AUTO_RESUME=1 RENDER_TO_LATENT=1`, from epoch 45 into `hierarchical_fm_v9_r2l/`, log
-`slurm_scripts/logs/hierarchical_fm_38260124.log`). Read its per-node latent R² (ablation summary `_latent`) before its IoU. Two
+`outputs/logs/hierarchical_fm_38260124.log`). Read its per-node latent R² (ablation summary `_latent`) before its IoU. Two
 further levers are cheap and principled if that is not enough: scale the latent to unit variance for the flow (an
 SD-style scale factor; changes the velocity head, so fine-tune from epoch 45) and sample t toward 0 where the
 conditioning matters. The gt_nodes run answers the other half: if per-node R² rises when the nodes are right, the
@@ -623,8 +630,8 @@ latent path is starved by node error after all.
 
 ```bash
 # Where is training right now? (latest job log)
-ls -t slurm_scripts/logs/hierarchical_fm_*.log | head -3
-tail -n 30 slurm_scripts/logs/hierarchical_fm_$(ls -t slurm_scripts/logs/ | grep ^hierarchical_fm | head -1 | sed 's/hierarchical_fm_//;s/.log//').log
+ls -t outputs/logs/hierarchical_fm_*.log | head -3
+tail -n 30 outputs/logs/hierarchical_fm_$(ls -t outputs/logs/ | grep ^hierarchical_fm | head -1 | sed 's/hierarchical_fm_//;s/.log//').log
 
 # All running/pending jobs
 squeue -u lion397
@@ -634,8 +641,8 @@ find dataset/helios_data/cowpea -name "*.xml" | wc -l   # 100,000
 find dataset/cache/cowpea_curv26 -name "*.pt" | wc -l   # 100,000 (all have phytomer_ids)
 
 # Available checkpoints
-ls -lh diffusion_based/checkpoints/hierarchical_latent_fm/*.pt
-ls -lh diffusion_based/checkpoints/phytomer_vae_v3/*.pt   # v3 is the DEFAULT now
+ls -lh outputs/checkpoints/hierarchical_latent_fm/*.pt
+ls -lh outputs/checkpoints/phytomer_vae_v3/*.pt   # v3 is the DEFAULT now
 ```
 
 ---
@@ -717,10 +724,10 @@ Epoch 040 | Loss: 0.0000 | ... | Vel: 0.0000 ... | VRAM: 26.9/47.4 GB
 scancel 38237555
 
 # 2. Check init_logits clamp patch
-grep -n "init_logits\|soft_margin\|clamp" diffusion_based/models/hierarchical_part_flow_matching.py | head -20
+grep -n "init_logits\|soft_margin\|clamp" plant_recon/models/hierarchical_part_flow_matching.py | head -20
 
 # 3. Check z_0 detach
-grep -n "z_0\|detach" diffusion_based/training/train_hierarchical_flow_matching.py | head -30
+grep -n "z_0\|detach" plant_recon/training/train_hierarchical_flow_matching.py | head -30
 
 # 4. Restart
 sbatch slurm_scripts/train_hierarchical_flow_matching.sh
@@ -773,7 +780,7 @@ sbatch slurm_scripts/train_hierarchical_flow_matching.sh
 
 ### 3.8 Per-Organ Mask IoU Roundtrip Diagnosis (2026-09-11)
 
-Execution results for `diffusion_based/eval/eval_13d_xml_organ_masks.py` (`fig10_helios_per_organ_mask_comparison.png`):
+Execution results for `plant_recon/eval/eval_13d_xml_organ_masks.py` (`fig10_helios_per_organ_mask_comparison.png`):
 
 | DAP | Foreground IoU | Mean Organ IoU | Internode | Petiole | Leaf | Peduncle | Flower | Fruit | Depth PSNR |
 | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -787,7 +794,7 @@ Execution results for `diffusion_based/eval/eval_13d_xml_organ_masks.py` (`fig10
 - At DAP 50, Internode IoU = 0.0% → stems rendered at entirely different positions
 - **Next Step**: Numerically compare world pose in `extract_part_tensor` ↔ Helios XML inverse kinematics (IK) transform agreement
 
-*(Result figure: [`docs/results/assets/fig10_helios_per_organ_mask_comparison.png`](assets/fig10_helios_per_organ_mask_comparison.png))*
+*(Result figure: [`docs/handovers/agent-takeover-guide/assets/fig10_helios_per_organ_mask_comparison.png`](assets/fig10_helios_per_organ_mask_comparison.png))*
 
 ---
 
@@ -796,17 +803,17 @@ Execution results for `diffusion_based/eval/eval_13d_xml_organ_masks.py` (`fig10
 Checkpoints saved on disk:
 ```bash
 # Hybrid decoupled 3-stage run (Sep 11) — 390 MB each, new architecture
-diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_025.pt  (390 MB, Sep 11 11:57)
-diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_050.pt  (390 MB, Sep 11 05:13)
-diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_075.pt  (390 MB, Sep 11 07:19)
-diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_100.pt  (390 MB, Sep 11 09:25)
+outputs/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_025.pt  (390 MB, Sep 11 11:57)
+outputs/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_050.pt  (390 MB, Sep 11 05:13)
+outputs/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_075.pt  (390 MB, Sep 11 07:19)
+outputs/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_100.pt  (390 MB, Sep 11 09:25)
 
 # Old organ-mode 500-epoch run (Sep 7–9) — 552 MB, OLD architecture (incompatible)
-diffusion_based/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_125.pt ~ epoch_500.pt  (552 MB, Sep 7–9)
+outputs/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_125.pt ~ epoch_500.pt  (552 MB, Sep 7–9)
 
 # PhytomerVAE v3 (ACCEPTED DEFAULT)
-diffusion_based/checkpoints/phytomer_vae_v3/phytomer_vae_64d_best.pt  (1.9 MB, Sep 10 14:54)
-diffusion_based/checkpoints/phytomer_vae_v3/phytomer_vae_64d_last.pt  (1.9 MB, Sep 10 14:54)
+outputs/checkpoints/phytomer_vae_v3/phytomer_vae_64d_best.pt  (1.9 MB, Sep 10 14:54)
+outputs/checkpoints/phytomer_vae_v3/phytomer_vae_64d_last.pt  (1.9 MB, Sep 10 14:54)
 ```
 
 > **WARNING**: epoch_025~100.pt (390 MB) = new 3-stage hybrid arch. epoch_125~500.pt (552 MB) = old organ-mode arch. These are **NOT interchangeable** — model structure differs.
@@ -864,7 +871,7 @@ sbatch slurm_scripts/train_hierarchical_flow_matching.sh
 | **P0** | **Fix grad_norm=inf deadlock & resubmit** | Cancel 38237555. Patch `init_logits` clamp [-15,+15] in `hierarchical_part_flow_matching.py`, verify `z_0.detach()` in `train_hierarchical_flow_matching.py`, add `torch.nan_to_num` on render outputs. Run local smoke test then `sbatch` |
 | **P1** | **Diagnose Internode/Petiole IoU=0~15%** | Compare `extract_part_tensor` world pose → Helios IK → XML → re-render numerically. Check coordinate convention (Z-up vs Y-up) between PyTorch mesh builder and Helios XML parser in `part_tensor_to_40d.py` |
 | **P2** | **Verify 10-slot ordered assembly roundtrip** | Run `test_phytomer_ordered_assembly.py` with DAP 15/40/75; confirm Δ-parts=0 across all growth stages |
-| **P3** | Epoch-1 sanity after resubmit | Check `slurm_scripts/logs/run_<jobid>/hierarchical_self_consistency_epoch_001.png` (each run's panels sit beside its own `run.log` symlink; they used to overwrite each other under `docs/results/assets`): loss ↓, pred count ~50, ClsAcc rising, no Recovery-skip lines |
+| **P3** | Epoch-1 sanity after resubmit | Check `outputs/logs/run_<jobid>/hierarchical_self_consistency_epoch_001.png` (each run's panels sit beside its own `run.log` symlink; they used to overwrite each other under `docs/results/assets`): loss ↓, pred count ~50, ClsAcc rising, no Recovery-skip lines |
 | **P4** | Monitor 6D rotation convergence | Panels epoch 25/50; s_a (petiole len) should track DAP growth |
 | **P5** | Evaluate Bidirectional Chamfer Distance | Add max/mean distance GT→Pred to avoid one-way clustering metric bias |
 | **P6** | Backbone A/B (DINOv2-scale vs frozen runs) | `slurm_scripts/submit_backbone_ablation.sh` — only after single-run training is stable |
@@ -875,7 +882,7 @@ sbatch slurm_scripts/train_hierarchical_flow_matching.sh
 
 ```
 /home/lion397/codes/image-to-l-system/
-├── diffusion_based/
+├── plant_recon/
 │   ├── models/
 │   │   ├── hierarchical_part_flow_matching.py    ← [CRITICAL] 3-stage model, PhytomerFlowMatchingDecoder (64D latent flow, NOT bridge), dap_embed, color_palette
 │   │   ├── dinov2_ray_encoder.py                 ← DINOv2 + PETR 3D ray PE; canonical_rays buffer (inplace gotcha §8.7)
@@ -969,11 +976,11 @@ sbatch slurm_scripts/train_hierarchical_flow_matching.sh
 
 | File | Date | Summary |
 | :--- | :--- | :--- |
-| [`docs/ongoing/20260909_phytomer_latent_and_local_matching.md`](../../engineering/20260909-phytomer-latent-matching/20260909-phytomer-latent-matching.md) | 2026-09-09/10 | **[MASTER ENGINEERING LOG]** §4.6–4.9: pipeline refactor, backbone A/B, fruit fix, v3 scale-normalized packets + 76D flow, render-pipeline timing |
-| [`docs/results/20260907_latent_hierarchical_flow_matching_500epoch_report.md`](../../experiments/20260907-latent-fm-500epoch/20260907-latent-fm-500epoch.md) | 2026-09-07 | Option B 500-epoch report: 55.1% IoU, 2.49cm height error |
-| [`docs/results/20260908_3d_spatial_vision_and_hierarchical_reconstruction_milestone.md`](../../experiments/20260908-3d-spatial-vision-milestone/20260908-3d-spatial-vision-milestone.md) | 2026-09-08 | Epoch 150 spatial vision breakthrough: 49.2% mean IoU, 2.6cm RMSE |
-| [`docs/results/20260908_3stage_cascaded_flow_matching_scaling_milestone.md`](../../experiments/20260908-3stage-cascaded-milestone/20260908-3stage-cascaded-milestone.md) | 2026-09-08 | 3-stage cascaded architecture scaling: batch 192, dormant slot damping |
-| [`docs/results/20260908_epoch050_skeleton_geometry_and_chamfer_bias_analysis.md`](../../experiments/20260908-skeleton-geometry-chamfer/20260908-skeleton-geometry-chamfer.md) | 2026-09-08 | Root cause analysis of Epoch 50 skeleton geometry vs AncPos loss |
-| [`docs/results/20260910_gradient_explosion_debug_and_architecture_comparison.md`](../../experiments/20260910-gradient-explosion-debug/20260910-gradient-explosion-debug.md) | 2026-09-10 | **[KEY]** Gradient explosion diagnosis: Float32 overflow + z0 detach bug + deadlock mechanism |
-| `docs/results/assets/fig10_helios_per_organ_mask_comparison.png` | **2026-09-11** | **[NEW]** Per-organ COCO mask IoU + Depth PSNR roundtrip: Leaf ✅, Internode/Petiole ❌ |
-| `docs/results/assets/fig12_phytomer_10slot_helios_roundtrip.png` | **2026-09-14** | Dataset plants DAP 15/40/75: GT mesh and 10-slot assembly under the same nadir and 45° cameras, Helios round-trip via packets and via the VAE (`eval_phytomer_10slot_assembly_views.py`) |
+| [`docs/engineering/20260909-phytomer-latent-matching/20260909-phytomer-latent-matching.md`](../../engineering/20260909-phytomer-latent-matching/20260909-phytomer-latent-matching.md) | 2026-09-09/10 | **[MASTER ENGINEERING LOG]** §4.6–4.9: pipeline refactor, backbone A/B, fruit fix, v3 scale-normalized packets + 76D flow, render-pipeline timing |
+| [`docs/experiments/20260907-latent-fm-500epoch/20260907-latent-fm-500epoch.md`](../../experiments/20260907-latent-fm-500epoch/20260907-latent-fm-500epoch.md) | 2026-09-07 | Option B 500-epoch report: 55.1% IoU, 2.49cm height error |
+| [`docs/experiments/20260908-3d-spatial-vision-milestone/20260908-3d-spatial-vision-milestone.md`](../../experiments/20260908-3d-spatial-vision-milestone/20260908-3d-spatial-vision-milestone.md) | 2026-09-08 | Epoch 150 spatial vision breakthrough: 49.2% mean IoU, 2.6cm RMSE |
+| [`docs/experiments/20260908-3stage-cascaded-milestone/20260908-3stage-cascaded-milestone.md`](../../experiments/20260908-3stage-cascaded-milestone/20260908-3stage-cascaded-milestone.md) | 2026-09-08 | 3-stage cascaded architecture scaling: batch 192, dormant slot damping |
+| [`docs/experiments/20260908-skeleton-geometry-chamfer/20260908-skeleton-geometry-chamfer.md`](../../experiments/20260908-skeleton-geometry-chamfer/20260908-skeleton-geometry-chamfer.md) | 2026-09-08 | Root cause analysis of Epoch 50 skeleton geometry vs AncPos loss |
+| [`docs/experiments/20260910-gradient-explosion-debug/20260910-gradient-explosion-debug.md`](../../experiments/20260910-gradient-explosion-debug/20260910-gradient-explosion-debug.md) | 2026-09-10 | **[KEY]** Gradient explosion diagnosis: Float32 overflow + z0 detach bug + deadlock mechanism |
+| `docs/handovers/agent-takeover-guide/assets/fig10_helios_per_organ_mask_comparison.png` | **2026-09-11** | **[NEW]** Per-organ COCO mask IoU + Depth PSNR roundtrip: Leaf ✅, Internode/Petiole ❌ |
+| `docs/experiments/20260914-stage2-burst-fix-roundtrip/assets/fig12_phytomer_10slot_helios_roundtrip.png` | **2026-09-14** | Dataset plants DAP 15/40/75: GT mesh and 10-slot assembly under the same nadir and 45° cameras, Helios round-trip via packets and via the VAE (`eval_phytomer_10slot_assembly_views.py`) |

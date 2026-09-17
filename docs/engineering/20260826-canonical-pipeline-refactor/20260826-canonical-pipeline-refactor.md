@@ -82,9 +82,9 @@ All active (non-`archive/`) callers switched from `build_mesh_from_organ_array(.
 
 ### Automated
 ```bash
-conda run -n digital-crops python diffusion_based/eval/generate_multimodal_outputs.py
+conda run -n digital-crops python plant_recon/eval/generate_multimodal_outputs.py
 ```
-- Runs to completion and regenerates `docs/results/assets/fig8_multimodal_depth_mask.png`.
+- Runs to completion and regenerates `docs/experiments/15-strategies-benchmark/assets/fig8_multimodal_depth_mask.png`.
 
 ### Native-FK equivalence
 - `extract_part_tensor()` (native 40D) == old 94D-based extract, **max abs diff = 0.0** across all roundtrip XMLs.
@@ -165,7 +165,7 @@ Remaining gaps are thin-tube positional precision (1–2 px), not scale.
 ### 8.4 Helios round-trip fixes
 
 * `part_assembly_to_xml.py:300-355` record-order grouping from `shoot_metas` (`phytomer_groups` with `shoot_id, internode, petioles, peduncle, flowers`), `inode_to_location` local `parent_node_index` (was `internodes.index(parent_i)` global) and `dir_z` fix.
-* `if shoot_metas: phytomer_parts/petiole_leaves/bud_state/peduncle_infls/inode_tip_pos` via record order else `cKDTree` fallback; `if not shoot_metas` guards prevent overwriting. Fixes `vector::_M_range_check __n=1 >=1` and `getPetioleAxisVector 76` crash. Verified `DAP050/090 11/11 shoots` vs prior `40` and `Helios rc 0` with `Digital-Crops/projects/syntheticdata_generation/build/params.json`.
+* `if shoot_metas: phytomer_parts/petiole_leaves/bud_state/peduncle_infls/inode_tip_pos` via record order else `cKDTree` fallback; `if not shoot_metas` guards prevent overwriting. Fixes `vector::_M_range_check __n=1 >=1` and `getPetioleAxisVector 76` crash. Verified `DAP050/090 11/11 shoots` vs prior `40` and `Helios rc 0` with `submodules/Digital-Crops/projects/syntheticdata_generation/build/params.json`.
 * `soft_existence` param added to `build_mesh_from_part_tensor`, `torch.full(ped_rad)` `float(ped_rad.item())` fix.
 
 ### 8.5 FOV check (final)
@@ -201,30 +201,30 @@ Two remaining bugs were found by comparing **GT-XML masks vs RT-XML masks** (sam
 | 050 | 1.00 | 1.00 | 1.00 | — | — | — |
 | 090 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
 
-All organs round-trip at **IoU 1.0000**; RGB mean abs diff `DAP050 0.00446`, `DAP090 0.00571` (OptiX noise). This was a **known unsolved problem** in prior docs (`20260826_helios_flower_peduncle_pod_alignment_and_cleanup_report.md` §4: "Exact pod transforms were sampled during original GT generation and lost"; `20260826_canonical_pipeline_refactor_progress.md` §7.5: flower IoU 0.139, pod 0.035). **Round-trip figure:** `docs/results/assets/fig_helios_17d_roundtrip.png` regenerated (`GT XML | PT 17D | Depth | Mask | RT XML | diff`, same `fov 8.78` camera).
+All organs round-trip at **IoU 1.0000**; RGB mean abs diff `DAP050 0.00446`, `DAP090 0.00571` (OptiX noise). This was a **known unsolved problem** in prior docs (`20260826_helios_flower_peduncle_pod_alignment_and_cleanup_report.md` §4: "Exact pod transforms were sampled during original GT generation and lost"; `20260826_canonical_pipeline_refactor_progress.md` §7.5: flower IoU 0.139, pod 0.035). **Round-trip figure:** `docs/archive/unreferenced-assets/fig_helios_17d_roundtrip.png` regenerated (`GT XML | PT 17D | Depth | Mask | RT XML | diff`, same `fov 8.78` camera).
 
 ### 8.7 Benchmark
 
-`diffusion_based/eval/benchmark_helios_vs_torch_renderer.py` re-run: `DAP100 8.36 ms total, 2270.8x` (`DAP50 2314x, DAP90 2230x`), `fig1_helios_vs_torch_rendering_benchmark.png` regenerated. `verify_40d_helios_render_comparison.py` mean diff `0.00489` (OptiX noise).
+`plant_recon/eval/benchmark_helios_vs_torch_renderer.py` re-run: `DAP100 8.36 ms total, 2270.8x` (`DAP50 2314x, DAP90 2230x`), `fig1_helios_vs_torch_rendering_benchmark.png` regenerated. `verify_40d_helios_render_comparison.py` mean diff `0.00489` (OptiX noise).
 
 ---
 
 ## 9. Files Changed
 
 ```
-diffusion_based/models/helios_pytorch_geometry.py   # native 40D FK, deprecated wrapper, import cleanup
-diffusion_based/models/plant_organ_array.py            # DeprecationWarnings on legacy converters
-diffusion_based/models/helios_pytorch_renderer.py      # _build_mesh_cached -> part-tensor path
-diffusion_based/training/train_cowpea_dit_100k_ddp.py
-diffusion_based/training/train_cowpea_dit_100k.py
-diffusion_based/training/train_cowpea_vlm_scaffold_dit_ddp.py
-diffusion_based/dataset/generate_tensor_shards.py
+plant_recon/models/helios_pytorch_geometry.py   # native 40D FK, deprecated wrapper, import cleanup
+plant_recon/models/plant_organ_array.py            # DeprecationWarnings on legacy converters
+plant_recon/models/helios_pytorch_renderer.py      # _build_mesh_cached -> part-tensor path
+plant_recon/training/train_cowpea_dit_100k_ddp.py
+plant_recon/training/train_cowpea_dit_100k.py
+plant_recon/training/train_cowpea_vlm_scaffold_dit_ddp.py
+plant_recon/dataset/generate_tensor_shards.py
 scripts/run_cowpea_dap10_direct_opt_full.py
 scripts/verify_40d_helios_render_comparison.py
 scripts/debug_larger_plant.py
 scripts/minimal_direct_opt_depth_chamfer_demo.py
 scripts/debug_side_view_render.py
-diffusion_based/eval/*.py   (eval_vlm_scaffold_dit, eval_cowpea_dit_100k,
+plant_recon/eval/*.py   (eval_vlm_scaffold_dit, eval_cowpea_dit_100k,
                               eval_canonical_cowpea_flow_matching, eval_pure_noise_flow_matching,
                               test_latent_interpolation, test_leaf_modes, test_latent_flow_matching,
                               test_vae_roundtrip, multi_dap_comparison_panel,

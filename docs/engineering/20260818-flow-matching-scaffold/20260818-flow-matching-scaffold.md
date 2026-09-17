@@ -113,7 +113,7 @@ x0 = 2,048 slots uniformly distributed in 3D cylindrical/conical canopy volume v
 
 ## 4. Next Action Items
 
-1. **Implement `BotanicalScaffold` Module (`diffusion_based/models/botanical_scaffold.py`)**:
+1. **Implement `BotanicalScaffold` Module (`plant_recon/models/botanical_scaffold.py`)**:
    - Tensor generator supporting 2048 nodes with 3D Fibonacci phyllotaxis and statistical organ proportions.
 2. **Scale `PartArrayDataset` and `PartFlowMatchingModel` to 2048 Nodes**:
    - Support `max_nodes = 2048` and update Flow Matching training loop with Scaffold Prior.

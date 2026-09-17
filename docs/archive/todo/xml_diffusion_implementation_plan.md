@@ -83,7 +83,7 @@ plant_instance
 
 ### Component 2: Model Architecture Updates
 
-#### [MODIFY] `diffusion_based/models/graph_diffuser_3d.py`
+#### [MODIFY] `plant_recon/models/graph_diffuser_3d.py`
 
 **Core Change**: 7D → 11D node features + organ type conditioning
 
@@ -119,7 +119,7 @@ class PlantGraphDiffuser3D:
 
 ### Component 3: Training Script Improvements
 
-#### [MODIFY] `diffusion_based/training/train_diffusion_3d.py`
+#### [MODIFY] `plant_recon/training/train_diffusion_3d.py`
 
 **Fix Core Issue**: Replace fixed 4 samples with standard DataLoader
 
@@ -155,14 +155,14 @@ Phase 3 (epochs 501+):    HeliosDataset exclusive + augmentation
 # Save best validation loss and per-epoch checkpoints
 if val_loss < best_val_loss:
     torch.save({"model": model.state_dict(), "epoch": epoch, "val_loss": val_loss},
-               "diffusion_based/checkpoints/best_3d_model.pt")
+               "outputs/checkpoints/best_3d_model.pt")
 ```
 
 ---
 
 ### Component 4: Evaluation & Visualization Improvements
 
-#### [MODIFY] `diffusion_based/eval/visualize_diffusion_3d.py`
+#### [MODIFY] `plant_recon/eval/visualize_diffusion_3d.py`
 
 1. **Real Image Input Support**:
    ```python
@@ -191,7 +191,7 @@ if val_loss < best_val_loss:
 
 ### Component 5: Automated Data Generation
 
-#### [NEW] `Digital-Crops/projects/syntheticdata_generation/scripts/generate_dataset.sh`
+#### [NEW] `submodules/Digital-Crops/projects/syntheticdata_generation/scripts/generate_dataset.sh`
 
 ```bash
 #!/bin/bash
@@ -213,7 +213,7 @@ dataset/
   [NEW] helios_dataset.py           # HeliosPlantDataset (image+xml pairs)
   [MODIFY] plant3d_dataset.py       # Fix duplicate synthetic generation bug
 
-diffusion_based/
+plant_recon/
   models/
     [MODIFY] graph_diffuser_3d.py   # 7D→11D, DAP cond, organ_type head
   training/
@@ -221,7 +221,7 @@ diffusion_based/
   eval/
     [MODIFY] visualize_diffusion_3d.py  # Real image inference, metrics
 
-Digital-Crops/projects/syntheticdata_generation/scripts/
+submodules/Digital-Crops/projects/syntheticdata_generation/scripts/
   [NEW] generate_dataset.sh         # Batch data generation script
 ```
 
@@ -233,22 +233,22 @@ Digital-Crops/projects/syntheticdata_generation/scripts/
 ```bash
 # 1. XML parser unit test
 python -c "from dataset.helios_xml_parser import parse_helios_xml; \
-           result = parse_helios_xml('Digital-Crops/.../cowpea_0000_plant_0000.xml'); \
+           result = parse_helios_xml('submodules/Digital-Crops/.../cowpea_0000_plant_0000.xml'); \
            print(f'Parsed {result[\"num_nodes\"]} nodes')"
 
 # 2. Dataset load test
 python -c "from dataset.helios_dataset import HeliosPlantDataset; \
-           ds = HeliosPlantDataset('Digital-Crops/.../build/output'); \
+           ds = HeliosPlantDataset('submodules/Digital-Crops/.../build/output'); \
            print(ds[0]['nodes'].shape)"
 
 # 3. Model forward pass (11D)
-python -c "from diffusion_based.models.graph_diffuser_3d import PlantGraphDiffuser3D; \
+python -c "from plant_recon.models.graph_diffuser_3d import PlantGraphDiffuser3D; \
            import torch; m = PlantGraphDiffuser3D(node_dim=11); \
            out = m(torch.randn(2,64,11), torch.ones(2,64,1), torch.tensor([500,500]), \
                    torch.randn(2,3,256,256)); print(out['pred_x0'].shape)"
 
 # 4. Training script smoke test (10 epochs)
-python -m diffusion_based.training.train_diffusion_3d --epochs 10 --batch_size 4
+python -m plant_recon.training.train_diffusion_3d --epochs 10 --batch_size 4
 ```
 
 ### Manual Verification

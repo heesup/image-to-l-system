@@ -108,15 +108,15 @@ no center leakage — unit-tested).
 
 ### Implemented (this change)
 
-1. `diffusion_based/dataset/phytomer_packets.py` — shared packet builder:
+1. `plant_recon/dataset/phytomer_packets.py` — shared packet builder:
    `build_phytomer_packets()` (matcher-identical clustering, canonical packing,
    compact-mask tolerant), `decode_packet()`, `cluster_organs()`.
-2. `diffusion_based/models/phytomer_vae.py` — PhytomerVAE, configurable latent
+2. `plant_recon/models/phytomer_vae.py` — PhytomerVAE, configurable latent
    dim (32/64/128, default 64): 216D -> 256 -> 256 -> 128 -> D -> 256 -> 256 ->
    128 -> 8x(13 cls + 13 geom). Masked recon (present full weight, absent 0.1
    toward empty convention) + beta-KL. Loss weights mirror OrganLatentVAE
    (cls 1 / base 3 / rot 2 incl. Frobenius MSE / scale 3 / curv 0.5).
-3. `diffusion_based/training/train_phytomer_vae.py` — argparse training script
+3. `plant_recon/training/train_phytomer_vae.py` — argparse training script
    (packet extraction with progress + drop stats + disk cache, 95/5 split,
    AdamW + cosine + grad clip, best-by-val-recon checkpointing).
 4. `slurm_scripts/train_phytomer_vae.sh` — single-GPU batch script.
@@ -264,7 +264,7 @@ becomes the accepted phytomer-level bridge. Rationale:
 
 **Accepted-checkpoint roundtrip figure** (GT | PhytomerVAE | OrganLatentVAE,
 top-view, packeted organ set, IoU vs GT mesh):
-`docs/results/assets/fig_phytomer_vae_roundtrip.png`
+`docs/archive/unreferenced-assets/fig_phytomer_vae_roundtrip.png`
 
 | DAP | PhytomerVAE IoU | OrganLatentVAE IoU |
 |---:|---:|---:|
@@ -380,7 +380,7 @@ existence as a separate head, decode via the refined node rot (reference).
 
 ### RELATIVE-ROTATION representation + Option 1 reference frame (2026-09-09)
 
-**Implemented** in `diffusion_based/dataset/phytomer_packets.py`:
+**Implemented** in `plant_recon/dataset/phytomer_packets.py`:
 - `rot6d_to_matrix` / `matrix_to_rot6d` (COLUMNS convention, matching the render
   geometry builder `R_mats = stack([r1,r2,r3], -1)` and `_rot6d_to_matrix`).
 - `rotation_relative_to_reference(rot6d, ref)`: R_rel = R_ref^T @ R_org.
@@ -414,7 +414,7 @@ predicted: with pose in a reference frame, the latent only encodes rotation
 DIFFERENCE (not absolute azimuth/pose), so no capacity is spent on global pose.
 Class 99.99%, base 0.16cm, scale 0.062. The render roundtrip flips to
 PhytomerVAE-64 **73.4%** vs OrganLatentVAE 65.1% mean IoU (packeted set, seed 3)
-— figure `docs/results/assets/fig_phytomer_vae_relative_roundtrip.png`.
+— figure `docs/archive/unreferenced-assets/fig_phytomer_vae_relative_roundtrip.png`.
 
 NOTE: `--rot-branch` is REQUIRED for the tuned checkpoints (the dedicated rot
 branch is used at training; eval without it uses the shared head -> garbage rot).
@@ -439,7 +439,7 @@ phytomer-mode forward + sample_ode on the (B,K,9+D) flow path (passed);
 `train_hierarchical_flow_matching.py` now supports `--flow-granularity phytomer`:
 
 - **CLI**: `--flow-granularity {organ,phytomer}` (default organ), `--phytomer_latent_dim 64`,
-  `--phytomer_vae_checkpoint` (default `diffusion_based/checkpoints/phytomer_vae_relative_d/phytomer_vae_64d_best.pt`).
+  `--phytomer_vae_checkpoint` (default `outputs/checkpoints/phytomer_vae_relative_d/phytomer_vae_64d_best.pt`).
 - **Frozen PhytomerVAE** loaded once in `main()` (eval mode, requires_grad=False).
 - **Per-sample packet targets**: `build_phytomer_packets` on the GT active nodes →
   frozen VAE encode → per-node latent; matcher provides GT node pos (cluster
@@ -670,7 +670,7 @@ Compare: ClsAcc, val recon, render IoU/Chamfer, step time, VRAM.
 ### 4.2 GUI app (COMPLETED 2026-09-09/10 — see dedicated doc)
 
 **Status**: DONE + hardened. Full spec/implementation/gotchas moved to
-`docs/ongoing/20260909_phytomer_latent_visualizer_gui.md` (notes 1–16 cover
+`docs/tools/phytomer-vae-latent-visualizer/phytomer-vae-latent-visualizer.md` (notes 1–16 cover
 structural decode, PCA-click mechanics, GLB race fix, PC sliders, the
 leaflet-center bug (ORGAN_LEAF=5), and the stem base = −fwd·L correction —
 the latter two are decode-side only, so VAE retraining was NOT needed).
@@ -683,10 +683,10 @@ Original handoff requirements (historical):
   `apply_ref_for_flow` with a chosen reference rot → 3D render
   (`HeliosPyTorchRenderer`).
 - **Reference frame**: default identity; optionally pick a real packet's ref.
-- **Files**: `diffusion_based/models/phytomer_vae.py` (decode),
-  `diffusion_based/dataset/phytomer_packets.py` (decode_packets/
+- **Files**: `plant_recon/models/phytomer_vae.py` (decode),
+  `plant_recon/dataset/phytomer_packets.py` (decode_packets/
   apply_reference_rotation, assemble_packets), checkpoint
-  `diffusion_based/checkpoints/phytomer_vae_v2/phytomer_vae_64d_best.pt` (v2).
+  `outputs/checkpoints/phytomer_vae_v2/phytomer_vae_64d_best.pt` (v2).
 - **Note**: `--rot-branch` checkpoints require `use_rot_branch=True` at decode;
   decode returns ZEROED base — call `assemble_packets(recon_packets, refs)`
   before `decode_packets`/`apply_ref_for_flow` to reconstruct slot bases.

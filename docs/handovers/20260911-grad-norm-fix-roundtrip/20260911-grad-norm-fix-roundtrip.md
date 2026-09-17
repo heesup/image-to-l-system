@@ -165,7 +165,7 @@ Prior to restarting main runs, end-to-end fidelity across the entire chain was e
 ```
 Helios GT -> XML -> 14D -> 10-slot packet -> PhytomerVAE encode/decode -> 14D -> XML -> Helios raytrace
 ```
-Implemented `diffusion_based/eval/eval_phytomer_vae_helios_roundtrip.py` to compare against IK-only baselines and isolate VAE contributions.
+Implemented `plant_recon/eval/eval_phytomer_vae_helios_roundtrip.py` to compare against IK-only baselines and isolate VAE contributions.
 
 ### 7.2 Results (`fig14_phytomer_vae_helios_roundtrip.png`)
 

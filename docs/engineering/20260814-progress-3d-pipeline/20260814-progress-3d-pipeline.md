@@ -13,7 +13,7 @@ status: done
 ## 1. Completed Work
 
 ### 1.1 Establish Unified Geometry Pipeline
-- Added `diffusion_based/models/helios_geometry.py`
+- Added `plant_recon/models/helios_geometry.py`
   - Helios XML → 3D tube/leaflet/ellipsoid geometry reconstruction
   - Fixed internode/petiole tube misclassification bug
   - Added leaf mesh sampling (triangle center/midpoints) → included leaf organs in point cloud
@@ -22,14 +22,14 @@ status: done
 - Deleted legacy `plant_geometry_3d.py`, `differentiable_renderer_3d.py`
 
 ### 1.2 Establish Unified 2D Rasterizer
-- Added `diffusion_based/models/helios_rasterizer_3d.py`
+- Added `plant_recon/models/helios_rasterizer_3d.py`
   - Matches Helios `Context` camera model projection
   - Supports `--focus-plant`: `recompute_focus_plant_hfov()` — XY bbox + 5% margin, `2*atan(span/(2*h))`
   - Added **area normalization** to soft triangle rasterization → clean subpixel triangles without filling entire screen
   - Added simple diffuse shading to tubes/leaves (double-sided leaves)
 
 ### 1.3 3D Chamfer Loss
-- Added `diffusion_based/models/pointcloud_loss_3d.py`
+- Added `plant_recon/models/pointcloud_loss_3d.py`
   - `PlantPointCloudChamferLoss`: 15D nodes → point cloud → Chamfer distance
   - Organ-aware weighted Chamfer loss
   - Includes PLY load/write/Chamfer/normalize utilities
@@ -40,7 +40,7 @@ status: done
   - Added `--export-3d ply` support
 
 ### 1.5 Training Script Integration
-- `diffusion_based/training/train_diffusion_3d.py`
+- `plant_recon/training/train_diffusion_3d.py`
   - Removed legacy renderer → uses `HeliosGeometryRasterizer`
   - Converts 15D predicted nodes via `nodes_to_geometry()` for batch rendering
   - Integrated `PlantPointCloudChamferLoss`
@@ -99,21 +99,21 @@ python dataset/generate_helios_dataset.py \
   --dap-start 5 --dap-end 5 --dap-step 5 --seeds 5 \
   --renderer vis --workers 1 --export-3d ply \
   --output-dir /tmp/helios_val5 \
-  --main-binary Digital-Crops/projects/syntheticdata_generation/build/main
+  --main-binary submodules/Digital-Crops/projects/syntheticdata_generation/build/main
 
 # Chamfer + render comparison
-python diffusion_based/eval/compare_xml_helios_3d.py \
+python plant_recon/eval/compare_xml_helios_3d.py \
   --helios-ply /tmp/helios_val5/..._helios.ply \
   --xml /tmp/helios_val5/..._plant_0000.xml \
   --visualize --visualize-path /tmp/compare.png
 
 # Training (render loss)
-python diffusion_based/training/train_diffusion_3d.py \
+python plant_recon/training/train_diffusion_3d.py \
   --data-dir /tmp/helios_val5 \
   --epochs 2 --batch-size 2 --render-loss 1.0
 
 # Training (point-cloud loss, with memory optimizations)
-python diffusion_based/training/train_diffusion_3d.py \
+python plant_recon/training/train_diffusion_3d.py \
   --data-dir /tmp/helios_val5 \
   --epochs 2 --batch-size 2 --pc-loss 1.0 \
   --target-ply /tmp/helios_val5/cowpea_dap005_seed00_..._helios.ply \

@@ -39,7 +39,7 @@ flowchart LR
 ## 2. Codebase Directory Structure & Key Files
 
 ```text
-diffusion_based/
+plant_recon/
 ├── models/
 │   ├── plant_organ.py                   # Data class definitions for PlantOrgan (Phytomer, Internode, Petiole, Leaf)
 │   ├── plant_organ_array.py             # PyTorch Tensor (N, 93) representation & XML parsing/serialization
@@ -109,33 +109,33 @@ PYTHON=/home/lion397/.conda/envs/digital-crops/bin/python
 
 ### 1. Run XML $\leftrightarrow$ PlantOrganArray Roundtrip Equivalence Test
 ```bash
-$PYTHON diffusion_based/models/test_organ_array_xml_roundtrip.py
+$PYTHON plant_recon/models/test_organ_array_xml_roundtrip.py
 ```
 *Expected Output*: `100% Roundtrip Attribute Equivalence Passed! (0 mismatched fields)`
 
 ### 2. Run Differentiable Autograd Backprop Gradient Test
 ```bash
-$PYTHON diffusion_based/models/test_differentiable_backprop.py
+$PYTHON plant_recon/models/test_differentiable_backprop.py
 ```
 *Expected Output*: `Organ Array Tensor Grad Norm: 6.127346, 106 / 465 gradient channels non-zero`
 
 ### 3. Run Helios C++ Radiation Ground-Truth Leaf Mask Comparison
 ```bash
-$PYTHON diffusion_based/eval/test_helios_coco_mask_comparison.py \
-    --xml Digital-Crops/projects/syntheticdata_generation/build/output_rad_test/plot_0000_plant_0000.xml \
-    --json Digital-Crops/projects/syntheticdata_generation/build/output_rad_test/plot_0000_masks.json \
-    --rad-img Digital-Crops/projects/syntheticdata_generation/build/output_rad_test/plot_0000_rad.jpeg \
-    --output-dir diffusion_based/eval/output
+$PYTHON plant_recon/eval/test_helios_coco_mask_comparison.py \
+    --xml submodules/Digital-Crops/projects/syntheticdata_generation/build/output_rad_test/plot_0000_plant_0000.xml \
+    --json submodules/Digital-Crops/projects/syntheticdata_generation/build/output_rad_test/plot_0000_masks.json \
+    --rad-img submodules/Digital-Crops/projects/syntheticdata_generation/build/output_rad_test/plot_0000_rad.jpeg \
+    --output-dir plant_recon/eval/output
 ```
 *Expected Output*: `Helios C++ GT Leaf Pixel Count: 135437, PyTorch Leaf Pixel Count: 98784, IoU: 0.3902, Dice: 0.5614`.
-Generates figure: `diffusion_based/eval/output/helios_coco_mask_comparison.png`.
+Generates figure: `plant_recon/eval/output/helios_coco_mask_comparison.png`.
 
 ### 4. Run 5-Seed DAP 30 Panel with Timing Analysis
 ```bash
-$PYTHON diffusion_based/eval/dap30_multi_seed_panel.py \
-    --base-dir Digital-Crops/projects/syntheticdata_generation/build/output_rad_dap30 \
+$PYTHON plant_recon/eval/dap30_multi_seed_panel.py \
+    --base-dir submodules/Digital-Crops/projects/syntheticdata_generation/build/output_rad_dap30 \
     --seeds 0 1 2 3 4 \
-    --output-dir diffusion_based/eval/output
+    --output-dir plant_recon/eval/output
 ```
 *Expected Output*:
 ```text
@@ -151,11 +151,11 @@ Generates figures: `dap30_seed_panel.png` and `dap30_timing_analysis.png`.
 
 ### 5. Run DAP 10 Incremental Leaf-by-Leaf Storyboard Debug Grid
 ```bash
-$PYTHON diffusion_based/eval/debug_leaf_by_leaf.py \
-    --xml Digital-Crops/projects/syntheticdata_generation/build/output/dap10_gt_0000_plant_0000.xml \
-    --output-dir diffusion_based/eval/output
+$PYTHON plant_recon/eval/debug_leaf_by_leaf.py \
+    --xml submodules/Digital-Crops/projects/syntheticdata_generation/build/output/dap10_gt_0000_plant_0000.xml \
+    --output-dir plant_recon/eval/output
 ```
-*Expected Output*: Saves 12-frame sketchbook grid to `diffusion_based/eval/output/dap10_leaf_by_leaf_debug.png`.
+*Expected Output*: Saves 12-frame sketchbook grid to `plant_recon/eval/output/dap10_leaf_by_leaf_debug.png`.
 
 ---
 

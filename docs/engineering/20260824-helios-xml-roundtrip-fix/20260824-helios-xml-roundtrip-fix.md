@@ -36,7 +36,7 @@ This document describes the root causes, mathematical formulations, and engineer
 ## 2. Root Cause Analysis & Exact Fixes
 
 ### 2.1 Missing `leaf_size_max` Restoration
-- **File**: [`Digital-Crops/libs/Helios/plugins/plantarchitecture/src/InputOutput.cpp:2003-2010`](file:///home/lion397/codes/image-to-l-system/Digital-Crops/libs/Helios/plugins/plantarchitecture/src/InputOutput.cpp#L2003-L2010)
+- **File**: [`submodules/Digital-Crops/libs/Helios/plugins/plantarchitecture/src/InputOutput.cpp:2003-2010`](file:///home/lion397/codes/image-to-l-system/submodules/Digital-Crops/libs/Helios/plugins/plantarchitecture/src/InputOutput.cpp#L2003-L2010)
 - **Mechanism**:
   - `writePlantStructureXML` outputs:
     $$\text{XML } \langle\text{leaf\_scale}\rangle = \text{phytomer}\to\text{leaf\_size\_max} \times \text{phytomer}\to\text{current\_leaf\_scale\_factor}$$
@@ -58,7 +58,7 @@ This document describes the root causes, mathematical formulations, and engineer
 ---
 
 ### 2.2 Preserving Perturbations Across XML Reloads
-- **File**: [`Digital-Crops/libs/Helios/plugins/plantarchitecture/src/InputOutput.cpp:1425-1427`](file:///home/lion397/codes/image-to-l-system/Digital-Crops/libs/Helios/plugins/plantarchitecture/src/InputOutput.cpp#L1425-L1427)
+- **File**: [`submodules/Digital-Crops/libs/Helios/plugins/plantarchitecture/src/InputOutput.cpp:1425-1427`](file:///home/lion397/codes/image-to-l-system/submodules/Digital-Crops/libs/Helios/plugins/plantarchitecture/src/InputOutput.cpp#L1425-L1427)
 - **Mechanism**:
   - `curvature_perturbations` and `yaw_perturbations` were parsed from XML, but were never assigned to the reconstructed `phytomer_ptr`.
 - **Fix**:
@@ -71,7 +71,7 @@ This document describes the root causes, mathematical formulations, and engineer
 ---
 
 ### 2.3 Shoot Tree Pruning Consistency in `pruneGroundCollisions`
-- **File**: [`Digital-Crops/libs/Helios/plugins/plantarchitecture/src/PlantArchitecture.cpp:3736`](file:///home/lion397/codes/image-to-l-system/Digital-Crops/libs/Helios/plugins/plantarchitecture/src/PlantArchitecture.cpp#L3736)
+- **File**: [`submodules/Digital-Crops/libs/Helios/plugins/plantarchitecture/src/PlantArchitecture.cpp:3736`](file:///home/lion397/codes/image-to-l-system/submodules/Digital-Crops/libs/Helios/plugins/plantarchitecture/src/PlantArchitecture.cpp#L3736)
 - **Mechanism**:
   - When ground collision occurred on lateral shoots (`rank > 0`), the old code simply called `context_ptr->deleteObject(shoot->internode_tube_objID)`.
   - The phytomers still lived in `plant_instances.at(plantID).shoot_tree`, so XML export wrote all of them out.
@@ -87,7 +87,7 @@ This document describes the root causes, mathematical formulations, and engineer
 ---
 
 ### 2.4 Mature Pod State & Color in PyTorch Geometry Builder
-- **File**: [`diffusion_based/models/helios_pytorch_geometry.py`](file:///home/lion397/codes/image-to-l-system/diffusion_based/models/helios_pytorch_geometry.py)
+- **File**: [`plant_recon/models/helios_pytorch_geometry.py`](file:///home/lion397/codes/image-to-l-system/plant_recon/models/helios_pytorch_geometry.py)
 - **Changes**:
   1. `is_active_flower = (bud_state in [2, 3, 4, 5])` (enables mature pod state 5).
   2. `self.COLOR_POD = torch.tensor([0.96, 0.92, 0.48], dtype=torch.float32)` (vibrant yellow matching Helios Cowpea material).
@@ -99,7 +99,7 @@ This document describes the root causes, mathematical formulations, and engineer
 
 ### 3.1 Rebuilding Helios & Synthetic Data Binary
 ```bash
-cd /home/lion397/codes/image-to-l-system/Digital-Crops/projects/syntheticdata_generation/build
+cd /home/lion397/codes/image-to-l-system/submodules/Digital-Crops/projects/syntheticdata_generation/build
 make -j8 plantarchitecture && make -j8 main
 ```
 
@@ -135,7 +135,7 @@ The evaluation produces a 2-row comparison figure (`archive/scratch/helios_pytho
 
 | File | Changes Made |
 | :--- | :--- |
-| [`Digital-Crops/libs/Helios/plugins/plantarchitecture/src/InputOutput.cpp`](file:///home/lion397/codes/image-to-l-system/Digital-Crops/libs/Helios/plugins/plantarchitecture/src/InputOutput.cpp) | Restored `leaf_size_max`, restored perturbations, preserved exact XML `leaves_per_petiole`. |
-| [`Digital-Crops/libs/Helios/plugins/plantarchitecture/src/PlantArchitecture.cpp`](file:///home/lion397/codes/image-to-l-system/Digital-Crops/libs/Helios/plugins/plantarchitecture/src/PlantArchitecture.cpp) | Synchronized shoot tree with Context via `deletePhytomer()` in `pruneGroundCollisions()`. |
-| [`Digital-Crops/projects/syntheticdata_generation/main.cpp`](file:///home/lion397/codes/image-to-l-system/Digital-Crops/projects/syntheticdata_generation/main.cpp) | Ensured ground clipping is enabled prior to aging. |
-| [`diffusion_based/models/helios_pytorch_geometry.py`](file:///home/lion397/codes/image-to-l-system/diffusion_based/models/helios_pytorch_geometry.py) | Added mature pod state 5, corrected pod prototype scale and yellow pod color. |
+| [`submodules/Digital-Crops/libs/Helios/plugins/plantarchitecture/src/InputOutput.cpp`](file:///home/lion397/codes/image-to-l-system/submodules/Digital-Crops/libs/Helios/plugins/plantarchitecture/src/InputOutput.cpp) | Restored `leaf_size_max`, restored perturbations, preserved exact XML `leaves_per_petiole`. |
+| [`submodules/Digital-Crops/libs/Helios/plugins/plantarchitecture/src/PlantArchitecture.cpp`](file:///home/lion397/codes/image-to-l-system/submodules/Digital-Crops/libs/Helios/plugins/plantarchitecture/src/PlantArchitecture.cpp) | Synchronized shoot tree with Context via `deletePhytomer()` in `pruneGroundCollisions()`. |
+| [`submodules/Digital-Crops/projects/syntheticdata_generation/main.cpp`](file:///home/lion397/codes/image-to-l-system/submodules/Digital-Crops/projects/syntheticdata_generation/main.cpp) | Ensured ground clipping is enabled prior to aging. |
+| [`plant_recon/models/helios_pytorch_geometry.py`](file:///home/lion397/codes/image-to-l-system/plant_recon/models/helios_pytorch_geometry.py) | Added mature pod state 5, corrected pod prototype scale and yellow pod color. |

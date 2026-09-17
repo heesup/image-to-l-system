@@ -24,7 +24,7 @@ status: active
 | `FM_GRAD_PROBE=1` intermediate + per-layer gradient probes | `ab0910f`, `582d03a` |
 | `--seed`, and an `UnboundLocalError` it exposed | `2fac3dc`, `d766a12` |
 | Query-boundary gradient barrier (a barrier, not a fix — see §1.9) | `684a9f1` |
-| Per-run figure folders under `slurm_scripts/logs/run_<jobid>/` | `12c0457` |
+| Per-run figure folders under `outputs/logs/run_<jobid>/` | `12c0457` |
 | **§2.1 redesign: `gt_parent_links`, one parent rule, no exceptions** | `8331abf`, `5e10c15` |
 | **§2.1 redesign: every node gets a real parent; +Z fallback deleted** | `e902487` |
 | `--resume` flag restored (its parser line had been lost; launcher passed it by default) | `c192f5f` |
@@ -48,11 +48,11 @@ status: active
 
 **Two inference bugs found by looking at the epoch-11 panel rather than the numbers** (§2.3). A 2 cm seedling with 0.6 cm node RMSE rendered at IoU 0.0% because metre-long stems shot across the frame. Fixed in `abce662`; the ordinal follow-up is `ae26ccb`.
 
-**Helios round-trip (§2.4, §2.5): solved.** `docs/results/assets/fig14_phytomer_vae_helios_roundtrip.png` (v9_tl_rw4_20k VAE, stem IK + leaf IK on both export columns; regenerated 2026-09-14) reads IK-only 99.9 / 99.6 / 97.7% and VAE round-trip **93.7 / 98.3 / 95.8%** FG IoU (mean organ IoU, which the thin organs dominate, 93.4 / 91.2 / 54.1 IK-only against 48.3 / 89.9 / 46.5 before the leaf inverse); on 2026-09-12 evening it was 95.7 / 99.5 / 96.7 and 92.2 / 98.4 / 95.7, against 81.4 / 90.2 / 79.3 this morning (v8, analytical export). Three things were wrong and all are fixed: the packet path lost the leaflet order (`ff5beb4`, `2f1691b`); the analytical 14D -> XML export was the real ceiling for every VAE, because Helios rebuilds a shoot by forward kinematics from per-node angles the converter derived from petiole azimuths and a decoded curvature, so a 1-3 degree error at one node moved every node above it -- `part_tensor_stem_ik` (§2.5) solves those parameters so the same FK lands on the predicted nodes and lifts even the identity export above the old IK-only number; and the seedling's young nodes were a small minority of the VAE's training packets, so their leaflet scale was 4.4% off -- training the same recipe on 20,000 files instead of 8,000 brings that to 1.0% and DAP 10 from 83.2 to 92.2. `phytomer_vae_v9_tl_rw4_20k` is the accepted VAE for the export path; the eval scripts default to it. It is NOT yet the FM training VAE -- that needs the packet cache regenerated with terminal-last packets and its latents (PKT_VERSION 7) and a Stage 3 retrain, see §5.
+**Helios round-trip (§2.4, §2.5): solved.** `docs/experiments/20260914-stage2-burst-fix-roundtrip/assets/fig14_phytomer_vae_helios_roundtrip.png` (v9_tl_rw4_20k VAE, stem IK + leaf IK on both export columns; regenerated 2026-09-14) reads IK-only 99.9 / 99.6 / 97.7% and VAE round-trip **93.7 / 98.3 / 95.8%** FG IoU (mean organ IoU, which the thin organs dominate, 93.4 / 91.2 / 54.1 IK-only against 48.3 / 89.9 / 46.5 before the leaf inverse); on 2026-09-12 evening it was 95.7 / 99.5 / 96.7 and 92.2 / 98.4 / 95.7, against 81.4 / 90.2 / 79.3 this morning (v8, analytical export). Three things were wrong and all are fixed: the packet path lost the leaflet order (`ff5beb4`, `2f1691b`); the analytical 14D -> XML export was the real ceiling for every VAE, because Helios rebuilds a shoot by forward kinematics from per-node angles the converter derived from petiole azimuths and a decoded curvature, so a 1-3 degree error at one node moved every node above it -- `part_tensor_stem_ik` (§2.5) solves those parameters so the same FK lands on the predicted nodes and lifts even the identity export above the old IK-only number; and the seedling's young nodes were a small minority of the VAE's training packets, so their leaflet scale was 4.4% off -- training the same recipe on 20,000 files instead of 8,000 brings that to 1.0% and DAP 10 from 83.2 to 92.2. `phytomer_vae_v9_tl_rw4_20k` is the accepted VAE for the export path; the eval scripts default to it. It is NOT yet the FM training VAE -- that needs the packet cache regenerated with terminal-last packets and its latents (PKT_VERSION 7) and a Stage 3 retrain, see §5.
 
 **Dataset plants (2026-09-14, §2.6): the round-trip above was only ever measured on the exact_gt trio, which is generated with the converter's own default angles.** On dataset plants (DAP 15 / 40 / 75, curvature, perturbed phyllotaxy and leaf angles, drooping laterals) the export alone read 81.8 / 92.2 / 54.6% and the VAE added nothing. Three fixes -- chaining that no longer requires a parent below its child, branch points from the decoded internode base (this also corrects a third of the lateral parent targets used in training), and a closed-form leaf orientation inverse in the export -- bring the packet path to **98.3 / 98.2 / 95.6%** and the VAE round-trip to **95.1 / 96.8 / 95.6%** on those plants (fig12, regenerated: GT and assembly under the same nadir and 45-degree cameras next to both Helios round-trips).
 
-**Next (2026-09-14)**: the live run is cluster job `38253656` (geminigrp, 2 GPUs, 24 h, batch 48/GPU, on `25c2251`: the training step without per-sample Python -- vectorized packet assembly, parent links in the loader workers, one VAE encode per batch, one nvdiffrast pass for all rendered plants, pointer-jumping chain_phytomers, batched matcher; step 1.9 s -> 0.15-0.24 s -- takeover guide §0-B.4-0-B.6; resumed from `hierarchical_fm_v9/hierarchical_fm_epoch_025.pt`; `38252603` and the batch-256 experiment `38252937` were cancelled earlier the same day, see the takeover guide §0-B.2), the v9 lineage continued from `hierarchical_fm_v9_local2/hierarchical_fm_epoch_015.pt` with the §2.6 topology targets and the launcher's new v9 defaults (log `slurm_scripts/logs/hierarchical_fm_38253656.log`, panels `run_38253656/`, checkpoints `hierarchical_fm_v9/`; the local legs `local_v9_run2.log` (epochs 1-15, 0 canary hits, loss 74 -> 20.0, IoU 19.5 -> 31.9%) and `local_v9_run2b.log` are stopped). The `low`/`publicgrp` jobs `38249632` (resumes `hierarchical_fm_v9/`) / `38250275` (`hierarchical_fm_v9_alt/`) are pending (estimates 9/18-19). Watch the canary and the Stage 2 Scl/Ord/Ext losses past epoch ~30, and the rendering panels against the originals. Then §2.1's remaining pieces -- Stage 3 predicting the child's position/roll/scale against the fixed parent, parent-noise recalibration from `ord_step_mae` -- and the export residuals in §2.6.
+**Next (2026-09-14)**: the live run is cluster job `38253656` (geminigrp, 2 GPUs, 24 h, batch 48/GPU, on `25c2251`: the training step without per-sample Python -- vectorized packet assembly, parent links in the loader workers, one VAE encode per batch, one nvdiffrast pass for all rendered plants, pointer-jumping chain_phytomers, batched matcher; step 1.9 s -> 0.15-0.24 s -- takeover guide §0-B.4-0-B.6; resumed from `hierarchical_fm_v9/hierarchical_fm_epoch_025.pt`; `38252603` and the batch-256 experiment `38252937` were cancelled earlier the same day, see the takeover guide §0-B.2), the v9 lineage continued from `hierarchical_fm_v9_local2/hierarchical_fm_epoch_015.pt` with the §2.6 topology targets and the launcher's new v9 defaults (log `outputs/logs/hierarchical_fm_38253656.log`, panels `run_38253656/`, checkpoints `hierarchical_fm_v9/`; the local legs `local_v9_run2.log` (epochs 1-15, 0 canary hits, loss 74 -> 20.0, IoU 19.5 -> 31.9%) and `local_v9_run2b.log` are stopped). The `low`/`publicgrp` jobs `38249632` (resumes `hierarchical_fm_v9/`) / `38250275` (`hierarchical_fm_v9_alt/`) are pending (estimates 9/18-19). Watch the canary and the Stage 2 Scl/Ord/Ext losses past epoch ~30, and the rendering panels against the originals. Then §2.1's remaining pieces -- Stage 3 predicting the child's position/roll/scale against the fixed parent, parent-noise recalibration from `ord_step_mae` -- and the export residuals in §2.6.
 
 ---
 
@@ -63,7 +63,7 @@ status: active
 Previous doc: [`20260911_hybrid_vae_rotation_capacity_and_topology_experiments.md`](../../engineering/20260911-hybrid-vae-rotation-topology/20260911-hybrid-vae-rotation-topology.md) ended with a cheap, training-free measurement showing `chain_phytomers` loses at most 2.5 points of parent-recovery accuracy without a rotation-based directional cue, once the ordinal cue is present. That measurement justified shrinking Stage 2's node rotation head.
 
 **Implemented** (commits `0341be2`, `8a98cfd`):
-- New `diffusion_based/dataset/phytomer_roll.py`: `derive_forward(pos, parent_idx)` (forward axis from resolved topology, world-+Z fallback for shoot bases), `encode_roll(R, forward)` / `roll_to_matrix(forward, roll)` (exact round-trip, tests in `tests/test_phytomer_roll.py`).
+- New `plant_recon/dataset/phytomer_roll.py`: `derive_forward(pos, parent_idx)` (forward axis from resolved topology, world-+Z fallback for shoot bases), `encode_roll(R, forward)` / `roll_to_matrix(forward, roll)` (exact round-trip, tests in `tests/test_phytomer_roll.py`).
 - `phytomer_topology.chain_phytomers`'s `rot6d` parameter is now `Optional` (`None` drops the directional cost term) -- this is what makes "resolve topology from position+ordinal, THEN derive rotation" possible instead of circular.
 - `CoarseSkeletalTransformer`: `rot_head` (6D) -> `roll_head` (2D). Output dict key `phytomer_rot` -> `phytomer_roll`.
 - New `hierarchical_part_flow_matching.reconstruct_phytomer_rot(pos, roll, ordinal, is_base_logits)` (`@no_grad` -- topology resolution has no gradient regardless of caller): chains on position+ordinal alone, derives forward, combines with predicted roll -> full 6D rotation. Called in `sample_ode` (inference) and per-render-sample in the training loop's render block.
@@ -73,7 +73,7 @@ Previous doc: [`20260911_hybrid_vae_rotation_capacity_and_topology_experiments.m
 
 **Correction made while implementing this** (worth remembering): the model does **not** actually run the "Stage 3 refines base+rot+scale+latent via a combined flow vector" design its own class docstrings describe. `HierarchicalPartFlowMatchingModel.__init__` constructs `PhytomerFlowMatchingDecoder` with `base_dim=rot_dim=scale_dim=0`, so the real, active flow target is the 128D VAE latent alone (pure `N(0,I)` prior, no bridge coupling); pos/roll/scale are Stage-2-only outputs with their own direct losses, used only as conditioning ("Hybrid Decoupled" in the code's own comments). This is presumably a deliberate simplification after an earlier bridge-flow attempt hit a real gradient explosion from a missing `.detach()` at the exact point where position entered the flow state. Keep this in mind before assuming the docstrings describe the live behavior -- trace `forward_backward_step`'s actual `z_0`/`z_1` construction directly when in doubt.
 
-**Validated**: 6-epoch local smoke test (`slurm_scripts/smoke_test_fix.sh`, TITAN RTX, gpu-5-58), render gate active epochs 4-6 (the historically dangerous zone) -- **0 `[Recovery]` lines, 0 `[Canary]` lines**, checkpoint saved (`diffusion_based/checkpoints/fm_smoke_test/hierarchical_fm_epoch_006.pt`, disposable, smoke-test only). Full `pytest tests/` after all of the above: 38 passed, exactly the same 3 failures + 1 error confirmed pre-existing via `git stash` before this session touched anything (`test_end_to_end_model_forward_backward`, `test_end_to_end_phytomer_mode_forward_and_ode`, `test_phytomer_flow_decoder_shapes_and_gradients`, `test_ik_fix::test_eval`) -- no regressions.
+**Validated**: 6-epoch local smoke test (`slurm_scripts/smoke_test_fix.sh`, TITAN RTX, gpu-5-58), render gate active epochs 4-6 (the historically dangerous zone) -- **0 `[Recovery]` lines, 0 `[Canary]` lines**, checkpoint saved (`outputs/checkpoints/fm_smoke_test/hierarchical_fm_epoch_006.pt`, disposable, smoke-test only). Full `pytest tests/` after all of the above: 38 passed, exactly the same 3 failures + 1 error confirmed pre-existing via `git stash` before this session touched anything (`test_end_to_end_model_forward_backward`, `test_end_to_end_phytomer_mode_forward_and_ode`, `test_phytomer_flow_decoder_shapes_and_gradients`, `test_ik_fix::test_eval`) -- no regressions.
 
 ---
 
@@ -93,7 +93,7 @@ Previous doc: [`20260911_hybrid_vae_rotation_capacity_and_topology_experiments.m
 
 Bases are ~13% of all phytomers at DAP 50 (96 of 757). End to end, reconstructing the full node rotation from GT positions with a perfect roll head, over ALL phytomers: mean **10.40° -> 7.40°**, p90 **46.13° -> 12.96°**.
 
-The base tail does get worse (p90 98.9° -> 123.0°), and it is worth knowing why before anyone "fixes" it: 6% of bases pick the wrong successor, and that group is **entirely `chain_phytomers` mislabelling the shoot** (chain-vs-GT successor agreement 0% in that group, 96.8% in the other 94%), with a mean axis error of 120°. It is the same topology-resolution exposure chained nodes already carry, not a flaw in the successor rule, and a distance gate cannot separate the two groups (successor distance / median spacing is 0.26 for the bad group vs 0.14 for the good one -- both well inside any plausible gate). Improving it means improving chaining, which has its own measurement harness in `diffusion_based/eval/measure_topology_recovery_ablation.py`.
+The base tail does get worse (p90 98.9° -> 123.0°), and it is worth knowing why before anyone "fixes" it: 6% of bases pick the wrong successor, and that group is **entirely `chain_phytomers` mislabelling the shoot** (chain-vs-GT successor agreement 0% in that group, 96.8% in the other 94%), with a mean axis error of 120°. It is the same topology-resolution exposure chained nodes already carry, not a flaw in the successor rule, and a distance gate cannot separate the two groups (successor distance / median spacing is 0.26 for the bad group vs 0.14 for the good one -- both well inside any plausible gate). Improving it means improving chaining, which has its own measurement harness in `plant_recon/eval/measure_topology_recovery_ablation.py`.
 
 The training target follows the same fallback order (parent direction, else successor, else +Z), read from GT `keys` rather than from `chain_phytomers`, so the target teaches the correct relationship and only inference carries the chaining error. `gt_stem_dir_target` was renamed `gt_forward_target` to match what it now holds.
 
@@ -294,7 +294,7 @@ restore via `FM_PARENT_COND=0`) has not started -- the group's GPU quota
 Image2PlantArchitecture_v2 project (submitted 2026-09-12 12:46 and 16:22, still
 running), and the A100 partition is refused at submit time under the same
 group limit. The replay is therefore running locally on the single RTX 6000
-Ada (`slurm_scripts/logs/local_replay_full.log`): same epoch permutation
+Ada (`outputs/logs/local_replay_full.log`): same epoch permutation
 (`DistributedSampler` seed 0 + epoch), batches of 48 that are quarter-slices
 of the cluster's 192, so cluster step k of epoch 27 is local steps 4k..4k+3;
 about 45 minutes per epoch with the GPU otherwise idle.
@@ -308,7 +308,7 @@ per-epoch self-consistency evaluation (`sample_ode` + the fixed-set render
 between epochs; the replay ran with `EVAL_EVERY=1000`). The 512-sample subset
 replay also skipped it. The replay is therefore running again with
 `EVAL_EVERY=1 EVAL_MIN_INTERVAL_MINUTES=30 EVAL_SAMPLES_PER_BUCKET=2`
-(`slurm_scripts/logs/local_replay_eval.log`). The other difference left is
+(`outputs/logs/local_replay_eval.log`). The other difference left is
 4-rank DDP itself (192-sample global batches, gradient all-reduce), which only
 the queued cluster replay can test. If the eval reproduces it, look at what
 `evaluate_self_consistency` / `sample_ode` leave behind: train/eval mode,
@@ -328,7 +328,7 @@ first garbage update is what made the next forty steps burst too in
 `38242849`). The v9 run (`38248747`) carries that guard.
 
 *2026-09-14 00:20, REPRODUCED on one GPU.* The local v9 run (from scratch,
-batch 48, `slurm_scripts/logs/local_v9_run.log`) burst at **epoch 7, step
+batch 48, `outputs/logs/local_v9_run.log`) burst at **epoch 7, step
 2062/2084**, first on `coarse_stage.decoder.layers.0.self_attn.in_proj_weight`,
 `.multihead_attn.in_proj_weight` and `.norm1.weight`. The new guard skipped that
 step and every step since -- and **the burst fires on every batch anyway**
@@ -366,7 +366,7 @@ stream's magnitude grows over training (query norms were already rising
 degrades gradually until one ordinary step crosses the threshold -- which is
 why a lower learning rate only delayed it and why no batch order, eval or DDP
 setting was the trigger. The v9 run was restarted from scratch with the fixes
-(`slurm_scripts/logs/local_v9_run2.log`, `hierarchical_fm_v9_local2/`); the
+(`outputs/logs/local_v9_run2.log`, `hierarchical_fm_v9_local2/`); the
 queued `low`-partition jobs pick the same defaults up when they start.
 
 *Ablation matrix on the frozen state, 8 steps each, fresh seeds (01:45):*
@@ -389,9 +389,9 @@ Heesup's `regen_shard` arrays (60+ tasks each, plus `regen_synth`/`regen_mopup`
 with dependencies), so neither cluster job has a start time. The v9 run was
 therefore also started **locally on the single RTX 6000 Ada** (from scratch,
 batch 48, eval every epoch, checkpoints every 5 epochs into
-`diffusion_based/checkpoints/hierarchical_fm_v9_local/`, log
-`slurm_scripts/logs/local_v9_run.log`, panels in the newest
-`slurm_scripts/logs/run_local_*/`). It shares that GPU with Heesup's local
+`outputs/checkpoints/hierarchical_fm_v9_local/`, log
+`outputs/logs/local_v9_run.log`, panels in the newest
+`outputs/logs/run_local_*/`). It shares that GPU with Heesup's local
 Helios regeneration shards, so it is slower than a dedicated GPU and slows them
 a little; stop it with `pkill -f hierarchical_fm_v9_loca[l]` if that matters.
 Whichever of the cluster jobs starts first should be cancelled if the other
@@ -506,7 +506,7 @@ This is worth adopting for three separate reasons. It takes parent coverage from
 
 ### 2.3 What the epoch-11 panel showed, and the two inference bugs behind it
 
-The self-consistency numbers are one mean over four DAP buckets and hid two separate failure modes that the panel (`slurm_scripts/logs/run_38240323/hierarchical_self_consistency_epoch_011.png`) made obvious:
+The self-consistency numbers are one mean over four DAP buckets and hid two separate failure modes that the panel (`outputs/logs/run_38240323/hierarchical_self_consistency_epoch_011.png`) made obvious:
 
 - **DAP 2 seedling**: node RMSE **0.6 cm**, count 4.1 of 4 -- the skeleton was essentially perfect -- yet IoU **0.0%**, because two internodes a metre long crossed the whole 1.2 m window on a 2 cm plant.
 - **DAP 68**: phytomer count **117 of 56**, a 2x overcount, so far too many organs. IoU 12.7%.
@@ -526,7 +526,7 @@ A gap gate was then tried -- distrust a chained stem longer than ~6x the decoded
 Heesup's requirement (2026-09-12, "very important"): the VAE round-trip
 (14D -> packet -> VAE -> 14D -> XML -> Helios) must reproduce the IK-only
 reconstruction (14D -> XML -> Helios, no VAE). The figure is
-`docs/results/assets/fig14_phytomer_vae_helios_roundtrip.png`; the old copy in
+`docs/experiments/20260914-stage2-burst-fix-roundtrip/assets/fig14_phytomer_vae_helios_roundtrip.png`; the old copy in
 `docs/results/assets/_unreferenced/` (52.8 / 20.4 / 24.7%) predates the 2026-09-11
 emit-order and shoot-partition fixes. FG IoU against the Helios GT render, same
 three plants throughout:
@@ -671,7 +671,7 @@ petiole 1.5-5.6%, peduncle 11%, flowers/fruit 12-22%, internode 17-39% (unused
 for chained nodes). Leaflet rotation error is irrelevant to Helios (see "What
 Helios actually reads"), though the PyTorch training render does draw it.
 
-**v9 candidates, measured** (local GPU, logs in `slurm_scripts/logs/local_vae_v9/`; all
+**v9 candidates, measured** (local GPU, logs in `outputs/logs/local_vae_v9/`; all
 128D = 48 + 10x8, 8,000 files, 120 epochs, ~5 min each; `_ctrl` keeps the v6/v8
 bottom-to-top leaflet order, `_tl` uses `PHYTOMER_TERMINAL_LAST=1`, `_rw4` adds
 `--rot-weight 4`). Packet-level fidelity at DAP 50 (mean, p90 in parens) and the
@@ -743,7 +743,7 @@ round-trip side by side.
 
 ### 2.5 Stem inverse kinematics: the export now follows the nodes (`d3731d3`, `7d92840`, `5827327`)
 
-`diffusion_based/models/part_tensor_stem_ik.py`, run by `assemble_part_tensor_to_xml`
+`plant_recon/models/part_tensor_stem_ik.py`, run by `assemble_part_tensor_to_xml`
 after `PartTensorTo40DConverter` (default on; `PART_TENSOR_STEM_IK=0` for the
 plain analytical export). It treats the 14D internode rows -- the parent-node ->
 node chords Stage 2 predicts and the identity path has exactly -- as the target
@@ -822,17 +822,17 @@ which is why the base step skips small singular values and caps its step at
 
 ### 2.6 Dataset plants: the round-trip had only ever been measured on the exact_gt trio (2026-09-14)
 
-Trigger: Heesup asked what `docs/results/assets/fig12_phytomer_10slot_helios_roundtrip.png`
+Trigger: Heesup asked what `docs/experiments/20260914-stage2-burst-fix-roundtrip/assets/fig12_phytomer_10slot_helios_roundtrip.png`
 was, why its Helios column looked bad, and whether the seedling's 45-degree view
 was right (there was no ground-truth 45-degree view to compare it with). That
 panel dated from 2026-09-11 13:01, drawn by an uncommitted script, and its
 Helios column predated the shoot-partition fix and the stem IK. It is now drawn
-by `diffusion_based/eval/eval_phytomer_10slot_assembly_views.py` on **dataset**
+by `plant_recon/eval/eval_phytomer_10slot_assembly_views.py` on **dataset**
 plants (`cowpea_dap015/040/075_seed00_..._plant_0000.xml`): GT mesh and 10-slot
 assembly under the same two cameras (nadir and 45 degrees, bounds from the GT
 mesh), then the Helios round-trip through the packet path alone and through the
 VAE. The old panel is kept as
-`docs/results/assets/_unreferenced/fig12_phytomer_10slot_helios_roundtrip_20260911.png`.
+`docs/archive/unreferenced-assets/_unreferenced/fig12_phytomer_10slot_helios_roundtrip_20260911.png`.
 
 The assembly is exact (RGB MAE 0.0002-0.003 against the GT mesh, both views), so
 the 45-degree view is simply what the plant looks like. The Helios round-trip
@@ -873,7 +873,7 @@ suites):
 3. **The converter's leaf angles are constants** (pitch 2.54, roll -15, yaw
    +10/0/-10 by leaflet index): the species defaults, exact on exact_gt plants,
    10-18 degrees off (mean) on dataset plants under the FK. New
-   `diffusion_based/models/part_tensor_leaf_ik.py`, run by
+   `plant_recon/models/part_tensor_leaf_ik.py`, run by
    `assemble_part_tensor_to_xml` after the stem IK (`PART_TENSOR_LEAF_IK=0`
    disables): the FK now reports each leaf's frame (azimuth from the petiole
    tip, asin/acos of the petiole and internode tip elevations, roll sign, kind),
@@ -985,15 +985,15 @@ This does not forbid *asymmetric* designs (e.g., predicting a parent-relative di
 
 ## 5. Reading order for the next session
 
-1. **`docs/ongoing/AGENT_TAKEOVER_GUIDE.md`** -- general orientation (environment, how to launch jobs locally vs SLURM, established conventions).
-2. **`docs/ongoing/20260911_hybrid_vae_rotation_capacity_and_topology_experiments.md`** -- hybrid PhytomerVAE architecture (coarse+residual latent), the pkt-cache `keys` bug, the render-loss internode `parent_pos` fix, why the gradient guard is canary-only, and the topology-recovery measurement that justified the roll-head reduction.
+1. **`docs/handovers/agent-takeover-guide/agent-takeover-guide.md`** -- general orientation (environment, how to launch jobs locally vs SLURM, established conventions).
+2. **`docs/engineering/20260911-hybrid-vae-rotation-topology/20260911-hybrid-vae-rotation-topology.md`** -- hybrid PhytomerVAE architecture (coarse+residual latent), the pkt-cache `keys` bug, the render-loss internode `parent_pos` fix, why the gradient guard is canary-only, and the topology-recovery measurement that justified the roll-head reduction.
 3. **This doc** -- what was actually implemented from that plan (roll-head reduction, validated), and the two next proposed changes (§2 Stage 2/3 boundary, §3 packet-level internode redundancy) plus the moving-target design lesson (§4).
 4. **§2.1 and §2.2** -- the adopted Stage 2/3 redesign, what has landed of it, and what has not. This is where to start implementing.
 5. Before the next piece of §2.1 (Stage 3 taking `(parent, self)` pairs): read `forward_backward_step` in `train_hierarchical_flow_matching.py` directly to see exactly how `pred_slot_exist_logits` is supervised during TRAINING (not just `sample_ode`'s inference-time t=1 read) -- this determines whether roll/scale can reuse that exact mechanism when they move to Stage 3.
 6. Before starting §3's implementation specifically: re-read `phytomer_packets.strip_base()` and `PhytomerVAE.compute_loss()` in full -- the fix is meant to be a small, mechanical extension of the pattern already there, not a new mechanism.
 7. **Before launching any training run**: §1.8 (budget the render loss with arithmetic; do not trust `--batch_size auto`) and §1.9.1 (**use `LR=1e-4`**; 3e-4 reliably destroys the run).
 
-**Checkpoint lineage**: `diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt` is the accepted PhytomerVAE for the export/round-trip path (§2.4: 128D = 48 + 10x8, `--rot-weight 4`, 20,000 files, 120 epochs, trained on terminal-last packets -- `PHYTOMER_TERMINAL_LAST=1`, which the eval scripts set for any `_tl` checkpoint). `phytomer_vae_v8` remains what the FM checkpoints and the v6 packet cache were built on; switching the FM to v9 means `PKT_VERSION` 7, a cache regeneration with terminal-last packets, and a Stage 3 retrain. `dataset/cache/cowpea_curv26_pkt/` is at `pkt_version=6` (100,000/100,000, `keys` present). No real (non-smoke) hierarchical FM training has been launched yet. `diffusion_based/checkpoints/fm_smoke_test/hierarchical_fm_epoch_006.pt` is a disposable smoke-test artifact, not a real checkpoint to build on -- delete it before a real run occupies that directory, or point `--output_dir` elsewhere.
+**Checkpoint lineage**: `outputs/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt` is the accepted PhytomerVAE for the export/round-trip path (§2.4: 128D = 48 + 10x8, `--rot-weight 4`, 20,000 files, 120 epochs, trained on terminal-last packets -- `PHYTOMER_TERMINAL_LAST=1`, which the eval scripts set for any `_tl` checkpoint). `phytomer_vae_v8` remains what the FM checkpoints and the v6 packet cache were built on; switching the FM to v9 means `PKT_VERSION` 7, a cache regeneration with terminal-last packets, and a Stage 3 retrain. `dataset/cache/cowpea_curv26_pkt/` is at `pkt_version=6` (100,000/100,000, `keys` present). No real (non-smoke) hierarchical FM training has been launched yet. `outputs/checkpoints/fm_smoke_test/hierarchical_fm_epoch_006.pt` is a disposable smoke-test artifact, not a real checkpoint to build on -- delete it before a real run occupies that directory, or point `--output_dir` elsewhere.
 
 **How to launch the v9 run when the GPU quota frees** (2026-09-13): the dataset's cache
 gate accepts `pkt_version >= 3`, so no code change is needed -- only the environment:
@@ -1001,9 +1001,9 @@ gate accepts `pkt_version >= 3`, so no code change is needed -- only the environ
 ```bash
 sbatch --export=ALL,SEED=1234,LR=1e-4,FORCE_BATCH_SIZE=48,RENDER_GRAD_START_EPOCH=11,RENDER_FRACTION=0.03,EPOCHS=500,\
 PKT_CACHE_DIR=dataset/cache/cowpea_curv26_pkt_v9,\
-PHYTOMER_VAE_CHECKPOINT=diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt,\
-PHYTOMER_TERMINAL_LAST=1,OUTPUT_DIR=diffusion_based/checkpoints/hierarchical_fm_v9,\
-INIT_CHECKPOINT=diffusion_based/checkpoints/hierarchical_fm_depth_ord/hierarchical_fm_epoch_025.pt,RESUME=1 \
+PHYTOMER_VAE_CHECKPOINT=outputs/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt,\
+PHYTOMER_TERMINAL_LAST=1,OUTPUT_DIR=outputs/checkpoints/hierarchical_fm_v9,\
+INIT_CHECKPOINT=outputs/checkpoints/hierarchical_fm_depth_ord/hierarchical_fm_epoch_025.pt,RESUME=1 \
   slurm_scripts/train_hierarchical_flow_matching.sh
 ```
 

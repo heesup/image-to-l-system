@@ -41,7 +41,7 @@ no longer trusted (see note 17). PCA evr 13.7/10.7/8.1%, PCA16 86.9%.
 | :--- | :--- |
 | `tools/precompute_phytomer_latent_pca.py` | Cache build: full rebuild (packets from cache + VAE encode) or `--from-pkt-cache` (packets from the pkt cache + **on-the-fly** VAE encode with `--ckpt`) → `dataset/cache/phytomer_gui_cache/` |
 | `tools/phytomer_vae_visualizer.py` | Gradio app (loads cache + frozen PhytomerVAE ckpt, `centers.pt` for exact world-frame placement; 10 slots: repro1–4) |
-| `diffusion_based/models/helios_pytorch_geometry.py` | + `"lowpoly"` leaf mode (~80-vert alpha-cutout leaf, `get_generic_leaf_mesh(Nx=8,Ny=8)`) |
+| `plant_recon/models/helios_pytorch_geometry.py` | + `"lowpoly"` leaf mode (~80-vert alpha-cutout leaf, `get_generic_leaf_mesh(Nx=8,Ny=8)`) |
 
 ## Run
 
@@ -49,12 +49,12 @@ no longer trusted (see note 17). PCA evr 13.7/10.7/8.1%, PCA16 86.9%.
 # 1. Precompute latent cloud + PCA (pkt-cache packets + on-the-fly VAE encode, ~12s)
 .../bin/python tools/precompute_phytomer_latent_pca.py --from-pkt-cache \
     --pkt-dir dataset/cache/cowpea_curv26_pkt_v9 \
-    --ckpt diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt \
+    --ckpt outputs/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt \
     --max-packets 250000 --out dataset/cache/phytomer_gui_cache
 
 # 2. Launch GUI
 .../bin/python tools/phytomer_vae_visualizer.py \
-    --ckpt diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt \
+    --ckpt outputs/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt \
     --server-name 0.0.0.0 --server-port 7860
 ```
 
@@ -139,7 +139,7 @@ Access: VNC browser `localhost:7860` or SSH tunnel `ssh -L 7860:localhost:7860`.
     from the node direction (terminal 160°, classic trifoliate). The apparent
     "leaflets at node" in identity mode = top-down camera (elev 90°) +
     petiole pointing down-forward (fwd≈(0.2,0.63,-0.75)) → foreshortened tube.
-    3-panel proof: `docs/results/assets/fig_phytomer_trifoliate_structure.png`
+    3-panel proof: `docs/archive/unreferenced-assets/fig_phytomer_trifoliate_structure.png`
     (A tubes-only real-ref / B full GT real-ref / C identity top-down).
 14. **Stem base rule corrected** (2026-09-10, user caught it): the internode
     tube spans PREVIOUS node -> THIS node, so its base is one internode back

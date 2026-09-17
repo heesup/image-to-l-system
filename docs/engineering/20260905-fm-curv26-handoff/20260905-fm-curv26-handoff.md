@@ -113,7 +113,7 @@ the ODE. At t=1: `curvature_deg_m = fm[:, FM_CURV] / CURV_SCALE`. Caveats:
 
 ### 2.5 Training results
 - **50 epochs COMPLETED** on 2×RTX 6000 Ada (DDP, global batch 256): loss **20,606 → 68**,
-  zero NaN skips. Checkpoint: `diffusion_based/checkpoints/fm_curv/part_flow_matching.pt`
+  zero NaN skips. Checkpoint: `outputs/checkpoints/fm_curv/part_flow_matching.pt`
   (max_nodes=512 — load with `PartFlowMatchingModel(max_nodes=512, node_dim=26, image_size=128)`).
 - **Slot-aligned curvature eval**: MAE 25.5°/m, median 8.8°/m (n=2,326 tube organs, 40 DAP-diverse
   samples, 15-step Euler). Caveats: (a) FM slot order ≠ canonical GT order — apply
@@ -142,7 +142,7 @@ Per-epoch panel saved to `docs/results/assets/fm_curv_epoch_NNN.png` +
 - W&B: scalars (`train/loss`), panel image, curvature GT/pred histograms. Rank 0 only.
 
 ### 2.8 Repo/config changes
-- `botanical_scaffold.py` restored to `diffusion_based/models/` (active dependency of the trainer —
+- `botanical_scaffold.py` restored to `plant_recon/models/` (active dependency of the trainer —
   was archived by mistake during cleanup).
 - Species filter in `PartArrayDataset`: when `cache_dir` is crop-named (`.../<crop>_curv26`),
   only that crop's XMLs are globbed (bean/cowpea never mix).
@@ -164,7 +164,7 @@ mamba activate digital-crops && export PYTHONPATH=.
 # Roundtrip 26D encode/decode with curvature
 python - <<'EOF'
 import torch
-from diffusion_based.dataset.part_array_dataset import encode_fm, decode_fm
+from plant_recon.dataset.part_array_dataset import encode_fm, decode_fm
 p = torch.zeros((2, 14)); p[:, 0] = torch.tensor([3.0, 4.0]); p[0, 13] = 45.0; p[1, 13] = -30.0
 fm = encode_fm(p); rec = decode_fm(fm)
 assert (rec - p).abs().max() < 1e-5 and fm.shape[-1] == 26
@@ -236,16 +236,16 @@ sbatch --export=FM_EPOCHS=50 slurm_scripts/train_part_fm_curv.sh
 
 | File | Change |
 |---|---|
-| `diffusion_based/dataset/part_array_dataset.py` | FM 26D layout, species filter, cache fast-path (pyramid resize + node crop) |
-| `diffusion_based/dataset/generate_tensor_shards.py` | merged cache/shard modes + pyramid concat + crop-named dirs |
-| `diffusion_based/dataset/cowpea_shard_dataset.py` | 25D→26D auto-pad for legacy shards |
-| `diffusion_based/models/helios_pytorch_geometry.py` | curvature wired into tubes, scale_z into leaf width, ±720°/m clamp, physicality clamp in diff_node_to_part_tensor_14d |
-| `diffusion_based/models/helios_pytorch_renderer.py` | render_mesh alias forwards zoom kwargs |
-| `diffusion_based/models/vit_image_encoder.py` | 16-ch pyramid per-zoom embedding averaging |
-| `diffusion_based/models/part_flow_matching.py` | in_channels=4 encoder |
-| `diffusion_based/models/botanical_scaffold.py` | restored from archive (active dependency) |
-| `diffusion_based/training/train_part_flow_matching.py` | NaN fixes, fp32 loss, loss_curv, DDP, fm_collate, vis/wandb wiring |
-| `diffusion_based/training/fm_visualization.py` | NEW: per-epoch panel + W&B |
+| `plant_recon/dataset/part_array_dataset.py` | FM 26D layout, species filter, cache fast-path (pyramid resize + node crop) |
+| `plant_recon/dataset/generate_tensor_shards.py` | merged cache/shard modes + pyramid concat + crop-named dirs |
+| `plant_recon/dataset/cowpea_shard_dataset.py` | 25D→26D auto-pad for legacy shards |
+| `plant_recon/models/helios_pytorch_geometry.py` | curvature wired into tubes, scale_z into leaf width, ±720°/m clamp, physicality clamp in diff_node_to_part_tensor_14d |
+| `plant_recon/models/helios_pytorch_renderer.py` | render_mesh alias forwards zoom kwargs |
+| `plant_recon/models/vit_image_encoder.py` | 16-ch pyramid per-zoom embedding averaging |
+| `plant_recon/models/part_flow_matching.py` | in_channels=4 encoder |
+| `plant_recon/models/botanical_scaffold.py` | restored from archive (active dependency) |
+| `plant_recon/training/train_part_flow_matching.py` | NaN fixes, fp32 loss, loss_curv, DDP, fm_collate, vis/wandb wiring |
+| `plant_recon/training/fm_visualization.py` | NEW: per-epoch panel + W&B |
 | `slurm_scripts/train_part_fm_curv.sh` | torchrun DDP launcher (2×6000_ada, batch 256, cache_dir) |
 | `slurm_scripts/generate_helios_dataset_jobs.sh` | --mode/--pyramid passthrough, crop-named dirs |
 | `archive/scratch/20260903_phase1_basics/phase2_core.py` | anti-erasure core (warden, pull loss, scale floors, tip anchor) |

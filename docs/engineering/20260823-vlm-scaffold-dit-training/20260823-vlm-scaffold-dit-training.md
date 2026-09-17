@@ -179,8 +179,8 @@ Every epoch, the evaluation pipeline generates and logs a full 6-column benchmar
 | **Col 5** | **Gen Depth** | Model-generated depth map with metric colorbar and predicted height $\widehat{H}_{\text{cm}}$. |
 | **Col 6** | **Gen Organ Seg** | Model-generated semantic organ segmentation map with discrete category legend. |
 
-* **Local Evaluation Figure Path**: [`docs/results/assets/fig_cowpea_100k_lifespan_benchmark.png`](assets/fig_cowpea_100k_lifespan_benchmark.png)
-* **Latest Training Epoch Visuals**: [`docs/results/assets/fig_vlm_scaffold_latest_eval.png`](assets/fig_vlm_scaffold_latest_eval.png)
+* **Local Evaluation Figure Path**: [`docs/engineering/20260823-vlm-scaffold-dit-training/assets/fig_cowpea_100k_lifespan_benchmark.png`](assets/fig_cowpea_100k_lifespan_benchmark.png)
+* **Latest Training Epoch Visuals**: [`docs/engineering/20260823-vlm-scaffold-dit-training/assets/fig_vlm_scaffold_latest_eval.png`](assets/fig_vlm_scaffold_latest_eval.png)
 
 ---
 

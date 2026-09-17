@@ -39,7 +39,7 @@ status: done
 
 ## 2. Quantitative Mask Overlap Progress (DAP 90 Exact GT)
 
-Running `python diffusion_based/eval/compare_flower_pod_masks.py` now yields:
+Running `python plant_recon/eval/compare_flower_pod_masks.py` now yields:
 
 | Organ | Helios GT Pixels | PyTorch Pixels | Intersection | IoU | Dice |
 |-------|-----------------:|---------------:|-------------:|----:|-----:|
@@ -56,12 +56,12 @@ Running `python diffusion_based/eval/compare_flower_pod_masks.py` now yields:
 
 ## 3. Implementation Details of Recent Fixes
 
-### 3.1 Parser Changes (`diffusion_based/models/plant_organ_array.py`)
+### 3.1 Parser Changes (`plant_recon/models/plant_organ_array.py`)
 * `ped_row[T_COL_EXISTENCE]` is now `1.0` only for `bs >= 2` (opened buds).
 * `ORGAN_FRUIT` rows are created only for `bs >= 5` and `current_fruit_scale_factor > 0`; if the XML value is missing or zero for a state-5 bud, it defaults to `1.0`.
 * `_get_float_text` now safely returns the default when the XML element is missing or empty (`text is None`).
 
-### 3.2 Geometry Builder Changes (`diffusion_based/models/helios_pytorch_geometry.py`)
+### 3.2 Geometry Builder Changes (`plant_recon/models/helios_pytorch_geometry.py`)
 * `load_obj_file` now applies the Helios "ZUP" conversion: `(x, y, z) -> (x, z, -y)`.
 * `extract_part_tensor` stores peduncle tip direction (`ped_tip_dirs`) and uses it for flower/fruit orientation.
 * Flower/fruit placement is at the peduncle tip (`peduncle_vertices.back()`), using `flower_offset` only to nudge down when `flowers_per_peduncle > 1`.
@@ -94,19 +94,19 @@ Running `python diffusion_based/eval/compare_flower_pod_masks.py` now yields:
 ### Core Codebase
 | File | Responsibility |
 |------|----------------|
-| [`diffusion_based/models/plant_organ_array.py`](../../../diffusion_based/models/plant_organ_array.py) | 40D Typed Organ representation, XML parser (`from_xml_file`), serialization bridge |
-| [`diffusion_based/models/helios_pytorch_geometry.py`](../../../diffusion_based/models/helios_pytorch_geometry.py) | 40D $\rightarrow$ 16D FK traversal (`extract_part_tensor`), GPU mesh builder (`build_mesh_from_part_tensor`) |
-| [`diffusion_based/models/helios_pytorch_renderer.py`](../../../diffusion_based/models/helios_pytorch_renderer.py) | Differentiable PyTorch renderer (RGB, Depth, Foreground Mask, Organ-Type Semantic Map) |
+| [`plant_recon/models/plant_organ_array.py`](../../../plant_recon/models/plant_organ_array.py) | 40D Typed Organ representation, XML parser (`from_xml_file`), serialization bridge |
+| [`plant_recon/models/helios_pytorch_geometry.py`](../../../plant_recon/models/helios_pytorch_geometry.py) | 40D $\rightarrow$ 16D FK traversal (`extract_part_tensor`), GPU mesh builder (`build_mesh_from_part_tensor`) |
+| [`plant_recon/models/helios_pytorch_renderer.py`](../../../plant_recon/models/helios_pytorch_renderer.py) | Differentiable PyTorch renderer (RGB, Depth, Foreground Mask, Organ-Type Semantic Map) |
 | [`archive/eval_scripts/generate_multimodal_outputs.py`](../../../archive/eval_scripts/generate_multimodal_outputs.py) | Multi-modal evaluation script generating Figure 8 |
 
 ### Verification Commands
 ```bash
 # 1. Run multi-modal rendering comparison across DAP 10, 50, 90
-python diffusion_based/eval/generate_multimodal_outputs.py
+python plant_recon/eval/generate_multimodal_outputs.py
 
 # 2. Inspect generated comparison figure
-# Output saved at: docs/results/assets/fig8_multimodal_depth_mask.png
+# Output saved at: docs/experiments/15-strategies-benchmark/assets/fig8_multimodal_depth_mask.png
 
 # 3. Verify exact quantitative metrics (IoU, MAE, 3D vertex error vs C++ GT)
-python diffusion_based/eval/test_eval_exact_gt.py
+python plant_recon/eval/test_eval_exact_gt.py
 ```

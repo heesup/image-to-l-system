@@ -108,11 +108,11 @@ to output `(base_rotation, internode_pitch, gravity, ...)` directly (large repre
 | Path | Description |
 |---|---|
 | `configs/params_cowpea.json` | gravitropic → `constant(200)` (committed change) |
-| `Digital-Crops/projects/syntheticdata_generation/main.cpp` | focus-plant margin 1.20→1.05 (committed change) |
-| `docs/results/assets/fig_python_world_reconstruction.png` | Python-world reconstruction demo (focus framing aligned) |
-| `docs/results/assets/fig_oneway_17d_to_xml_helios_exhaustive.png` | 17D→XML→Helios exhaustive (grav=200) |
-| `docs/results/assets/fig_grav_curvature_ab_test.png` | gravitropic tag A/B (load-path) |
-| `docs/done/20260831_pr_gravitropic_curvature_xml.md` | PR draft (superseded by `gravitropic=200` fix) |
+| `submodules/Digital-Crops/projects/syntheticdata_generation/main.cpp` | focus-plant margin 1.20→1.05 (committed change) |
+| `docs/archive/unreferenced-assets/fig_python_world_reconstruction.png` | Python-world reconstruction demo (focus framing aligned) |
+| `docs/archive/unreferenced-assets/fig_oneway_17d_to_xml_helios_exhaustive.png` | 17D→XML→Helios exhaustive (grav=200) |
+| `docs/engineering/20260831-pr-gravitropic-curvature/assets/fig_grav_curvature_ab_test.png` | gravitropic tag A/B (load-path) |
+| `docs/engineering/20260831-pr-gravitropic-curvature/20260831-pr-gravitropic-curvature.md` | PR draft (superseded by `gravitropic=200` fix) |
 
 ---
 
@@ -127,14 +127,14 @@ to output `(base_rotation, internode_pitch, gravity, ...)` directly (large repre
 
 ## 7. Key Code Locations
 
-- **17D part tensor columns:** `diffusion_based/models/plant_organ_array.py` (`P_COL_*`, NUM_FEATURES=17)
-- **17D→XML converter:** `diffusion_based/models/part_assembly_to_xml.py` (`PartAssemblyToXMLConverter`)
-- **Python renderer:** `diffusion_based/models/helios_pytorch_renderer.py`
+- **17D part tensor columns:** `plant_recon/models/plant_organ_array.py` (`P_COL_*`, NUM_FEATURES=17)
+- **17D→XML converter:** `plant_recon/models/part_assembly_to_xml.py` (`PartAssemblyToXMLConverter`)
+- **Python renderer:** `plant_recon/models/helios_pytorch_renderer.py`
   - `compute_focus_plant_camera` (5% margin, line ~141)
   - `render_part_tensor` (line ~758)
-- **Helios reload FK:** `Digital-Crops/libs/Helios/plugins/plantarchitecture/src/InputOutput.cpp`
+- **Helios reload FK:** `submodules/Digital-Crops/libs/Helios/plugins/plantarchitecture/src/InputOutput.cpp`
   - `recomputeInternodeOrientationVectors_local` (~line 1479)
   - internode segment loop with gravity (~line 1596)
 - **Helios growth:** `.../PlantArchitecture.cpp` — `Phytomer` ctor (~line 1520), `setInternodeLengthScaleFraction` (~line 2849)
-- **Helios focus-plant:** `Digital-Crops/projects/syntheticdata_generation/main.cpp` (~line 1729)
-- **Config sampling:** `Digital-Crops/projects/syntheticdata_generation/configs/params_cowpea.json`
+- **Helios focus-plant:** `submodules/Digital-Crops/projects/syntheticdata_generation/main.cpp` (~line 1729)
+- **Config sampling:** `submodules/Digital-Crops/projects/syntheticdata_generation/configs/params_cowpea.json`

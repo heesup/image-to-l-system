@@ -75,7 +75,7 @@ Verified: mesh built from 27D FM nodes is **bit-identical** to the 17D GT path
 
 ### 2.3 Duplicated FM layout constants removed (single source of truth)
 
-`diffusion_based/training/flow_matching.py` hardcoded a **16D-mismatched** copy of the
+`plant_recon/training/flow_matching.py` hardcoded a **16D-mismatched** copy of the
 FM constants (`FM_NODE_DIM = 26` with different indices). It now imports everything
 from `part_array_dataset.py`, so the layout cannot drift again.
 
@@ -148,15 +148,15 @@ organ block conditions the DiT to interpret each column family consistently.
 ## 4. Code Changes
 
 ```
-diffusion_based/dataset/part_array_dataset.py      # 27D layout (FM_BUD_IDX), BUD_STATE_SCALE,
+plant_recon/dataset/part_array_dataset.py      # 27D layout (FM_BUD_IDX), BUD_STATE_SCALE,
                                                    # standalone encode_fm + decode_fm (importable, GPU-safe):
                                                    # linear scale (no softplus), organ-aware normalization
                                                    # (meta*10, angle carriers /180), classmethods delegate
-diffusion_based/dataset/generate_tensor_shards.py  # nodes_27d via encode_fm() — the stale inline
+plant_recon/dataset/generate_tensor_shards.py  # nodes_27d via encode_fm() — the stale inline
                                                    # 26D hand-encoding (curv at old col14, no bud) removed
-diffusion_based/dataset/canonical_cowpea_dataset.py# __getitem__ uses encode_fm (was hand-rolled 26D)
-diffusion_based/training/flow_matching.py          # imports FM_* constants from part_array_dataset
-diffusion_based/models/helios_pytorch_geometry.py  # build_mesh_from_part_tensor: 26/27D FM decode
+plant_recon/dataset/canonical_cowpea_dataset.py# __getitem__ uses encode_fm (was hand-rolled 26D)
+plant_recon/training/flow_matching.py          # imports FM_* constants from part_array_dataset
+plant_recon/models/helios_pytorch_geometry.py  # build_mesh_from_part_tensor: 26/27D FM decode
                                                    # branch with proper inverse normalizations;
                                                    # extract_part_tensor: angle wrapping to [-180,180)
                                                    # (flower pitch/yaw/roll/azimuth, leaf pitch/yaw/roll,
@@ -242,7 +242,7 @@ went healthy:
 | 5 | **`38048780`** | **4 ranks × batch 32, grad-accum 1, global 128 — RUNNING** | ✅ live |
 
 The stale 26D checkpoint was archived as
-`diffusion_based/checkpoints/fm/cowpea_vlm_scaffold_dit_h100_ddp_stale26d_epoch08.pt`
+`outputs/checkpoints/fm/cowpea_vlm_scaffold_dit_h100_ddp_stale26d_epoch08.pt`
 (2.1 GB, epoch-8 TLE run) and `--resume` was removed from the SLURM script: fresh start.
 
 ### 7.2 Launcher de-hardcoded (`slurm_scripts/train_cowpea_vlm_scaffold_dit_ddp.sh`)
@@ -277,7 +277,7 @@ Epoch 01 [00075/00781] | Step Loss: 7.14 (v: 6.16, macro: 1.82, r_rgb: 0.37, r_d
   normalization works — no 30k explosion)
 - ~0.7 s/step, 781 steps/epoch → **≈ 9 min/epoch**, full 60-epoch run ≈ 9 h
   (fits 24 h wall with 3× margin)
-- Log: `slurm_scripts/logs/train_vlm_scaffold_38048780.log`
+- Log: `outputs/logs/train_vlm_scaffold_38048780.log`
 - Live probe: `srun --overlap --jobid=38048780 nvidia-smi` (login node's nvidia-smi
   shows an empty GPU list — not visible from the head node; use srun)
 
@@ -310,7 +310,7 @@ cheap since shard tooling is consolidated) or zero the perturbations in the corp
    `Loaded 100,000 samples across 1000 shards`.
 2. **Training: RUNNING (job 38048780).** Monitor v-loss descent; first checkpoint
    will be written by the training script's save cadence (verify a 27D checkpoint):
-   `ls -la diffusion_based/checkpoints/fm/cowpea_vlm_scaffold_dit_h100_ddp.pt`.
+   `ls -la outputs/checkpoints/fm/cowpea_vlm_scaffold_dit_h100_ddp.pt`.
 3. After epoch ~2–4: check the `--helios-roundtrip` eval column images for the
    17D→XML→Helios round-trip self-consistency Δ on generated plants.
 4. Decide follow-up for §8 perturbation-gap issue (17D → 19D vs zero the corpus).
@@ -321,7 +321,7 @@ cheap since shard tooling is consolidated) or zero the perturbations in the corp
 
 - **Live training**: SLURM job `38048780` (`vlm_mmdit_ddp`, 4×H100 NVL gpu-10-58,
   4 ranks × batch 32, global 128, `--helios-roundtrip`, fresh 27D shards, NO resume).
-- **Checkpoint watch**: `diffusion_based/checkpoints/fm/cowpea_vlm_scaffold_dit_h100_ddp.pt`
+- **Checkpoint watch**: `outputs/checkpoints/fm/cowpea_vlm_scaffold_dit_h100_ddp.pt`
   will now be 27D — the pre-rename `cowpea_vlm_scaffold_dit_h100_ddp_stale26d_epoch08.pt`
   is the incompatible 26D one. Do NOT mix them up.
 - Uncommitted code changes: `part_array_dataset.py`, `generate_tensor_shards.py`,
@@ -330,7 +330,7 @@ cheap since shard tooling is consolidated) or zero the perturbations in the corp
   (log de-hardcoding), `slurm_scripts/train_cowpea_vlm_scaffold_dit_ddp.sh`
   (N-rank launcher) — commit after run stability check.
 - Sharding (complete): jobs 38036260–38036299, all-referenced logs
-  `slurm_scripts/logs/unified_cowpea_20260831_150646/`.
+  `outputs/logs/unified_cowpea_20260831_150646/`.
 - `dataset/helios_data/cowpea_shard/` — **fresh 27D, valid, in use by 38048780**.
 - `dataset/helios_data/cowpea_shard_stale_26d_20260824/` — preserved old data, do not train on it.
 - Launcher caveat: `--master_port=0` hangs torchrun rendezvous on this stack

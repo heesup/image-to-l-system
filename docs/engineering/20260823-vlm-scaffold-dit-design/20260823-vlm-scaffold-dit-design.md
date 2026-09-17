@@ -119,7 +119,7 @@ $$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{flow}} + \lambda_{\text{macro}
 
 ## 5. Execution Roadmap for Phase 2
 
-1. **Step 1**: Load pretrained `dinov3_vitb14` via HuggingFace [facebook/dinov3](https://huggingface.co/collections/facebook/dinov3) or [GitHub](https://github.com/facebookresearch/dinov3) (`AutoModel.from_pretrained('facebook/dinov3-...')`) in `diffusion_based/models/vlm_vision_tower.py`.
+1. **Step 1**: Load pretrained `dinov3_vitb14` via HuggingFace [facebook/dinov3](https://huggingface.co/collections/facebook/dinov3) or [GitHub](https://github.com/facebookresearch/dinov3) (`AutoModel.from_pretrained('facebook/dinov3-...')`) in `plant_recon/models/vlm_vision_tower.py`.
 2. **Step 2**: Connect `ConditionalScaffoldPredictor` to the DINOv3 `[CLS]` token.
 3. **Step 3**: Implement Bridge Flow Matching in `CanonicalCowpeaDiTLargeModel` with cross-attention to DINOv3 `Patch` tokens.
 4. **Step 4**: Run 60-epoch DDP training on 2× H100 and benchmark against the baseline.

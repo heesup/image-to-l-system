@@ -66,10 +66,10 @@ During the setup of the large-scale Cowpea dataset synthesis pipeline for 100K F
 ### 2.4 Codebase Cleanup & Dataset Component Roles
 The roles of all dataset-related files are clearly decoupled:
 1. **`scripts/generate_helios_dataset.py`** [Phase 1 Engine]: Calls C++ Helios engine to simulate 3D plant growth and write XMLs to `dataset/helios_data/cowpea/`.
-2. **`diffusion_based/dataset/generate_tensor_shards.py`** [Phase 2 Engine]: Reads XMLs, performs GPU multi-view rendering + 26D organ encoding, and writes `.pt` tensor shards to `dataset/helios_data/cowpea_shard/`.
-3. **`diffusion_based/dataset/cowpea_shard_dataset.py`** [PyTorch DataLoader]: `PlantShardDataset` / `CowpeaShardDataset` streaming loader and dynamic collation for model training.
+2. **`plant_recon/dataset/generate_tensor_shards.py`** [Phase 2 Engine]: Reads XMLs, performs GPU multi-view rendering + 26D organ encoding, and writes `.pt` tensor shards to `dataset/helios_data/cowpea_shard/`.
+3. **`plant_recon/dataset/cowpea_shard_dataset.py`** [PyTorch DataLoader]: `PlantShardDataset` / `CowpeaShardDataset` streaming loader and dynamic collation for model training.
 4. **Deleted Obsolete Files**:
-   * Removed `diffusion_based/dataset/generate_cowpea_100k.py` (legacy stub).
+   * Removed `plant_recon/dataset/generate_cowpea_100k.py` (legacy stub).
    * Removed `slurm_scripts/generate_tensor_shards_jobs.sh` (merged into master pipeline).
    * Removed `slurm_scripts/generate_cowpea_dataset_jobs.sh` (merged into master pipeline).
 
@@ -91,7 +91,7 @@ image-to-l-system/
 │   └── helios_data/
 │       ├── cowpea/                         # [Raw XMLs] DAP 1~100 × 100 Seeds base 3D plant XMLs
 │       └── cowpea_shard/                   # [Shards] 100K 26D Flow Matching .pt tensor shards
-└── diffusion_based/
+└── plant_recon/
     ├── dataset/
     │   ├── generate_tensor_shards.py       # Standalone GPU rendering & tensor sharding engine
     │   ├── cowpea_shard_dataset.py         # PlantShardDataset (auto-fallback & dynamic batching)
@@ -142,7 +142,7 @@ ls -1 dataset/helios_data/cowpea_shard/*.pt | wc -l
 ### Step 2: Launch 232M DiT-Large Flow Matching Model Training
 Once shards are generated (or dynamically streamed):
 ```bash
-python diffusion_based/training/train_cowpea_dit_100k.py \
+python plant_recon/training/train_cowpea_dit_100k.py \
     --epochs 60 \
     --batch-size 32 \
     --lr 2e-4 \

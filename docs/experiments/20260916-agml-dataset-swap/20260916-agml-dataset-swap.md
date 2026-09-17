@@ -8,7 +8,7 @@ status: done
 # Swapping the Real-Image Dataset Source: Roboflow → AgML
 
 **Date**: September 16, 2026
-**Follows**: `docs/results/20260915_real_image_first_test.md` (the first real-image pass, Roboflow
+**Follows**: `docs/experiments/20260915-real-image-first-test/20260915-real-image-first-test.md` (the first real-image pass, Roboflow
 `gemini-breeding-eqsam/t4_plant_weed_seg`)
 **Request**: replace the Roboflow source with an AgML (https://github.com/Project-AgML/AgML) bean
 or cowpea bounding-box dataset and test it through the same pipeline.
@@ -35,16 +35,16 @@ batch/date range of the same field campaign, not an independent domain.
 
 ## 2. New/changed code
 
-- `real_world/download_agml_dataset.py` (new) — downloads via `agml.data.AgMLDataLoader`, converts
+- `use_cases/real_world/download_agml_dataset.py` (new) — downloads via `agml.data.AgMLDataLoader`, converts
   the COCO `annotations.json` to YOLO-detection format (images/labels/data.yaml, 80/15/15
   train/valid/test split by image), matching the Roboflow downloader's on-disk convention so every
   downstream script is unchanged.
-- `real_world/dataset/real_plant_crop_utils.py::bbox_to_mask` (new) — `detect_plants` now falls back
+- `use_cases/real_world/dataset/real_plant_crop_utils.py::bbox_to_mask` (new) — `detect_plants` now falls back
   to a bounding-box-rectangle mask when the detector has no segmentation output, instead of leaving
   `PlantDetection.mask = None` (see §4).
-- Detector: `real_world/detector/train_yolo_detector.py --weights yolo11n.pt` (plain detection, not
+- Detector: `use_cases/real_world/detector/train_yolo_detector.py --weights yolo11n.pt` (plain detection, not
   `-seg` — this source has no polygons), 100 epochs, same script used for the Roboflow detector.
-  Weights at `slurm_scripts/logs/20260916/agml_plant_detector/weights/best.pt`.
+  Weights at `outputs/logs/20260916/agml_plant_detector/weights/best.pt`.
 
 ## 3. Detector result
 
@@ -58,12 +58,12 @@ instance segmentation, and/or this export's boxes are cleaner.
 
 ## 4. Running Approach 1 / Approach 2 on the new images
 
-Both `real_world/eval/run_approach1_cold.py` and `run_approach2_refine.py` ran end-to-end against
-`real_world/data/agml_gemini_plant_detection_2022/test/images/*.jpg` with `--detector_weights`
+Both `use_cases/real_world/eval/run_approach1_cold.py` and `run_approach2_refine.py` ran end-to-end against
+`use_cases/real_world/data/agml_gemini_plant_detection_2022/test/images/*.jpg` with `--detector_weights`
 pointed at the new checkpoint, unchanged otherwise — no code changes were needed for that part, only
 for the mask fallback below.
 
-**First pass, no mask at all** (`docs/results/assets/20260916_agml_real_image_test.png`): reproduced
+**First pass, no mask at all** (`docs/archive/unreferenced-assets/20260916_agml_real_image_test.png`): reproduced
 the project's known "canvas inflation" failure — organs growing into large flat polygons that fill
 the crop — on most of the 6 plants, despite the script's `scale_clip_mult=1.5` / `reg_pos=20.0`
 defaults (the fix the 2026-09-15 report found and set as the new defaults). Root cause: this
@@ -73,7 +73,7 @@ inflation" bug's original cause on 2026-09-15 (a real but zoom-saturated segment
 
 **Fix attempt: `bbox_to_mask`** — gave `detect_plants` a bounding-box-rectangle mask fallback so a
 box-only detector still has *some* real silhouette bound, tighter than a depth threshold. Re-ran
-(`docs/results/assets/20260916_agml_real_image_test_bboxmask.png`): **the inflation is still there**
+(`docs/archive/unreferenced-assets/20260916_agml_real_image_test_bboxmask.png`): **the inflation is still there**
 on most plants, materially unchanged from the no-mask pass. A rectangle around a small, young,
 already-undersized seedling is itself loose — most of the box is bare soil, not canopy — so filling
 it still costs the optimizer little more than filling a depth blob did. The existing hard clamp
@@ -83,7 +83,7 @@ can still read as "one large flat leaf" against a target this loose.
 ## 5. A tighter clip helps partially, not fully
 
 Re-ran Approach 2 with `--scale_clip_mult 1.1` (vs. the 1.5 default) on the same 6 crops
-(`docs/results/assets/20260916_agml_real_image_test_tightclip.png`): **1 of 6 plants** (DAP 77,
+(`docs/archive/unreferenced-assets/20260916_agml_real_image_test_tightclip.png`): **1 of 6 plants** (DAP 77,
 the smallest cold start) now stays a small, plausible branching structure through refinement
 (nodes moved 0.8 cm, no inflation) — genuinely fixed. The other 5 still inflate into the same flat
 polygons, materially unchanged from `scale_clip_mult=1.5`. So a tighter multiplicative clip *does*
@@ -104,7 +104,7 @@ first.
 Follow-up the same day, prompted by a direct question about what "checking the scale field
 packing convention" actually requires: `scale0` (`phytomer_scale`, the Stage-3 flow ODE's
 `geom[..., 5:8]` slice, see `geometry_from_flow` in
-`diffusion_based/models/hierarchical_part_flow_matching.py`) is in FM units, `metres =
+`plant_recon/models/hierarchical_part_flow_matching.py`) is in FM units, `metres =
 FM_units / SCALE_SCALE(50)`, three components `[length, radius, unused]`. Measured it directly
 on cold-start (`sample_ode`, before any refinement) predictions for 20 AgML plants
 (`/tmp/.../diag_scale0.py`, not checked in — a one-off), split by whether the node is live
@@ -136,7 +136,7 @@ every organ in the packet by this one row linearly, so a sign flip changes the w
 geometry, not just its size.
 
 Re-ran Approach 2 on the same 6 AgML plants as §4–5 with the new defaults
-(`docs/results/assets/20260916_agml_real_image_test_scale_abs_max_calibrated.png`): **6 of 6
+(`docs/archive/unreferenced-assets/20260916_agml_real_image_test_scale_abs_max_calibrated.png`): **6 of 6
 plants stay small and plant-shaped through refinement — no flat-polygon inflation on any of
 them**, up from 1/6 with the best multiplicative-clip attempt (`scale_clip_mult=1.1`, §5). Node
 positions barely move under this setting (`nodes moved 0.0cm` on all 6, one decimal place) —
