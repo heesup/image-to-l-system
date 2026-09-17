@@ -57,9 +57,9 @@ if camera_poses is not None:
     img_feats = img_feats + pose_emb
 ```
 
-### B. Dataset & Training Integration ([`dataset/plant3d_dataset.py`](../../../dataset/plant3d_dataset.py), `train_diffusion_3d.py`)
+### B. Dataset & Training Integration ([`dataset/plant3d_dataset.py`](../../../archive/dataset_legacy/plant3d_dataset.py), `train_diffusion_3d.py`)
 
-1. **Dataset ([`plant3d_dataset.py`](../../../dataset/plant3d_dataset.py))**: Adds `camera_pose = tensor([0.0, 0.0])` returned per sample.
+1. **Dataset ([`plant3d_dataset.py`](../../../archive/dataset_legacy/plant3d_dataset.py))**: Adds `camera_pose = tensor([0.0, 0.0])` returned per sample.
 2. **Training Loop (`train_diffusion_3d.py`)**: Extracts `gt_poses = torch.stack([s["camera_pose"] for s in four_samples]).to(device)` and forwards it via `forward(..., camera_poses=gt_poses)`.
 3. **Inference Visualization (`visualize_diffusion_3d.py`)**: Applies camera pose condition during 50-step reverse diffusion denoising via `sample_reverse_diffusion_3d(..., camera_pose=sample["camera_pose"])`.
 
@@ -87,7 +87,7 @@ $$\mathcal{L}_{\text{render}} = \left\| R(G_{3D}, \mathbf{P}_{\text{cam}}) - I_{
 ## 5. Complex 3D Plant Structure Training Results
 
 ### (1) Dataset Structure (29-Node Plant)
-In [`plant3d_dataset.py`](../../../dataset/plant3d_dataset.py), complex 3D plants with **29 total nodes (11 stems + 18 leaves, depth 3-4 multi-level 3D branching structure)** were generated:
+In [`plant3d_dataset.py`](../../../archive/dataset_legacy/plant3d_dataset.py), complex 3D plants with **29 total nodes (11 stems + 18 leaves, depth 3-4 multi-level 3D branching structure)** were generated:
 
 - **Level 0**: Main stem (Node 0 $\rightarrow$ Node 1)
 - **Level 1**: 3 main 3D branches (Node 2: Left-Front, Node 3: Right-Back, Node 4: Center-Up)

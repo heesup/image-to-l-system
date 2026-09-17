@@ -16,7 +16,7 @@ status: active
 > wandb to `outputs/wandb/`, the real-image track to `use_cases/real_world/`, Digital-Crops to
 > `submodules/Digital-Crops/`, and the VLM track to `archive/lm_based/`. Paths in this guide
 > have been bulk-updated accordingly; see
-> [`docs/architecture/code-structure/code-structure.md`](../architecture/code-structure/code-structure.md).
+> [`docs/architecture/code-structure/code-structure.md`](../../architecture/code-structure/code-structure.md).
 
 > **Takeover for Claude Code (2026-09-14):** this guide is the handover doc. Claude Code session
 > memory additionally lives outside the repo at `~/.claude/projects/-home-lion397-codes-image-to-l-system/memory/*.md`
