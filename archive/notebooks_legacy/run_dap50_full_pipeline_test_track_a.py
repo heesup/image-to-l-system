@@ -27,13 +27,13 @@ repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.helios_xml_parser import HeliosXMLParser, OrganNode3D
-from diffusion_based.models.legacy.helios_xml_writer_track_a import write_organ_nodes_to_xml
-from diffusion_based.models.legacy.helios_geometry_track_a import nodes_to_geometry_torch
-from diffusion_based.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
-from diffusion_based.models.legacy.differentiable_pipeline_track_a import DifferentiableHeliosRenderer
-from diffusion_based.models.legacy.graph_diffuser_3d_track_a import PlantGraphDiffuser3D
-from diffusion_based.training.train_diffusion_3d import DDPMScheduler, compute_losses
+from plant_recon.models.helios_xml_parser import HeliosXMLParser, OrganNode3D
+from plant_recon.models.legacy.helios_xml_writer_track_a import write_organ_nodes_to_xml
+from plant_recon.models.legacy.helios_geometry_track_a import nodes_to_geometry_torch
+from plant_recon.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
+from plant_recon.models.legacy.differentiable_pipeline_track_a import DifferentiableHeliosRenderer
+from plant_recon.models.legacy.graph_diffuser_3d_track_a import PlantGraphDiffuser3D
+from plant_recon.training.train_diffusion_3d import DDPMScheduler, compute_losses
 
 
 def setup_display_env() -> dict:
@@ -433,7 +433,7 @@ def phase3_inference_and_evaluation(
     print(f"[PASS] Saved inferred DAP 50 XML to: {pred_xml_path}")
     
     # 3. Render Differentiable Prediction vs Target Differentiable Render
-    from diffusion_based.models.legacy.helios_geometry_track_a import build_helios_geometry_from_nodes
+    from plant_recon.models.legacy.helios_geometry_track_a import build_helios_geometry_from_nodes
     rasterizer = HeliosGeometryRasterizer(image_size=image_size).to(device)
     geom_pred = build_helios_geometry_from_nodes(organ_nodes)
     diff_pred_rgba = rasterizer.render_numpy_geometry(
@@ -562,7 +562,7 @@ def phase3_inference_and_evaluation(
 
 def main():
     output_dir = os.path.join(repo_root, "notebooks", "output_dap50_pipeline")
-    save_path = os.path.join(repo_root, "diffusion_based", "checkpoints", "diffusion_3d_dap50.pt")
+    save_path = os.path.join(repo_root, "plant_recon", "checkpoints", "diffusion_3d_dap50.pt")
     
     # Phase 1: Generate Dataset (10 seeds for DAP 50 mature architecture)
     seeds = list(range(42, 52))

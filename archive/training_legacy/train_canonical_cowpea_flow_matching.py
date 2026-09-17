@@ -19,10 +19,10 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.dataset.canonical_cowpea_dataset import CanonicalCowpeaDataset, canonical_collate_fn
-from diffusion_based.dataset.part_array_dataset import EMPTY_IDX
-from diffusion_based.models.canonical_cowpea_dit import CanonicalCowpeaDiTModel
-from diffusion_based.training.flow_matching import FlowMatchingScheduler, FM_OT_END, FM_BASE_START, FM_BASE_END, FM_ROT_START, FM_ROT_END, FM_SCALE_START, FM_SCALE_END
+from plant_recon.dataset.canonical_cowpea_dataset import CanonicalCowpeaDataset, canonical_collate_fn
+from plant_recon.dataset.part_array_dataset import EMPTY_IDX
+from plant_recon.models.canonical_cowpea_dit import CanonicalCowpeaDiTModel
+from plant_recon.training.flow_matching import FlowMatchingScheduler, FM_OT_END, FM_BASE_START, FM_BASE_END, FM_ROT_START, FM_ROT_END, FM_SCALE_START, FM_SCALE_END
 
 
 def train_canonical_cowpea(
@@ -30,7 +30,7 @@ def train_canonical_cowpea(
     batch_size: int = 32,
     lr: float = 3e-4,
     data_root: str = "dataset/helios_data/cowpea",
-    ckpt_dir: str = "diffusion_based/checkpoints/fm",
+    ckpt_dir: str = "plant_recon/checkpoints/fm",
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(ckpt_dir, exist_ok=True)

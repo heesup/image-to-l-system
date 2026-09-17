@@ -20,11 +20,11 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.legacy.vit_image_to_organ_array_40d import ViTImageToOrganArray, ViTOrganArrayDiffuser
-from diffusion_based.models.legacy.organ_array_diffuser_40d import PlantOrganArrayDiffuser
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
-from diffusion_based.models.plant_organ_array import PlantOrganArray
-from diffusion_based.dataset.legacy.organ_array_dataset_40d import OrganArrayDataset
+from plant_recon.models.legacy.vit_image_to_organ_array_40d import ViTImageToOrganArray, ViTOrganArrayDiffuser
+from plant_recon.models.legacy.organ_array_diffuser_40d import PlantOrganArrayDiffuser
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.plant_organ_array import PlantOrganArray
+from plant_recon.dataset.legacy.organ_array_dataset_40d import OrganArrayDataset
 
 
 def compute_ssim_numpy(img1: np.ndarray, img2: np.ndarray) -> float:
@@ -132,8 +132,8 @@ def prepare_image_input(img_t: torch.Tensor, target_size: int, device: torch.dev
 
 def main():
     parser = argparse.ArgumentParser(description="Method 1 vs Method 2 Comparison Report")
-    parser.add_argument("--method1_ckpt", type=str, default="diffusion_based/checkpoints/vit_backprop_vit.pt")
-    parser.add_argument("--method2_ckpt", type=str, default="diffusion_based/checkpoints/organ_array_diffuser_norm.pt")
+    parser.add_argument("--method1_ckpt", type=str, default="plant_recon/checkpoints/vit_backprop_vit.pt")
+    parser.add_argument("--method2_ckpt", type=str, default="plant_recon/checkpoints/organ_array_diffuser_norm.pt")
     parser.add_argument("--data_root", type=str, default="dataset/helios_data")
     parser.add_argument("--pattern", type=str, default="*seed09*")
     parser.add_argument("--output_dir", type=str, default="docs/results")

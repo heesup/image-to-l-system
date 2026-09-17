@@ -18,11 +18,11 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.part_flow_matching import PartFlowMatchingModel
-from diffusion_based.training.flow_matching import FlowMatchingScheduler, FM_OT_END, FM_BASE_START, FM_BASE_END, FM_ROT_START, FM_ROT_END, FM_SCALE_START, FM_SCALE_END, FM_CURV_IDX, FM_PHYLLO_IDX
-from diffusion_based.models.part_assembly_to_xml import PartAssemblyToXMLConverter
-from diffusion_based.models.plant_organ_array import PlantOrganArray, P_COL_ORGAN_TYPE, P_COL_BASE_X, P_COL_BASE_Y, P_COL_BASE_Z, P_COL_ROT_0, P_COL_ROT_5, P_COL_SCALE_X, P_COL_SCALE_Y, P_COL_SCALE_Z, P_COL_EXISTENCE, P_COL_CURVATURE, P_COL_PHYLLOTACTIC_ANGLE, NUM_FEATURES_PART
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.part_flow_matching import PartFlowMatchingModel
+from plant_recon.training.flow_matching import FlowMatchingScheduler, FM_OT_END, FM_BASE_START, FM_BASE_END, FM_ROT_START, FM_ROT_END, FM_SCALE_START, FM_SCALE_END, FM_CURV_IDX, FM_PHYLLO_IDX
+from plant_recon.models.part_assembly_to_xml import PartAssemblyToXMLConverter
+from plant_recon.models.plant_organ_array import PlantOrganArray, P_COL_ORGAN_TYPE, P_COL_BASE_X, P_COL_BASE_Y, P_COL_BASE_Z, P_COL_ROT_0, P_COL_ROT_5, P_COL_SCALE_X, P_COL_SCALE_Y, P_COL_SCALE_Z, P_COL_EXISTENCE, P_COL_CURVATURE, P_COL_PHYLLOTACTIC_ANGLE, NUM_FEATURES_PART
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 
 
 def compute_iou(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
@@ -66,7 +66,7 @@ def main():
     print(f"Running Pure Gaussian Noise Flow Matching + Depth Shape Evaluation on {device}...")
 
     # Load 73M Cowpea DiT Model Checkpoint
-    ckpt_path = os.path.join(repo_root, "diffusion_based", "checkpoints", "fm", "part_flow_matching_epoch60.pt")
+    ckpt_path = os.path.join(repo_root, "plant_recon", "checkpoints", "fm", "part_flow_matching_epoch60.pt")
     ckpt = torch.load(ckpt_path, map_location=device)
     
     model = PartFlowMatchingModel(

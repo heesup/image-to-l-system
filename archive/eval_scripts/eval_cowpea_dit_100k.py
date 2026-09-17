@@ -22,11 +22,11 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.canonical_cowpea_dit_large import CanonicalCowpeaDiTLargeModel
-from diffusion_based.models.plant_organ_array import PlantOrganArray, NUM_FEATURES_PART
-from diffusion_based.models.part_assembly_to_xml import PartAssemblyToXMLConverter
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
-from diffusion_based.dataset.part_array_dataset import (
+from plant_recon.models.canonical_cowpea_dit_large import CanonicalCowpeaDiTLargeModel
+from plant_recon.models.plant_organ_array import PlantOrganArray, NUM_FEATURES_PART
+from plant_recon.models.part_assembly_to_xml import PartAssemblyToXMLConverter
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.dataset.part_array_dataset import (
     ORGAN_CATEGORIES, EMPTY_IDX, FM_NODE_DIM, FM_OT_END,
     FM_BASE_START, FM_BASE_END, FM_ROT_START, FM_ROT_END,
     FM_SCALE_START, FM_SCALE_END, FM_CURV_IDX, FM_PHYLLO_IDX
@@ -82,9 +82,9 @@ def main():
         ckpt_path = args.checkpoint
     else:
         candidates = [
-            os.path.join(repo_root, "diffusion_based", "checkpoints", "fm", "cowpea_dit_large_2xh100_ddp.pt"),
-            os.path.join(repo_root, "diffusion_based", "checkpoints", "fm", "cowpea_dit_large_150m.pt"),
-            os.path.join(repo_root, "diffusion_based", "checkpoints", "fm", "test_large.pt"),
+            os.path.join(repo_root, "plant_recon", "checkpoints", "fm", "cowpea_dit_large_2xh100_ddp.pt"),
+            os.path.join(repo_root, "plant_recon", "checkpoints", "fm", "cowpea_dit_large_150m.pt"),
+            os.path.join(repo_root, "plant_recon", "checkpoints", "fm", "test_large.pt"),
         ]
         ckpt_path = next((c for c in candidates if os.path.exists(c)), None)
         if ckpt_path is None:

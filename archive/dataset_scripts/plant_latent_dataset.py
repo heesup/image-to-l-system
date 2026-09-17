@@ -15,8 +15,8 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 from PIL import Image
 
-from diffusion_based.models.plant_organ_array import PlantOrganArray
-from diffusion_based.models.plant_vae import PlantOrganVAE
+from plant_recon.models.plant_organ_array import PlantOrganArray
+from plant_recon.models.plant_vae import PlantOrganVAE
 
 
 class PlantLatentDataset(Dataset):
@@ -30,7 +30,7 @@ class PlantLatentDataset(Dataset):
         image_size: int = 128,
         max_organs: int = 1600,
         vae_model: Optional[PlantOrganVAE] = None,
-        vae_ckpt: str = "diffusion_based/checkpoints/plant_organ_vae_best.pt",
+        vae_ckpt: str = "plant_recon/checkpoints/plant_organ_vae_best.pt",
         device: str = "cpu",
         max_samples: Optional[int] = None,
     ):

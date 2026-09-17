@@ -5,7 +5,7 @@ Unit test for Plant Organ Array Tensor (N, 78) XML round-trip text identity veri
 import os
 import glob
 import sys
-from diffusion_based.models.plant_organ_array import PlantOrganArray
+from plant_recon.models.plant_organ_array import PlantOrganArray
 
 
 def normalize_xml(xml_str: str) -> str:

@@ -14,8 +14,8 @@ import numpy as np
 from typing import List, Dict, Tuple, Optional
 from skimage.metrics import structural_similarity as ssim
 
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
-from diffusion_based.models.plant_organ_array import PlantOrganArray
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.plant_organ_array import PlantOrganArray
 
 
 def compute_ssim_torch(pred_rgb: torch.Tensor, gt_rgb: torch.Tensor) -> float:

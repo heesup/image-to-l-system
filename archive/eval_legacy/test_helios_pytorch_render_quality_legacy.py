@@ -1,7 +1,7 @@
 """
 Quantitative & Visual Evaluation Script for PyTorch Helios Renderer using PlantOrganArray Tensor.
 Compares PyTorch plant renders directly against Helios C++ visualizer reference images (_vis.jpeg).
-Saves output figure directly to project folder `diffusion_based/eval/output`.
+Saves output figure directly to project folder `plant_recon/eval/output`.
 """
 
 import os
@@ -11,9 +11,9 @@ import torch
 from PIL import Image
 import matplotlib.pyplot as plt
 
-from diffusion_based.models.plant_organ_array import PlantOrganArray
-from diffusion_based.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.plant_organ_array import PlantOrganArray
+from plant_recon.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 
 
 def compute_ssim(img1: np.ndarray, img2: np.ndarray) -> float:
@@ -55,7 +55,7 @@ def compute_iou(mask1: np.ndarray, mask2: np.ndarray) -> float:
 def evaluate_render_quality(
     xml_path: str,
     helios_img_path: str,
-    output_dir: str = "diffusion_based/eval/output",
+    output_dir: str = "plant_recon/eval/output",
     azimuth_deg: float = 0.0,
     elevation_deg: float = 90.0,
     use_generic_leaves: bool = True
@@ -154,7 +154,7 @@ if __name__ == "__main__":
         "--helios-img",
         default="/home/lion397/codes/image-to-l-system/Digital-Crops/projects/syntheticdata_generation/build/output/cowpea_dap005_seed00_caz000_h1.0_se045_saz180_0000_vis.jpeg"
     )
-    parser.add_argument("--output-dir", default="diffusion_based/eval/output")
+    parser.add_argument("--output-dir", default="plant_recon/eval/output")
     parser.add_argument("--azimuth", type=float, default=0.0)
     parser.add_argument("--elevation", type=float, default=90.0)
     parser.add_argument("--generic-leaves", action="store_true", default=False)

@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from diffusion_based.models.plant_organ_array import (
+from plant_recon.models.plant_organ_array import (
     PlantOrganArray,
     NUM_FEATURES_TYPED,
     NUM_ORGAN_TYPES,

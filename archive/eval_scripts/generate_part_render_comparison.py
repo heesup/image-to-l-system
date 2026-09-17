@@ -23,7 +23,7 @@ repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.plant_organ_array import PlantOrganArray
+from plant_recon.models.plant_organ_array import PlantOrganArray
 
 
 def compute_metrics(img1: np.ndarray, img2: np.ndarray):
@@ -53,7 +53,7 @@ def main():
         {"name": "DAP 100 (Flowering & Pods)", "xml": "dap100_gt_0000_plant_0000.xml", "gt_img": "dap100_gt_0000_vis.jpeg", "params": "dap100_gt_0000_params.json"},
     ]
 
-    from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+    from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
     renderer = HeliosPyTorchRenderer(image_size=512)
 
     fig, axes = plt.subplots(len(samples), 3, figsize=(15, 4.5 * len(samples)))

@@ -33,16 +33,17 @@ This directory consolidates legacy, historical, and exploratory scripts accumula
 | Directory | Original Path | Era | Description |
 |-----------|---------------|-----|-------------|
 | [`root_legacy/`](root_legacy/) | `legacy/` | Track-A / Aug 12 | Original differentiable renderer, 15D graph diffuser, and early verification scripts. |
-| [`models_legacy/`](models_legacy/) | `diffusion_based/models/legacy/` | 40D / Track-A | Historical models: `plant_global_vae.py`, `plant_shoot_vae.py`, `plant_pure_transformer_vae.py`, `vit_grpo_policy_40d.py`, `organ_array_diffuser_40d.py`. |
-| [`training_legacy/`](training_legacy/) | `diffusion_based/training/legacy/` | 40D / Track-A | Historical training scripts: `train_40d_flow_matching.py`, `train_plant_vae.py`, `train_vit_grpo_40d.py`, `train_vit_backprop_40d.py`. |
-| [`eval_legacy/`](eval_legacy/) | `diffusion_based/eval/legacy/` | 40D / Track-A | Historical evaluation: 40D backprop demo, 15-strategy deep benchmark, VAE comparison scripts. |
-| [`eval_scripts/`](eval_scripts/) | `diffusion_based/eval/test_comparison_*.py` | 40D / Aug 23 | Standalone renderer comparison scripts (`test_comparison_all_renderers_script.py`, `test_comparison_including_40d_script.py`). |
-| [`dataset_legacy/`](dataset_legacy/) | `diffusion_based/dataset/legacy/` | 40D | `organ_array_dataset_40d.py` (40D dataset loader). |
+| [`models_legacy/`](models_legacy/) | `plant_recon/models/legacy/` | 40D / Track-A | Historical models: `plant_global_vae.py`, `plant_shoot_vae.py`, `plant_pure_transformer_vae.py`, `vit_grpo_policy_40d.py`, `organ_array_diffuser_40d.py`. |
+| [`training_legacy/`](training_legacy/) | `plant_recon/training/legacy/` | 40D / Track-A | Historical training scripts: `train_40d_flow_matching.py`, `train_plant_vae.py`, `train_vit_grpo_40d.py`, `train_vit_backprop_40d.py`. |
+| [`eval_legacy/`](eval_legacy/) | `plant_recon/eval/legacy/` | 40D / Track-A | Historical evaluation: 40D backprop demo, 15-strategy deep benchmark, VAE comparison scripts. |
+| [`eval_scripts/`](eval_scripts/) | `plant_recon/eval/test_comparison_*.py` | 40D / Aug 23 | Standalone renderer comparison scripts (`test_comparison_all_renderers_script.py`, `test_comparison_including_40d_script.py`). |
+| [`dataset_legacy/`](dataset_legacy/) | `plant_recon/dataset/legacy/` + root `dataset/` Track-A loaders | 40D / Track-A | `organ_array_dataset_40d.py` (40D dataset loader) plus `helios_dataset.py` and `plant3d_dataset.py`, the root `dataset/` package's Track-A loaders used only by `eval_legacy/`/`training_legacy/` (2026-09-16: `dataset/` is now data-only). |
 | [`dataset_raw_legacy/`](dataset_raw_legacy/) | `dataset/legacy/` | Track-A | `generate_helios_dataset_track_a.py` and old `helios_xml_parser.py`. |
-| [`notebooks_legacy/`](notebooks_legacy/) | `notebooks/legacy/` | Track-A | Timing comparisons, leaflet mesh benchmarks, and DAP stability tests. |
+| [`notebooks_legacy/`](notebooks_legacy/) | `notebooks/` | Track-A | Notebooks + figures from the Track-A renderer era, merged with the existing `notebooks/legacy/` archive on 2026-09-16 (`notebooks/` is gone). |
 | [`scripts_legacy/`](scripts_legacy/) | `scripts/legacy/` | Track-A | Legacy notebook creation helpers. |
-| [`tests_render_legacy/`](tests_render_legacy/) | `diffusion_based/tests/legacy/` | 40D | `verify_rendering_equivalence_40d.py`. |
+| [`tests_render_legacy/`](tests_render_legacy/) | `plant_recon/tests/legacy/` | 40D | `verify_rendering_equivalence_40d.py`. |
 | [`tests_unit_legacy/`](tests_unit_legacy/) | `tests/unit/legacy/` | 40D | 40D unit test suite (`test_part_representation_40d.py`, `test_plant_organ_array_image_backprop_40d.py`, `test_plant_organ_array_xml_roundtrip_40d.py`). |
+| [`lm_based/`](lm_based/) | `lm_based/` | Aug 2026 | The independent VLM/grammar-token track (SFT + render-in-the-loop RL over L-system tokens), archived 2026-09-16 — superseded by the `plant_recon/` phytomer pipeline. Its L-system data layer (`lsystem.py`, `renderer.py`, `generator.py`, `dataloader.py`, `graph_extractor.py`) moved with it into `lm_based/dataset/` and stays importable via `from archive.lm_based.dataset import ...`. |
 | [`scratch/`](scratch/) | `scratch/` | Aug 23 - Aug 25 | Active working snapshots: ground clipping verification, multi-species round-trip scripts, XML PR comparison tools, and direct optimization debug scripts. |
 | [`scratch/20260903_phase1_basics/`](scratch/20260903_phase1_basics/) | `scratch/` | Sep 3 - Sep 4 | Phase-1 "back-to-basics" five-method comparison (unifoliate target generation, per-organ ICP, differentiable-renderer direct optimization, toy flow matching, over/under-allocation, dimension coverage/recovery) plus `phase2_core.py` anti-erasure core and its `*_recon_14d.pt` artifacts. See [`docs/engineering/20260903-back-to-basics/20260903-back-to-basics.md`](../docs/engineering/20260903-back-to-basics/20260903-back-to-basics.md). |
 | [`scratch/20260906_eval_500ep/`](scratch/20260906_eval_500ep/) | `scratch/` | Sep 6 - Sep 8 | Option B 500-epoch evaluation runners and panel/figure scripts (epoch-50/500 eval, 7/8-column panels, latent flow/train-step smoke tests, class-mismatch debug). |
@@ -53,11 +54,11 @@ This directory consolidates legacy, historical, and exploratory scripts accumula
 ## 🔄 Canonical Active Pipeline Mapping
 
 For current production code, refer to:
-- **XML Parsing & Serialization**: `diffusion_based/models/plant_organ_array.py` (40D Typed format)
-- **16D Part Extraction & FK**: `diffusion_based/models/helios_pytorch_geometry.py` (`extract_part_tensor`)
-- **Fast GPU Mesh Building**: `diffusion_based/models/helios_pytorch_geometry.py` (`build_mesh_from_part_tensor`)
-- **Multi-Modal Differentiable Renderer**: `diffusion_based/models/helios_pytorch_renderer.py` (`render_part_tensor`, `render_multimodal`)
-- **DiT-Large Flow Matching Training**: `diffusion_based/training/train_cowpea_dit_100k_ddp.py`
+- **XML Parsing & Serialization**: `plant_recon/models/plant_organ_array.py` (40D Typed format)
+- **16D Part Extraction & FK**: `plant_recon/models/helios_pytorch_geometry.py` (`extract_part_tensor`)
+- **Fast GPU Mesh Building**: `plant_recon/models/helios_pytorch_geometry.py` (`build_mesh_from_part_tensor`)
+- **Multi-Modal Differentiable Renderer**: `plant_recon/models/helios_pytorch_renderer.py` (`render_part_tensor`, `render_multimodal`)
+- **DiT-Large Flow Matching Training**: `plant_recon/training/train_cowpea_dit_100k_ddp.py`
 
 ---
 

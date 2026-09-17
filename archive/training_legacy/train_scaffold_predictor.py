@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.insert(0, REPO_ROOT)
 
-from diffusion_based.dataset.part_array_dataset import (
+from plant_recon.dataset.part_array_dataset import (
     PartArrayDataset,
     EMPTY_IDX,
     P_COL_BASE_X,
@@ -33,7 +33,7 @@ from diffusion_based.dataset.part_array_dataset import (
     BASE_SCALE,
     SCALE_SCALE,
 )
-from diffusion_based.models.conditional_scaffold_predictor import ConditionalScaffoldPredictor
+from plant_recon.models.conditional_scaffold_predictor import ConditionalScaffoldPredictor
 
 
 def main():
@@ -43,7 +43,7 @@ def main():
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--checkpoint_dir", type=str, default="diffusion_based/checkpoints/fm")
+    parser.add_argument("--checkpoint_dir", type=str, default="plant_recon/checkpoints/fm")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

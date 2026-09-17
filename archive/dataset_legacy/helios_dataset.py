@@ -25,7 +25,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 
-from diffusion_based.models.plant_organ_array import (
+from plant_recon.models.plant_organ_array import (
     PlantOrganArray,
     P_COL_EXISTENCE,
     P_COL_ORGAN_TYPE,

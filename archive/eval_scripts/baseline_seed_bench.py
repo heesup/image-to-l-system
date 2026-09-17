@@ -5,7 +5,7 @@ import argparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from diffusion_based.eval.dap30_multi_seed_panel import process_seed
+from plant_recon.eval.dap30_multi_seed_panel import process_seed
 
 
 def main():
@@ -16,7 +16,7 @@ def main():
     args = parser.parse_args()
 
     for seed in args.seeds:
-        res = process_seed(args.base_dir, seed, "diffusion_based/eval/output", use_generic_leaves=args.generic_leaves, time_helios=False)
+        res = process_seed(args.base_dir, seed, "plant_recon/eval/output", use_generic_leaves=args.generic_leaves, time_helios=False)
         print(f"\nSeed {seed}: GT={res['helios_mask'].sum()}, PyTorch={res['pytorch_mask'].sum()}, IoU={res['iou']:.4f}, Dice={res['dice']:.4f}")
 
 

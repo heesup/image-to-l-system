@@ -13,8 +13,8 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.plant_organ_array import PlantOrganArray, sort_typed_organ_array_canonical
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.plant_organ_array import PlantOrganArray, sort_typed_organ_array_canonical
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 
 
 def verify_equivalence():
@@ -23,7 +23,7 @@ def verify_equivalence():
 
     xml_files = sorted(glob.glob("dataset/helios_data/*_plant_*.xml"))[:10]
     if not xml_files:
-        xml_files = sorted(glob.glob("diffusion_based/eval/output/*.xml"))[:5]
+        xml_files = sorted(glob.glob("plant_recon/eval/output/*.xml"))[:5]
 
     if not xml_files:
         print("No XML files found to test.")
@@ -39,7 +39,7 @@ def verify_equivalence():
 
         # Parse without canonical sorting (raw order from XML)
         import xml.etree.ElementTree as ET
-        from diffusion_based.models.plant_organ_array import NUM_FEATURES_TYPED
+        from plant_recon.models.plant_organ_array import NUM_FEATURES_TYPED
         root = ET.fromstring(xml_text)
         # Load typed array (which now has canonical sorting)
         array_sorted = PlantOrganArray.from_xml_string_typed(xml_text)

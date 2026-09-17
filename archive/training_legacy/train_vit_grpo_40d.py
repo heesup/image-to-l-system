@@ -19,11 +19,11 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.legacy.vit_image_to_organ_array_40d import ViTImageToOrganArray
-from diffusion_based.models.legacy.vit_grpo_policy_40d import ViTGRPOPolicy
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
-from diffusion_based.training.grpo_rewards import PlantGRPORewardEngine
-from diffusion_based.dataset.legacy.organ_array_dataset_40d import OrganArrayDataset
+from plant_recon.models.legacy.vit_image_to_organ_array_40d import ViTImageToOrganArray
+from plant_recon.models.legacy.vit_grpo_policy_40d import ViTGRPOPolicy
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.training.grpo_rewards import PlantGRPORewardEngine
+from plant_recon.dataset.legacy.organ_array_dataset_40d import OrganArrayDataset
 
 
 def get_device() -> torch.device:
@@ -48,7 +48,7 @@ def compute_kl_divergence(
 
 def main():
     parser = argparse.ArgumentParser(description="Train ViT Image-to-Organ-Array via GRPO RL")
-    parser.add_argument("--base_checkpoint", type=str, default="diffusion_based/checkpoints/vit_backprop_vit.pt",
+    parser.add_argument("--base_checkpoint", type=str, default="plant_recon/checkpoints/vit_backprop_vit.pt",
                         help="Pre-trained supervised ViT checkpoint")
     parser.add_argument("--data_root", type=str, default="dataset/helios_data")
     parser.add_argument("--val_pattern", type=str, default="*seed09*")
@@ -60,7 +60,7 @@ def main():
     parser.add_argument("--clip_eps", type=float, default=0.2, help="PPO clip epsilon")
     parser.add_argument("--kl_weight", type=float, default=0.04, help="KL divergence penalty coefficient")
     parser.add_argument("--entropy_weight", type=float, default=0.001, help="Entropy bonus coefficient")
-    parser.add_argument("--checkpoint_dir", type=str, default="diffusion_based/checkpoints")
+    parser.add_argument("--checkpoint_dir", type=str, default="plant_recon/checkpoints")
     parser.add_argument("--save_every", type=int, default=5)
     args = parser.parse_args()
 

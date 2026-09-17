@@ -30,10 +30,10 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.legacy.vit_image_to_organ_array_40d import ViTImageToOrganArray
-from diffusion_based.dataset.legacy.organ_array_dataset_40d import OrganArrayDataset
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
-from diffusion_based.models.plant_organ_array import PlantOrganArray, T_COL_ORGAN_TYPE, T_COL_EXISTENCE
+from plant_recon.models.legacy.vit_image_to_organ_array_40d import ViTImageToOrganArray
+from plant_recon.dataset.legacy.organ_array_dataset_40d import OrganArrayDataset
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.plant_organ_array import PlantOrganArray, T_COL_ORGAN_TYPE, T_COL_EXISTENCE
 
 
 def compute_ssim_numpy(img1, img2):
@@ -82,7 +82,7 @@ def predict_organ_array(model, image: torch.Tensor, dataset: OrganArrayDataset):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=str,
-                        default="diffusion_based/checkpoints/vit_backprop_vit_render.pt")
+                        default="plant_recon/checkpoints/vit_backprop_vit_render.pt")
     parser.add_argument("--data_root", type=str, default="dataset/helios_data")
     parser.add_argument("--pattern", type=str, default="*seed09*",
                         help="Glob pattern for the evaluation (holdout) samples")
@@ -113,7 +113,7 @@ def main():
     )
 
     if args.output_dir is None:
-        args.output_dir = os.path.join("diffusion_based", "eval", "output", "vit_backprop_eval")
+        args.output_dir = os.path.join("plant_recon", "eval", "output", "vit_backprop_eval")
     os.makedirs(args.output_dir, exist_ok=True)
 
     model = ViTImageToOrganArray(

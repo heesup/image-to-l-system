@@ -29,7 +29,7 @@ TORCHRUN_BIN="/home/lion397/.conda/envs/digital-crops/bin/torchrun"
 BATCH_ARG=${FORCE_BATCH_SIZE:-8}
 TARGET_RATIO=0.60
 BACKBONE=${BACKBONE:-dinov2_vits14}
-OUTPUT_DIR=${OUTPUT_DIR:-diffusion_based/checkpoints/fm_smoke_test}
+OUTPUT_DIR=${OUTPUT_DIR:-plant_recon/checkpoints/fm_smoke_test}
 EPOCHS=6
 SAVE_EVERY=100
 FREEZE_BACKBONE=${FREEZE_BACKBONE:-1}
@@ -61,7 +61,7 @@ echo "==========================================================================
 MASTER_PORT=$(shuf -i 29500-29999 -n 1)
 
 ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
-    diffusion_based/training/train_hierarchical_flow_matching.py \
+    plant_recon/training/train_hierarchical_flow_matching.py \
     --data_dir dataset/helios_data/cowpea \
     --cache_dir dataset/cache/cowpea_curv26 \
     --output_dir "${OUTPUT_DIR}" \
@@ -74,14 +74,14 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     --dap_weight 0.05 \
     --init_phytomer_count 50.0 \
     --node_dim 16 \
-    --organ_vae_checkpoint diffusion_based/checkpoints/organ_vae/organ_latent_vae_best.pt \
+    --organ_vae_checkpoint plant_recon/checkpoints/organ_vae/organ_latent_vae_best.pt \
     --flow_granularity phytomer \
     --backbone "${BACKBONE}" \
     --matcher_type greedy \
     ${FREEZE_ARGS} \
     --phytomer_latent_dim 128 \
     --phytomer_residual_dim 8 \
-    --phytomer_vae_checkpoint diffusion_based/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt \
+    --phytomer_vae_checkpoint plant_recon/checkpoints/phytomer_vae_v8/phytomer_vae_128d_best.pt \
     --pkt_cache_dir dataset/cache/cowpea_curv26_pkt \
     --max_phytomers 512 \
     --slots_per_phytomer 10 \

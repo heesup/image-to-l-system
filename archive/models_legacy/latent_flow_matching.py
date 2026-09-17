@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from diffusion_based.models.vit_image_encoder import ViTImageEncoder
+from plant_recon.models.vit_image_encoder import ViTImageEncoder
 
 
 class LatentFlowMatchingModel(nn.Module):

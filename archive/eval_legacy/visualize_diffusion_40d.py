@@ -6,9 +6,9 @@ import matplotlib.pyplot as plt
 from PIL import Image
 from typing import Optional, Dict, Any
 
-from diffusion_based.dataset.graph_dataset import PlantGraphDataset
+from plant_recon.dataset.graph_dataset import PlantGraphDataset
 from legacy.graph_diffuser import PlantGraphDiffuser
-from diffusion_based.training.train_diffusion import DDPMScheduler, get_device
+from plant_recon.training.train_diffusion import DDPMScheduler, get_device
 
 @torch.no_grad()
 def sample_reverse_diffusion(model: PlantGraphDiffuser, image: torch.Tensor, steps: int = 50) -> Dict[str, Any]:
@@ -66,7 +66,7 @@ def sample_reverse_diffusion(model: PlantGraphDiffuser, image: torch.Tensor, ste
         "final_existence": final_snapshot["existence_mask"]
     }
 
-def visualize_reconstruction(image_tensor: torch.Tensor, results: Dict[str, Any], gt_sample: Dict[str, Any], save_path: str = "diffusion_based/plots/diffusion_sample.png"):
+def visualize_reconstruction(image_tensor: torch.Tensor, results: Dict[str, Any], gt_sample: Dict[str, Any], save_path: str = "plant_recon/plots/diffusion_sample.png"):
     """Visualize 4-panel figure with Ground Truth Tree Edges & Reconstructed Overlay."""
     fig, axes = plt.subplots(1, 4, figsize=(22, 5.5))
 
@@ -192,7 +192,7 @@ def main():
     dataset = PlantGraphDataset(num_synthetic_samples=10)
     
     model = PlantGraphDiffuser(max_nodes=64).to(device)
-    checkpoint_path = "diffusion_based/checkpoints/diffusion_model_3d.pt"
+    checkpoint_path = "plant_recon/checkpoints/diffusion_model_3d.pt"
 
     if os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
@@ -206,10 +206,10 @@ def main():
         sample = dataset[i]
         image_tensor = sample["image"].to(device)
         results = sample_reverse_diffusion(model, image_tensor, steps=50)
-        save_path = f"diffusion_based/plots/diffusion_sample_{i+1}.png"
+        save_path = f"plant_recon/plots/diffusion_sample_{i+1}.png"
         visualize_reconstruction(image_tensor, results, gt_sample=sample, save_path=save_path)
         if i == 0:
-            visualize_reconstruction(image_tensor, results, gt_sample=sample, save_path="diffusion_based/plots/diffusion_sample.png")
+            visualize_reconstruction(image_tensor, results, gt_sample=sample, save_path="plant_recon/plots/diffusion_sample.png")
 
 if __name__ == "__main__":
     main()

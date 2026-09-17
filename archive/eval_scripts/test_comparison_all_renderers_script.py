@@ -2,8 +2,8 @@ import os, json, math, torch
 import numpy as np
 from PIL import Image, ImageDraw
 import matplotlib.pyplot as plt
-from diffusion_based.models.plant_organ_array import PlantOrganArray
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.plant_organ_array import PlantOrganArray
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 
 DEVICE = torch.device('cuda:0')
 IMG_SIZE = 512
@@ -148,6 +148,6 @@ for row_idx, d in enumerate(daps):
                          bbox=dict(boxstyle='round,pad=0.3', facecolor='#111827', edgecolor='#4B5563', alpha=0.85))
 
 plt.subplots_adjust(wspace=0.06, hspace=0.12)
-out_path = 'diffusion_based/eval/test_comparison_all_renderers.png'
+out_path = 'plant_recon/eval/test_comparison_all_renderers.png'
 plt.savefig(out_path, dpi=180, bbox_inches='tight', facecolor='#0B0D17')
 print('Successfully saved:', out_path)

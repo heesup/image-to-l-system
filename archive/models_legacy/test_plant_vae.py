@@ -4,8 +4,8 @@ Unit Tests for PlantOrganVAE & PlantTransformerVAE.
 
 import unittest
 import torch
-from diffusion_based.models.plant_organ_array import PlantOrganArray, NUM_FEATURES_TYPED
-from diffusion_based.models.plant_vae import (
+from plant_recon.models.plant_organ_array import PlantOrganArray, NUM_FEATURES_TYPED
+from plant_recon.models.plant_vae import (
     PlantOrganVAE,
     PlantTransformerVAE,
     compute_organ_vae_loss,

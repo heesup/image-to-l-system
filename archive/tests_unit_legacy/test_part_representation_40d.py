@@ -15,9 +15,9 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from diffusion_based.models.plant_organ_array import PlantOrganArray
-from diffusion_based.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.plant_organ_array import PlantOrganArray
+from plant_recon.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 
 
 def normalize_xml(xml_str: str) -> str:

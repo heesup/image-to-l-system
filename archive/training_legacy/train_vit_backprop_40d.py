@@ -27,10 +27,10 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.legacy.vit_image_to_organ_array_40d import ViTImageToOrganArray
-from diffusion_based.dataset.legacy.organ_array_dataset_40d import OrganArrayDataset
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
-from diffusion_based.models.plant_organ_array import PlantOrganArray
+from plant_recon.models.legacy.vit_image_to_organ_array_40d import ViTImageToOrganArray
+from plant_recon.dataset.legacy.organ_array_dataset_40d import OrganArrayDataset
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.plant_organ_array import PlantOrganArray
 
 
 def get_device() -> torch.device:
@@ -241,7 +241,7 @@ def main():
     parser.add_argument("--render-every", type=int, default=1)
     parser.add_argument("--render-weight", type=float, default=1.0)
     parser.add_argument("--save_every", type=int, default=50)
-    parser.add_argument("--checkpoint_dir", type=str, default="diffusion_based/checkpoints")
+    parser.add_argument("--checkpoint_dir", type=str, default="plant_recon/checkpoints")
     parser.add_argument("--use-gt-renderer-image", action="store_true", default=True,
                         help="Render GT directly via PyTorch renderer for training input")
     parser.add_argument("--val_pattern", type=str, default=None,

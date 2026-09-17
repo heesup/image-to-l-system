@@ -33,7 +33,7 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.plant_organ_array import (
+from plant_recon.models.plant_organ_array import (
     PlantOrganArray,
     ORGAN_INTERNODE, ORGAN_PETIOLE, ORGAN_LEAF, ORGAN_FLOWER, ORGAN_FRUIT,
     P_COL_ORGAN_TYPE, P_COL_BASE_X, P_COL_BASE_Y, P_COL_BASE_Z,
@@ -41,7 +41,7 @@ from diffusion_based.models.plant_organ_array import (
     P_COL_EXISTENCE, P_COL_CURVATURE, P_COL_PHYLLOTACTIC_ANGLE,
     NUM_FEATURES_PART
 )
-from diffusion_based.dataset.part_array_dataset import (
+from plant_recon.dataset.part_array_dataset import (
     encode_fm, FM_NODE_DIM, NUM_ORGAN_CATEGORIES, EMPTY_IDX,
 )
 

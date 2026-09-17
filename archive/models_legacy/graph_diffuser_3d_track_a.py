@@ -57,7 +57,7 @@ class MultiScaleSpatialEncoder(nn.Module):
         tokens = feat_map.permute(0, 2, 3, 1).reshape(B, H * W, C)
         return self.final_proj(tokens)
 
-from diffusion_based.models.legacy.knn_attention_track_a import KNNTransformerDecoderLayer
+from plant_recon.models.legacy.knn_attention_track_a import KNNTransformerDecoderLayer
 
 
 class PlantGraphDiffuser3D(nn.Module):

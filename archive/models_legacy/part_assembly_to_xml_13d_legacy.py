@@ -21,7 +21,7 @@ import torch
 from scipy.spatial import cKDTree
 from typing import Dict, Any, List, Tuple, Optional
 
-from diffusion_based.models.plant_organ_array import (
+from plant_recon.models.plant_organ_array import (
     ORGAN_NONE,
     ORGAN_ROOT_META,
     ORGAN_SHOOT_META,
@@ -647,8 +647,8 @@ def assemble_part_tensor_to_xml(
     Convenience helper to convert a 13D part tensor into a Helios XML string
     via canonical (N, 40) PlantOrganArray intermediate representation.
     """
-    from diffusion_based.models.part_tensor_to_40d import PartTensorTo40DConverter
-    from diffusion_based.models.plant_organ_array import PlantOrganArray
+    from plant_recon.models.part_tensor_to_40d import PartTensorTo40DConverter
+    from plant_recon.models.plant_organ_array import PlantOrganArray
     converter = PartTensorTo40DConverter()
     t_40d = converter.convert(part_tensor, plant_id=plant_id)
     arr = PlantOrganArray(t_40d)

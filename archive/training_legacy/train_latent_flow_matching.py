@@ -21,9 +21,9 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.latent_flow_matching import LatentFlowMatchingModel
-from diffusion_based.models.plant_vae import PlantOrganVAE
-from diffusion_based.dataset.plant_latent_dataset import PlantLatentDataset, collate_latent_flow_batch
+from plant_recon.models.latent_flow_matching import LatentFlowMatchingModel
+from plant_recon.models.plant_vae import PlantOrganVAE
+from plant_recon.dataset.plant_latent_dataset import PlantLatentDataset, collate_latent_flow_batch
 
 
 class LatentFlowScheduler:
@@ -78,8 +78,8 @@ class LatentFlowScheduler:
 
 def train_latent_flow_matching(
     dataset_dir: str = "dataset/helios_data",
-    vae_ckpt: str = "diffusion_based/checkpoints/plant_organ_vae_best.pt",
-    checkpoint_dir: str = "diffusion_based/checkpoints",
+    vae_ckpt: str = "plant_recon/checkpoints/plant_organ_vae_best.pt",
+    checkpoint_dir: str = "plant_recon/checkpoints",
     epochs: int = 30,
     batch_size: int = 8,
     lr: float = 2e-4,

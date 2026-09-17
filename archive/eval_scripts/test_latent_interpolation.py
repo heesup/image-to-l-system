@@ -23,7 +23,7 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.plant_organ_array import (
+from plant_recon.models.plant_organ_array import (
     PlantOrganArray,
     NUM_FEATURES_TYPED,
     T_COL_ORGAN_TYPE,
@@ -37,8 +37,8 @@ from diffusion_based.models.plant_organ_array import (
     T_COL_CURVATURE,
     T_COL_EXISTENCE,
 )
-from diffusion_based.models.plant_vae import PlantOrganVAE
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.plant_vae import PlantOrganVAE
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 
 
 def compute_mask_iou(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
@@ -129,7 +129,7 @@ def evaluate_manifold_coverage(
 
 
 def run_latent_interpolation(
-    ckpt_path: str = "diffusion_based/checkpoints/plant_organ_vae_best.pt",
+    ckpt_path: str = "plant_recon/checkpoints/plant_organ_vae_best.pt",
     xml_path_1: Optional[str] = None,
     xml_path_2: Optional[str] = None,
     num_steps: int = 6,

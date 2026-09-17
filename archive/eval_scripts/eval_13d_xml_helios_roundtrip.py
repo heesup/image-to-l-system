@@ -28,10 +28,10 @@ from typing import Dict, Any, List, Tuple
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.insert(0, REPO_ROOT)
 
-from diffusion_based.models.plant_organ_array import PlantOrganArray, NUM_FEATURES_PART
-from diffusion_based.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
-from diffusion_based.models.part_assembly_to_xml import assemble_part_tensor_to_xml
+from plant_recon.models.plant_organ_array import PlantOrganArray, NUM_FEATURES_PART
+from plant_recon.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.part_assembly_to_xml import assemble_part_tensor_to_xml
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 IMG_SIZE = 512

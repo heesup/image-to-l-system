@@ -16,10 +16,10 @@ import torch
 from PIL import Image
 import matplotlib.pyplot as plt
 
-from diffusion_based.models.plant_organ_array import PlantOrganArray
-from diffusion_based.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
-from diffusion_based.eval.test_helios_coco_mask_comparison import (
+from plant_recon.models.plant_organ_array import PlantOrganArray
+from plant_recon.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.eval.test_helios_coco_mask_comparison import (
     decode_helios_coco_leaf_mask,
 )
 
@@ -270,7 +270,7 @@ def main():
     parser.add_argument("--base-dir-template", default="Digital-Crops/projects/syntheticdata_generation/build/output_rad_dap{DAP}")
     parser.add_argument("--daps", nargs="+", type=int, default=[10, 30, 50, 70, 90])
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--output-dir", default="diffusion_based/eval/output")
+    parser.add_argument("--output-dir", default="plant_recon/eval/output")
     parser.add_argument("--output-name", default="dap_growth_panel")
     parser.add_argument("--generic-leaves", action="store_true", default=False)
     args = parser.parse_args()

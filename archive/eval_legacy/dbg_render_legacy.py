@@ -8,10 +8,10 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from diffusion_based.models.plant_organ_array import PlantOrganArray
-from diffusion_based.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
-from diffusion_based.eval.test_helios_coco_mask_comparison import decode_helios_coco_leaf_mask
+from plant_recon.models.plant_organ_array import PlantOrganArray
+from plant_recon.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.eval.test_helios_coco_mask_comparison import decode_helios_coco_leaf_mask
 
 base = "Digital-Crops/projects/syntheticdata_generation/build/output_rad_dap30"
 prefix = "seed0_0000"

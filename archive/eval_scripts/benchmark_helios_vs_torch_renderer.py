@@ -10,7 +10,7 @@ Function Call Path Profiled:
 
 Outputs:
   - docs/results/assets/fig1_helios_vs_torch_rendering_benchmark.png
-  - diffusion_based/eval/benchmark_cache_13d.json
+  - plant_recon/eval/benchmark_cache_13d.json
 """
 
 import os
@@ -31,8 +31,8 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from diffusion_based.models.plant_organ_array import PlantOrganArray
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.plant_organ_array import PlantOrganArray
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 
 BUILD_DIR = os.path.join(REPO_ROOT, "Digital-Crops", "projects", "syntheticdata_generation", "build")
 MAIN_BIN = os.path.join(BUILD_DIR, "main")
@@ -40,7 +40,7 @@ PARAMS_FILE = os.path.join(BUILD_DIR, "params.json")
 
 
 def benchmark_accurate_dap(force_recompute=False):
-    cache_file = os.path.join(REPO_ROOT, "diffusion_based", "eval", "benchmark_cache_13d.json")
+    cache_file = os.path.join(REPO_ROOT, "plant_recon", "eval", "benchmark_cache_13d.json")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Running Real Empirical Benchmark on {device}...")
 
@@ -63,7 +63,7 @@ def benchmark_accurate_dap(force_recompute=False):
     }
 
     # Load baseline Helios C++ cache if available
-    old_cache_file = os.path.join(REPO_ROOT, "diffusion_based", "eval", "benchmark_cache.json")
+    old_cache_file = os.path.join(REPO_ROOT, "plant_recon", "eval", "benchmark_cache.json")
     helios_cached = {}
     if os.path.exists(old_cache_file):
         with open(old_cache_file, "r") as f:

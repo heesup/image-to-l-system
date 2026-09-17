@@ -19,7 +19,7 @@ from torchvision import transforms
 from torchvision.transforms import InterpolationMode
 from PIL import Image
 
-from diffusion_based.models.plant_organ_array import (
+from plant_recon.models.plant_organ_array import (
     PlantOrganArray,
     ORGAN_COLUMN_MASK,
 )
@@ -249,7 +249,7 @@ class OrganArrayDataset(Dataset):
             else:
                 # Render the ground-truth XML directly through the differentiable PyTorch renderer
                 if self._cached_renderer is None:
-                    from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+                    from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
                     self._cached_renderer = HeliosPyTorchRenderer(image_size=self.image_size).to(self.device)
                 
                 if self.use_typed_layout:

@@ -11,7 +11,7 @@ from typing import List, Optional
 import numpy as np
 import math
 
-from diffusion_based.models.helios_xml_parser import OrganNode3D
+from plant_recon.models.helios_xml_parser import OrganNode3D
 
 
 def _fmt(v) -> str:

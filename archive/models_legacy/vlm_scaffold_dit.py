@@ -17,7 +17,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from diffusion_based.dataset.part_array_dataset import (
+from plant_recon.dataset.part_array_dataset import (
     FM_NODE_DIM,
     FM_OT_END,
     FM_BASE_START,
@@ -31,7 +31,7 @@ from diffusion_based.dataset.part_array_dataset import (
     BASE_SCALE,
     SCALE_SCALE,
 )
-from diffusion_based.models.vlm_vision_tower import DINOv3VisionTower
+from plant_recon.models.vlm_vision_tower import DINOv3VisionTower
 
 
 class SinusoidalTimeEmbedding(nn.Module):

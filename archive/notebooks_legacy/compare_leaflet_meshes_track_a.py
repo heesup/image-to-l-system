@@ -8,8 +8,8 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.legacy.helios_geometry_track_a import _leaflet_local_mesh_torch
-from diffusion_based.models.legacy.helios_geometry_legacy import _leaflet_local_mesh
+from plant_recon.models.legacy.helios_geometry_track_a import _leaflet_local_mesh_torch
+from plant_recon.models.legacy.helios_geometry_legacy import _leaflet_local_mesh
 
 
 def main():

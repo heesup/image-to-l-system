@@ -7,7 +7,7 @@
     3. Rendered pixel similarity (18D path)
 
 Run from repo root:
-  python diffusion_based/models/test_18d_xml_roundtrip.py
+  python plant_recon/models/test_18d_xml_roundtrip.py
 """
 import os, sys, json, numpy as np, torch
 import matplotlib
@@ -17,15 +17,15 @@ import matplotlib.pyplot as plt
 repo_root = "/home/lion397/codes/image-to-l-system"
 sys.path.insert(0, repo_root)
 
-from diffusion_based.models.helios_xml_parser import HeliosXMLParser, OrganNode3D
-from diffusion_based.models.helios_xml_writer import write_organ_nodes_to_xml
-from diffusion_based.models.helios_rasterizer_3d import HeliosGeometryRasterizer
-from diffusion_based.models.differentiable_pipeline import DifferentiableHeliosRenderer
+from plant_recon.models.helios_xml_parser import HeliosXMLParser, OrganNode3D
+from plant_recon.models.helios_xml_writer import write_organ_nodes_to_xml
+from plant_recon.models.helios_rasterizer_3d import HeliosGeometryRasterizer
+from plant_recon.models.differentiable_pipeline import DifferentiableHeliosRenderer
 
 # ── Config ────────────────────────────────────────────────────────
 xml_path = os.path.join(repo_root, "notebooks", "output_dap30_verification",
                         "dap30_gt_seed42_0000_plant_0000.xml")
-out_dir  = os.path.join(repo_root, "diffusion_based", "docs",
+out_dir  = os.path.join(repo_root, "plant_recon", "docs",
                         "report1_backprop_vs_difffusion", "images")
 os.makedirs(out_dir, exist_ok=True)
 

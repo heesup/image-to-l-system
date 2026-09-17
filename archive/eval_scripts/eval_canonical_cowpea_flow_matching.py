@@ -23,17 +23,17 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.plant_organ_array import (
+from plant_recon.models.plant_organ_array import (
     PlantOrganArray,
     P_COL_ORGAN_TYPE, P_COL_BASE_X, P_COL_BASE_Y, P_COL_BASE_Z,
     P_COL_ROT_0, P_COL_ROT_5, P_COL_SCALE_X, P_COL_SCALE_Y, P_COL_SCALE_Z,
     P_COL_EXISTENCE, P_COL_CURVATURE, P_COL_PHYLLOTACTIC_ANGLE,
     NUM_FEATURES_PART
 )
-from diffusion_based.models.canonical_cowpea_dit import CanonicalCowpeaDiTModel
-from diffusion_based.models.part_assembly_to_xml import PartAssemblyToXMLConverter
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
-from diffusion_based.dataset.part_array_dataset import (
+from plant_recon.models.canonical_cowpea_dit import CanonicalCowpeaDiTModel
+from plant_recon.models.part_assembly_to_xml import PartAssemblyToXMLConverter
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.dataset.part_array_dataset import (
     FM_OT_END, FM_BASE_START, FM_BASE_END, FM_ROT_START, FM_ROT_END,
     FM_SCALE_START, FM_SCALE_END, FM_CURV_IDX, FM_PHYLLO_IDX
 )
@@ -78,7 +78,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Evaluating Canonical Cowpea DiT Model on {device}...")
 
-    ckpt_path = os.path.join(repo_root, "diffusion_based", "checkpoints", "fm", "canonical_cowpea_dit_best.pt")
+    ckpt_path = os.path.join(repo_root, "plant_recon", "checkpoints", "fm", "canonical_cowpea_dit_best.pt")
     ckpt = torch.load(ckpt_path, map_location=device)
 
     model = CanonicalCowpeaDiTModel(
@@ -153,7 +153,7 @@ def main():
         empty_idx = FM_OT_END - 1
         existence = 1.0 - ot_probs[:, empty_idx]
 
-        from diffusion_based.dataset.part_array_dataset import ORGAN_CATEGORIES
+        from plant_recon.dataset.part_array_dataset import ORGAN_CATEGORIES
         raw_ot = torch.tensor([ORGAN_CATEGORIES[min(i.item(), len(ORGAN_CATEGORIES)-1)] for i in ot_idx], device=device).float()
 
         part_16d = torch.zeros((n_slots, NUM_FEATURES_PART), device=device)

@@ -28,10 +28,10 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.helios_xml_parser import HeliosXMLParser, OrganNode3D
-from diffusion_based.models.legacy.helios_xml_writer_track_a import write_organ_nodes_to_xml
-from diffusion_based.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
-from diffusion_based.models.legacy.differentiable_pipeline_track_a import DifferentiableHeliosRenderer
+from plant_recon.models.helios_xml_parser import HeliosXMLParser, OrganNode3D
+from plant_recon.models.legacy.helios_xml_writer_track_a import write_organ_nodes_to_xml
+from plant_recon.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
+from plant_recon.models.legacy.differentiable_pipeline_track_a import DifferentiableHeliosRenderer
 
 
 # ──────────────────────────────────────────────────────────────────

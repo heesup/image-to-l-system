@@ -7,10 +7,10 @@ from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from typing import Optional, Dict, Any
 
-from dataset.plant3d_dataset import Plant3DDataset
-from dataset.helios_dataset import HeliosPlantDataset
-from diffusion_based.models.legacy.graph_diffuser_3d_track_a import PlantGraphDiffuser3D
-from diffusion_based.training.train_diffusion import DDPMScheduler, get_device
+from archive.dataset_legacy.plant3d_dataset import Plant3DDataset
+from archive.dataset_legacy.helios_dataset import HeliosPlantDataset
+from plant_recon.models.legacy.graph_diffuser_3d_track_a import PlantGraphDiffuser3D
+from plant_recon.training.train_diffusion import DDPMScheduler, get_device
 
 
 ORGAN_COLORS = {
@@ -232,7 +232,7 @@ def draw_3d_plant_graph(ax3d, nodes, parents, active_mask, is_gt=False):
 
 def visualize_reconstruction_3d(image_tensor: torch.Tensor, results: Dict[str, Any],
                                 gt_sample: Dict[str, Any],
-                                save_path: str = "diffusion_based/plots/diffusion_sample_3d.png",
+                                save_path: str = "plant_recon/plots/diffusion_sample_3d.png",
                                 existence_threshold: float = 0.5):
     snapshots = results["snapshots"]
     step_first = results["step_first"]
@@ -366,8 +366,8 @@ def visualize_reconstruction_3d(image_tensor: torch.Tensor, results: Dict[str, A
 
 def run_inference_on_real_image(jpeg_path: str, xml_path: Optional[str] = None,
                                 dap: int = 10,
-                                checkpoint_path: str = "diffusion_based/checkpoints/diffusion_model_3d.pt",
-                                save_path: str = "diffusion_based/plots/real_image_reconstruction_3d.png",
+                                checkpoint_path: str = "plant_recon/checkpoints/diffusion_model_3d.pt",
+                                save_path: str = "plant_recon/plots/real_image_reconstruction_3d.png",
                                 steps: int = 50,
                                 existence_threshold: float = 0.5,
                                 max_nodes: int = 2048) -> Dict[str, Any]:
@@ -424,7 +424,7 @@ def main():
     image_tensor = sample["image"].to(device)
 
     model = PlantGraphDiffuser3D(max_nodes=2048, node_dim=15).to(device)
-    checkpoint_path = "diffusion_based/checkpoints/diffusion_model_3d.pt"
+    checkpoint_path = "plant_recon/checkpoints/diffusion_model_3d.pt"
 
     if os.path.exists(checkpoint_path):
         state = torch.load(checkpoint_path, map_location=device, weights_only=False)
@@ -441,7 +441,7 @@ def main():
         steps=50
     )
     visualize_reconstruction_3d(image_tensor, results, gt_sample=sample,
-                                  save_path="diffusion_based/plots/diffusion_sample_3d.png")
+                                  save_path="plant_recon/plots/diffusion_sample_3d.png")
 
 
 if __name__ == "__main__":

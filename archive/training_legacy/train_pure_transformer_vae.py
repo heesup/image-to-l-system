@@ -13,11 +13,11 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.training.train_plant_global_and_shoot_vae import (
+from plant_recon.training.train_plant_global_and_shoot_vae import (
     FastPlantArrayDataset,
     collate_plant_batch,
 )
-from diffusion_based.models.plant_pure_transformer_vae import (
+from plant_recon.models.plant_pure_transformer_vae import (
     PlantPureTransformerVAE,
     compute_pure_transformer_vae_loss,
 )
@@ -46,9 +46,9 @@ def train(epochs: int = 30, batch_size: int = 16, lr: float = 3e-4, max_samples:
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
 
-    os.makedirs("diffusion_based/checkpoints", exist_ok=True)
+    os.makedirs("plant_recon/checkpoints", exist_ok=True)
     best_loss = float("inf")
-    save_path = "diffusion_based/checkpoints/plant_pure_transformer_vae_best.pt"
+    save_path = "plant_recon/checkpoints/plant_pure_transformer_vae_best.pt"
 
     for ep in range(1, epochs + 1):
         model.train()

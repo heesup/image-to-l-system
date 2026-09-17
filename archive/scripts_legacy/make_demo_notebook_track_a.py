@@ -41,9 +41,9 @@ cells = [
             "if repo_root not in sys.path:\n",
             "    sys.path.insert(0, repo_root)\n",
             "\n",
-            "from diffusion_based.models.helios_xml_parser import HeliosXMLParser\n",
-            "from diffusion_based.models.legacy.helios_geometry_track_a import build_helios_geometry_from_xml, DifferentiableHeliosXMLRenderer\n",
-            "from diffusion_based.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer\n",
+            "from plant_recon.models.helios_xml_parser import HeliosXMLParser\n",
+            "from plant_recon.models.legacy.helios_geometry_track_a import build_helios_geometry_from_xml, DifferentiableHeliosXMLRenderer\n",
+            "from plant_recon.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer\n",
             "from notebooks.run_differentiable_renderer_stability_test import compute_ssim_numpy\n",
             "\n",
             "print('Environment and Differentiable Renderer imported successfully!')"

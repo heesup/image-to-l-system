@@ -17,14 +17,14 @@ repo_root = "/home/lion397/codes/image-to-l-system"
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.legacy.helios_geometry_track_a import (
+from plant_recon.models.legacy.helios_geometry_track_a import (
     build_helios_geometry_from_xml,
     nodes_to_geometry,
     nodes_to_geometry_torch,
 )
-from diffusion_based.models.helios_xml_parser import HeliosXMLParser
-from diffusion_based.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
-from diffusion_based.models.legacy.differentiable_pipeline_track_a import DifferentiableHeliosRenderer
+from plant_recon.models.helios_xml_parser import HeliosXMLParser
+from plant_recon.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
+from plant_recon.models.legacy.differentiable_pipeline_track_a import DifferentiableHeliosRenderer
 
 print(f"PyTorch version: {torch.__version__}")
 print(f"CUDA available: {torch.cuda.is_available()}")
@@ -73,7 +73,7 @@ print(f"parents shape: {parents.shape}")             # (1, N)
 # --------------------------------------------------------------
 # CRITICAL: nodes_to_geometry is NOT fully differentiable
 # It calls .detach().cpu().numpy() internally.
-# See diffusion_based/models/helios_geometry.py:849-922
+# See plant_recon/models/helios_geometry.py:849-922
 # --------------------------------------------------------------
 with torch.no_grad():
     t0 = time.time()

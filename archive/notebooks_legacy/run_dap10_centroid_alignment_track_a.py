@@ -9,8 +9,8 @@ from PIL import Image
 from scipy.ndimage import shift
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from diffusion_based.models.legacy.helios_geometry_track_a import HeliosPlantGeometryTorch
-from diffusion_based.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
+from plant_recon.models.legacy.helios_geometry_track_a import HeliosPlantGeometryTorch
+from plant_recon.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
 
 out_dir = os.path.join(os.path.dirname(__file__), "output_dap_benchmark")
 os.makedirs(out_dir, exist_ok=True)

@@ -59,7 +59,7 @@ echo "============================================================"
 
 PREV_JOB=""
 for ARM in ${ARMS}; do
-    OUT="diffusion_based/checkpoints/ablation_${ARM}"
+    OUT="plant_recon/checkpoints/ablation_${ARM}"
     NAME="ablation-${ARM}-${FLOW_GRANULARITY}-e${EPOCHS}"
     DEP=""
     if [[ "${SEQUENTIAL}" == "1" && -n "${PREV_JOB}" ]]; then
@@ -90,4 +90,4 @@ done
 
 echo ""
 echo "Done. Monitor: squeue -u $USER"
-echo "Checkpoints: diffusion_based/checkpoints/ablation_<arm>/"
+echo "Checkpoints: plant_recon/checkpoints/ablation_<arm>/"

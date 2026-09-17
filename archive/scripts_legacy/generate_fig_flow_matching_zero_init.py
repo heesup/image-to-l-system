@@ -33,11 +33,11 @@ from torchvision import transforms
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, REPO_ROOT)
 
-from diffusion_based.dataset.part_array_dataset import PartArrayDataset, FM_NODE_DIM, EMPTY_IDX, FM_OT_END
-from diffusion_based.models.part_flow_matching import PartFlowMatchingModel
-from diffusion_based.training.flow_matching import FlowMatchingScheduler
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
-from diffusion_based.models.plant_organ_array import (
+from plant_recon.dataset.part_array_dataset import PartArrayDataset, FM_NODE_DIM, EMPTY_IDX, FM_OT_END
+from plant_recon.models.part_flow_matching import PartFlowMatchingModel
+from plant_recon.training.flow_matching import FlowMatchingScheduler
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.plant_organ_array import (
     PlantOrganArray,
     P_COL_EXISTENCE, P_COL_ORGAN_TYPE,
     P_COL_BASE_X, P_COL_BASE_Y, P_COL_BASE_Z,
@@ -46,7 +46,7 @@ from diffusion_based.models.plant_organ_array import (
     P_COL_CURVATURE, P_COL_PHYLLOTACTIC_ANGLE,
     ORGAN_LEAF, rotation_6d_to_matrix,
 )
-from diffusion_based.eval.metrics import masked_ssim, foreground_iou
+from plant_recon.eval.metrics import masked_ssim, foreground_iou
 
 ELEVATION_DEG = 89.88
 
@@ -127,7 +127,7 @@ def main():
     os.makedirs(tmp_xml_dir, exist_ok=True)
 
     # 1. Load latest Flow Matching Checkpoint
-    ckpt_dir = os.path.join(REPO_ROOT, "diffusion_based/checkpoints/fm")
+    ckpt_dir = os.path.join(REPO_ROOT, "plant_recon/checkpoints/fm")
     ckpt_candidates = sorted(glob.glob(os.path.join(ckpt_dir, "part_flow_matching_epoch*.pt")), key=os.path.getmtime)
     if not ckpt_candidates:
         print(f"No checkpoints found in {ckpt_dir}")
@@ -305,7 +305,7 @@ def main():
 
         # 4. Re-rendered XML using Helios C++
         # Update node geometry from the flow-matched & refined 3D prediction
-        from diffusion_based.models.helios_xml_parser import HeliosXMLParser
+        from plant_recon.models.helios_xml_parser import HeliosXMLParser
         parser = HeliosXMLParser(xml_path)
         nodes_spec = parser.get_all_organ_nodes()
         p_np = p_eval.detach().cpu().numpy()

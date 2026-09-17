@@ -11,9 +11,9 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.helios_xml_parser import HeliosXMLParser
-from diffusion_based.models.helios_rasterizer_3d import HeliosGeometryRasterizer
-from diffusion_based.models.differentiable_pipeline import DifferentiableHeliosRenderer
+from plant_recon.models.helios_xml_parser import HeliosXMLParser
+from plant_recon.models.helios_rasterizer_3d import HeliosGeometryRasterizer
+from plant_recon.models.differentiable_pipeline import DifferentiableHeliosRenderer
 from notebooks.run_differentiable_renderer_stability_test import (
     step1_generate_groundtruth_data,
     compute_ssim_numpy,

@@ -2,8 +2,8 @@
 Unified Training Script for Global Plant VAE and Hierarchical Shoot VAE.
 
 Trains both architectures on the Helios dataset and saves checkpoints to:
-- diffusion_based/checkpoints/plant_global_vae_best.pt
-- diffusion_based/checkpoints/plant_shoot_vae_best.pt
+- plant_recon/checkpoints/plant_global_vae_best.pt
+- plant_recon/checkpoints/plant_shoot_vae_best.pt
 """
 
 import os
@@ -20,9 +20,9 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.plant_organ_array import PlantOrganArray
-from diffusion_based.models.plant_global_vae import PlantGlobalVAE, compute_global_vae_loss
-from diffusion_based.models.plant_shoot_vae import PlantShootVAE, compute_shoot_vae_loss
+from plant_recon.models.plant_organ_array import PlantOrganArray
+from plant_recon.models.plant_global_vae import PlantGlobalVAE, compute_global_vae_loss
+from plant_recon.models.plant_shoot_vae import PlantShootVAE, compute_shoot_vae_loss
 
 
 class FastPlantArrayDataset(Dataset):
@@ -76,7 +76,7 @@ def train_model(
     batch_size: int = 8,
     lr: float = 3e-4,
     max_samples: int = 1000,
-    checkpoint_dir: str = "diffusion_based/checkpoints",
+    checkpoint_dir: str = "plant_recon/checkpoints",
     device: str = "cuda",
 ):
     device = torch.device(device if torch.cuda.is_available() else "cpu")

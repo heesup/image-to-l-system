@@ -23,16 +23,16 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.latent_flow_matching import LatentFlowMatchingModel
-from diffusion_based.models.plant_vae import PlantOrganVAE
-from diffusion_based.models.plant_organ_array import PlantOrganArray
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
-from diffusion_based.training.train_latent_flow_matching import LatentFlowScheduler
+from plant_recon.models.latent_flow_matching import LatentFlowMatchingModel
+from plant_recon.models.plant_vae import PlantOrganVAE
+from plant_recon.models.plant_organ_array import PlantOrganArray
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.training.train_latent_flow_matching import LatentFlowScheduler
 
 
 def evaluate_latent_flow_matching(
-    fm_ckpt: str = "diffusion_based/checkpoints/latent_flow_matching_best.pt",
-    vae_ckpt: str = "diffusion_based/checkpoints/plant_organ_vae_best.pt",
+    fm_ckpt: str = "plant_recon/checkpoints/latent_flow_matching_best.pt",
+    vae_ckpt: str = "plant_recon/checkpoints/plant_organ_vae_best.pt",
     output_png: str = "docs/results/assets/fig_latent_flow_matching_generation.png",
     num_steps: int = 15,
     device: str = "cuda",
@@ -241,8 +241,8 @@ def _plot_generation_figure(results: List[Dict[str, Any]], output_png: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--fm_ckpt", default="diffusion_based/checkpoints/latent_flow_matching_best.pt")
-    parser.add_argument("--vae_ckpt", default="diffusion_based/checkpoints/plant_organ_vae_best.pt")
+    parser.add_argument("--fm_ckpt", default="plant_recon/checkpoints/latent_flow_matching_best.pt")
+    parser.add_argument("--vae_ckpt", default="plant_recon/checkpoints/plant_organ_vae_best.pt")
     parser.add_argument("--output_png", default="docs/results/assets/fig_latent_flow_matching_generation.png")
     parser.add_argument("--num_steps", type=int, default=15)
     args = parser.parse_args()

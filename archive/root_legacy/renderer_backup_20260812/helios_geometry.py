@@ -25,7 +25,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from diffusion_based.models.helios_xml_parser import (
+from plant_recon.models.helios_xml_parser import (
     HeliosXMLParser,
     OrganNode3D,
     Phytomer3D,

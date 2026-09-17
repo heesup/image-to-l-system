@@ -30,7 +30,7 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.plant_organ_array import (
+from plant_recon.models.plant_organ_array import (
     PlantOrganArray,
     NUM_FEATURES_TYPED,
     T_COL_ORGAN_TYPE,
@@ -44,8 +44,8 @@ from diffusion_based.models.plant_organ_array import (
     T_COL_PHYLLOTACTIC_ANGLE,
     T_COL_LENGTH_MAX,
 )
-from diffusion_based.models.plant_vae import PlantOrganVAE
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.plant_vae import PlantOrganVAE
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 
 
 def compute_iou(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
@@ -57,7 +57,7 @@ def compute_iou(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
 
 
 def run_vae_roundtrip_benchmark(
-    ckpt_path: str = "diffusion_based/checkpoints/plant_organ_vae_best.pt",
+    ckpt_path: str = "plant_recon/checkpoints/plant_organ_vae_best.pt",
     test_daps: List[int] = [10, 50, 90],
     species: str = "cowpea",
     device: str = "cuda"
@@ -157,7 +157,7 @@ def run_vae_roundtrip_benchmark(
         # Stage 4: Decoded 40D -> Serialized XML
         t0 = time.time()
         recon_arr = PlantOrganArray(tensor=X_recon_full.cpu(), raw_metadata=gt_arr.raw_metadata)
-        out_xml_dir = os.path.join(repo_root, "diffusion_based", "eval", "roundtrip_outputs")
+        out_xml_dir = os.path.join(repo_root, "plant_recon", "eval", "roundtrip_outputs")
         os.makedirs(out_xml_dir, exist_ok=True)
         recon_xml_path = os.path.join(out_xml_dir, f"recon_roundtrip_dap{dap:03d}.xml")
         recon_arr.write_xml(recon_xml_path)

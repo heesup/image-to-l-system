@@ -30,12 +30,12 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.legacy.organ_array_diffuser_40d import PlantOrganArrayDiffuser
-from diffusion_based.models.legacy.vit_image_to_organ_array_40d import ViTOrganArrayDiffuser
-from diffusion_based.dataset.legacy.organ_array_dataset_40d import OrganArrayDataset
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
-from diffusion_based.models.plant_organ_array import PlantOrganArray
-from diffusion_based.models.perceptual_loss import VGGPerceptualLoss
+from plant_recon.models.legacy.organ_array_diffuser_40d import PlantOrganArrayDiffuser
+from plant_recon.models.legacy.vit_image_to_organ_array_40d import ViTOrganArrayDiffuser
+from plant_recon.dataset.legacy.organ_array_dataset_40d import OrganArrayDataset
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.plant_organ_array import PlantOrganArray
+from plant_recon.models.perceptual_loss import VGGPerceptualLoss
 
 
 class DDPMScheduler:
@@ -385,7 +385,7 @@ def main():
     parser.add_argument("--perceptual_weight", type=float, default=0.5,
                         help="Weight for VGG perceptual loss")
     parser.add_argument("--save_every", type=int, default=10)
-    parser.add_argument("--checkpoint_dir", type=str, default="diffusion_based/checkpoints")
+    parser.add_argument("--checkpoint_dir", type=str, default="plant_recon/checkpoints")
     parser.add_argument("--model", type=str, default="vit", choices=["resnet", "vit"],
                         help="backbone: resnet (PlantOrganArrayDiffuser) or vit (ViTOrganArrayDiffuser)")
     parser.add_argument("--patch_size", type=int, default=8)

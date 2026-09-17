@@ -1,7 +1,7 @@
 """
 Step-by-Step Sketchbook Debugging Grid for Plant Organ Array (DAP 10).
 Renders plant organs incrementally (Stem only -> Stem + 1 Leaf Group -> Stem + 2 Leaf Groups -> ... -> Full Canopy)
-and saves a multi-panel grid figure to `diffusion_based/eval/output/dap10_leaf_by_leaf_debug.png`.
+and saves a multi-panel grid figure to `plant_recon/eval/output/dap10_leaf_by_leaf_debug.png`.
 Accelerated via CUDA GPU with Helios --focus-plant math.
 """
 
@@ -11,14 +11,14 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 
-from diffusion_based.models.plant_organ_array import PlantOrganArray
-from diffusion_based.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.plant_organ_array import PlantOrganArray
+from plant_recon.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 
 
 def run_leaf_by_leaf_sketchbook_debug(
     xml_path: str = "Digital-Crops/projects/syntheticdata_generation/build/output/dap10_gt_0000_plant_0000.xml",
-    output_dir: str = "diffusion_based/eval/output"
+    output_dir: str = "plant_recon/eval/output"
 ):
     os.makedirs(output_dir, exist_ok=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -69,7 +69,7 @@ def run_leaf_by_leaf_sketchbook_debug(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--xml", default="Digital-Crops/projects/syntheticdata_generation/build/output/dap10_gt_0000_plant_0000.xml")
-    parser.add_argument("--output-dir", default="diffusion_based/eval/output")
+    parser.add_argument("--output-dir", default="plant_recon/eval/output")
     args = parser.parse_args()
 
     run_leaf_by_leaf_sketchbook_debug(args.xml, args.output_dir)

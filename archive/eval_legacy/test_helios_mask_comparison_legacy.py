@@ -1,6 +1,6 @@
 """
 Leaf Mask Comparison Script comparing Helios C++ radiation/visualizer output against PyTorch Organ Array render mask.
-Calculates IoU, Dice coefficient, and saves visual comparison figure to project folder `diffusion_based/eval/output/mask_comparison.png`.
+Calculates IoU, Dice coefficient, and saves visual comparison figure to project folder `plant_recon/eval/output/mask_comparison.png`.
 """
 
 import os
@@ -10,8 +10,8 @@ import torch
 from PIL import Image
 import matplotlib.pyplot as plt
 
-from diffusion_based.models.plant_organ_array import PlantOrganArray
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.plant_organ_array import PlantOrganArray
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 
 
 def extract_leaf_mask(img_np: np.ndarray, bg_color: np.ndarray = np.array([0.72, 0.62, 0.50])) -> np.ndarray:
@@ -24,7 +24,7 @@ def extract_leaf_mask(img_np: np.ndarray, bg_color: np.ndarray = np.array([0.72,
 def evaluate_leaf_mask_comparison(
     xml_path: str,
     helios_img_path: str,
-    output_dir: str = "diffusion_based/eval/output"
+    output_dir: str = "plant_recon/eval/output"
 ):
     os.makedirs(output_dir, exist_ok=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -99,7 +99,7 @@ if __name__ == "__main__":
         "--helios-img",
         default="/home/lion397/codes/image-to-l-system/Digital-Crops/projects/syntheticdata_generation/build/output/cowpea_dap005_seed00_caz000_h1.0_se045_saz180_0000_vis.jpeg"
     )
-    parser.add_argument("--output-dir", default="diffusion_based/eval/output")
+    parser.add_argument("--output-dir", default="plant_recon/eval/output")
     args = parser.parse_args()
 
     evaluate_leaf_mask_comparison(args.xml, args.helios_img, args.output_dir)

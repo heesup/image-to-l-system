@@ -16,8 +16,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from diffusion_based.models.helios_geometry import HeliosEllipsoid, HeliosLeaflet, HeliosTube
-from diffusion_based.models.helios_xml_parser import OrganNode3D
+from plant_recon.models.helios_geometry import HeliosEllipsoid, HeliosLeaflet, HeliosTube
+from plant_recon.models.helios_xml_parser import OrganNode3D
 
 
 class HeliosGeometryRasterizer(nn.Module):
@@ -879,7 +879,7 @@ class HeliosGeometryRasterizer(nn.Module):
                 focus_plant=focus_plant,
                 background=background,
             )
-        from diffusion_based.models.helios_geometry import HeliosPlantGeometryTorch
+        from plant_recon.models.helios_geometry import HeliosPlantGeometryTorch
         device = next(self.parameters()).device if list(self.parameters()) else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         geom_torch = HeliosPlantGeometryTorch.from_xml_obj(geom, device=device)
         return self(geom_torch, focus_plant=focus_plant, background=background)

@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from scipy.spatial import cKDTree
 
-from diffusion_based.models.plant_organ_array import (
+from plant_recon.models.plant_organ_array import (
     PlantOrganArray,
     ORGAN_NONE,
     ORGAN_ROOT_META,
@@ -36,7 +36,7 @@ from diffusion_based.models.plant_organ_array import (
     ORGAN_FRUIT,
     rotation_6d_to_matrix,
 )
-from diffusion_based.models.part_assembly_to_xml import PartAssemblyToXMLConverter
+from plant_recon.models.part_assembly_to_xml import PartAssemblyToXMLConverter
 
 
 def generate_pipeline_debug_figure(dap_str: str = "050"):

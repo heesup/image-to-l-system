@@ -34,7 +34,7 @@ from torchvision import transforms
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, REPO_ROOT)
 
-from diffusion_based.dataset.part_array_dataset import (
+from plant_recon.dataset.part_array_dataset import (
     PartArrayDataset,
     EMPTY_IDX,
     P_COL_ORGAN_TYPE,
@@ -48,12 +48,12 @@ from diffusion_based.dataset.part_array_dataset import (
     P_COL_CURVATURE,
     NUM_FEATURES,
 )
-from diffusion_based.models.plant_organ_array import PlantOrganArray
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
-from diffusion_based.models.botanical_scaffold import BotanicalScaffoldGenerator
-from diffusion_based.models.conditional_scaffold_predictor import ConditionalScaffoldPredictor
-from diffusion_based.models.part_flow_matching import PartFlowMatchingModel
-from diffusion_based.eval.metrics import masked_ssim, foreground_iou
+from plant_recon.models.plant_organ_array import PlantOrganArray
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.botanical_scaffold import BotanicalScaffoldGenerator
+from plant_recon.models.conditional_scaffold_predictor import ConditionalScaffoldPredictor
+from plant_recon.models.part_flow_matching import PartFlowMatchingModel
+from plant_recon.eval.metrics import masked_ssim, foreground_iou
 
 ELEVATION_DEG = 90.0
 IMAGE_SIZE = 128
@@ -116,9 +116,9 @@ def main():
     os.system("rm -rf /tmp/helios_* Digital-Crops/projects/syntheticdata_generation/build/output/tmp_*")
 
     # Load Flow Matching Model
-    ckpt_path = os.path.join(REPO_ROOT, "diffusion_based/checkpoints/fm/part_flow_matching_epoch40.pt")
+    ckpt_path = os.path.join(REPO_ROOT, "plant_recon/checkpoints/fm/part_flow_matching_epoch40.pt")
     if not os.path.exists(ckpt_path):
-        ckpt_path = os.path.join(REPO_ROOT, "diffusion_based/checkpoints/fm/part_flow_matching.pt")
+        ckpt_path = os.path.join(REPO_ROOT, "plant_recon/checkpoints/fm/part_flow_matching.pt")
     print(f"Loading trained Flow Matching checkpoint: {os.path.basename(ckpt_path)}")
     checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
 
@@ -144,7 +144,7 @@ def main():
     model.load_state_dict(clean_state)
     model.eval()
 
-    predictor_path = os.path.join(REPO_ROOT, "diffusion_based/checkpoints/fm/scaffold_predictor.pt")
+    predictor_path = os.path.join(REPO_ROOT, "plant_recon/checkpoints/fm/scaffold_predictor.pt")
     predictor = ConditionalScaffoldPredictor(in_channels=3, embed_dim=256, max_nodes=512).to(device)
     if os.path.exists(predictor_path):
         predictor.load_state_dict(torch.load(predictor_path, map_location=device, weights_only=True))
@@ -316,7 +316,7 @@ def main():
         iou_val = float(foreground_iou(_to_tensor(refined_rgb_np, device), _to_tensor(gt_rgb_np, device)).item())
 
         # 4. Re-rendered XML using Helios C++
-        from diffusion_based.models.helios_xml_parser import HeliosXMLParser
+        from plant_recon.models.helios_xml_parser import HeliosXMLParser
         parser = HeliosXMLParser(full_xml)
         nodes_spec = parser.get_all_organ_nodes()
         p_np = p_eval.detach().cpu().numpy()

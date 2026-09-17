@@ -23,7 +23,7 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.plant_organ_array import (
+from plant_recon.models.plant_organ_array import (
     PlantOrganArray,
     T_COL_ORGAN_TYPE,
     T_COL_LENGTH,
@@ -35,10 +35,10 @@ from diffusion_based.models.plant_organ_array import (
     T_COL_ROLL,
     T_COL_PHYLLOTACTIC_ANGLE,
 )
-from diffusion_based.models.plant_vae import PlantOrganVAE
-from diffusion_based.models.plant_global_vae import PlantGlobalVAE
-from diffusion_based.models.plant_shoot_vae import PlantShootVAE
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.plant_vae import PlantOrganVAE
+from plant_recon.models.plant_global_vae import PlantGlobalVAE
+from plant_recon.models.plant_shoot_vae import PlantShootVAE
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 
 
 def compute_iou(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
@@ -48,9 +48,9 @@ def compute_iou(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
 
 
 def evaluate_comparative_vaes(
-    global_ckpt: str = "diffusion_based/checkpoints/plant_global_vae_best.pt",
-    shoot_ckpt: str = "diffusion_based/checkpoints/plant_shoot_vae_best.pt",
-    organ_ckpt: str = "diffusion_based/checkpoints/plant_organ_vae_best.pt",
+    global_ckpt: str = "plant_recon/checkpoints/plant_global_vae_best.pt",
+    shoot_ckpt: str = "plant_recon/checkpoints/plant_shoot_vae_best.pt",
+    organ_ckpt: str = "plant_recon/checkpoints/plant_organ_vae_best.pt",
     output_png: str = "docs/results/assets/fig_global_vs_shoot_vae_comparison.png",
     device: str = "cuda",
 ):
@@ -254,9 +254,9 @@ def _plot_comparison_figure(results: List[Dict[str, Any]], output_png: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--global_ckpt", default="diffusion_based/checkpoints/plant_global_vae_best.pt")
-    parser.add_argument("--shoot_ckpt", default="diffusion_based/checkpoints/plant_shoot_vae_best.pt")
-    parser.add_argument("--organ_ckpt", default="diffusion_based/checkpoints/plant_organ_vae_best.pt")
+    parser.add_argument("--global_ckpt", default="plant_recon/checkpoints/plant_global_vae_best.pt")
+    parser.add_argument("--shoot_ckpt", default="plant_recon/checkpoints/plant_shoot_vae_best.pt")
+    parser.add_argument("--organ_ckpt", default="plant_recon/checkpoints/plant_organ_vae_best.pt")
     parser.add_argument("--output_png", default="docs/results/assets/fig_global_vs_shoot_vae_comparison.png")
     args = parser.parse_args()
 

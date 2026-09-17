@@ -17,7 +17,7 @@ import numpy as np
 import torch
 from scipy.spatial import cKDTree
 
-from diffusion_based.models.plant_organ_array import (
+from plant_recon.models.plant_organ_array import (
     PlantOrganArray,
     ORGAN_NONE,
     ORGAN_ROOT_META,
@@ -75,7 +75,7 @@ from diffusion_based.models.plant_organ_array import (
     T_COL_EXISTENCE,
     rotation_6d_to_matrix,
 )
-from diffusion_based.models.part_assembly_to_xml import PartAssemblyToXMLConverter, _invert_helios_zxz_rotation, _rot_z_matrix
+from plant_recon.models.part_assembly_to_xml import PartAssemblyToXMLConverter, _invert_helios_zxz_rotation, _rot_z_matrix
 
 
 def reconstruct_40d_from_13d(part_tensor: torch.Tensor) -> torch.Tensor:
@@ -207,7 +207,7 @@ def run_residual_diagnostics(dap_str: str = "010"):
     gt_40d = arr.tensor.cpu()
     part_13d = arr.to_part_tensor().cpu()
 
-    from diffusion_based.models.part_tensor_to_40d import PartTensorTo40DConverter
+    from plant_recon.models.part_tensor_to_40d import PartTensorTo40DConverter
     converter = PartTensorTo40DConverter()
     recon_40d = converter.convert(part_13d)
 

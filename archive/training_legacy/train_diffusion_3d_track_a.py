@@ -24,12 +24,12 @@ from typing import Optional, Dict, Tuple
 # Add project root to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from diffusion_based.models.legacy.graph_diffuser_3d_track_a import PlantGraphDiffuser3D
-from diffusion_based.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
-from diffusion_based.models.legacy.differentiable_pipeline_track_a import DifferentiableHeliosRenderer
-from diffusion_based.models.legacy.pointcloud_loss_3d_track_a import PlantPointCloudChamferLoss, load_ply_to_tensor
-from diffusion_based.models import helios_geometry
-from dataset.helios_dataset import HeliosPlantDataset
+from plant_recon.models.legacy.graph_diffuser_3d_track_a import PlantGraphDiffuser3D
+from plant_recon.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
+from plant_recon.models.legacy.differentiable_pipeline_track_a import DifferentiableHeliosRenderer
+from plant_recon.models.legacy.pointcloud_loss_3d_track_a import PlantPointCloudChamferLoss, load_ply_to_tensor
+from plant_recon.models import helios_geometry
+from archive.dataset_legacy.helios_dataset import HeliosPlantDataset
 
 
 def get_device() -> torch.device:
@@ -209,7 +209,7 @@ def train_3d_diffusion(
     num_epochs: int = 500,
     batch_size: int = 1,
     lr: float = 3e-4,
-    save_path: str = "diffusion_based/checkpoints/diffusion_3d_25d.pt",
+    save_path: str = "plant_recon/checkpoints/diffusion_3d_25d.pt",
     node_dim: int = 25,
     max_nodes: int = 2048,
     render_loss_weight: float = 0.0,  # Set > 0 to enable 2D render-in-the-loop
@@ -440,7 +440,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--save-path", type=str,
-                        default="diffusion_based/checkpoints/diffusion_3d_25d.pt")
+                        default="plant_recon/checkpoints/diffusion_3d_25d.pt")
     parser.add_argument("--node-dim", type=int, default=25,
                         choices=[15, 25],
                         help="Node feature dimension: 15 (legacy) or 25 (full R-matrix)")

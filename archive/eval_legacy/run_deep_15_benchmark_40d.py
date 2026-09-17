@@ -8,7 +8,7 @@ Merges four former scripts into one entry point:
   - generate_report_visualizations.py : report figures 3-7 (14D + depth)
 
 Design:
-  - Training is done separately via diffusion_based/training/*.py. This script
+  - Training is done separately via plant_recon/training/*.py. This script
     only LOADS checkpoints for evaluation (no inline training).
   - A train/val split is applied to the dataset so evaluation targets are
     never seen during training.
@@ -20,8 +20,8 @@ Modes (--mode):
   all       : benchmark + problem
 
 Outputs:
-  - diffusion_based/eval/output/deep_benchmark/benchmark_results.json
-  - diffusion_based/eval/output/deep_benchmark/*.png
+  - plant_recon/eval/output/deep_benchmark/benchmark_results.json
+  - plant_recon/eval/output/deep_benchmark/*.png
 """
 
 import os
@@ -47,7 +47,7 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.plant_organ_array import (
+from plant_recon.models.plant_organ_array import (
     PlantOrganArray,
     T_COL_ORGAN_TYPE,
     T_COL_EXISTENCE,
@@ -67,21 +67,21 @@ from diffusion_based.models.plant_organ_array import (
     P14_COL_ROT_0, P14_COL_ROT_5, P14_COL_SCALE_X, P14_COL_SCALE_Y, P14_COL_SCALE_Z,
     P14_COL_EXISTENCE, rotation_6d_to_matrix,
 )
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
-from diffusion_based.models.perceptual_loss import VGGPerceptualLoss
-from diffusion_based.dataset.legacy.organ_array_dataset_40d import OrganArrayDataset
-from diffusion_based.training.legacy.train_organ_array_diffusion_40d import (
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.perceptual_loss import VGGPerceptualLoss
+from plant_recon.dataset.legacy.organ_array_dataset_40d import OrganArrayDataset
+from plant_recon.training.legacy.train_organ_array_diffusion_40d import (
     DDPMScheduler,
     prediction_to_organ_array,
 )
-from diffusion_based.models.legacy.vit_image_to_organ_array_40d import (
+from plant_recon.models.legacy.vit_image_to_organ_array_40d import (
     ViTOrganArrayDiffuser,
     ViTImageToOrganArray,
 )
-from diffusion_based.models.part_flow_matching import PartFlowMatchingModel
-from diffusion_based.training.flow_matching import FlowMatchingScheduler
-from diffusion_based.dataset.part_array_dataset import PartArrayDataset
-from diffusion_based.eval.metrics import (
+from plant_recon.models.part_flow_matching import PartFlowMatchingModel
+from plant_recon.training.flow_matching import FlowMatchingScheduler
+from plant_recon.dataset.part_array_dataset import PartArrayDataset
+from plant_recon.eval.metrics import (
     masked_ssim, foreground_iou, affine_invariant_depth_loss,
 )
 
@@ -1572,10 +1572,10 @@ def main():
     parser.add_argument("--max_nodes", type=int, default=2048)
     parser.add_argument("--image_size", type=int, default=128)
     parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--output_dir", type=str, default="diffusion_based/eval/output/deep_benchmark")
-    parser.add_argument("--decoder_checkpoint", type=str, default="diffusion_based/checkpoints/vit_backprop_vit.pt")
-    parser.add_argument("--diffuser_checkpoint", type=str, default="diffusion_based/checkpoints/organ_array_diffuser_norm.pt")
-    parser.add_argument("--flow_checkpoint", type=str, default="diffusion_based/checkpoints/part_flow_matching.pt")
+    parser.add_argument("--output_dir", type=str, default="plant_recon/eval/output/deep_benchmark")
+    parser.add_argument("--decoder_checkpoint", type=str, default="plant_recon/checkpoints/vit_backprop_vit.pt")
+    parser.add_argument("--diffuser_checkpoint", type=str, default="plant_recon/checkpoints/organ_array_diffuser_norm.pt")
+    parser.add_argument("--flow_checkpoint", type=str, default="plant_recon/checkpoints/part_flow_matching.pt")
     parser.add_argument("--steps", type=int, default=80, help="Direct-opt / problem-suite steps")
     parser.add_argument("--tta_steps", type=int, default=30, help="TTA steps for B5")
     parser.add_argument("--diffusion_steps", type=int, default=40, help="Diffusion reverse steps")

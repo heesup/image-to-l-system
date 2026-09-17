@@ -24,10 +24,10 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.plant_organ_array import PlantOrganArray
-from diffusion_based.models.plant_global_vae import OrganFeatureNormalizer
-from diffusion_based.models.plant_organ_40d_flow_matching import PlantOrgan40DFlowMatchingModel
-from diffusion_based.training.flow_matching import FlowMatchingScheduler
+from plant_recon.models.plant_organ_array import PlantOrganArray
+from plant_recon.models.plant_global_vae import OrganFeatureNormalizer
+from plant_recon.models.plant_organ_40d_flow_matching import PlantOrgan40DFlowMatchingModel
+from plant_recon.training.flow_matching import FlowMatchingScheduler
 
 
 class Direct40DPlantDataset(Dataset):
@@ -112,7 +112,7 @@ def train_40d_flow_matching(
     lr: float = 5e-4,
     max_organs: int = 1200,
     data_root: str = "dataset/helios_data",
-    ckpt_dir: str = "diffusion_based/checkpoints/fm",
+    ckpt_dir: str = "plant_recon/checkpoints/fm",
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(ckpt_dir, exist_ok=True)

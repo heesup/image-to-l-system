@@ -10,7 +10,7 @@ from typing import List, Dict, Any, Tuple, Optional
 
 import torch
 from torch.utils.data import Dataset
-from diffusion_based.dataset.part_array_dataset import FM_NODE_DIM, EMPTY_IDX, canonical_sort_nodes
+from plant_recon.dataset.part_array_dataset import FM_NODE_DIM, EMPTY_IDX, canonical_sort_nodes
 
 
 class PlantShardDataset(Dataset):
@@ -59,7 +59,7 @@ class PlantShardDataset(Dataset):
                 print(f"[PlantShardDataset] No cached shards found in '{self.cache_dir}'.")
                 print(f"[PlantShardDataset] Found {len(raw_xmls)} raw XMLs. Starting on-the-fly sharding ({auto_preprocess_samples:,} samples)...")
                 try:
-                    from diffusion_based.dataset.generate_tensor_shards import generate_shards
+                    from plant_recon.dataset.generate_tensor_shards import generate_shards
                     generate_shards(
                         species=self.species,
                         data_root=self.data_root,

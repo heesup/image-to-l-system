@@ -10,7 +10,7 @@ Two camera modes are compared:
   exact: HFOV read from the Helios camera.json (focal_length / sensor_width)
 
 Usage:
-  python diffusion_based/eval/eval_organ_category_masks.py \
+  python plant_recon/eval/eval_organ_category_masks.py \
       --samples "dataset/helios_data/cowpea_dap080_seed00*,dataset/helios_data/cowpea_dap100_seed01*"
 """
 
@@ -31,9 +31,9 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.plant_organ_array import PlantOrganArray
-from diffusion_based.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.plant_organ_array import PlantOrganArray
+from plant_recon.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 
 CATEGORIES = {
     1: "petiole",
@@ -138,7 +138,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--samples", type=str,
                         default="dataset/helios_data/cowpea_dap080_seed00*,dataset/helios_data/cowpea_dap100_seed00*")
-    parser.add_argument("--output-dir", default="diffusion_based/eval/output/category_masks")
+    parser.add_argument("--output-dir", default="plant_recon/eval/output/category_masks")
     parser.add_argument("--modes", type=str, default="auto,exact")
     parser.add_argument("--image-size", type=int, default=720)
     parser.add_argument("--no-figures", action="store_true")

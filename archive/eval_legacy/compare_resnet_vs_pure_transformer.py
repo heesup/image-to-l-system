@@ -21,16 +21,16 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.plant_organ_array import (
+from plant_recon.models.plant_organ_array import (
     PlantOrganArray,
     T_COL_LENGTH,
     T_COL_RADIUS,
     T_COL_SCALE,
     T_COL_ORGAN_TYPE,
 )
-from diffusion_based.models.plant_global_vae import PlantGlobalVAE
-from diffusion_based.models.plant_pure_transformer_vae import PlantPureTransformerVAE
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.plant_global_vae import PlantGlobalVAE
+from plant_recon.models.plant_pure_transformer_vae import PlantPureTransformerVAE
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 
 
 def compute_iou(mask1: np.ndarray, mask2: np.ndarray) -> float:
@@ -45,8 +45,8 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Initializing ResNet vs Pure Transformer VAE Comparison on {device}...")
 
-    resnet_ckpt = "diffusion_based/checkpoints/plant_global_vae_best.pt"
-    pure_ckpt = "diffusion_based/checkpoints/plant_pure_transformer_vae_best.pt"
+    resnet_ckpt = "plant_recon/checkpoints/plant_global_vae_best.pt"
+    pure_ckpt = "plant_recon/checkpoints/plant_pure_transformer_vae_best.pt"
 
     # 1. Model A: Hybrid ResNet + Transformer (4+4 layers)
     model_resnet = PlantGlobalVAE(latent_dim=512, hidden_dim=512, encoder_layers=4, decoder_layers=4).to(device)

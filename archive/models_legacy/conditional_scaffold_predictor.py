@@ -13,8 +13,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from diffusion_based.dataset.part_array_dataset import FM_NODE_DIM
-from diffusion_based.models.botanical_scaffold import BotanicalScaffoldGenerator
+from plant_recon.dataset.part_array_dataset import FM_NODE_DIM
+from plant_recon.models.botanical_scaffold import BotanicalScaffoldGenerator
 
 
 class ConditionalScaffoldPredictor(nn.Module):
@@ -125,7 +125,7 @@ class ConditionalScaffoldPredictor(nn.Module):
         scaffolds_t = torch.stack(scaffolds, dim=0)
 
         if noise_std > 0:
-            from diffusion_based.dataset.part_array_dataset import FM_BASE_START, FM_BASE_END, FM_SCALE_START, FM_SCALE_END
+            from plant_recon.dataset.part_array_dataset import FM_BASE_START, FM_BASE_END, FM_SCALE_START, FM_SCALE_END
             base_noise = torch.randn((B, self.max_nodes, 3), device=device) * noise_std
             scaffolds_t[:, :, FM_BASE_START:FM_BASE_END] += base_noise
             scale_noise = torch.randn((B, self.max_nodes, 3), device=device) * (noise_std * 0.5)

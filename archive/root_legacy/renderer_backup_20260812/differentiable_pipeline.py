@@ -34,9 +34,9 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from diffusion_based.models.helios_geometry import nodes_to_geometry_torch
-from diffusion_based.models.helios_rasterizer_3d import HeliosGeometryRasterizer
-from diffusion_based.models.legacy.helios_geometry_legacy import (
+from plant_recon.models.helios_geometry import nodes_to_geometry_torch
+from plant_recon.models.helios_rasterizer_3d import HeliosGeometryRasterizer
+from plant_recon.models.legacy.helios_geometry_legacy import (
     DifferentiableHeliosXMLRenderer,
     build_helios_geometry_from_xml,
 )

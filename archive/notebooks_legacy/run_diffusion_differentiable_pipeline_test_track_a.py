@@ -16,12 +16,12 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.helios_xml_parser import HeliosXMLParser, OrganNode3D
-from diffusion_based.models.legacy.helios_xml_writer_track_a import write_organ_nodes_to_xml
-from diffusion_based.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
-from diffusion_based.models.legacy.differentiable_pipeline_track_a import DifferentiableHeliosRenderer
-from diffusion_based.models.legacy.graph_diffuser_3d_track_a import PlantGraphDiffuser3D
-from diffusion_based.eval.visualize_diffusion_3d import sample_reverse_diffusion_3d
+from plant_recon.models.helios_xml_parser import HeliosXMLParser, OrganNode3D
+from plant_recon.models.legacy.helios_xml_writer_track_a import write_organ_nodes_to_xml
+from plant_recon.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
+from plant_recon.models.legacy.differentiable_pipeline_track_a import DifferentiableHeliosRenderer
+from plant_recon.models.legacy.graph_diffuser_3d_track_a import PlantGraphDiffuser3D
+from plant_recon.eval.visualize_diffusion_3d import sample_reverse_diffusion_3d
 
 
 def setup_display_env() -> dict:
@@ -184,7 +184,7 @@ def step2_diffusion_proposal_and_refinement(
     max_nodes = 256
     diffuser_model = PlantGraphDiffuser3D(max_nodes=max_nodes, node_dim=15).to(device)
     
-    checkpoint_path = os.path.join(repo_root, "diffusion_based", "checkpoints", "diffusion_model_3d.pt")
+    checkpoint_path = os.path.join(repo_root, "plant_recon", "checkpoints", "diffusion_model_3d.pt")
     if os.path.exists(checkpoint_path):
         state = torch.load(checkpoint_path, map_location=device, weights_only=False)
         if isinstance(state, dict):

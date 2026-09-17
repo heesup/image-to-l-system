@@ -10,10 +10,10 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.helios_xml_parser import HeliosXMLParser
-from diffusion_based.models.legacy.differentiable_pipeline_track_a import DifferentiableHeliosRenderer
-from diffusion_based.models.legacy.helios_geometry_legacy import build_helios_geometry_from_xml, DifferentiableHeliosXMLRenderer
-from diffusion_based.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
+from plant_recon.models.helios_xml_parser import HeliosXMLParser
+from plant_recon.models.legacy.differentiable_pipeline_track_a import DifferentiableHeliosRenderer
+from plant_recon.models.legacy.helios_geometry_legacy import build_helios_geometry_from_xml, DifferentiableHeliosXMLRenderer
+from plant_recon.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
 
 
 def render_track_a(xml_path, rasterizer, device):

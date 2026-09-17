@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from diffusion_based.models.plant_organ_array import (
+from plant_recon.models.plant_organ_array import (
     NUM_FEATURES_TYPED,
     T_COL_ORGAN_TYPE,
     T_COL_SHOOT_TYPE,
@@ -44,7 +44,7 @@ from diffusion_based.models.plant_organ_array import (
     T_COL_LEAFLET_SCALE,
     ORGAN_LEAF,
 )
-from diffusion_based.models.plant_vae import (
+from plant_recon.models.plant_vae import (
     OrganFeatureNormalizer,
     ANGULAR_COLS,
     NUM_ANGULAR_COLS,

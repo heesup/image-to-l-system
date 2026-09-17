@@ -6,8 +6,8 @@ Trains:
   2. PlantTransformerVAE: Full plant canopy sequence compressor ((N, 40) -> z_plant in R^256).
 
 Saves checkpoints to:
-  - diffusion_based/checkpoints/plant_organ_vae_best.pt
-  - diffusion_based/checkpoints/plant_transformer_vae_best.pt
+  - plant_recon/checkpoints/plant_organ_vae_best.pt
+  - plant_recon/checkpoints/plant_transformer_vae_best.pt
 """
 
 import os
@@ -25,8 +25,8 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.plant_organ_array import PlantOrganArray, NUM_FEATURES_TYPED
-from diffusion_based.models.plant_vae import (
+from plant_recon.models.plant_organ_array import PlantOrganArray, NUM_FEATURES_TYPED
+from plant_recon.models.plant_vae import (
     PlantOrganVAE,
     PlantTransformerVAE,
     compute_organ_vae_loss,
@@ -122,7 +122,7 @@ def train_plant_organ_vae(
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-5)
 
-    ckpt_dir = os.path.join(repo_root, "diffusion_based", "checkpoints")
+    ckpt_dir = os.path.join(repo_root, "plant_recon", "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
     best_val_loss = float("inf")
     best_ckpt_path = os.path.join(ckpt_dir, "plant_organ_vae_best.pt")

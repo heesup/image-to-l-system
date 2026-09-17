@@ -23,11 +23,11 @@ import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
-from diffusion_based.models.plant_organ_array import PlantOrganArray, NUM_FEATURES_PART
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
-from diffusion_based.models.vlm_scaffold_dit import VLMScaffoldDiTModel
-from diffusion_based.models.part_assembly_to_xml import PartAssemblyToXMLConverter
-from diffusion_based.dataset.part_array_dataset import (
+from plant_recon.models.plant_organ_array import PlantOrganArray, NUM_FEATURES_PART
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.vlm_scaffold_dit import VLMScaffoldDiTModel
+from plant_recon.models.part_assembly_to_xml import PartAssemblyToXMLConverter
+from plant_recon.dataset.part_array_dataset import (
     ORGAN_CATEGORIES, EMPTY_IDX, FM_NODE_DIM, FM_OT_END,
     FM_BASE_START, FM_BASE_END, FM_ROT_START, FM_ROT_END,
     FM_SCALE_START, FM_SCALE_END, FM_CURV_IDX, FM_PHYLLO_IDX,
@@ -88,13 +88,13 @@ def main():
         ckpt_path = args.checkpoint
     else:
         candidates = [
-            os.path.join(repo_root, "diffusion_based", "checkpoints", "fm", "cowpea_vlm_scaffold_dit_h100_ddp.pt"),
-            os.path.join(repo_root, "diffusion_based", "checkpoints", "fm", "cowpea_dit_large_2xh100_ddp.pt"),
-            os.path.join(repo_root, "diffusion_based", "checkpoints", "fm", "cowpea_dit_large_150m.pt"),
+            os.path.join(repo_root, "plant_recon", "checkpoints", "fm", "cowpea_vlm_scaffold_dit_h100_ddp.pt"),
+            os.path.join(repo_root, "plant_recon", "checkpoints", "fm", "cowpea_dit_large_2xh100_ddp.pt"),
+            os.path.join(repo_root, "plant_recon", "checkpoints", "fm", "cowpea_dit_large_150m.pt"),
         ]
         ckpt_path = next((c for c in candidates if os.path.exists(c)), None)
         if ckpt_path is None:
-            raise FileNotFoundError("No valid model checkpoint found in diffusion_based/checkpoints/fm/")
+            raise FileNotFoundError("No valid model checkpoint found in plant_recon/checkpoints/fm/")
 
     print(f"Loading checkpoint from: {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)

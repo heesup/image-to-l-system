@@ -20,7 +20,7 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.plant_organ_array import (
+from plant_recon.models.plant_organ_array import (
     PlantOrganArray,
     T_COL_LENGTH,
     T_COL_RADIUS,
@@ -34,7 +34,7 @@ from diffusion_based.models.plant_organ_array import (
     ORGAN_PETIOLE,
     ORGAN_LEAF,
 )
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 
 
 def compute_ssim_numpy(img1: np.ndarray, img2: np.ndarray) -> float:
@@ -51,7 +51,7 @@ def compute_ssim_numpy(img1: np.ndarray, img2: np.ndarray) -> float:
 
 
 def main():
-    output_dir = os.path.join(repo_root, "diffusion_based", "eval", "output")
+    output_dir = os.path.join(repo_root, "plant_recon", "eval", "output")
     os.makedirs(output_dir, exist_ok=True)
     source_xml = os.path.join(
         repo_root,

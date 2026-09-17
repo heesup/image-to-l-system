@@ -29,7 +29,7 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.plant_organ_array import (
+from plant_recon.models.plant_organ_array import (
     PlantOrganArray,
     ORGAN_LEAF,
     P_COL_ORGAN_TYPE,
@@ -40,8 +40,8 @@ from diffusion_based.models.plant_organ_array import (
     P_COL_CURVATURE, P_COL_PHYLLOTACTIC_ANGLE,
     rotation_6d_to_matrix,
 )
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
-from diffusion_based.eval.metrics import (
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.eval.metrics import (
     masked_ssim, foreground_iou, affine_invariant_depth_loss,
 )
 

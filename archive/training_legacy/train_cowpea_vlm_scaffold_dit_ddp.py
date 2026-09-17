@@ -39,12 +39,12 @@ try:
 except ImportError:
     WANDB_AVAILABLE = False
 
-from diffusion_based.dataset.cowpea_shard_dataset import CowpeaShardDataset, cowpea_collate_fn
-from diffusion_based.models.vlm_scaffold_dit import VLMScaffoldDiTModel
-from diffusion_based.models.plant_organ_array import PlantOrganArray, NUM_FEATURES_PART
-from diffusion_based.models.part_assembly_to_xml import PartAssemblyToXMLConverter
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
-from diffusion_based.dataset.part_array_dataset import (
+from plant_recon.dataset.cowpea_shard_dataset import CowpeaShardDataset, cowpea_collate_fn
+from plant_recon.models.vlm_scaffold_dit import VLMScaffoldDiTModel
+from plant_recon.models.plant_organ_array import PlantOrganArray, NUM_FEATURES_PART
+from plant_recon.models.part_assembly_to_xml import PartAssemblyToXMLConverter
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.dataset.part_array_dataset import (
     ORGAN_CATEGORIES, EMPTY_IDX, FM_NODE_DIM, FM_OT_END,
     FM_BASE_START, FM_BASE_END, FM_ROT_START, FM_ROT_END,
     FM_SCALE_START, FM_SCALE_END,
@@ -70,7 +70,7 @@ def parse_args():
     parser.add_argument("--warmup-epochs", type=int, default=3, help="Linear warmup epochs")
     parser.add_argument("--cache-dir", type=str, default="dataset/helios_data/cowpea_shard")
     parser.add_argument("--data-root", type=str, default="dataset/helios_data/cowpea")
-    parser.add_argument("--save-dir", type=str, default="diffusion_based/checkpoints/fm")
+    parser.add_argument("--save-dir", type=str, default="plant_recon/checkpoints/fm")
     parser.add_argument("--save-name", type=str, default="cowpea_vlm_scaffold_dit_h100_ddp.pt")
     parser.add_argument("--num-workers", type=int, default=4, help="DataLoader workers per GPU")
     parser.add_argument("--use-wandb", action="store_true", default=True, help="Enable Weights & Biases logging")

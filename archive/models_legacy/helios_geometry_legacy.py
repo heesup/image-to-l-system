@@ -4,7 +4,7 @@ This module is the **Track A** (XML-native) implementation of the Helios
 forward kinematics. It reconstructs explicit 3D geometry objects that match the
 C++ PlantArchitecture output as closely as possible. The resulting geometry is
 stored in the shared dataclasses defined in
-``diffusion_based.models.helios_geometry`` so that both Track A and Track B
+``plant_recon.models.helios_geometry`` so that both Track A and Track B
 converge on the same rasterization path.
 
 Responsibilities:
@@ -17,7 +17,7 @@ Responsibilities:
     ``HeliosGeometryRasterizer``.
 
 All torch-aware node-array conversion (15D/19D/22D) lives in
-``diffusion_based.models.helios_geometry`` and is re-exported here for backward
+``plant_recon.models.helios_geometry`` and is re-exported here for backward
 compatibility only.
 """
 
@@ -31,7 +31,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from diffusion_based.models.legacy.helios_geometry_track_a import (
+from plant_recon.models.legacy.helios_geometry_track_a import (
     HeliosEllipsoid,
     HeliosLeaflet,
     HeliosPlantGeometry,
@@ -40,7 +40,7 @@ from diffusion_based.models.legacy.helios_geometry_track_a import (
     nodes_to_geometry_torch as _nodes_to_geometry_torch,
     nodes_to_point_cloud as _nodes_to_point_cloud,
 )
-from diffusion_based.models.helios_xml_parser import (
+from plant_recon.models.helios_xml_parser import (
     HeliosXMLParser,
     OrganNode3D,
     Phytomer3D,
@@ -48,7 +48,7 @@ from diffusion_based.models.helios_xml_parser import (
     _normalize as _np_normalize,
     _rotate_point_about_line as _np_rodrigues,
 )
-from diffusion_based.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
+from plant_recon.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
 
 
 # Backward-compatible aliases for the shared geometry dataclasses.
@@ -648,7 +648,7 @@ def _interpolate_tube(vertices: List[np.ndarray], frac: float) -> np.ndarray:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # For 15D/19D/22D node arrays, the canonical implementation now lives in
-# diffusion_based.models.helios_geometry. Re-export here so legacy callers
+# plant_recon.models.helios_geometry. Re-export here so legacy callers
 # keep working without modification.
 
 nodes_to_geometry = _nodes_to_geometry

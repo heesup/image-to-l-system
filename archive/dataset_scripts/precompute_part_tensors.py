@@ -7,7 +7,7 @@ per sample. This script computes each tensor ONCE and caches it to a .pt file,
 so the training dataset can load them instantly.
 
 Usage:
-    python diffusion_based/dataset/precompute_part_tensors.py \
+    python plant_recon/dataset/precompute_part_tensors.py \
         --data_root dataset/helios_data \
         --cache_dir dataset/helios_data_14d_cache
 """
@@ -24,7 +24,7 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from diffusion_based.models.plant_organ_array import PlantOrganArray
+from plant_recon.models.plant_organ_array import PlantOrganArray
 
 
 def main():
@@ -46,7 +46,7 @@ def main():
     print(f"Precomputing part tensors + images for {len(xml_paths)} samples -> {args.cache_dir}", flush=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+    from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
     renderer = HeliosPyTorchRenderer(image_size=args.image_size).to(device)
 
     done = 0

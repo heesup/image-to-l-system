@@ -257,13 +257,13 @@ def generate_one(args: Tuple) -> Tuple[int, int, int, float, float, float, bool,
             from PIL import Image
             import numpy as np
             import time
-            from diffusion_based.models.legacy.helios_geometry_track_a import (
+            from plant_recon.models.legacy.helios_geometry_track_a import (
                 build_helios_geometry_from_xml,
                 nodes_to_geometry_torch,
                 HeliosPlantGeometryTorch,
             )
-            from diffusion_based.models.helios_xml_parser import HeliosXMLParser
-            from diffusion_based.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
+            from plant_recon.models.helios_xml_parser import HeliosXMLParser
+            from plant_recon.models.legacy.helios_rasterizer_3d_track_a import HeliosGeometryRasterizer
 
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             rasterizer = HeliosGeometryRasterizer(image_size=256).to(device)
