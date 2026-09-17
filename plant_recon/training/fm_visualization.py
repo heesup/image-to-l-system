@@ -111,7 +111,7 @@ def render_epoch_panel(
     batch: Dict[str, torch.Tensor],
     epoch: int,
     global_step: int,
-    out_dir: str = "docs/results/assets",
+    out_dir: str = "outputs/eval",
     num_rows: int = 3,
     wandb_run=None,
 ) -> Optional[plt.Figure]:

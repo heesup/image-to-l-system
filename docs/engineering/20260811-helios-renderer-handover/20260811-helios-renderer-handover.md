@@ -124,7 +124,7 @@ This matrix is copied into `OrganNode3D.R_matrix` when leaf nodes are created.
 * `verify_xml_round_trip(xml_path)` — parses, serializes, and checks both **text_equal** and **semantic_equal**.
 * `extract_xml_tag_coverage(xml_path)` — audits consumed vs ignored XML tags.
 
-All XML fixtures under `notebooks/output_dap*/` pass round-trip verification with `text_equal=True` and `semantic_equal=True`.
+All XML fixtures under `archive/notebooks_legacy/output_dap*/` pass round-trip verification with `text_equal=True` and `semantic_equal=True`.
 
 ---
 
@@ -142,9 +142,9 @@ All XML fixtures under `notebooks/output_dap*/` pass round-trip verification wit
    - PyTorch 3D Geometry Rasterizer.
 6. `plant_recon/models/graph_diffuser_3d.py`
    - 25D 3D graph diffusion model.
-7. `notebooks/compare_track_a_b.py`
+7. `archive/notebooks_legacy/compare_track_a_b_track_a.py`
    - Quick Track A vs Track B comparison script.
-8. `notebooks/run_dap_multi_benchmark_with_track_a.py`
+8. `archive/notebooks_legacy/run_dap_multi_benchmark_with_track_a_track_a.py`
    - Multi-DAP Track A / Track B benchmark.
 
 ---
@@ -156,15 +156,15 @@ source /cvmfs/hpc.ucdavis.edu/sw/conda/root/etc/profile.d/mamba.sh
 mamba activate digital-crops
 
 # Track A vs Track B quick comparison
-python notebooks/compare_track_a_b.py
+python archive/notebooks_legacy/compare_track_a_b_track_a.py
 
 # Multi-DAP benchmark (skip slow C++ rendering)
-python notebooks/run_dap_multi_benchmark_with_track_a.py --daps 10 50 90 --skip-cpp
+python archive/notebooks_legacy/run_dap_multi_benchmark_with_track_a_track_a.py --daps 10 50 90 --skip-cpp
 
 # XML round-trip verification
 python - <<'PY'
 from plant_recon.models.helios_xml_parser import verify_xml_round_trip
-print(verify_xml_round_trip('notebooks/output_dap_benchmark/dap50_gt_0000_plant_0000.xml'))
+print(verify_xml_round_trip('archive/notebooks_legacy/output_dap_benchmark/dap50_gt_0000_plant_0000.xml'))
 PY
 
 # 25D GraphDiffuser3D integration test
@@ -210,7 +210,7 @@ The 3D graph diffusion training script (`plant_recon/training/train_diffusion_3d
 python - <<'PY'
 from plant_recon.training.train_diffusion_3d import train_3d_diffusion
 train_3d_diffusion(
-    data_dir='/home/lion397/codes/image-to-l-system/notebooks/output_dap_benchmark',
+    data_dir='/home/lion397/codes/image-to-l-system/archive/notebooks_legacy/output_dap_benchmark',
     num_epochs=1, batch_size=1, save_path='/tmp/opencode/smoke_25d.pt',
     node_dim=25, max_nodes=256, render_loss_weight=0.0)
 PY
@@ -219,7 +219,7 @@ PY
 python - <<'PY'
 from plant_recon.training.train_diffusion_3d import train_3d_diffusion
 train_3d_diffusion(
-    data_dir='/home/lion397/codes/image-to-l-system/notebooks/output_dap_benchmark',
+    data_dir='/home/lion397/codes/image-to-l-system/archive/notebooks_legacy/output_dap_benchmark',
     num_epochs=1, batch_size=1, save_path='/tmp/opencode/smoke_25d_render.pt',
     node_dim=25, max_nodes=256, render_loss_weight=0.1, render_fast_mode=True)
 PY
@@ -239,4 +239,4 @@ Both tests complete successfully with non-zero gradient norms.
    - Consider curriculum training: train without render loss for the first N epochs, then enable `--render-loss 0.1 --render-fast-mode` for refinement.
 
 3. **Validate End-to-End Inverse Optimization**
-   - Use `notebooks/run_single_image_optimization_demo.py` with 25D node arrays to verify backpropagation from pixels to organ nodes still works.
+   - Use `archive/notebooks_legacy/run_single_image_optimization_demo_track_a.py` with 25D node arrays to verify backpropagation from pixels to organ nodes still works.

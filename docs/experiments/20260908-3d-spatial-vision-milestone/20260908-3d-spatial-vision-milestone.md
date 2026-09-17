@@ -9,7 +9,7 @@ status: done
 
 **Date**: September 8, 2026  
 **Status**: Empirical Breakthrough Confirmed  
-**Target File Analyzed**: [`docs/results/assets/hierarchical_self_consistency_epoch_125_20260908.png`](assets/hierarchical_self_consistency_epoch_150.png)  
+**Target File Analyzed**: [`hierarchical_self_consistency_epoch_125_20260908.png`](../20260907-latent-fm-500epoch/assets/hierarchical_self_consistency_epoch_125_20260908.png)  
 **Cluster Job**: `38145444` (4× NVIDIA RTX 6000 Ada Generation, 192 GB total VRAM)  
 **Model Architecture**: DINOv2-S/14 + 3D Ray PE (PETR) + 3D Reference Query Scaffold (DETR3D) + Intra-Phytomer Flow Matching (16D Latents)
 

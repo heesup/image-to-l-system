@@ -29,7 +29,7 @@ test-time refinement):
     by the SAME scale row linearly, so leaf area grows quadratically with scale while the
     synthetic script's un-bounded position (no reg_pos existed there either) is equally free to
     spread. A HARD bound (clip scale after each step, not just penalize it) plus a position
-    prior fixed it on the plants tested so far — see docs/results/20260915_real_image_first_test.md.
+    prior fixed it on the plants tested so far — see docs/experiments/20260915-real-image-first-test/20260915-real-image-first-test.md.
 """
 import argparse
 import datetime

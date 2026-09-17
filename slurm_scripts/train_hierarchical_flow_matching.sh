@@ -124,7 +124,7 @@ mkdir -p "${OUTPUT_DIR}"
 
 # Per-run artifact folder: the self-consistency panels live here beside this
 # run's own log, so runs stay comparable instead of overwriting each other at
-# fixed filenames under docs/results/assets. SLURM will not create a directory
+# fixed filenames under outputs/eval. SLURM will not create a directory
 # for --output, so the log is written where it always was and symlinked in
 # rather than moved (it is appended to for the life of the job).
 RUN_TAG="${SLURM_JOB_ID:-local_$(date +%Y%m%d_%H%M%S)}"

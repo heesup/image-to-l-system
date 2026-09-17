@@ -2075,7 +2075,7 @@ def main():
                              "Empty derives a per-run folder under outputs/logs "
                              "(run_$SLURM_JOB_ID, or run_local_<timestamp>). Keeping each "
                              "run's figures beside its own log makes a run self-contained; "
-                             "writing them to docs/results/assets meant every run silently "
+                             "writing them to outputs/eval meant every run silently "
                              "overwrote the previous run's panels at the same filenames.")
     parser.add_argument("--seed", type=int, default=None,
                         help="Seed weight init, data shuffling and the DistributedSampler. "
@@ -2099,9 +2099,9 @@ def main():
         random.seed(_rank_seed)
 
     # Per-run figure folder, so a run's panels sit beside its own log instead of
-    # overwriting the previous run's at fixed filenames under docs/results/assets.
+    # overwriting the previous run's at fixed filenames under outputs/logs.
     figure_dir = args.figure_dir or os.path.join(
-        "slurm_scripts", "logs",
+        "outputs", "logs",
         f"run_{os.environ['SLURM_JOB_ID']}" if os.environ.get("SLURM_JOB_ID")
         else f"run_local_{time.strftime('%Y%m%d_%H%M%S')}")
     os.makedirs(figure_dir, exist_ok=True)

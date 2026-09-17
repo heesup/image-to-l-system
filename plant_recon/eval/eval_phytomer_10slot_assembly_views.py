@@ -22,7 +22,7 @@ Columns:
 Columns 1-4 share one camera per row (bounds taken from the GT mesh), so a
 shape difference between 2 and 4 is geometry, not framing.
 
-Output: docs/results/assets/fig12_phytomer_10slot_helios_roundtrip.png
+Output: outputs/eval/fig12_phytomer_10slot_helios_roundtrip.png
 """
 import os
 import sys

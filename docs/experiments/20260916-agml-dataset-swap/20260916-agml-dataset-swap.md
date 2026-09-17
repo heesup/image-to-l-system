@@ -63,7 +63,7 @@ Both `use_cases/real_world/eval/run_approach1_cold.py` and `run_approach2_refine
 pointed at the new checkpoint, unchanged otherwise — no code changes were needed for that part, only
 for the mask fallback below.
 
-**First pass, no mask at all** (`docs/archive/unreferenced-assets/20260916_agml_real_image_test.png`): reproduced
+**First pass, no mask at all** ([`assets/20260916_agml_real_image_test.png`](assets/20260916_agml_real_image_test.png)): reproduced
 the project's known "canvas inflation" failure — organs growing into large flat polygons that fill
 the crop — on most of the 6 plants, despite the script's `scale_clip_mult=1.5` / `reg_pos=20.0`
 defaults (the fix the 2026-09-15 report found and set as the new defaults). Root cause: this
@@ -73,7 +73,7 @@ inflation" bug's original cause on 2026-09-15 (a real but zoom-saturated segment
 
 **Fix attempt: `bbox_to_mask`** — gave `detect_plants` a bounding-box-rectangle mask fallback so a
 box-only detector still has *some* real silhouette bound, tighter than a depth threshold. Re-ran
-(`docs/archive/unreferenced-assets/20260916_agml_real_image_test_bboxmask.png`): **the inflation is still there**
+([`assets/20260916_agml_real_image_test_bboxmask.png`](assets/20260916_agml_real_image_test_bboxmask.png)): **the inflation is still there**
 on most plants, materially unchanged from the no-mask pass. A rectangle around a small, young,
 already-undersized seedling is itself loose — most of the box is bare soil, not canopy — so filling
 it still costs the optimizer little more than filling a depth blob did. The existing hard clamp
@@ -83,7 +83,7 @@ can still read as "one large flat leaf" against a target this loose.
 ## 5. A tighter clip helps partially, not fully
 
 Re-ran Approach 2 with `--scale_clip_mult 1.1` (vs. the 1.5 default) on the same 6 crops
-(`docs/archive/unreferenced-assets/20260916_agml_real_image_test_tightclip.png`): **1 of 6 plants** (DAP 77,
+([`assets/20260916_agml_real_image_test_tightclip.png`](assets/20260916_agml_real_image_test_tightclip.png)): **1 of 6 plants** (DAP 77,
 the smallest cold start) now stays a small, plausible branching structure through refinement
 (nodes moved 0.8 cm, no inflation) — genuinely fixed. The other 5 still inflate into the same flat
 polygons, materially unchanged from `scale_clip_mult=1.5`. So a tighter multiplicative clip *does*
@@ -136,7 +136,7 @@ every organ in the packet by this one row linearly, so a sign flip changes the w
 geometry, not just its size.
 
 Re-ran Approach 2 on the same 6 AgML plants as §4–5 with the new defaults
-(`docs/archive/unreferenced-assets/20260916_agml_real_image_test_scale_abs_max_calibrated.png`): **6 of 6
+([`assets/20260916_agml_real_image_test_scale_abs_max_calibrated.png`](assets/20260916_agml_real_image_test_scale_abs_max_calibrated.png)): **6 of 6
 plants stay small and plant-shaped through refinement — no flat-polygon inflation on any of
 them**, up from 1/6 with the best multiplicative-clip attempt (`scale_clip_mult=1.1`, §5). Node
 positions barely move under this setting (`nodes moved 0.0cm` on all 6, one decimal place) —

@@ -18,7 +18,7 @@ PhytomerVAE in the loop against a real Helios raytrace:
 Produces:
 1. Per-class IoU (Internode, Petiole, Leaf, Peduncle, Flower, Fruit) for both
    IK-only and IK+VAE roundtrips vs Helios GT.
-2. Comparison figure: docs/results/assets/fig14_phytomer_vae_helios_roundtrip.png
+2. Comparison figure: outputs/eval/fig14_phytomer_vae_helios_roundtrip.png
 """
 
 import os

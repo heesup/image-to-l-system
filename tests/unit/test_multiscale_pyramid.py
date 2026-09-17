@@ -97,7 +97,7 @@ def main():
                 ax.set_ylabel("DAP 50 Branching\n(Width = 60 cm)", fontsize=12, fontweight="bold", color="white", rotation=0, labelpad=80, va="center")
 
     plt.tight_layout()
-    out_dir = "docs/results/assets"
+    out_dir = "outputs/eval"
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, "fig13_progressive_multiscale_pyramid.png")
     plt.savefig(out_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches='tight')

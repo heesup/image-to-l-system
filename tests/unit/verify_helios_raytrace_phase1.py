@@ -58,7 +58,7 @@ def main():
         axes[1, col].axis('off')
 
     plt.tight_layout()
-    out_png = "docs/results/assets/helios_cpp_raytrace_verification.png"
+    out_png = "outputs/eval/helios_cpp_raytrace_verification.png"
     plt.savefig(out_png, dpi=200, bbox_inches='tight')
     plt.close()
     print(f"[Helios-Raytrace] Visual verification grid saved to {out_png}")

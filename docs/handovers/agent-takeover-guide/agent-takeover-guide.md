@@ -554,12 +554,12 @@ variants: w3t0 ep85 34.4, lr 2e-4 ep100 33.0 — every training-side variant sit
 (GT plant bbox centre, via `render_batched(centers=)`) so the input loss is no longer shifted. v10 ep95, 20 plants, 40
 steps, keep_best: **33.5 → 62.9** (DAP > 15: 38.4 → 74.5; every DAP > 15 plant rises, the two that collapsed before now
 reach 80.8 / 81.3; DAP ≤ 15 unchanged). IoU is still the strict origin-frame 256 px protocol. BUT the saved renders
-(`docs/results/assets/20260915_test_time_refinement_before_after_input_camera.png`) show a few leaves inflated into
+(`assets/20260915_test_time_refinement_before_after_input_camera_noprior.png`) show a few leaves inflated into
 large flat polygons on 3 of 6 plants: the silhouette/depth loss has no prior on scale or latent, so the optimiser fills
-the silhouette with implausible geometry. The origin-frame version (`..._before_after.png`, 39.8 → 64.3 on the same six)
+the silhouette with implausible geometry. The origin-frame version (`assets/20260915_test_time_refinement_before_after.png`, 39.8 → 64.3 on the same six)
 keeps leaf shapes. **With a shape prior** (`--reg_scale 5 --reg_latent 0.5`, squared deviation from the sampled values)
 the same six plants go 39.6 → 70.4 and the inflated polygons are gone (now the main figure,
-`..._before_after.png`; the two earlier variants are `..._origin_frame.png` and `..._input_camera_noprior.png`).
+`assets/20260915_test_time_refinement_before_after.png`; the two earlier variants are `assets/20260915_test_time_refinement_before_after_origin_frame.png` and `assets/20260915_test_time_refinement_before_after_input_camera_noprior.png`).
 On all 20 plants with the prior: **35.8 → 63.9** strict P (DAP > 15: 39.3 → 72.2) — the best deployable number so far, with plausible geometry. With all four cache zoom levels as targets (`--target_zooms 1,2,4,8`, now the default together with `--input_camera` and the prior; `--origin_camera` restores the old frame): **35.8 → 67.6** (DAP > 15: 41.1 → 74.0), the young plants finally gaining (DAP 2/3/11/12: 0/11/21/27 → 35/22/53/58). 80 steps with the defaults: 36.0 → 69.1 (DAP > 15 41.3 → 78.6). `--recompute_rot` (rotation and parent position re-derived from the moving nodes) 33.5 → 60.0 and roll as a fourth variable 35.1 → 61.4: both worse than the frozen-rotation default, so rotation stays fixed at the sampled node positions. Baseline ep135 (full data) with the defaults: 27.0 → 63.1 (DAP > 15 31.7 → 72.4) — the training-side gap to v10 shrinks from 8.8 to 4.5 after refinement. Lesson: silhouette IoU alone is not sufficient, the
 refinement needs a prior on scale/latent — and the same GT-bbox camera must go into the training render block.
 
@@ -621,7 +621,7 @@ latent path is starved by node error after all.
 ### 0-B.3 Working-tree hygiene
 
 - Anything not in `git status` clean + the two files named in 0-B.2 is either untracked run artifacts
-  (`docs/results/assets/`) or belongs to the archived-launcher index (`archive/README.md`). Keep `slurm_scripts/`
+  (`outputs/eval/`, `outputs/checkpoints/`) or belongs to the archived-launcher index (`archive/README.md`). Keep `slurm_scripts/`
   to the two current launchers (`train_hierarchical_flow_matching.sh`, `generate_helios_dataset_jobs.sh`).
 - Cluster etiquette: Heesup's `regen_*` jobs (geminigrp) hold the group GPU quota — do not cancel; training goes on
   `gpu-6000_ada-h` / `low`. The OnDemand desktop (38252204) must not be killed.

@@ -4,7 +4,7 @@ full 3D rendering round-trip fidelity using HeliosPyTorchRenderer.
 
 Produces:
 - Numerical accuracy table (Silhouette IoU, Depth MAE, Cls Acc, Scale MAE)
-- docs/results/assets/fig_organ_vae_roundtrip_comparison.png
+- outputs/eval/fig_organ_vae_roundtrip_comparison.png
 """
 
 import os
@@ -132,7 +132,7 @@ def run_roundtrip_rendering_benchmark(
     dataset: PartArrayDataset,
     renderer: HeliosPyTorchRenderer,
     test_dap_indices: list,
-    output_image_path: str = "docs/results/assets/fig_organ_vae_roundtrip_comparison.png",
+    output_image_path: str = "outputs/eval/fig_organ_vae_roundtrip_comparison.png",
     device: torch.device = torch.device("cuda:0"),
 ):
     """Encodes plant organ arrays to latent z, decodes back, and compares 3D renderings."""
@@ -336,7 +336,7 @@ def main():
         dataset=dataset,
         renderer=renderer,
         test_dap_indices=test_indices,
-        output_image_path="docs/results/assets/fig_organ_vae_roundtrip_comparison.png",
+        output_image_path="outputs/eval/fig_organ_vae_roundtrip_comparison.png",
         device=device,
     )
 

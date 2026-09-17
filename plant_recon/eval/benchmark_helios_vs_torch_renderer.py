@@ -9,7 +9,7 @@ Function Call Path Profiled:
   5. Backpropagation: loss.backward() -> dLoss/d(14D Part Tensor)
 
 Outputs:
-  - docs/results/assets/fig1_helios_vs_torch_rendering_benchmark.png
+  - outputs/eval/fig1_helios_vs_torch_rendering_benchmark.png
   - plant_recon/eval/benchmark_cache_14d.json
 """
 

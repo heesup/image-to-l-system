@@ -6,7 +6,7 @@ status: archived
 ---
 
 # Botanical Hierarchical Matryoshka Flow Matching Architecture
-**Document ID**: `docs/ongoing/20260906_hierarchical_matryoshka_botanical_flow_matching_architecture.md`  
+**Document ID**: `20260906-hierarchical-matryoshka-botanical-flow-matching-architecture.md` (originally written under `docs/ongoing/`)  
 **Date**: 2026-09-06  
 **Status**: Architecture Design Finalized & Implementation Active  
 **Target Repository**: `image-to-l-system`

@@ -6,7 +6,7 @@ Produces:
 1. Per-class IoU for Internode, Petiole, Leaf, Peduncle, Flower, Fruit.
 2. Depth map comparison (Helios raytraced depth vs PyTorch CHM depth).
 3. High-resolution multi-modal comparison figure:
-   docs/results/assets/fig10_helios_per_organ_mask_comparison.png
+   outputs/eval/fig10_helios_per_organ_mask_comparison.png
 """
 
 import os
@@ -31,7 +31,7 @@ from plant_recon.models.part_tensor_to_40d import assemble_part_tensor_to_xml
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 IMG_SIZE = 512
-OUTPUT_DIR = os.path.join(REPO_ROOT, "docs/results/assets")
+OUTPUT_DIR = os.path.join(REPO_ROOT, "outputs/eval")
 SCRATCH_DIR = "/tmp/helios_organ_mask_eval"
 
 TEST_PLANTS = [

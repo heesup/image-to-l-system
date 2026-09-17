@@ -259,7 +259,7 @@ def evaluate_self_consistency_batch(
     renderer: HeliosPyTorchRenderer,
     device: torch.device,
     epoch: int,
-    output_dir: str = "docs/results/assets",
+    output_dir: str = "outputs/eval",
     num_samples_to_plot: int = 3,
     vae: Optional[torch.nn.Module] = None,
     phytomer_vae: Optional[torch.nn.Module] = None,
@@ -270,7 +270,7 @@ def evaluate_self_consistency_batch(
       - val/silhouette_iou
       - val/depth_mae_meters
       - val/dice_loss (training-loss parity, all panel samples)
-    Saves diagnostic panel to docs/results/assets/hierarchical_self_consistency_epoch_{epoch:03d}.png
+    Saves diagnostic panel to outputs/eval/hierarchical_self_consistency_epoch_{epoch:03d}.png
     """
     was_training = model.training
     model.eval()

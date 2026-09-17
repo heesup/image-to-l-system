@@ -7,7 +7,7 @@ Renders a plant organ at various existence values:
   - existence = 0.70 (mostly opaque)
   - existence = 1.0 (crisp ground truth)
 
-Saves diagnostic visualization to docs/results/assets/test_soft_existence_visual.png.
+Saves diagnostic visualization to outputs/eval/test_soft_existence_visual.png.
 """
 
 import os
@@ -50,8 +50,8 @@ def run_soft_existence_demo():
         img_np = rgbd[:3].detach().cpu().permute(1, 2, 0).clamp(0, 1).numpy()
         renders.append(img_np)
 
-    os.makedirs("docs/results/assets", exist_ok=True)
-    out_png = "docs/results/assets/test_soft_existence_visual.png"
+    os.makedirs("outputs/eval", exist_ok=True)
+    out_png = "outputs/eval/test_soft_existence_visual.png"
 
     fig, axes = plt.subplots(1, 4, figsize=(16, 4.5))
     titles = [

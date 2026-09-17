@@ -4,7 +4,7 @@ Generate Figure comparing the 3 Leaf Modes in PyTorch Differentiable Renderer:
 2. Lowpoly Alpha-Cutout (get_generic_leaf_mesh, 81 verts, 62 faces)
 3. High-Res OBJ Prototype (CowpeaLeaf_tip_highres.obj, 1,458 verts, 1,939 faces)
 
-Follows the visual aesthetic of docs/results/assets/fig8_multimodal_depth_mask.png:
+Follows the visual aesthetic of outputs/eval/fig8_multimodal_depth_mask.png:
 Dark theme (#12131C), 6 columns:
 Col 1: Leaf Prototype (Close-up Shaded + Projected Wireframe)
 Col 2: Drone Top-Down RGB (Elevation 90°)

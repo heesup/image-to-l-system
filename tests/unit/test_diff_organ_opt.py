@@ -14,7 +14,7 @@ Demonstration & Verification: Differentiable Renderer Optimization of Organ Type
 4. Log and plot optimization trajectory:
    - Organ probabilities over iterations (Slot 0, Slot 1, Slot 2).
    - Initial render vs Intermediate vs Final render vs Ground Truth.
-   - Save to docs/results/assets/test_diff_organ_opt.png.
+   - Save to outputs/eval/test_diff_organ_opt.png.
 """
 
 import os
@@ -212,8 +212,8 @@ def run_diff_organ_opt_test():
     # -------------------------------------------------------------
     # 4. PLOT & SAVE DIAGNOSTIC VISUALIZATION
     # -------------------------------------------------------------
-    os.makedirs("docs/results/assets", exist_ok=True)
-    out_png = "docs/results/assets/test_diff_organ_opt.png"
+    os.makedirs("outputs/eval", exist_ok=True)
+    out_png = "outputs/eval/test_diff_organ_opt.png"
 
     fig, axes = plt.subplots(2, 4, figsize=(16, 8))
 

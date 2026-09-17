@@ -3,7 +3,7 @@
 tools/compare_same_plants_figure.py's rcParams/layout): rows = real plants, one RGB + one Depth
 column per stage (real crop, Approach 1 cold, Approach 2 before/after), plus one Mask column for
 the real crop — the detector's own segmentation mask, i.e. the actual Dice-loss foreground
-target run_approach2_refine.py optimizes against (see docs/results/20260915_real_image_first_test.md
+target run_approach2_refine.py optimizes against (see docs/experiments/20260915-real-image-first-test/20260915-real-image-first-test.md
 §4.1: this mask nearly fills the frame at 4x/8x zoom, a contributor to the "canvas inflation"
 failure diagnosed there). No IoU column — there is no ground truth for a real photo; the DAP
 shown is Stage 1's own self-predicted estimate, flagged as such since the DAP head was trained

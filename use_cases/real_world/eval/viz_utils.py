@@ -1,7 +1,7 @@
 """Shared depth-channel colorization for the real_world eval scripts and comparison figure.
 One fixed color scale across all panels (real input, Approach 1, Approach 2 before/after) so
 depth maps are visually comparable — in particular, a degenerate flat/inflated prediction (the
-known "canvas inflation" failure mode, see docs/results/20260915_real_image_first_test.md)
+known "canvas inflation" failure mode, see docs/experiments/20260915-real-image-first-test/20260915-real-image-first-test.md)
 shows up as a near-uniform color patch rather than being auto-scaled to look textured.
 """
 import numpy as np

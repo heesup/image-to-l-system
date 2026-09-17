@@ -527,7 +527,7 @@ Heesup's requirement (2026-09-12, "very important"): the VAE round-trip
 (14D -> packet -> VAE -> 14D -> XML -> Helios) must reproduce the IK-only
 reconstruction (14D -> XML -> Helios, no VAE). The figure is
 `docs/experiments/20260914-stage2-burst-fix-roundtrip/assets/fig14_phytomer_vae_helios_roundtrip.png`; the old copy in
-`docs/results/assets/_unreferenced/` (52.8 / 20.4 / 24.7%) predates the 2026-09-11
+`docs/archive/unreferenced-assets/_unreferenced/` (52.8 / 20.4 / 24.7%) predates the 2026-09-11
 emit-order and shoot-partition fixes. FG IoU against the Helios GT render, same
 three plants throughout:
 

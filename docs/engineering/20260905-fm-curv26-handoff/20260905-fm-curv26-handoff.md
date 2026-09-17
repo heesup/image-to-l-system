@@ -134,7 +134,7 @@ the ODE. At t=1: `curvature_deg_m = fm[:, FM_CURV] / CURV_SCALE`. Caveats:
   `reference_window_size` (was dropping them → the SLURM cache run produced 0 files).
 
 ### 2.7 Visualization (`fm_visualization.py`)
-Per-epoch panel saved to `docs/results/assets/fm_curv_epoch_NNN.png` +
+Per-epoch panel saved to `outputs/eval/fm_curv_epoch_NNN.png` +
 `fig_fm_curv_latest_eval.png`:
 - Row 1: target image — now shows **zoom-8 channels (12:15)** because DAP-1 at 1x looks like bare ground.
 - Row 2: GT render | FM-generated composite (focus_plant=True @ 0.4 m) + per-tube curvature
@@ -250,7 +250,7 @@ sbatch --export=FM_EPOCHS=50 slurm_scripts/train_part_fm_curv.sh
 | `slurm_scripts/generate_helios_dataset_jobs.sh` | --mode/--pyramid passthrough, crop-named dirs |
 | `archive/scratch/20260903_phase1_basics/phase2_core.py` | anti-erasure core (warden, pull loss, scale floors, tip anchor) |
 | `archive/scratch/20260903_phase1_basics/exp2/4/5/6/7*.py` | benchmarks (see §1) |
-| `docs/results/assets/` | exp4/5/6/7 + fm_curv panels |
+| `outputs/eval/` (previously `docs/results/assets/`) | exp4/5/6/7 + fm_curv panels |
 | `scripts/cache_dataset_tensors.py` | DELETED (merged) |
 
 ---

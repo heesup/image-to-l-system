@@ -21,7 +21,7 @@ status: archived
 
 3. **Generate honest 14D report figures**
    - Script: `plant_recon/eval/generate_14d_report.py`
-   - Outputs: `docs/results/assets/fig3..fig7`
+   - Outputs: `docs/archive/results/assets/fig3..fig7` (figures since moved out of `docs/results/assets/`)
    - All numbers come from real 14D direct-optimization runs; no aspirational learned-method metrics.
 
 ## Deferred / Future

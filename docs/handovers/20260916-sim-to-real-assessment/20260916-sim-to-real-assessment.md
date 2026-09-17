@@ -155,7 +155,7 @@ larger offsets (index 77889 at 2×, 16 px; 67809 at 4×, 6 px) are cast shadows 
 heuristic counts as plant, not framing errors (panels inspected). Mean mask IoU per zoom is 72–80%,
 limited by specular highlights and shadows in the heuristic, not by geometry. Render cost 30–100 s
 per plant at 2048 px, 958 s for the set. Example panel:
-`docs/results/assets/20260916_appearance_gap_framing_check_dap042.png`.
+[`assets/20260916_appearance_gap_framing_check_dap042.png`](assets/20260916_appearance_gap_framing_check_dap042.png).
 
 **Numbers** (`compare_rgb_source_readings.py`; nodes = active predicted phytomer nodes before
 refinement, GT = ground-truth phytomers; DAP error = |Stage 1 probe − true DAP| in days):
@@ -168,7 +168,7 @@ refinement, GT = ground-truth phytomers; DAP error = |Stage 1 probe − true DAP
 | > 75 | 6 | 48.8 | 32.4 | 76.0 | 70.6 | 107.0 / 63.2 / 122.2 | 5.5 / 25.1 |
 | **all** | 20 | **38.1** | **28.6** | **66.3** | **59.2** | 60.0 / 51.6 / 73.0 | 4.6 / 24.3 |
 
-Figure: `docs/results/assets/20260916_appearance_gap_flat_vs_helios.png` — (a) raw P per plant,
+Figure: [`assets/20260916_appearance_gap_flat_vs_helios.png`](assets/20260916_appearance_gap_flat_vs_helios.png) — (a) raw P per plant,
 (b) refined P per plant, (c) predicted against true DAP, flat in blue and Helios in orange.
 
 **Reading.**

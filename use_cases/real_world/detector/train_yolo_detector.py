@@ -3,7 +3,7 @@ individual cowpea plants (class 'plant') in real nadir tunnel-cart images, separ
 weeds (class 'weed'). Output feeds use_cases/real_world/dataset/real_plant_crop_utils.py::detect_plants.
 
 Per-run artifacts (weights, curves, args.yaml) are written next to that run's own directory
-under outputs/logs/, not scattered into docs/results/assets.
+under outputs/logs/, not scattered into outputs/eval.
 """
 import argparse
 from pathlib import Path

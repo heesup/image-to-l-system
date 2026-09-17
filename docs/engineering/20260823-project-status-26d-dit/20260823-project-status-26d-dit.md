@@ -157,6 +157,12 @@ Dim     25: Phyllotactic angle / 180.0
 
 ## 6. Documentation Organization — What's Where
 
+> **2026-09-16:** this section describes the `docs/` layout as it was on 2026-08-23.
+> The topic-based tree used today maps those folders as follows: `ongoing/` → `handovers/`,
+> `done/` → `engineering/`, `results/` → `experiments/`, `todo/` → `planning/` (stale items → `archive/`),
+> `misc/` → `architecture/`, `archived/` → `archive/`. See
+> [`docs/architecture/code-structure/code-structure.md`](../../architecture/code-structure/code-structure.md).
+
 ### `docs/ongoing/` — Must-Read for Next Agent
 
 | Document | Topic | Status |
