@@ -177,6 +177,11 @@ def main():
     ap.add_argument("--reg_exist", type=float, default=0.3, help="penalty weight on (existence_prob - sampled existence_prob)^2, keeps refinement from turning on every candidate slot")
     ap.add_argument("--reg_scale", type=float, default=5.0, help="penalty weight on (scale - sampled scale)^2, keeps leaves from inflating to fill the silhouette")
     ap.add_argument("--reg_latent", type=float, default=0.5, help="penalty weight on mean (latent - sampled latent)^2")
+    ap.add_argument("--rgb_override_dir", default="",
+                    help="folder of <prefix>_helios_rgb.pt files ((12, S, S): level-major RGB in the cache's [-1, 1] convention, written by "
+                         "render_helios_eval_crops.py). When given, the 12 RGB planes of each plant's 16-channel input are replaced by them and "
+                         "the CHM planes are kept, so the same checkpoint is scored on the same plants with only the pixels changed "
+                         "(appearance-gap measurement, docs/engineering/20260916-sim-to-real-assessment-and-plan/20260916-sim-to-real-assessment-and-plan.md §4)")
     ap.add_argument("--keep_best", action="store_true",
                     help="Return the variables of the step with the lowest INPUT loss (model selection on the input only), "
                          "not the last step -- guards against the divergent plants.")
@@ -227,6 +232,13 @@ def main():
         print(f"init_mean_latent: mean over {lat_n} phytomers from {len(pool)} training plants", flush=True)
     for i in idxs:
         it = ds[i]; images = it["image"].unsqueeze(0).to(dev); dap = int(it["dap"].item()); zoom = 8.0 if dap <= 15 else 1.0
+        if a.rgb_override_dir:
+            # appearance-gap measurement: Helios raytraced RGB in place of the flat cache render, CHM planes untouched
+            ov = torch.load(os.path.join(a.rgb_override_dir, f"{ds.samples[i]['prefix']}_helios_rgb.pt"), map_location="cpu", weights_only=True).float()
+            if ov.shape[-1] != images.shape[-1]:
+                ov = F.interpolate(ov.unsqueeze(0), size=images.shape[-2:], mode="bilinear", align_corners=False).squeeze(0)
+            for l_ in range(4):
+                images[0, 4 * l_:4 * l_ + 3] = ov[3 * l_:3 * l_ + 3].to(dev)
         nodes = it["nodes"].to(dev); exist_gt = it["existence_mask"].to(dev)
         with torch.no_grad():
             gt_parts = decode_predictions_to_part_tensor(nodes[:, FM_BASE_START:], nodes[:, :FM_OT_END].argmax(-1), exist_gt, device=dev)
@@ -277,10 +289,14 @@ def main():
                 json.dump({"index": i, "dap": dap, "iou_before": iou0, "iou_after": iou1, "jpeg": ds.samples[i].get("jpeg")},
                           open(os.path.join(a.save_renders, f"{i}_meta.json"), "w"))
         n_before, n_after = int((exist > 0.5).sum()), int((exist_after > 0.5).sum())
+        pred_dap = float(clue.reshape(-1)[0].item())
+        pid_ = it.get("phytomer_ids")   # (N, 2) (shoot_id, phytomer_idx) per organ row, -1 padded
+        n_gt_phyto = int(torch.unique(pid_[(exist_gt.cpu() > 0.5) & (pid_[:, 0] >= 0)], dim=0).shape[0]) if pid_ is not None else -1
         rows.append({"index": i, "dap": dap, "iou_before": iou0, "iou_after": iou1, "mean_node_move_cm": moved,
-                    "n_nodes_before": n_before, "n_nodes_after": n_after})
-        extra = f"  nodes {n_before:>3d} -> {n_after:>3d}" if "exist" in opt_set else ""
-        print(f"idx {i:6d} DAP {dap:3d} IoU {iou0*100:5.1f} -> {iou1*100:5.1f}  (nodes moved {moved:.1f} cm){extra}", flush=True)
+                    "n_nodes_before": n_before, "n_nodes_after": n_after, "n_phytomers_gt": n_gt_phyto,
+                    "n_organs_gt": int(exist_gt.sum().item()), "pred_dap": pred_dap})
+        extra = f"  nodes {n_before:>3d} -> {n_after:>3d}" if "exist" in opt_set else f"  nodes {n_before:>3d}"
+        print(f"idx {i:6d} DAP {dap:3d} (pred {pred_dap:5.1f}) IoU {iou0*100:5.1f} -> {iou1*100:5.1f}  (nodes moved {moved:.1f} cm){extra}", flush=True)
     b = np.array([r["iou_before"] for r in rows]); c = np.array([r["iou_after"] for r in rows]); d = np.array([r["dap"] for r in rows])
     print(f"MEAN over {len(rows)} plants: {b.mean()*100:.1f} -> {c.mean()*100:.1f}  (DAP>15: {b[d>15].mean()*100:.1f} -> {c[d>15].mean()*100:.1f}) | opt={a.opt} steps={a.steps}")
     if a.out:

@@ -5,7 +5,7 @@
 > **Active pipeline**: inverse 3D botanical reconstruction of cowpea seedlings — hierarchical
 > phytomer-level Flow Matching (DINOv2 scaffold → VAE-latent decoder), a multi-scale
 > differentiable renderer, and a Helios C++ OptiX XML round-trip for physical validation.
-> See [`docs/ongoing/AGENT_TAKEOVER_GUIDE.md`](docs/ongoing/AGENT_TAKEOVER_GUIDE.md) for the
+> See [`docs/handovers/agent-takeover-guide/agent-takeover-guide.md`](docs/handovers/agent-takeover-guide/agent-takeover-guide.md) for the
 > full state, math, active jobs, and benchmark results — it is the single source of truth and
 > is updated far more often than this README.
 
@@ -122,10 +122,14 @@ image-to-l-system/
 ├── archive/                               # Legacy/superseded code, kept for lineage — see archive/README.md
 ├── Digital-Crops/                         # Helios C++ OptiX simulation engine (git submodule)
 └── docs/
-    ├── ongoing/AGENT_TAKEOVER_GUIDE.md    # ★ Single source of truth — read this first
-    ├── ongoing/README.md                  # Live status dashboard (active jobs, next steps)
-    ├── results/                           # Milestone reports + benchmark figures
-    └── done/, archived/                   # Completed handoffs / superseded design docs
+    ├── _index.md                          # Map of Content (MOC) — topic-based directory index
+    ├── handovers/current-status.md        # Live status dashboard (active jobs, next steps)
+    ├── handovers/agent-takeover-guide/    # ★ Single source of truth — read this first
+    ├── architecture/                      # System design, specs & camera geometry reference
+    ├── experiments/                       # Training runs, benchmark reports & local assets
+    ├── engineering/                       # Implementation sessions, refactors & PR records
+    ├── planning/                          # Roadmaps & upcoming milestone plans
+    └── archive/                           # Superseded documents & unreferenced asset backups
 ```
 
 ---
@@ -190,24 +194,24 @@ Checkpoints are git-ignored (`diffusion_based/checkpoints/`) and live on disk on
 |---|---|---|
 | `diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/` | PhytomerVAE 128D hybrid (48 + 10×8), terminal-last packets, 20k files | **Accepted default** (export VAE and the v9 FM run's VAE; `PHYTOMER_TERMINAL_LAST=1`) |
 | `diffusion_based/checkpoints/phytomer_vae_v8/` | PhytomerVAE 128D hybrid, bottom-to-top packets | VAE of every FM run before v9 (`cowpea_curv26_pkt/`, pkt `6`, `PHYTOMER_TERMINAL_LAST=0`) |
-| `diffusion_based/checkpoints/hierarchical_fm_v9_local2/` | 3-stage cascaded FM, v9 lineage (final-norm decoder, fp32 self-attention) | Active training — see `docs/ongoing/README.md` |
+| `diffusion_based/checkpoints/hierarchical_fm_v9_local2/` | 3-stage cascaded FM, v9 lineage (final-norm decoder, fp32 self-attention) | Active training — see `docs/handovers/current-status.md` |
 | `diffusion_based/checkpoints/organ_vae/organ_latent_vae_best.pt` | Frozen per-organ latent VAE bridge (earlier design) | Kept for lineage |
 
 Checkpoint naming/size is the fastest way to tell architectures apart — see §4 of
-[`AGENT_TAKEOVER_GUIDE.md`](docs/ongoing/AGENT_TAKEOVER_GUIDE.md) before loading one, since
+[`AGENT_TAKEOVER_GUIDE.md`](docs/handovers/agent-takeover-guide/agent-takeover-guide.md) before loading one, since
 incompatible architectures have been saved under the same directory during migrations.
 
 ---
 
 ## Documentation
 
-- [`docs/ongoing/20260912_stage2_stage3_boundary_and_remaining_redundancy.md`](docs/ongoing/20260912_stage2_stage3_boundary_and_remaining_redundancy.md)
-  — the primary engineering record since 2026-09-12: status, the Stage 2 gradient-burst root cause,
-  the Stage 2/3 boundary redesign, the Helios round-trip and its two inverse-kinematics passes
-- [`docs/ongoing/AGENT_TAKEOVER_GUIDE.md`](docs/ongoing/AGENT_TAKEOVER_GUIDE.md) — master handover:
+- [`docs/_index.md`](docs/_index.md) — Map of Content (MOC) indexing all topics, roadmaps, and experiments
+- [`docs/handovers/agent-takeover-guide/agent-takeover-guide.md`](docs/handovers/agent-takeover-guide/agent-takeover-guide.md) — master handover:
   full system state, active SLURM jobs, failed-launch forensics, next steps, gotchas
-- [`docs/ongoing/README.md`](docs/ongoing/README.md) — live status dashboard
-- [`docs/results/`](docs/results/) — milestone reports & benchmark figures
-- [`docs/done/`](docs/done/) — completed implementation session handoffs
+- [`docs/handovers/current-status.md`](docs/handovers/current-status.md) — live status dashboard
+- [`docs/handovers/20260912-stage2-stage3-boundary/20260912-stage2-stage3-boundary.md`](docs/handovers/20260912-stage2-stage3-boundary/20260912-stage2-stage3-boundary.md)
+  — engineering record: status, Stage 2 gradient-burst root cause, Stage 2/3 boundary redesign, Helios round-trip and inverse kinematics passes
+- [`docs/experiments/`](docs/experiments/) — milestone reports & benchmark figures with co-located image assets
+- [`docs/engineering/`](docs/engineering/) — implementation session handoffs & PR records
 - [`archive/README.md`](archive/README.md) — legacy module index and architectural evolution timeline
 - [`lm_based/README.md`](lm_based/README.md) — the independent VLM/grammar-token track
