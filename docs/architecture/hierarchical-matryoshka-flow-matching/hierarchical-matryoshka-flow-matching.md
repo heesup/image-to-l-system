@@ -147,7 +147,7 @@ To reflect this hierarchical branching structure while maintaining sub-50ms infe
 3. **Training Engine**:
    * [`plant_recon/training/train_hierarchical_flow_matching.py`](file:///home/lion397/codes/image-to-l-system/plant_recon/training/train_hierarchical_flow_matching.py)
 4. **SLURM Cluster Launcher**:
-   * [`slurm_scripts/train_hierarchical_flow_matching.sh`](file:///home/lion397/codes/image-to-l-system/slurm_scripts/train_hierarchical_flow_matching.sh)
+   * [`scripts/train_hierarchical_flow_matching.sh`](file:///home/lion397/codes/image-to-l-system/scripts/train_hierarchical_flow_matching.sh)
 5. **Automated Verification**:
    * [`tests/test_hierarchical_flow_matching.py`](file:///home/lion397/codes/image-to-l-system/tests/test_hierarchical_flow_matching.py)
 

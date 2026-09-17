@@ -45,7 +45,7 @@ Dim     25: Phyllotactic angle / 180.0
 ### Train (2×H100 DDP)
 
 ```bash
-sbatch slurm_scripts/train_hierarchical_flow_matching.sh
+sbatch scripts/train_hierarchical_flow_matching.sh
 ```
 
 ### Train (Single GPU)

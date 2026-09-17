@@ -11,14 +11,14 @@
 #             -> dataset/cache/<species>_curv26/
 #
 # Usage:
-#   ./slurm_scripts/generate_helios_dataset_jobs.sh --dry-run
-#   ./slurm_scripts/generate_helios_dataset_jobs.sh --submit
-#   ./slurm_scripts/generate_helios_dataset_jobs.sh --plant-types cowpea --seeds 100 --total-samples 100000 --submit
-#   ./slurm_scripts/generate_helios_dataset_jobs.sh --skip-xml --submit      # Run only cache generation
-#   ./slurm_scripts/generate_helios_dataset_jobs.sh --skip-shards --submit   # Run only C++ XML generation
-#   ./slurm_scripts/generate_helios_dataset_jobs.sh --pyramid concat --skip-xml --submit
+#   ./scripts/generate_helios_dataset_jobs.sh --dry-run
+#   ./scripts/generate_helios_dataset_jobs.sh --submit
+#   ./scripts/generate_helios_dataset_jobs.sh --plant-types cowpea --seeds 100 --total-samples 100000 --submit
+#   ./scripts/generate_helios_dataset_jobs.sh --skip-xml --submit      # Run only cache generation
+#   ./scripts/generate_helios_dataset_jobs.sh --skip-shards --submit   # Run only C++ XML generation
+#   ./scripts/generate_helios_dataset_jobs.sh --pyramid concat --skip-xml --submit
 #       # per-sample cache with pyramid-concat 16-ch image, cowpea-only
-#   ./slurm_scripts/generate_helios_dataset_jobs.sh --packets-only --pkt-version 7 --terminal-last --submit
+#   ./scripts/generate_helios_dataset_jobs.sh --packets-only --pkt-version 7 --terminal-last --submit
 #       # [Phase 3] packet targets only, XML-direct, no re-rendering: (re)build
 #       # dataset/cache/<species>_curv26_pkt* when the PACKET FORMAT changes
 #       # (10-slot layout, leaflet order). Not needed for a new VAE: FM training
@@ -433,7 +433,7 @@ trap cleanup_tmp EXIT INT TERM
 if [[ "${RUN_XML}" == true ]]; then
     echo ""
     echo ">>> [Phase 1/2] Synthesizing Helios C++ Plant Structures (DAP ${JOB_DAP_START}-${JOB_DAP_END}, ${SEEDS} seeds)..."
-    ${PYTHON_BIN} scripts/generate_helios_dataset.py \\
+    ${PYTHON_BIN} plant_recon/dataset/generate_helios_dataset.py \\
         --plant-types "${PLANT_TYPES}" \\
         --genotypes "${GENOTYPES}" \\
         --dap-min ${JOB_DAP_START} \\

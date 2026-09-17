@@ -21,7 +21,7 @@ import argparse
 import subprocess
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 BUILD_DIR = os.path.join(REPO_ROOT, "submodules/Digital-Crops", "projects", "syntheticdata_generation", "build")
 MAIN_BIN = os.path.join(BUILD_DIR, "main")
 BASE_PARAMS = os.path.join(BUILD_DIR, "params.json")

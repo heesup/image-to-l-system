@@ -182,7 +182,7 @@ Add unified batch conversion utilities:
   6. Decode $\hat{z}_1$ via frozen VAE, assemble mesh, and render 4-scale pyramid.
   7. Compute multi-scale Depth, Soft Dice, and Cosine losses, backpropagating through frozen VAE weights directly into $v_\theta$.
 
-### 5.5. `slurm_scripts/train_hierarchical_flow_matching.sh`
+### 5.5. `scripts/train_hierarchical_flow_matching.sh`
 - Add `--organ_vae_checkpoint outputs/checkpoints/organ_vae/organ_latent_vae_best.pt`.
 - Add `--node_dim 16`.
 - Direct checkpoint destination to `outputs/checkpoints/hierarchical_latent_fm/`.
@@ -203,5 +203,5 @@ Add unified batch conversion utilities:
    - Confirm `sample_ode` generates valid, non-spiky organ parameters.
 3. **Step 3: SLURM Launch**:
    - Cancel old 13D training job (`scancel 38143159`).
-   - Submit new 16D Latent Flow Matching training job via `sbatch slurm_scripts/train_hierarchical_flow_matching.sh`.
+   - Submit new 16D Latent Flow Matching training job via `sbatch scripts/train_hierarchical_flow_matching.sh`.
    - Verify logs for loss progression (`VelLoss`, `AncPosLoss`, `DepthLoss`, `DiceLoss`, `CosLoss`).

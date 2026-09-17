@@ -12,7 +12,7 @@
 # Fine-tunes a lightweight YOLO11n-seg detector on the Roboflow t4_plant_weed_seg export
 # (159 real nadir tunnel-cart images, classes: plant/weed) to localize individual cowpea
 # plants for use_cases/real_world/dataset/real_field_dataset.py. Small dataset -> short job.
-#   sbatch slurm_scripts/train_real_plant_detector.sh
+#   sbatch scripts/train_real_plant_detector.sh
 # Weights + curves land under outputs/logs/real_plant_detector/ (see --name below);
 # move/rename per run if training more than once.
 

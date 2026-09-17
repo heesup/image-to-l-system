@@ -170,7 +170,7 @@ Following detailed inspection of checkpoints, four critical corrections were imp
 | [`plant_recon/eval/eval_hierarchical_self_consistency.py`](../../../plant_recon/eval/eval_hierarchical_self_consistency.py) | Corrected camera alignment (`focus_plant=False`), added adaptive zoom ($8.0\times$) for seedlings, and integrated frozen VAE decoding. |
 | [`plant_recon/training/train_hierarchical_flow_matching.py`](../../../plant_recon/training/train_hierarchical_flow_matching.py) | Integrated frozen VAE in-loop rendering, weighted BCE (`pos_weight=12.0`), and canopy-masked SmoothL1 depth loss. |
 | [`plant_recon/training/hierarchical_hungarian_matcher.py`](../../../plant_recon/training/hierarchical_hungarian_matcher.py) | Added 16D latent cost matrix support for Stage 2 intra-cluster assignment. |
-| [`slurm_scripts/train_hierarchical_flow_matching.sh`](../../../slurm_scripts/train_hierarchical_flow_matching.sh) | Configured 4× RTX 6000 Ada SLURM environment for 16D latent training. |
+| [`scripts/train_hierarchical_flow_matching.sh`](../../../scripts/train_hierarchical_flow_matching.sh) | Configured 4× RTX 6000 Ada SLURM environment for 16D latent training. |
 
 ---
 

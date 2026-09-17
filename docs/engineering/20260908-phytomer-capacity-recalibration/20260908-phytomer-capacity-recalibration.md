@@ -269,7 +269,7 @@ grounded in the three completed runs' evidence:
 ### 8.5 Suggested launch command (post-100k-freeze)
 
 ```bash
-sbatch slurm_scripts/train_hierarchical_flow_matching.sh  # with:
+sbatch scripts/train_hierarchical_flow_matching.sh  # with:
 #   --dap_buckets 8 --capacity_warmup_epochs 50 --capacity_full_epochs 150
 #   --eval_every 25 --lr 3e-4   (backbone auto: 3e-4 × 0.15 = 4.5e-5 ≈ 3e-5 target)
 #   --init_checkpoint outputs/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_500.pt
@@ -376,7 +376,7 @@ config by ~2–3× and make Config C essentially free.
 
 ```bash
 # (The auto-watcher submit_ablation_when_frozen.sh was removed in the 2026-09-09
-# cleanup; submit A/B arms directly via slurm_scripts/submit_backbone_ablation.sh.)
+# cleanup; submit A/B arms directly via archive/slurm_scripts/submit_backbone_ablation.sh.)
 ```
 
 ### 9.5 Open follow-ups

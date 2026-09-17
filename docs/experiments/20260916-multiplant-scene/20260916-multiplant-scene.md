@@ -185,7 +185,7 @@ renders with the same canopy density as the original XMLs loaded directly. (The 
 plant is the cotyledon node's synthesized opposite petiole, documented in
 `emit_part_tensor_with_shoot_meta`.)
 
-While reusing the existing generator, `scripts/generate_helios_dataset.py` also gained `--renderer
+While reusing the existing generator, `plant_recon/dataset/generate_helios_dataset.py` also gained `--renderer
 none` support: both its completion check and its success check required a rendered `_rad.jpeg`, so an
 XML-only run was never cached and always reported failure. `generate_helios_xml` now delegates to its
 `render_one` instead of invoking the binary a second way (first call 14.5 s, cached call 0.00 s).

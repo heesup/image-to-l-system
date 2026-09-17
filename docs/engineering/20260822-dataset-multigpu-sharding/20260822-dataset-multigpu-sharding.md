@@ -50,7 +50,7 @@ During the setup of the large-scale Cowpea dataset synthesis pipeline for 100K F
   * Relaunched all 34 jobs; verified that workers across all node architectures (`gpu-4-54`, `gpu-5-46`, `gpu-3-38`, `gpu-10-58`, `gpu-10-50`) are generating `.pt` shards simultaneously with 0 errors.
 
 ### 2.2 Unification of Helios XML Generator & Expansion to 100 Seeds
-* **Master Script**: Unified all generation workflows into **`slurm_scripts/generate_helios_dataset_jobs.sh`**.
+* **Master Script**: Unified all generation workflows into **`scripts/generate_helios_dataset_jobs.sh`**.
 * **Seed 100 Expansion**: Configured default parameters to `PLANT_TYPES="cowpea"`, `SEEDS=100` (expanded from 50), and `DAP=1..100`, producing 10,000 unique 3D plant XML structural templates.
 * **Incremental Generation**: Automatically skips pre-existing samples (`seeds 0..49`) and synthesizes only new seeds (`seeds 50..99`).
 
@@ -65,7 +65,7 @@ During the setup of the large-scale Cowpea dataset synthesis pipeline for 100K F
 
 ### 2.4 Codebase Cleanup & Dataset Component Roles
 The roles of all dataset-related files are clearly decoupled:
-1. **`scripts/generate_helios_dataset.py`** [Phase 1 Engine]: Calls C++ Helios engine to simulate 3D plant growth and write XMLs to `dataset/helios_data/cowpea/`.
+1. **`plant_recon/dataset/generate_helios_dataset.py`** [Phase 1 Engine]: Calls C++ Helios engine to simulate 3D plant growth and write XMLs to `dataset/helios_data/cowpea/`.
 2. **`plant_recon/dataset/generate_tensor_shards.py`** [Phase 2 Engine]: Reads XMLs, performs GPU multi-view rendering + 26D organ encoding, and writes `.pt` tensor shards to `dataset/helios_data/cowpea_shard/`.
 3. **`plant_recon/dataset/cowpea_shard_dataset.py`** [PyTorch DataLoader]: `PlantShardDataset` / `CowpeaShardDataset` streaming loader and dynamic collation for model training.
 4. **Deleted Obsolete Files**:

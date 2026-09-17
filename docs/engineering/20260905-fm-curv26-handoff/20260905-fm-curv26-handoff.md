@@ -149,7 +149,7 @@ Per-epoch panel saved to `outputs/eval/fm_curv_epoch_NNN.png` +
 - `slurm_scripts/train_part_fm_curv.sh`: torchrun DDP launcher, cpus=8, mem=64G,
   global batch 256 (per-rank = 256/NPROC), `--cache_dir dataset/cache/cowpea_curv26`,
   vis + wandb flags on.
-- `slurm_scripts/generate_helios_dataset_jobs.sh`: `--mode` and `--pyramid` passthrough; crop-named
+- `scripts/generate_helios_dataset_jobs.sh`: `--mode` and `--pyramid` passthrough; crop-named
   output dirs (`dataset/cache/<crop>_curv26` for cache mode).
 - Old mixed cache deleted. Current cache: `dataset/cache/cowpea_curv26/` (10,000 cowpea samples,
   16-ch pyramid, verified all-cowpea).
@@ -247,7 +247,7 @@ sbatch --export=FM_EPOCHS=50 slurm_scripts/train_part_fm_curv.sh
 | `plant_recon/training/train_part_flow_matching.py` | NaN fixes, fp32 loss, loss_curv, DDP, fm_collate, vis/wandb wiring |
 | `plant_recon/training/fm_visualization.py` | NEW: per-epoch panel + W&B |
 | `slurm_scripts/train_part_fm_curv.sh` | torchrun DDP launcher (2×6000_ada, batch 256, cache_dir) |
-| `slurm_scripts/generate_helios_dataset_jobs.sh` | --mode/--pyramid passthrough, crop-named dirs |
+| `scripts/generate_helios_dataset_jobs.sh` | --mode/--pyramid passthrough, crop-named dirs |
 | `archive/scratch/20260903_phase1_basics/phase2_core.py` | anti-erasure core (warden, pull loss, scale floors, tip anchor) |
 | `archive/scratch/20260903_phase1_basics/exp2/4/5/6/7*.py` | benchmarks (see §1) |
 | `outputs/eval/` (previously `docs/results/assets/`) | exp4/5/6/7 + fm_curv panels |

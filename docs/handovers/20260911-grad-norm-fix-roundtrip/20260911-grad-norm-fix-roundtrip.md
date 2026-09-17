@@ -134,7 +134,7 @@ While a 9-slot draft (omitting internodes) existed in the working tree, the **10
 | `phytomer_packets.py` | Restored 10-slot builder (`NUM_SLOTS=10`, `ROLE_SLOT_RANGES` 4:(6,10), `LABEL_ROLE_RANGES` stem 1..3). Adapted helper functions: `phytomer_scale`, `normalize/denormalize_packet_scales`, `assemble_phytomer_ordered_14d_tensor` |
 | `hierarchical_part_flow_matching.py` | Set `SLOT_ROLE_MAPPING = [0,1,2,2,2,3,4,4,4,4]` (10 elements), `SLOT_SUB_ROLE_MAPPING = [0,0,0,1,2,0,0,1,2,3]`, default `slots_per_phytomer` 9 $\to$ 10 |
 | `hierarchical_hungarian_matcher.py` | Set `_role_slot_ranges[4]: (6,8) -> (6,10)` (repro x4) |
-| `slurm_scripts/train_hierarchical_flow_matching.sh` | Set `SLOTS_PER_PHYTOMER` default 9 $\to$ 10 |
+| `scripts/train_hierarchical_flow_matching.sh` | Set `SLOTS_PER_PHYTOMER` default 9 $\to$ 10 |
 | `tests/test_phytomer_packets.py` | Restored v2 expected values (7 passed) |
 | `tests/test_phytomer_vae.py` | Updated synthetic bag role map to 10 slots (8 passed) |
 

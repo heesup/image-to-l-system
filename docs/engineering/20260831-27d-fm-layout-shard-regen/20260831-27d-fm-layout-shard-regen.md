@@ -185,7 +185,7 @@ Shard regeneration was **delegated to the SLURM production pipeline** and the lo
 runs were cancelled:
 
 ```bash
-./slurm_scripts/generate_helios_dataset_jobs.sh --skip-xml --submit
+./scripts/generate_helios_dataset_jobs.sh --skip-xml --submit
 # → 40 jobs submitted (IDs 38036260–38036299), Phase 1 XML disabled ("false" == true
 #   guard), Phase 2 = generate_tensor_shards.py --num-workers 40 --worker-id {0..39}
 #   --total-samples 100000 --shard-size 100 --image-size 512 --max-templates 30

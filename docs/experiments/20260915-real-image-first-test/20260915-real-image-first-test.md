@@ -26,7 +26,7 @@ has been pointed at real, rover-captured cowpea images, following the plan in
 
 - **Phase A** `use_cases/real_world/download_roboflow_dataset.py` — downloads the Roboflow export; the
   API key lives only in the untracked `use_cases/real_world/.env`.
-- **Phase B** `use_cases/real_world/detector/train_yolo_detector.py` + `slurm_scripts/train_real_plant_detector.sh`
+- **Phase B** `use_cases/real_world/detector/train_yolo_detector.py` + `scripts/train_real_plant_detector.sh`
   — fine-tunes YOLO11n-seg on the 159-image export (80 train / 22 valid / 57 test) to localize
   individual plants and separate them from weeds. Trained locally (111 epochs, early-stopped),
   weights + curves at `outputs/logs/20260915/real_plant_detector/`:

@@ -46,7 +46,7 @@ This document:
 - **2.5x Training Speedup**: Skipping backbone backpropagation reduced per-step time from 1.5 s $\to$ **under 0.6 s**.
 
 ### 3.2 Configuration
-`slurm_scripts/train_hierarchical_flow_matching.sh`:
+`scripts/train_hierarchical_flow_matching.sh`:
 ```bash
 FREEZE_BACKBONE=${FREEZE_BACKBONE:-1}
 ```

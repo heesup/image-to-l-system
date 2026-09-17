@@ -122,7 +122,7 @@ Dim     25: Phyllotactic angle / 180.0
 | File | Role |
 |------|------|
 | `slurm_scripts/train_cowpea_dit_h100_ddp.sh` | 2×H100 DDP training launcher |
-| `slurm_scripts/generate_helios_dataset_jobs.sh` | Master C++ XML + GPU sharding pipeline |
+| `scripts/generate_helios_dataset_jobs.sh` | Master C++ XML + GPU sharding pipeline |
 
 ### C++ (Helios Submodule)
 

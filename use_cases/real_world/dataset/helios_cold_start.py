@@ -27,7 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 _HELIOS_ROOT = REPO_ROOT / "submodules/Digital-Crops" / "projects" / "syntheticdata_generation"
 BUILD_DIR = _HELIOS_ROOT / "build"
 MAIN_BIN = BUILD_DIR / "main"
-DEFAULT_CACHE = REPO_ROOT / "real_world" / "data" / "helios_procedural"
+DEFAULT_CACHE = REPO_ROOT / "use_cases" / "real_world" / "data" / "helios_procedural"
 
 # The packet slot layout must match the VAE whose latents the pipeline consumes: the v9 packet
 # cache this project's checkpoints train against was built with terminal_leaflet_last=True, and
@@ -39,16 +39,16 @@ def generate_helios_xml(dap: int, seed: int = 0, species: str = "cowpea",
                          cache_dir: Optional[Path] = None, genotype: str = "") -> Path:
     """Procedurally grows one plant of age `dap` days and returns its structure XML path.
 
-    Delegates to `scripts/generate_helios_dataset.render_one`, the same function that produced this
+    Delegates to `plant_recon/dataset/generate_helios_dataset.render_one`, the same function that produced this
     project's synthetic training set, with `--renderer none` so only the structure XML is written.
     That function already handles the binary's working-directory requirement, the isolated temp dir,
     the output-file moves and the naming convention, and it skips work when the sample is already on
     disk — so a repeated (species, dap, seed) costs nothing instead of re-running the ~20 s growth
     simulation.
     """
-    if str(REPO_ROOT) not in sys.path:      # `scripts` is a namespace package at the repo root
+    if str(REPO_ROOT) not in sys.path:      # plant_recon imports as a package at the repo root
         sys.path.insert(0, str(REPO_ROOT))
-    from scripts.generate_helios_dataset import render_one, _sample_name
+    from plant_recon.dataset.generate_helios_dataset import render_one, _sample_name
 
     cache_dir = Path(cache_dir or DEFAULT_CACHE)
     cache_dir.mkdir(parents=True, exist_ok=True)

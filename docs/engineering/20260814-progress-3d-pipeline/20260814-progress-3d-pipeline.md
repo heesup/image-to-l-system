@@ -35,7 +35,7 @@ status: done
   - Includes PLY load/write/Chamfer/normalize utilities
 
 ### 1.4 Helios Dataset Generator Improvements
-- `dataset/generate_helios_dataset.py`
+- `plant_recon/dataset/generate_helios_dataset.py`
   - Removed macOS offscreen env override (XQuartz dependency)
   - Added `--export-3d ply` support
 
@@ -83,7 +83,7 @@ status: done
 
 ### 3.4 Dataset Expansion
 - 5 validation samples are smoke tests only; scale dataset to DAP 5–30 with varying viewpoints and solar angles
-- Run `dataset/generate_helios_dataset.py` with `--workers 1 --renderer vis --export-3d ply`
+- Run `plant_recon/dataset/generate_helios_dataset.py` with `--workers 1 --renderer vis --export-3d ply`
 
 ### 3.5 Training Experiments
 - Experiment with render-loss only, point-cloud loss only, and joint supervision
@@ -95,7 +95,7 @@ status: done
 ```bash
 # Regenerate 5 validation samples
 source /Users/lion397/homebrew/Caskroom/miniforge/base/bin/activate l-system
-python dataset/generate_helios_dataset.py \
+python plant_recon/dataset/generate_helios_dataset.py \
   --dap-start 5 --dap-end 5 --dap-step 5 --seeds 5 \
   --renderer vis --workers 1 --export-3d ply \
   --output-dir /tmp/helios_val5 \

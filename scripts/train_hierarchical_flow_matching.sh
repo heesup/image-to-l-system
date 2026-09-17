@@ -17,11 +17,11 @@
 # checkpoint every 5 epochs and
 # an eval every epoch (30-min floor). Every knob is an env override, e.g.
 #   mkdir -p outputs/logs/$(date +%Y%m%d) && sbatch --output=outputs/logs/$(date +%Y%m%d)/hierarchical_fm_%j.log \
-#          slurm_scripts/train_hierarchical_flow_matching.sh                       # plain: this recipe, 2 GPUs, geminigrp; log in today's folder
+#          scripts/train_hierarchical_flow_matching.sh                       # plain: this recipe, 2 GPUs, geminigrp; log in today's folder
 #   sbatch --partition=low --account=publicgrp --gres=gpu:a100:4 --time=7-00:00:00 \
-#          --requeue --export=ALL,AUTO_RESUME=1 slurm_scripts/train_hierarchical_flow_matching.sh
+#          --requeue --export=ALL,AUTO_RESUME=1 scripts/train_hierarchical_flow_matching.sh
 #   INIT_CHECKPOINT=<...>/hierarchical_fm_epoch_015.pt RESUME=1 sbatch ...           # continue a lineage elsewhere
-#   TRAIN_VAE=1 sbatch slurm_scripts/train_hierarchical_flow_matching.sh             # train a fresh VAE first, then FM with it
+#   TRAIN_VAE=1 sbatch scripts/train_hierarchical_flow_matching.sh             # train a fresh VAE first, then FM with it
 # The v8 recipe (bottom-to-top packets) needs PHYTOMER_VAE_CHECKPOINT=.../phytomer_vae_v8/...,
 # PKT_CACHE_DIR=dataset/cache/cowpea_curv26_pkt and PHYTOMER_TERMINAL_LAST=0 together; never mix.
 

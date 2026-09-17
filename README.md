@@ -112,7 +112,7 @@ image-to-l-system/
 ├── submodules/Digital-Crops/           # Helios C++ OptiX simulation engine (git submodule)
 ├── dataset/                            # DATA ONLY: helios_data/ (raw XMLs) + cache/ (.pt caches) — git-ignored
 ├── outputs/                            # ALL generated artifacts (git-ignored): checkpoints/, logs/, wandb/, weights/, eval/
-├── slurm_scripts/                      # Cluster launchers (train_hierarchical_flow_matching.sh, ...)
+├── scripts/                      # Cluster launchers (train_hierarchical_flow_matching.sh, ...)
 ├── tools/                              # Standalone utilities (phytomer VAE latent visualizer GUI, organize_logs.py, ...)
 ├── tests/                              # pytest suite (hierarchical FM, phytomer VAE/packets, gradient flow)
 │   └── unit/                           # lower-level roundtrip/geometry verification scripts
@@ -150,7 +150,7 @@ export PYTHONPATH=.   # REQUIRED — always run commands from the repo root
 ### 2. Generate / check the dataset
 
 ```bash
-python scripts/generate_helios_dataset.py --help       # Helios XML synthesis
+python plant_recon/dataset/generate_helios_dataset.py --help   # Helios XML synthesis
 python plant_recon/dataset/generate_cache.py --help  # XML -> .pt cache + phytomer packets
 ```
 
@@ -165,10 +165,10 @@ python plant_recon/training/train_phytomer_vae.py --help
 
 # Stages 1-3: hierarchical scaffold + phytomer-latent flow matching.
 python plant_recon/training/train_hierarchical_flow_matching.py --help
-sbatch slurm_scripts/train_hierarchical_flow_matching.sh
+sbatch scripts/train_hierarchical_flow_matching.sh
 # One launcher trains the VAE first in the same allocation, then FM with it
 # (the standalone train_phytomer_vae.sh is archived under archive/slurm_scripts/):
-TRAIN_VAE=1 sbatch slurm_scripts/train_hierarchical_flow_matching.sh
+TRAIN_VAE=1 sbatch scripts/train_hierarchical_flow_matching.sh
 ```
 
 ### 4. Evaluate

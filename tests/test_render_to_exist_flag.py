@@ -15,7 +15,7 @@ class TestRenderToExistFlag(unittest.TestCase):
         self.assertIn("--render_to_latent", out.stdout)
 
     def test_launcher_accepts_render_to_exist_env(self):
-        script = os.path.join(REPO, "slurm_scripts/train_hierarchical_flow_matching.sh")
+        script = os.path.join(REPO, "scripts/train_hierarchical_flow_matching.sh")
         r = subprocess.run(["bash", "-n", script], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("RENDER_TO_EXIST", open(script).read())

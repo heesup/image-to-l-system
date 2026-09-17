@@ -32,9 +32,8 @@ image-to-l-system/
 │   ├── wandb/                    #   wandb runs (WANDB_DIR exported by the training launcher)
 │   ├── weights/                  #   detector base weights (yolo11n*.pt)
 │   └── eval/                     #   eval script output dirs (debug_outputs/, output/, roundtrip_outputs/)
-├── slurm_scripts/                # cluster launchers ONLY (train_hierarchical_flow_matching.sh, ...)
+├── scripts/                      # cluster launchers ONLY (train_hierarchical_flow_matching.sh, ...)
 ├── tools/                        # standalone utilities (organize_logs.py, VAE visualizer, figure scripts)
-├── scripts/                      # dataset-generation entry point (generate_helios_dataset.py)
 ├── tests/                        # pytest suite (imports plant_recon)
 ├── docs/                         # this documentation tree (see docs/_index.md)
 ├── archive/                      # superseded code, kept for lineage (see archive/README.md)
@@ -58,7 +57,7 @@ image-to-l-system/
 | Helios C++ engine | `submodules/Digital-Crops/` (git submodule, pinned commit) |
 | Generated datasets & caches (data) | `dataset/helios_data/`, `dataset/cache/` — see `dataset/README.md` |
 | Checkpoints, logs, wandb, weights, eval dumps | `outputs/` (everything gitignored) |
-| Cluster job launchers | `slurm_scripts/*.sh` (logs are NOT here — they are in `outputs/logs/`) |
+| Cluster job launchers | `scripts/*.sh` (logs are NOT here — they are in `outputs/logs/`) |
 | One-off experiments / debug repros | `scratch/<YYYYMMDD_topic>/` (gitignored; see `scratch/README.md`) |
 | Superseded code | `archive/` with an index in `archive/README.md` |
 
@@ -76,10 +75,10 @@ image-to-l-system/
 - **One rule**: anything regenerable or generated goes under `outputs/`; nothing inside it is
   committed. Job logs keep the launcher's one-folder-per-start-date layout (`outputs/logs/<YYYYMMDD>/`);
   `python tools/organize_logs.py --apply` files stray logs (see `outputs/logs/README.md`).
-- `slurm_scripts/train_hierarchical_flow_matching.sh` exports `WANDB_DIR=outputs/wandb` and
+- `scripts/train_hierarchical_flow_matching.sh` exports `WANDB_DIR=outputs/wandb` and
   writes checkpoints to `outputs/checkpoints/` (default `OUTPUT_DIR`).
 - Detector weights live in `outputs/weights/` (defaults in
-  `use_cases/real_world/detector/train_yolo_detector.py` and `slurm_scripts/train_real_plant_detector.sh`).
+  `use_cases/real_world/detector/train_yolo_detector.py` and `scripts/train_real_plant_detector.sh`).
 
 ## 5. Promotion rules (from `scratch/`)
 

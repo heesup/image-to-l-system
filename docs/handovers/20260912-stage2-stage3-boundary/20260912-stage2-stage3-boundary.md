@@ -73,7 +73,7 @@ Previous doc: [`20260911_hybrid_vae_rotation_capacity_and_topology_experiments.m
 
 **Correction made while implementing this** (worth remembering): the model does **not** actually run the "Stage 3 refines base+rot+scale+latent via a combined flow vector" design its own class docstrings describe. `HierarchicalPartFlowMatchingModel.__init__` constructs `PhytomerFlowMatchingDecoder` with `base_dim=rot_dim=scale_dim=0`, so the real, active flow target is the 128D VAE latent alone (pure `N(0,I)` prior, no bridge coupling); pos/roll/scale are Stage-2-only outputs with their own direct losses, used only as conditioning ("Hybrid Decoupled" in the code's own comments). This is presumably a deliberate simplification after an earlier bridge-flow attempt hit a real gradient explosion from a missing `.detach()` at the exact point where position entered the flow state. Keep this in mind before assuming the docstrings describe the live behavior -- trace `forward_backward_step`'s actual `z_0`/`z_1` construction directly when in doubt.
 
-**Validated**: 6-epoch local smoke test (`slurm_scripts/smoke_test_fix.sh`, TITAN RTX, gpu-5-58), render gate active epochs 4-6 (the historically dangerous zone) -- **0 `[Recovery]` lines, 0 `[Canary]` lines**, checkpoint saved (`outputs/checkpoints/fm_smoke_test/hierarchical_fm_epoch_006.pt`, disposable, smoke-test only). Full `pytest tests/` after all of the above: 38 passed, exactly the same 3 failures + 1 error confirmed pre-existing via `git stash` before this session touched anything (`test_end_to_end_model_forward_backward`, `test_end_to_end_phytomer_mode_forward_and_ode`, `test_phytomer_flow_decoder_shapes_and_gradients`, `test_ik_fix::test_eval`) -- no regressions.
+**Validated**: 6-epoch local smoke test (`archive/slurm_scripts/smoke_test_fix.sh`, TITAN RTX, gpu-5-58), render gate active epochs 4-6 (the historically dangerous zone) -- **0 `[Recovery]` lines, 0 `[Canary]` lines**, checkpoint saved (`outputs/checkpoints/fm_smoke_test/hierarchical_fm_epoch_006.pt`, disposable, smoke-test only). Full `pytest tests/` after all of the above: 38 passed, exactly the same 3 failures + 1 error confirmed pre-existing via `git stash` before this session touched anything (`test_end_to_end_model_forward_backward`, `test_end_to_end_phytomer_mode_forward_and_ode`, `test_phytomer_flow_decoder_shapes_and_gradients`, `test_ik_fix::test_eval`) -- no regressions.
 
 ---
 
@@ -1004,7 +1004,7 @@ PKT_CACHE_DIR=dataset/cache/cowpea_curv26_pkt_v9,\
 PHYTOMER_VAE_CHECKPOINT=outputs/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt,\
 PHYTOMER_TERMINAL_LAST=1,OUTPUT_DIR=outputs/checkpoints/hierarchical_fm_v9,\
 INIT_CHECKPOINT=outputs/checkpoints/hierarchical_fm_depth_ord/hierarchical_fm_epoch_025.pt,RESUME=1 \
-  slurm_scripts/train_hierarchical_flow_matching.sh
+  scripts/train_hierarchical_flow_matching.sh
 ```
 
 `INIT_CHECKPOINT`/`RESUME` warm-start Stage 1-2 from the v8 lineage's epoch 25 (the

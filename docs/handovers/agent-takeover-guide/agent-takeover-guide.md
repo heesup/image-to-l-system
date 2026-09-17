@@ -57,7 +57,7 @@ branch point from the decoded slot-0 base (66 -> 98% of laterals right -- the tr
 earlier run trained on wrong parent/depth targets for a third of the laterals); and `part_tensor_leaf_ik.py` inverts the
 FK's leaf rotation per leaf (`PART_TENSOR_LEAF_IK=0` disables). Packet path on those plants: **98.3 / 98.2 / 95.6%**, VAE round-trip **95.1 / 96.8 / 95.6%**.
 
-**VAE / cache lineage.** Every FM checkpoint so far read its Stage-3 target latents from a packet cache stamped with a VAE's latents. Since 2026-09-14 that coupling is gone: `train_hierarchical_flow_matching.py` encodes the target latent on the fly from the cached packets with the VAE the run loads, so `dataset/cache/cowpea_curv26_pkt_v9/` (pkt_version 7, terminal-last) and `cowpea_curv26_pkt/` (pkt_version 6, bottom-to-top) hold only packets/presence/centers/refs/keys and are VAE-independent. What still binds VAE ↔ cache is the packet ORDER (terminal-last vs bottom-to-top), via `PHYTOMER_TERMINAL_LAST`. So: bump `PKT_VERSION` and regenerate ONLY when the packet format changes; to swap the VAE, point `PHYTOMER_VAE_CHECKPOINT` at it (or `TRAIN_VAE=1` in the launcher) with `PKT_VERSION` matching its packets. The old standalone launchers `slurm_scripts/train_phytomer_vae.sh` and `generate_phytomer_packets_jobs.sh` are folded into `train_hierarchical_flow_matching.sh` (`TRAIN_VAE=1`) and `generate_helios_dataset_jobs.sh` (`--packets-only`), and now live under `archive/slurm_scripts/`.
+**VAE / cache lineage.** Every FM checkpoint so far read its Stage-3 target latents from a packet cache stamped with a VAE's latents. Since 2026-09-14 that coupling is gone: `train_hierarchical_flow_matching.py` encodes the target latent on the fly from the cached packets with the VAE the run loads, so `dataset/cache/cowpea_curv26_pkt_v9/` (pkt_version 7, terminal-last) and `cowpea_curv26_pkt/` (pkt_version 6, bottom-to-top) hold only packets/presence/centers/refs/keys and are VAE-independent. What still binds VAE ↔ cache is the packet ORDER (terminal-last vs bottom-to-top), via `PHYTOMER_TERMINAL_LAST`. So: bump `PKT_VERSION` and regenerate ONLY when the packet format changes; to swap the VAE, point `PHYTOMER_VAE_CHECKPOINT` at it (or `TRAIN_VAE=1` in the launcher) with `PKT_VERSION` matching its packets. The old standalone launchers `archive/slurm_scripts/train_phytomer_vae.sh` and `generate_phytomer_packets_jobs.sh` are folded into `train_hierarchical_flow_matching.sh` (`TRAIN_VAE=1`) and `generate_helios_dataset_jobs.sh` (`--packets-only`), and now live under `archive/slurm_scripts/`.
 
 **Training: the Stage 2 gradient burst is FIXED (2026-09-14).** Root cause: the coarse `nn.TransformerDecoder` (`norm_first=True`) had no final norm, so its raw residual stream (magnitude ~1e3 late in training) went into the bf16 phytomer self-attention as query/key/value; on a frozen burst state the backward amplified the gradient ~6000x on every batch. A final LayerNorm (`FM_DECODER_FINAL_NORM`, default on) gives 0/8 burst steps vs 8/8; fp32 self-attention (`FM_SELFATTN_FP32`, default on) is a partial mitigation kept as well. The v9 run restarted from scratch with both (`outputs/logs/local_v9_run2.log`, epochs 1-15, 0 canary hits; continued on 2026-09-14 10:30 from epoch 15 as cluster job `38252603` (geminigrp, 2 GPUs, log `hierarchical_fm_38252603.log`, checkpoints `hierarchical_fm_v9/`) with the §2.6 topology targets; the launcher's defaults are now the v9 recipe, and the queued `low`-partition jobs 38249632 / 38250275 pick up the current code when they start). The history below is kept for the record. It recurred at epoch 27-28 in two runs that
 differ in seed and learning rate (`38240479` at 1e-4, `38242849` at 5e-5, both resumed from the same lineage) at the
@@ -94,10 +94,10 @@ Two commits, `main` == `origin/main`:
     `DEFAULT_VAE_CHECKPOINT` constant removed; docstrings updated (`pkt` mode = packets/presence/centers/refs/keys).
   - `train_hierarchical_flow_matching.sh`: opt-in **`TRAIN_VAE=1`** stage trains the PhytomerVAE first in the same
     allocation with the v9 recipe (`--rot-weight 4`, 20,000 files, 120 epochs), then runs FM with it.
-    Standalone `slurm_scripts/train_phytomer_vae.sh` moved to `archive/slurm_scripts/` (indexed in `archive/README.md`).
+    Standalone `archive/slurm_scripts/train_phytomer_vae.sh` moved to `archive/slurm_scripts/` (indexed in `archive/README.md`).
   - `generate_helios_dataset_jobs.sh`: the XML-direct packet backfill is now the **`--packets-only`** phase
     (`--pkt-version`, `--terminal-last`, `--pkt-out-dir`, `--num-jobs`), no VAE. Standalone
-    `slurm_scripts/generate_phytomer_packets_jobs.sh` moved to `archive/slurm_scripts/`.
+    `archive/slurm_scripts/generate_phytomer_packets_jobs.sh` moved to `archive/slurm_scripts/`.
   - `tests/test_hierarchical_3stage_cascaded.py` fixed to the current model contract (pure-latent flow width,
     10 slots, `phytomer_parent_rel` input, valid 1+16×16 patch grid) — 2 stale failures closed. Full relevant suite:
     **57 passed**.
@@ -119,7 +119,7 @@ Two commits, `main` == `origin/main`:
 - **Uncommitted changes backing the experiment** (commit or revert them):
   - `plant_recon/training/train_hierarchical_flow_matching.py`: new `--num_workers` arg (default 4);
     both DataLoaders now use `num_workers=args.num_workers, prefetch_factor=4, persistent_workers=True`.
-  - `slurm_scripts/train_hierarchical_flow_matching.sh`: passes `--num_workers "${NUM_WORKERS:-8}"`.
+  - `scripts/train_hierarchical_flow_matching.sh`: passes `--num_workers "${NUM_WORKERS:-8}"`.
 - **Recommendation for the next agent:** wall-clock favours the small batch. Either (a) cancel 38252937 and
   resubmit with `FORCE_BATCH_SIZE=48` (the validated recipe; keeps LR/optimizer-momentum consistency of the lineage)
   while keeping the loader improvements (they are harmless and shave the small `other` wait), or (b) sweep one
@@ -603,7 +603,7 @@ scheduled TF (`38274495`, to ep95), v10 render-every-sample (`38274747`, ep80: 3
 affected and the desktop job has ~36 h left, but an admin reboot to clear the drain would kill both local runs. Both
 resume from their checkpoints: geometry saves every epoch (`hierarchical_fm_v9_s3geom/`), gt_nodes every 5
 (`hierarchical_fm_v9_gtnodes/`, next at 55). To move either to the cluster:
-`sbatch --partition=low --account=publicgrp --gres=gpu:a100:2 --time=7-00:00:00 --requeue --export=ALL,AUTO_RESUME=1,STAGE3_GEOMETRY=1,OUTPUT_DIR=outputs/checkpoints/hierarchical_fm_v9_s3geom slurm_scripts/train_hierarchical_flow_matching.sh`
+`sbatch --partition=low --account=publicgrp --gres=gpu:a100:2 --time=7-00:00:00 --requeue --export=ALL,AUTO_RESUME=1,STAGE3_GEOMETRY=1,OUTPUT_DIR=outputs/checkpoints/hierarchical_fm_v9_s3geom scripts/train_hierarchical_flow_matching.sh`
 (gt_nodes: `STAGE3_GT_NODES=1,OUTPUT_DIR=…_gtnodes` instead). The baseline `38257989` ends at its 24 h limit 2026-09-15 ~15:53
 — resubmit with `AUTO_RESUME=1` into `hierarchical_fm_v9/` before then.
 
@@ -621,8 +621,8 @@ latent path is starved by node error after all.
 ### 0-B.3 Working-tree hygiene
 
 - Anything not in `git status` clean + the two files named in 0-B.2 is either untracked run artifacts
-  (`outputs/eval/`, `outputs/checkpoints/`) or belongs to the archived-launcher index (`archive/README.md`). Keep `slurm_scripts/`
-  to the two current launchers (`train_hierarchical_flow_matching.sh`, `generate_helios_dataset_jobs.sh`).
+  (`outputs/eval/`, `outputs/checkpoints/`) or belongs to the archived-launcher index (`archive/README.md`). Keep `scripts/`
+  to the current launchers (`train_hierarchical_flow_matching.sh`, `generate_helios_dataset_jobs.sh`).
 - Cluster etiquette: Heesup's `regen_*` jobs (geminigrp) hold the group GPU quota — do not cancel; training goes on
   `gpu-6000_ada-h` / `low`. The OnDemand desktop (38252204) must not be killed.
 
@@ -730,7 +730,7 @@ grep -n "init_logits\|soft_margin\|clamp" plant_recon/models/hierarchical_part_f
 grep -n "z_0\|detach" plant_recon/training/train_hierarchical_flow_matching.py | head -30
 
 # 4. Restart
-sbatch slurm_scripts/train_hierarchical_flow_matching.sh
+sbatch scripts/train_hierarchical_flow_matching.sh
 ```
 
 ### Failed-launch forensics (earlier)
@@ -851,11 +851,11 @@ outputs/checkpoints/phytomer_vae_v3/phytomer_vae_64d_last.pt  (1.9 MB, Sep 10 14
 # 1. OPTIONAL: quick local smoke first (subset4k, catches inplace/DDP errors in ~min)
 #    env FLOW_GRANULARITY=phytomer CAPACITY_WARMUP=0 CAPACITY_FULL=1 \
 #      CACHE_DIR=dataset/cache/cowpea_curv26_subset4k \
-#      WANDB_RUN_NAME=smoke-4k-v3-76d bash slurm_scripts/train_hierarchical_flow_matching.sh
+#      WANDB_RUN_NAME=smoke-4k-v3-76d bash scripts/train_hierarchical_flow_matching.sh
 #    (with --max_train_samples small + --detect_anomaly if debugging)
 
 # 2. Cluster submission (defaults now carry v3 VAE + pkt v3 cache)
-sbatch slurm_scripts/train_hierarchical_flow_matching.sh
+sbatch scripts/train_hierarchical_flow_matching.sh
 # env overrides if needed: FLOW_GRANULARITY=phytomer CAPACITY_WARMUP=0 CAPACITY_FULL=1
 
 # 3. WATCH THE FIRST 3 MINUTES: if it survives probe_optimal_batch_size +
@@ -874,7 +874,7 @@ sbatch slurm_scripts/train_hierarchical_flow_matching.sh
 | **P3** | Epoch-1 sanity after resubmit | Check `outputs/logs/run_<jobid>/hierarchical_self_consistency_epoch_001.png` (each run's panels sit beside its own `run.log` symlink; they used to overwrite each other under `docs/results/assets`): loss ↓, pred count ~50, ClsAcc rising, no Recovery-skip lines |
 | **P4** | Monitor 6D rotation convergence | Panels epoch 25/50; s_a (petiole len) should track DAP growth |
 | **P5** | Evaluate Bidirectional Chamfer Distance | Add max/mean distance GT→Pred to avoid one-way clustering metric bias |
-| **P6** | Backbone A/B (DINOv2-scale vs frozen runs) | `slurm_scripts/submit_backbone_ablation.sh` — only after single-run training is stable |
+| **P6** | Backbone A/B (DINOv2-scale vs frozen runs) | `archive/slurm_scripts/submit_backbone_ablation.sh` — only after single-run training is stable |
 
 ---
 
@@ -908,10 +908,10 @@ sbatch slurm_scripts/train_hierarchical_flow_matching.sh
 │       ├── hierarchical_latent_fm/               ← epoch_025~100 (390MB, new 3-stage arch); epoch_125~500 (552MB, OLD arch — incompatible)
 │       ├── organ_vae/organ_latent_vae_best.pt    ← frozen OrganLatentVAE bridge
 │       └── phytomer_vae_v3/                      ← [ACCEPTED DEFAULT] PhytomerVAE-64 v3, 10-slot normalized (val recon 0.070, cls 100%)
-├── slurm_scripts/
+├── scripts/
 │   ├── train_hierarchical_flow_matching.sh       ← launcher; defaults: VAE v3, SLOTS_PER_PHYTOMER=10, BACKBONE_LR_RATIO=0.3
 │   ├── generate_helios_dataset_jobs.sh           ← full pipeline: XML synth + cache (+ pkt/latent) in one pass
-│   └── submit_backbone_ablation.sh               ← A/B dispatcher (DAP-spread runs, sequential chain)
+│   └── archive/slurm_scripts/submit_backbone_ablation.sh  ← A/B dispatcher (archived; DAP-spread runs, sequential chain)
 ├── dataset/
 │   ├── helios_data/cowpea/                       ← 100,000 XML files (complete)
 │   ├── cache/cowpea_curv26/                      ← 100,000 cached .pt (image+nodes+phytomer_ids, complete)

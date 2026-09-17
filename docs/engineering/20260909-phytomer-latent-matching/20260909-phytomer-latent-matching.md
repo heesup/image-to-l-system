@@ -119,7 +119,7 @@ no center leakage — unit-tested).
 3. `plant_recon/training/train_phytomer_vae.py` — argparse training script
    (packet extraction with progress + drop stats + disk cache, 95/5 split,
    AdamW + cosine + grad clip, best-by-val-recon checkpointing).
-4. `slurm_scripts/train_phytomer_vae.sh` — single-GPU batch script.
+4. `archive/slurm_scripts/train_phytomer_vae.sh` — single-GPU batch script.
 5. `tests/test_phytomer_vae.py` + `tests/test_phytomer_packets.py` — 10 tests,
    all passing (shapes, gradients, determinism, save/load, canonical ordering,
    overflow rule, empty convention, roundtrip).
@@ -574,7 +574,7 @@ input) and pkt targets are needed — nodes are recreated by decoding latents.
 - Deleted post-hoc tools/launchers: `tools/add_phytomer_ids_to_cache.py`,
   `tools/precompute_phytomer_packets.py`, `tools/precompute_phytomer_packets_xml.py`,
   `slurm_scripts/precompute_phytomer_packets{,_jobs,_gpu}.sh`.
-- New backfill launcher: `slurm_scripts/generate_phytomer_packets_jobs.sh`
+- New backfill launcher: `archive/slurm_scripts/generate_phytomer_packets_jobs.sh`
   (multi-node, `--gres gpu:1` optional, timestamped batch dir).
 - `generate_helios_dataset_jobs.sh` passes `--vae-checkpoint`; the full pipeline
   now emits packets+latent with the images in a single pass.
@@ -644,7 +644,7 @@ arm; the CHMv2 DPT head itself is not needed (backbone features only).
 - `--backbone` + `--freeze_backbone` training args; model constructor params.
 - Launcher env: `BACKBONE`, `FREEZE_BACKBONE=1`, `OUTPUT_DIR`, `EPOCHS`,
   `SAVE_EVERY` (A/B runs get isolated checkpoint dirs + wandb names).
-- Dispatcher: `slurm_scripts/submit_backbone_ablation.sh` (default arms below,
+- Dispatcher: `archive/slurm_scripts/submit_backbone_ablation.sh` (default arms below,
   50 epochs, sequential via `--dependency=afterany`).
 - Gated DINOv3 web arms need `DINOV3_WEIGHTS=/path/or/url`.
 
@@ -663,8 +663,8 @@ arm; the CHMv2 DPT head itself is not needed (backbone features only).
 Compare: ClsAcc, val recon, render IoU/Chamfer, step time, VRAM.
 
 ```bash
-./slurm_scripts/submit_backbone_ablation.sh --dry-run
-./slurm_scripts/submit_backbone_ablation.sh --submit
+./archive/slurm_scripts/submit_backbone_ablation.sh --dry-run
+./archive/slurm_scripts/submit_backbone_ablation.sh --submit
 ```
 
 ### 4.2 GUI app (COMPLETED 2026-09-09/10 — see dedicated doc)
