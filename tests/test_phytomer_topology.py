@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import torch
 
-from diffusion_based.dataset.phytomer_topology import gt_parent_links
+from plant_recon.dataset.phytomer_topology import gt_parent_links
 
 
 class TestGtParentLinks(unittest.TestCase):
@@ -167,7 +167,7 @@ class TestChainPhytomersDroopingShoot(unittest.TestCase):
     parent had to sit below its child, which cut every drooping lateral."""
 
     def test_descending_shoot_is_one_chain(self):
-        from diffusion_based.dataset.phytomer_topology import chain_phytomers
+        from plant_recon.dataset.phytomer_topology import chain_phytomers
         pos = torch.tensor([[0.0, 0.0, 0.10], [0.03, 0.0, 0.098], [0.06, 0.0, 0.095], [0.09, 0.0, 0.091]])
         ordinal = torch.tensor([3.0, 4.0, 5.0, 6.0])
         parent, shoot, phy = chain_phytomers(pos, ordinal=ordinal)
@@ -178,7 +178,7 @@ class TestChainPhytomersDroopingShoot(unittest.TestCase):
     def test_mutual_nearest_pair_is_cut_at_the_upper_node(self):
         """Two nodes that are each other's nearest neighbour form a 2-cycle;
         the edge whose parent is HIGHER is the one to cut."""
-        from diffusion_based.dataset.phytomer_topology import chain_phytomers
+        from plant_recon.dataset.phytomer_topology import chain_phytomers
         pos = torch.tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.01]])
         parent, shoot, phy = chain_phytomers(pos)
         self.assertEqual(parent.tolist(), [-1, 0])

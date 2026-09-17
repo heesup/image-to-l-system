@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import torch
 
-from diffusion_based.dataset.phytomer_topology import chain_phytomers
+from plant_recon.dataset.phytomer_topology import chain_phytomers
 
 _XMLS = sorted(glob.glob(os.path.join(os.path.dirname(__file__), "..", "dataset", "helios_data", "cowpea",
                                       "cowpea_dap0[2-9]0_seed0[0-1]_*_0000_plant_0000.xml")))
@@ -57,10 +57,10 @@ class TestChainVectorized(unittest.TestCase):
 
     @unittest.skipUnless(_XMLS, "no cowpea XML available")
     def test_ground_truth_plants(self):
-        from diffusion_based.models.plant_organ_array import PlantOrganArray, P_COL_ORGAN_TYPE, ORGAN_NONE
-        from diffusion_based.dataset.part_array_dataset import encode_fm, attach_parent_links
-        from diffusion_based.dataset.phytomer_packets import build_phytomer_packets
-        from diffusion_based.dataset.generate_cache import extract_phytomer_ids
+        from plant_recon.models.plant_organ_array import PlantOrganArray, P_COL_ORGAN_TYPE, ORGAN_NONE
+        from plant_recon.dataset.part_array_dataset import encode_fm, attach_parent_links
+        from plant_recon.dataset.phytomer_packets import build_phytomer_packets
+        from plant_recon.dataset.generate_cache import extract_phytomer_ids
         for path in _XMLS[:6]:
             arr = PlantOrganArray.from_xml_file(path); gt14 = arr.to_part_tensor().float()
             exist = (gt14[:, P_COL_ORGAN_TYPE] > ORGAN_NONE).float()

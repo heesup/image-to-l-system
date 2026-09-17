@@ -3,9 +3,9 @@ import math
 import numpy as np
 import torch
 
-from diffusion_based.models.plant_organ_array import PlantOrganArray
-from diffusion_based.models.part_tensor_to_40d import PartTensorTo40DConverter
-from diffusion_based.eval.eval_13d_xml_organ_masks import render_helios_full, compute_iou_per_class
+from plant_recon.models.plant_organ_array import PlantOrganArray
+from plant_recon.models.part_tensor_to_40d import PartTensorTo40DConverter
+from plant_recon.eval.eval_13d_xml_organ_masks import render_helios_full, compute_iou_per_class
 
 def test_eval(xml_rel, tag):
     orig_xml = os.path.abspath(xml_rel)
@@ -33,5 +33,5 @@ def test_eval(xml_rel, tag):
             print(f"  * {k}: {v*100:.2f}%")
 
 if __name__ == "__main__":
-    test_eval("Digital-Crops/projects/syntheticdata_generation/build/output/exact_gt_renders/rad_dap050_0000_plant_0000.xml", "dap050")
-    test_eval("Digital-Crops/projects/syntheticdata_generation/build/output/exact_gt_renders/rad_dap090_0000_plant_0000.xml", "dap090")
+    test_eval("submodules/Digital-Crops/projects/syntheticdata_generation/build/output/exact_gt_renders/rad_dap050_0000_plant_0000.xml", "dap050")
+    test_eval("submodules/Digital-Crops/projects/syntheticdata_generation/build/output/exact_gt_renders/rad_dap090_0000_plant_0000.xml", "dap090")

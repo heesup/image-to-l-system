@@ -7,8 +7,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import torch
 
-from diffusion_based.models.phytomer_vae import PhytomerVAE, PACKET_IN_DIM
-from diffusion_based.dataset.phytomer_packets import build_phytomer_packets, NUM_SLOTS
+from plant_recon.models.phytomer_vae import PhytomerVAE, PACKET_IN_DIM
+from plant_recon.dataset.phytomer_packets import build_phytomer_packets, NUM_SLOTS
 
 
 def _synthetic_packet_bag(n_packets: int = 32, seed: int = 0):

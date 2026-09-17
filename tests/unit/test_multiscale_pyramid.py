@@ -9,9 +9,9 @@ import torch
 import matplotlib.pyplot as plt
 import numpy as np
 
-from diffusion_based.models.plant_organ_array import PlantOrganArray
-from diffusion_based.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.plant_organ_array import PlantOrganArray
+from plant_recon.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 
 DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
@@ -45,7 +45,7 @@ def main():
     )
 
     # 2. DAP 50 Branching Plant
-    dap50_xml = "Digital-Crops/projects/syntheticdata_generation/build/output/exact_gt_renders/rad_dap050_0000_plant_0000.xml"
+    dap50_xml = "submodules/Digital-Crops/projects/syntheticdata_generation/build/output/exact_gt_renders/rad_dap050_0000_plant_0000.xml"
     if os.path.exists(dap50_xml):
         arr50 = PlantOrganArray.from_xml_file(dap50_xml)
         pt_dap50 = arr50.to_part_tensor(device=DEVICE)

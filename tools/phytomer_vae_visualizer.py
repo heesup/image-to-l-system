@@ -10,7 +10,7 @@ centers, packets, dap, meta.json).
 Usage (workspace root):
     .../bin/python tools/phytomer_vae_visualizer.py \
         --cache dataset/cache/phytomer_gui_cache \
-        --ckpt diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt \
+        --ckpt outputs/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt \
         --server-name 0.0.0.0 --server-port 7860
 """
 
@@ -31,12 +31,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 
-from diffusion_based.models.phytomer_vae import PhytomerVAE
-from diffusion_based.dataset.phytomer_packets import (
+from plant_recon.models.phytomer_vae import PhytomerVAE
+from plant_recon.dataset.phytomer_packets import (
     apply_reference_rotation,
     assemble_packets,
 )
-from diffusion_based.dataset.part_array_dataset import (
+from plant_recon.dataset.part_array_dataset import (
     decode_fm,
     FM_OT_END,
     FM_BASE_START,
@@ -45,7 +45,7 @@ from diffusion_based.dataset.part_array_dataset import (
     FM_CURV,
     BASE_SCALE,
 )
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 
 # Leaf mesh quality options (HeliosPlantGeometryBuilder.leaf_mode):
 #   "high"   = highres cowpea OBJ leaf assets (~1.4k verts/leaf)
@@ -87,7 +87,7 @@ class PhytomerVisualizer:
 
         # v3: the VAE decodes NORMALIZED scales; s_a per cached packet restores
         # absolute geometry for display (GT s_a for real packets, mean for sliders).
-        from diffusion_based.dataset.phytomer_packets import phytomer_scale
+        from plant_recon.dataset.phytomer_packets import phytomer_scale
         with torch.no_grad():
             self.s_a = phytomer_scale(self.packets.float())
             self.s_a_mean = self.s_a.mean(dim=0)
@@ -107,7 +107,7 @@ class PhytomerVisualizer:
 
         # Latent dims are NOT equal. Rank them by how much a +2σ nudge actually
         # moves the decoded organs, measured by
-        # diffusion_based/eval/eval_phytomer_vae_latent_usage.py and written next
+        # plant_recon/eval/eval_phytomer_vae_latent_usage.py and written next
         # to the checkpoint. std(mu) alone cannot distinguish a dimension that is
         # collapsed (posterior variance ~ 1) from one that is merely
         # low-variance but used; fall back to it only when the measurement is
@@ -429,7 +429,7 @@ class PhytomerVisualizer:
         rel = out["recon_packets"][0].cpu()
         # v3: decode output has NORMALIZED scales — restore absolute with the
         # GT s_a (real packet) or the mean s_a (slider latents).
-        from diffusion_based.dataset.phytomer_packets import denormalize_packet_scales
+        from plant_recon.dataset.phytomer_packets import denormalize_packet_scales
         _sa = self.s_a[ref_idx].unsqueeze(0) if (ref_mode == "real" and 0 <= ref_idx < self.n) else self.s_a_mean.unsqueeze(0)
         rel = denormalize_packet_scales(rel.unsqueeze(0), _sa)[0]
         presence = out["cls_logits"][0].argmax(-1).cpu() > 0
@@ -769,7 +769,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cache", type=str, default="dataset/cache/phytomer_gui_cache")
     parser.add_argument("--ckpt", type=str,
-                        default="diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt")
+                        default="outputs/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt")
     parser.add_argument("--server-name", type=str, default="0.0.0.0")
     parser.add_argument("--server-port", type=int, default=7860)
     parser.add_argument("--device", type=str, default="cuda:0")

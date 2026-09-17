@@ -28,8 +28,8 @@
 
 set -e
 
-REPO_ROOT="/home/lion397/codes/image-to-l-system"
-LOGS_DIR="${REPO_ROOT}/slurm_scripts/logs"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LOGS_DIR="${REPO_ROOT}/outputs/logs"
 DATASET_DIR="${REPO_ROOT}/dataset/helios_data"
 PYTHON_BIN="/home/lion397/.conda/envs/digital-crops/bin/python"
 
@@ -222,7 +222,7 @@ cd ${REPO_ROOT}
 export PYTHONUNBUFFERED=1
 export PYTHONPATH=.
 echo "Job ${job_idx}: ${START}..${END} (${LIST_FILE})"
-${PYTHON_BIN} diffusion_based/dataset/generate_cache.py \
+${PYTHON_BIN} plant_recon/dataset/generate_cache.py \
     --mode pkt \
     --data-root ${PKT_DATA_DIR} \
     --output-dir ${PKT_OUT_DIR} \
@@ -455,7 +455,7 @@ fi
 if [[ "${RUN_SHARDS}" == true ]]; then
     echo ""
     echo ">>> [Phase 2/2] Generating cache (pyramid=${PYRAMID}, Worker ${job_idx}/${NUM_JOBS}, ${SAMPLES_PER_WORKER} samples)..."
-    ${PYTHON_BIN} diffusion_based/dataset/generate_cache.py \\
+    ${PYTHON_BIN} plant_recon/dataset/generate_cache.py \\
         --mode cache \\
         --pyramid "${PYRAMID}" \\
         --species "${PLANT_TYPES}" \\

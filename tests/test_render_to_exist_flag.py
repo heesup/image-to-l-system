@@ -9,7 +9,7 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 class TestRenderToExistFlag(unittest.TestCase):
     def test_help_lists_both_flags(self):
-        out = subprocess.run([sys.executable, os.path.join(REPO, "diffusion_based/training/train_hierarchical_flow_matching.py"), "--help"],
+        out = subprocess.run([sys.executable, os.path.join(REPO, "plant_recon/training/train_hierarchical_flow_matching.py"), "--help"],
                              capture_output=True, text=True, timeout=60)
         self.assertIn("--render_to_exist", out.stdout)
         self.assertIn("--render_to_latent", out.stdout)

@@ -10,7 +10,7 @@ import unittest
 import torch
 import torch.nn.functional as F
 
-from diffusion_based.models.hierarchical_part_flow_matching import (
+from plant_recon.models.hierarchical_part_flow_matching import (
     compute_matryoshka_slice,
     MacroBiologicalHead,
     CoarseSkeletalTransformer,
@@ -20,7 +20,7 @@ from diffusion_based.models.hierarchical_part_flow_matching import (
     build_phytomer_flow_target,
     split_phytomer_flow_target,
 )
-from diffusion_based.training.hierarchical_hungarian_matcher import HierarchicalBotanicalMatcher
+from plant_recon.training.hierarchical_hungarian_matcher import HierarchicalBotanicalMatcher
 
 
 class TestHierarchical3StageCascaded(unittest.TestCase):

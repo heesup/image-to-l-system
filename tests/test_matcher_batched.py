@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import torch
 
-from diffusion_based.training.hierarchical_hungarian_matcher import HierarchicalBotanicalMatcher
+from plant_recon.training.hierarchical_hungarian_matcher import HierarchicalBotanicalMatcher
 
 
 def _pairs(m):

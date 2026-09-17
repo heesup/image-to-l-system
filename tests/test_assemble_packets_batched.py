@@ -9,8 +9,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import torch
 
-from diffusion_based.dataset import phytomer_packets as pp
-from diffusion_based.dataset.phytomer_packets import (
+from plant_recon.dataset import phytomer_packets as pp
+from plant_recon.dataset.phytomer_packets import (
     assemble_packets, rot6d_to_matrix, _petiole_curve_points, terminal_leaflet_is_slot2,
     FM_BASE_START, FM_BASE_END, FM_ROT_START, FM_ROT_END, FM_SCALE_START, FM_CURV, FM_OT_END,
     LEAFLET_ATTACH_FRAC, REPRO_ATTACH_FRAC, REPRO_TIP_ORGAN_TYPES, DETERMINISTIC_ORGAN_TYPES, NUM_SLOTS,
@@ -82,9 +82,9 @@ _XMLS = sorted(glob.glob(os.path.join(os.path.dirname(__file__), "..", "dataset"
 
 class TestAssembleBatched(unittest.TestCase):
     def _real_packets(self, path, terminal_last):
-        from diffusion_based.models.plant_organ_array import PlantOrganArray, P_COL_ORGAN_TYPE, ORGAN_NONE
-        from diffusion_based.dataset.part_array_dataset import encode_fm
-        from diffusion_based.dataset.generate_cache import extract_phytomer_ids
+        from plant_recon.models.plant_organ_array import PlantOrganArray, P_COL_ORGAN_TYPE, ORGAN_NONE
+        from plant_recon.dataset.part_array_dataset import encode_fm
+        from plant_recon.dataset.generate_cache import extract_phytomer_ids
         arr = PlantOrganArray.from_xml_file(path); gt14 = arr.to_part_tensor().float()
         exist = (gt14[:, P_COL_ORGAN_TYPE] > ORGAN_NONE).float()
         packets, presence, centers, refs, keys = pp.build_phytomer_packets(

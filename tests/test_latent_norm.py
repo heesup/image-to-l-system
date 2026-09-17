@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import torch
 
-from diffusion_based.models.hierarchical_part_flow_matching import HierarchicalPartFlowMatchingModel, split_flow_state
+from plant_recon.models.hierarchical_part_flow_matching import HierarchicalPartFlowMatchingModel, split_flow_state
 
 
 class TestLatentNorm(unittest.TestCase):

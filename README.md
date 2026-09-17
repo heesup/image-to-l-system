@@ -33,7 +33,7 @@
 RGB-D image (4×256×256)
    │
    ▼
-[Stage 0] DINOv2 ViT-S/14 + PETR 3D ray PE  → 3D-aware image tokens (diffusion_based/models/dinov2_ray_encoder.py)
+[Stage 0] DINOv2 ViT-S/14 + PETR 3D ray PE  → 3D-aware image tokens (plant_recon/models/dinov2_ray_encoder.py)
    │
    ▼
 [Stage 1] MacroBiologicalHead (CLS token)   → phytomer count + soft-margin existence prior
@@ -53,18 +53,18 @@ RGB-D image (4×256×256)
 HeliosPyTorchRenderer                        → multi-scale CHM depth + soft-Dice silhouette loss
 ```
 
-`diffusion_based/models/hierarchical_part_flow_matching.py` implements Stages 1–3;
-`diffusion_based/models/phytomer_vae.py` implements Stage 4;
-`diffusion_based/training/hierarchical_hungarian_matcher.py` does node↔GT bipartite matching.
+`plant_recon/models/hierarchical_part_flow_matching.py` implements Stages 1–3;
+`plant_recon/models/phytomer_vae.py` implements Stage 4;
+`plant_recon/training/hierarchical_hungarian_matcher.py` does node↔GT bipartite matching.
 
 A separate, earlier-generation **direct 26D-node Flow Matching** track
-(`diffusion_based/models/part_flow_matching.py`, `training/train_part_flow_matching.py`) still
+(`plant_recon/models/part_flow_matching.py`, `training/train_part_flow_matching.py`) still
 works and is useful as a simpler baseline, but the hierarchical/phytomer pipeline above is the
 one under active development.
 
-There is also an independent **VLM/language-model track** in [`lm_based/`](lm_based/README.md)
-that predicts L-system grammar tokens directly from a rendered 2D image, trained with SFT + a
-render-in-the-loop RL stage. It does not share code with the diffusion pipeline.
+There is also an independent **VLM/language-model track**, now archived in
+[`archive/lm_based/`](archive/lm_based/README.md), that predicted L-system grammar tokens
+directly from a rendered 2D image, trained with SFT + a render-in-the-loop RL stage.
 
 ---
 
@@ -72,7 +72,7 @@ render-in-the-loop RL stage. It does not share code with the diffusion pipeline.
 
 ```
 image-to-l-system/
-├── diffusion_based/                      # ★ Active AI + differentiable rendering pipeline
+├── plant_recon/                      # ★ the library: the whole active pipeline
 │   ├── models/
 │   │   ├── dinov2_ray_encoder.py         # Stage 0: DINOv2 + PETR 3D ray positional encoding
 │   │   ├── hierarchical_part_flow_matching.py  # [CRITICAL] Stages 1-3: scaffold + phytomer-latent FM
@@ -100,37 +100,39 @@ image-to-l-system/
 │   │   ├── phytomer_roll.py              # forward axis from the chain, 1-DOF roll encoding
 │   │   ├── generate_cache.py             # XML → GPU render → .pt cache + phytomer packets
 │   │   └── dap_bucket_sampler.py         # DAP-stratified batch sampler
-│   ├── eval/
-│   │   ├── eval_hierarchical_self_consistency.py  # DAP-spread diagnostic panel generator
-│   │   ├── eval_13d_xml_organ_masks.py   # per-organ COCO mask IoU + depth PSNR roundtrip
-│   │   ├── eval_phytomer_vae_helios_roundtrip.py   # fig14: IK-only vs VAE round-trip in Helios (exact_gt plants)
-│   │   ├── eval_phytomer_10slot_assembly_views.py  # fig12: GT vs assembly (nadir, 45°) + Helios round-trips (dataset plants)
-│   │   ├── benchmark_helios_vs_torch_renderer.py
-│   │   ├── benchmark_organ_vae_roundtrip.py
-│   │   └── metrics.py                    # mSSIM, FG-IoU, Chamfer
-│   └── checkpoints/                      # git-ignored; see "Key Checkpoints" below
-├── lm_based/                              # Independent VLM/grammar-token track — see its own README
-├── tools/                                 # Standalone utilities (phytomer VAE latent visualizer GUI, ...)
-├── tests/                                 # pytest suite (hierarchical FM, phytomer VAE/packets, gradient flow)
-│   └── unit/                              # lower-level roundtrip/geometry verification scripts
-├── scratch/                               # Working/experimental scripts + outputs (git-ignored)
-├── dataset/
-│   ├── helios_data/cowpea/               # Raw Helios XMLs (100 seeds × 100 DAPs), git-ignored
-│   └── cache/                            # Generated .pt tensor + phytomer-packet caches, git-ignored
-├── scripts/generate_helios_dataset.py     # Helios XML synthesis entry point
-├── slurm_scripts/                         # Cluster launchers (train_hierarchical_flow_matching.sh, ...)
-├── archive/                               # Legacy/superseded code, kept for lineage — see archive/README.md
-├── Digital-Crops/                         # Helios C++ OptiX simulation engine (git submodule)
+│   └── eval/
+│       ├── eval_hierarchical_self_consistency.py  # DAP-spread diagnostic panel generator
+│       ├── eval_13d_xml_organ_masks.py   # per-organ COCO mask IoU + depth PSNR roundtrip
+│       ├── eval_phytomer_vae_helios_roundtrip.py   # fig14: IK-only vs VAE round-trip in Helios (exact_gt plants)
+│       ├── eval_phytomer_10slot_assembly_views.py  # fig12: GT vs assembly (nadir, 45°) + Helios round-trips (dataset plants)
+│       ├── benchmark_helios_vs_torch_renderer.py
+│       ├── benchmark_organ_vae_roundtrip.py
+│       └── metrics.py                    # mSSIM, FG-IoU, Chamfer
+├── use_cases/real_world/               # ★ sim-to-real application: detectors, real-field datasets, multi-plant pipeline
+├── submodules/Digital-Crops/           # Helios C++ OptiX simulation engine (git submodule)
+├── dataset/                            # DATA ONLY: helios_data/ (raw XMLs) + cache/ (.pt caches) — git-ignored
+├── outputs/                            # ALL generated artifacts (git-ignored): checkpoints/, logs/, wandb/, weights/, eval/
+├── slurm_scripts/                      # Cluster launchers (train_hierarchical_flow_matching.sh, ...)
+├── tools/                              # Standalone utilities (phytomer VAE latent visualizer GUI, organize_logs.py, ...)
+├── tests/                              # pytest suite (hierarchical FM, phytomer VAE/packets, gradient flow)
+│   └── unit/                           # lower-level roundtrip/geometry verification scripts
+├── scratch/                            # Working/experimental scripts + outputs (git-ignored; see scratch/README.md)
+├── archive/                            # Legacy/superseded code, kept for lineage — see archive/README.md
+│   └── lm_based/                       #   archived VLM/grammar-token track (+ its L-system dataset code)
 └── docs/
-    ├── _index.md                          # Map of Content (MOC) — topic-based directory index
-    ├── handovers/current-status.md        # Live status dashboard (active jobs, next steps)
-    ├── handovers/agent-takeover-guide/    # ★ Single source of truth — read this first
-    ├── architecture/                      # System design, specs & camera geometry reference
-    ├── experiments/                       # Training runs, benchmark reports & local assets
-    ├── engineering/                       # Implementation sessions, refactors & PR records
-    ├── planning/                          # Roadmaps & upcoming milestone plans
-    └── archive/                           # Superseded documents & unreferenced asset backups
+    ├── _index.md                        # Map of Content (MOC) — topic-based directory index
+    ├── handovers/current-status.md      # Live status dashboard (active jobs, next steps)
+    ├── handovers/agent-takeover-guide/  # ★ Single source of truth — read this first
+    ├── architecture/                    # System design, specs, camera geometry, and the code-structure map
+    ├── experiments/                     # Training runs, benchmark reports & local assets
+    ├── engineering/                      # Implementation sessions, refactors & PR records
+    ├── planning/                        # Roadmaps & upcoming milestone plans
+    └── archive/                         # Superseded documents & unreferenced asset backups
 ```
+
+The canonical layout is documented in
+[`docs/architecture/code-structure/code-structure.md`](docs/architecture/code-structure/code-structure.md)
+(storage conventions, import rules, promotion rules).
 
 ---
 
@@ -149,7 +151,7 @@ export PYTHONPATH=.   # REQUIRED — always run commands from the repo root
 
 ```bash
 python scripts/generate_helios_dataset.py --help       # Helios XML synthesis
-python diffusion_based/dataset/generate_cache.py --help  # XML -> .pt cache + phytomer packets
+python plant_recon/dataset/generate_cache.py --help  # XML -> .pt cache + phytomer packets
 ```
 
 ### 3. Train
@@ -159,10 +161,10 @@ python diffusion_based/dataset/generate_cache.py --help  # XML -> .pt cache + ph
 # Cached packets no longer store latents: the FM trainer encodes Stage-3 target
 # latents on the fly with the VAE it loads (2026-09-14), so a new VAE does NOT
 # need a packet-cache rebuild. Retrain the VAE only when the packet format changes.
-python diffusion_based/training/train_phytomer_vae.py --help
+python plant_recon/training/train_phytomer_vae.py --help
 
 # Stages 1-3: hierarchical scaffold + phytomer-latent flow matching.
-python diffusion_based/training/train_hierarchical_flow_matching.py --help
+python plant_recon/training/train_hierarchical_flow_matching.py --help
 sbatch slurm_scripts/train_hierarchical_flow_matching.sh
 # One launcher trains the VAE first in the same allocation, then FM with it
 # (the standalone train_phytomer_vae.sh is archived under archive/slurm_scripts/):
@@ -172,10 +174,10 @@ TRAIN_VAE=1 sbatch slurm_scripts/train_hierarchical_flow_matching.sh
 ### 4. Evaluate
 
 ```bash
-python diffusion_based/eval/eval_hierarchical_self_consistency.py --help
-python diffusion_based/eval/eval_13d_xml_organ_masks.py --help   # Helios raytrace + per-organ IoU
-python diffusion_based/eval/eval_phytomer_vae_helios_roundtrip.py   # fig14 (exact_gt DAP 10/50/90)
-python diffusion_based/eval/eval_phytomer_10slot_assembly_views.py  # fig12 (dataset DAP 15/40/75, GT + assembly at nadir and 45°)
+python plant_recon/eval/eval_hierarchical_self_consistency.py --help
+python plant_recon/eval/eval_13d_xml_organ_masks.py --help   # Helios raytrace + per-organ IoU
+python plant_recon/eval/eval_phytomer_vae_helios_roundtrip.py   # fig14 (exact_gt DAP 10/50/90)
+python plant_recon/eval/eval_phytomer_10slot_assembly_views.py  # fig12 (dataset DAP 15/40/75, GT + assembly at nadir and 45°)
 ```
 
 ### 5. Tests
@@ -188,14 +190,14 @@ pytest tests/
 
 ## Key Checkpoints
 
-Checkpoints are git-ignored (`diffusion_based/checkpoints/`) and live on disk on the cluster.
+Checkpoints are git-ignored (`outputs/checkpoints/`) and live on disk on the cluster.
 
 | Directory | Model | Status |
 |---|---|---|
-| `diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/` | PhytomerVAE 128D hybrid (48 + 10×8), terminal-last packets, 20k files | **Accepted default** (export VAE and the v9 FM run's VAE; `PHYTOMER_TERMINAL_LAST=1`) |
-| `diffusion_based/checkpoints/phytomer_vae_v8/` | PhytomerVAE 128D hybrid, bottom-to-top packets | VAE of every FM run before v9 (`cowpea_curv26_pkt/`, pkt `6`, `PHYTOMER_TERMINAL_LAST=0`) |
-| `diffusion_based/checkpoints/hierarchical_fm_v9_local2/` | 3-stage cascaded FM, v9 lineage (final-norm decoder, fp32 self-attention) | Active training — see `docs/handovers/current-status.md` |
-| `diffusion_based/checkpoints/organ_vae/organ_latent_vae_best.pt` | Frozen per-organ latent VAE bridge (earlier design) | Kept for lineage |
+| `outputs/checkpoints/phytomer_vae_v9_tl_rw4_20k/` | PhytomerVAE 128D hybrid (48 + 10×8), terminal-last packets, 20k files | **Accepted default** (export VAE and the v9 FM run's VAE; `PHYTOMER_TERMINAL_LAST=1`) |
+| `outputs/checkpoints/phytomer_vae_v8/` | PhytomerVAE 128D hybrid, bottom-to-top packets | VAE of every FM run before v9 (`cowpea_curv26_pkt/`, pkt `6`, `PHYTOMER_TERMINAL_LAST=0`) |
+| `outputs/checkpoints/hierarchical_fm_v9_local2/` | 3-stage cascaded FM, v9 lineage (final-norm decoder, fp32 self-attention) | Active training — see `docs/handovers/current-status.md` |
+| `outputs/checkpoints/organ_vae/organ_latent_vae_best.pt` | Frozen per-organ latent VAE bridge (earlier design) | Kept for lineage |
 
 Checkpoint naming/size is the fastest way to tell architectures apart — see §4 of
 [`AGENT_TAKEOVER_GUIDE.md`](docs/handovers/agent-takeover-guide/agent-takeover-guide.md) before loading one, since
@@ -214,4 +216,4 @@ incompatible architectures have been saved under the same directory during migra
 - [`docs/experiments/`](docs/experiments/) — milestone reports & benchmark figures with co-located image assets
 - [`docs/engineering/`](docs/engineering/) — implementation session handoffs & PR records
 - [`archive/README.md`](archive/README.md) — legacy module index and architectural evolution timeline
-- [`lm_based/README.md`](lm_based/README.md) — the independent VLM/grammar-token track
+- [`archive/lm_based/README.md`](archive/lm_based/README.md) — the archived VLM/grammar-token track

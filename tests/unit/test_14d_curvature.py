@@ -7,7 +7,7 @@ import math
 import torch
 import numpy as np
 
-from diffusion_based.models.plant_organ_array import (
+from plant_recon.models.plant_organ_array import (
     PlantOrganArray,
     ORGAN_INTERNODE,
     ORGAN_PETIOLE,
@@ -16,10 +16,10 @@ from diffusion_based.models.plant_organ_array import (
     T_COL_CURV_PERT_0,
     T_COL_ORGAN_TYPE,
 )
-from diffusion_based.models.part_tensor_to_40d import PartTensorTo40DConverter
+from plant_recon.models.part_tensor_to_40d import PartTensorTo40DConverter
 
 def main():
-    xml_path = "Digital-Crops/projects/syntheticdata_generation/build/output/exact_gt_renders/rad_dap010_0000_plant_0000.xml"
+    xml_path = "submodules/Digital-Crops/projects/syntheticdata_generation/build/output/exact_gt_renders/rad_dap010_0000_plant_0000.xml"
     arr = PlantOrganArray.from_xml_file(xml_path)
     gt_40d = arr.tensor.clone()
     N = gt_40d.shape[0]
@@ -59,7 +59,7 @@ def main():
     print(f"Curvature MAE with 14D: {mae_curv_14d:.4f}")
 
     # Now let's serialize both to temporary XML and test Helios rendering!
-    out_dir = "Digital-Crops/projects/syntheticdata_generation/build/output/exact_gt_renders"
+    out_dir = "submodules/Digital-Crops/projects/syntheticdata_generation/build/output/exact_gt_renders"
     tmp_xml_13d = os.path.join(out_dir, "_tmp_recon_13d.xml")
     tmp_xml_14d = os.path.join(out_dir, "_tmp_recon_14d.xml")
 

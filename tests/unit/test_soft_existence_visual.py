@@ -14,9 +14,9 @@ import os
 import torch
 import matplotlib.pyplot as plt
 
-from diffusion_based.models.plant_organ_array import ORGAN_LEAF
-from diffusion_based.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.plant_organ_array import ORGAN_LEAF
+from plant_recon.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 
 
 def run_soft_existence_demo():

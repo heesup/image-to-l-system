@@ -27,15 +27,15 @@ from PIL import Image, ImageDraw, ImageFont
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-REPO_ROOT = Path("/home/lion397/codes/image-to-l-system")
-BUILD_DIR = REPO_ROOT / "Digital-Crops/projects/syntheticdata_generation/build"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+BUILD_DIR = REPO_ROOT / "submodules/Digital-Crops/projects/syntheticdata_generation/build"
 MAIN_NEW  = BUILD_DIR / "main_new"   # fixed binary (post-fix)
 MAIN_OLD  = BUILD_DIR / "main_old"   # pre-fix binary
 
 SCRATCH = BUILD_DIR / "scratch" / "roundtrip_vis"
 SCRATCH.mkdir(parents=True, exist_ok=True)
 
-OUT_FIGURE = REPO_ROOT / "docs/results/assets/fig_helios_xml_roundtrip_vis_stages.png"
+OUT_FIGURE = REPO_ROOT / "outputs/eval/fig_helios_xml_roundtrip_vis_stages.png"
 
 REF_PARAMS = BUILD_DIR / "output" / "dap50_gt_0000_params.json"
 REF_XML    = BUILD_DIR / "output" / "dap50_gt_0000_plant_0000.xml"

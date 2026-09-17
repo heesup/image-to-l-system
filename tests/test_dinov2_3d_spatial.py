@@ -5,8 +5,8 @@ Unit tests for DINOv2 3D Spatial Vision and Hierarchical Flow Matching.
 import unittest
 import torch
 
-from diffusion_based.models.dinov2_ray_encoder import DINOv2RayEncoder
-from diffusion_based.models.hierarchical_part_flow_matching import (
+from plant_recon.models.dinov2_ray_encoder import DINOv2RayEncoder
+from plant_recon.models.hierarchical_part_flow_matching import (
     CoarseSkeletalTransformer,
     HierarchicalPartFlowMatchingModel,
 )

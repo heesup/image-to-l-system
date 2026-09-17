@@ -9,7 +9,7 @@ Scratch script to test the complete set of improvements:
 import math
 import numpy as np
 import torch
-from diffusion_based.models.plant_organ_array import (
+from plant_recon.models.plant_organ_array import (
     PlantOrganArray,
     ORGAN_NONE,
     ORGAN_ROOT_META,
@@ -67,7 +67,7 @@ from diffusion_based.models.plant_organ_array import (
     T_COL_EXISTENCE,
     rotation_6d_to_matrix,
 )
-from diffusion_based.models.part_tensor_to_40d import _invert_helios_zxz_rotation
+from plant_recon.models.part_tensor_to_40d import _invert_helios_zxz_rotation
 
 def rotate_about_line(point, axis, angle_rad):
     v = point
@@ -463,11 +463,11 @@ def convert_part_to_40d_v2(part_tensor: torch.Tensor, plant_id: int = 0) -> torc
     return out_40d
 
 if __name__ == "__main__":
-    from diffusion_based.eval.eval_13d_xml_organ_masks import render_helios_full, compute_iou_per_class, ORGAN_CLASSES
+    from plant_recon.eval.eval_13d_xml_organ_masks import render_helios_full, compute_iou_per_class, ORGAN_CLASSES
     import os
 
     for dap_str in ["010", "050", "090"]:
-        gt_xml = f"Digital-Crops/projects/syntheticdata_generation/build/output/exact_gt_renders/rad_dap{dap_str}_0000_plant_0000.xml"
+        gt_xml = f"submodules/Digital-Crops/projects/syntheticdata_generation/build/output/exact_gt_renders/rad_dap{dap_str}_0000_plant_0000.xml"
         arr = PlantOrganArray.from_xml_file(gt_xml)
         part = arr.to_part_tensor()
         

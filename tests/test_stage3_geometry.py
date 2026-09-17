@@ -7,9 +7,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import torch
 
-from diffusion_based.models.hierarchical_part_flow_matching import (
+from plant_recon.models.hierarchical_part_flow_matching import (
     split_flow_state, geometry_from_flow, STAGE3_GEOM_DIM, PhytomerFlowMatchingDecoder, BASE_SCALE)
-from diffusion_based.training.train_hierarchical_flow_matching import _widen_optimizer_state
+from plant_recon.training.train_hierarchical_flow_matching import _widen_optimizer_state
 
 
 class TestStage3Geometry(unittest.TestCase):

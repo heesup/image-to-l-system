@@ -15,21 +15,21 @@ train_*.log
 debug_run.log
 debug*.log
 *.pt
-diffusion_based/checkpoints/
-diffusion_based/plots/
+plant_recon/plots/
 training_logs/
 
 # Data outputs (Helios generated data is large)
-Digital-Crops/projects/syntheticdata_generation/build/output/
-Digital-Crops/projects/syntheticdata_generation/build/*.log
-Digital-Crops/projects/syntheticdata_generation/build/*.txt
+submodules/Digital-Crops/projects/syntheticdata_generation/build/output/
+submodules/Digital-Crops/projects/syntheticdata_generation/build/*.log
+submodules/Digital-Crops/projects/syntheticdata_generation/build/*.txt
 
 # OS
 .DS_Store
 
 # Local data / outputs (keep only source code)
 data/
-lm_based/plots/
+runs/
+archive/lm_based/plots/
 
 # Generated renders / logs
 render_*.png
@@ -42,31 +42,28 @@ dataset/helios_test_bush/
 dataset/cache/
 dataset/cache_cowpea_100k/
 dataset/cache*/
-notebooks/output*
-diffusion_based/eval/output/*
-diffusion_based/eval/roundtrip_outputs/
-diffusion_based/eval/debug_outputs/
-slurm_scripts/logs/*
+plant_recon/eval/output/*
+plant_recon/eval/roundtrip_outputs/
+plant_recon/eval/debug_outputs/
 slurm-*.out
 logs/
 
+# Centralized storage (checkpoints, job logs, wandb, detector weights, eval dumps)
+outputs/
+
 # Runtime benchmark caches
-diffusion_based/eval/benchmark_cache*.json
-docs/results/assets/*_metrics.json
-wandb/
+plant_recon/eval/benchmark_cache*.json
+docs/**/assets/*_metrics.json
 scratch/
-diffusion_based/eval/test_*.png
-diffusion_based/eval/test_*.py
+plant_recon/eval/test_*.png
+plant_recon/eval/test_*.py
 agent_temp/
-# Per-run training artifacts: self-consistency panels and the run.log symlink
-# live in slurm_scripts/logs/run_<jobid>/ beside each run's own log.
-slurm_scripts/logs/
 
 # Real-world (Roboflow) data + secrets — never commit the API key or downloaded imagery
-real_world/.env
-real_world/data/
-real_world/detector/runs/
-real_world/eval/output/
+use_cases/real_world/.env
+use_cases/real_world/data/
+use_cases/real_world/detector/runs/
+use_cases/real_world/eval/output/
 *.env
 
 # Scratch images and ad-hoc debug output

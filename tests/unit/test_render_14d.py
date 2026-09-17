@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from diffusion_based.models.plant_organ_array import (
+from plant_recon.models.plant_organ_array import (
     PlantOrganArray,
     ORGAN_INTERNODE,
     ORGAN_PETIOLE,
@@ -17,15 +17,15 @@ from diffusion_based.models.plant_organ_array import (
     T_COL_CURVATURE,
     T_COL_CURV_PERT_0,
 )
-from diffusion_based.eval.eval_13d_xml_organ_masks import (
+from plant_recon.eval.eval_13d_xml_organ_masks import (
     render_helios_full,
     compute_iou_per_class,
     ORGAN_CLASSES,
 )
 
 def test_plant(dap_str="050"):
-    gt_xml = f"Digital-Crops/projects/syntheticdata_generation/build/output/exact_gt_renders/rad_dap{dap_str}_0000_plant_0000.xml"
-    out_dir = "Digital-Crops/projects/syntheticdata_generation/build/output/exact_gt_renders"
+    gt_xml = f"submodules/Digital-Crops/projects/syntheticdata_generation/build/output/exact_gt_renders/rad_dap{dap_str}_0000_plant_0000.xml"
+    out_dir = "submodules/Digital-Crops/projects/syntheticdata_generation/build/output/exact_gt_renders"
     xml_13d = os.path.join(out_dir, f"_tmp_recon_13d_dap{dap_str}.xml")
     xml_14d = os.path.join(out_dir, f"_tmp_recon_14d_dap{dap_str}.xml")
 
@@ -45,7 +45,7 @@ def test_plant(dap_str="050"):
 
     part_14d = torch.cat([part_13d, curv_col], dim=1)
 
-    from diffusion_based.models.part_tensor_to_40d import PartTensorTo40DConverter
+    from plant_recon.models.part_tensor_to_40d import PartTensorTo40DConverter
     converter = PartTensorTo40DConverter()
     recon_40d_13d = converter.convert(part_13d)
     

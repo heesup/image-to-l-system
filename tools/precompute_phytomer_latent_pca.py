@@ -31,12 +31,12 @@ Both save everything the visualizer needs:
 
 Usage (workspace root):
     .../bin/python tools/precompute_phytomer_latent_pca.py \
-        --ckpt diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt \
+        --ckpt outputs/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt \
         --out dataset/cache/phytomer_gui_cache
 
     .../bin/python tools/precompute_phytomer_latent_pca.py --from-pkt-cache \
         --pkt-dir dataset/cache/cowpea_curv26_pkt_v9 \
-        --ckpt diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt \
+        --ckpt outputs/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt \
         --max-packets 250000 \
         --out dataset/cache/phytomer_gui_cache
 """
@@ -56,8 +56,8 @@ import numpy as np
 import torch
 from sklearn.decomposition import PCA
 
-from diffusion_based.models.phytomer_vae import PhytomerVAE
-from diffusion_based.dataset.phytomer_packets import build_phytomer_packets
+from plant_recon.models.phytomer_vae import PhytomerVAE
+from plant_recon.dataset.phytomer_packets import build_phytomer_packets
 
 _DAP_RE = re.compile(r"cowpea_dap(\d+)_")
 
@@ -192,7 +192,7 @@ def _build_and_encode(args, device):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt", type=str,
-                        default="diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt")
+                        default="outputs/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt")
     parser.add_argument("--latent-dim", type=int, default=128)
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--out", type=str, default="dataset/cache/phytomer_gui_cache")

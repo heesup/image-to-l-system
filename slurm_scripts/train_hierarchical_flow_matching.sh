@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=hierarchical_fm
-#SBATCH --output=slurm_scripts/logs/hierarchical_fm_%j.log
-#SBATCH --error=slurm_scripts/logs/hierarchical_fm_%j.log
+#SBATCH --output=outputs/logs/hierarchical_fm_%j.log
+#SBATCH --error=outputs/logs/hierarchical_fm_%j.log
 #SBATCH --account=geminigrp
 #SBATCH --partition=gpu-6000_ada-h
 #SBATCH --gres=gpu:2
@@ -16,7 +16,7 @@
 # from when one rendered plant cost 0.65 s; batched, 8 plants cost ~0.1 s), a
 # checkpoint every 5 epochs and
 # an eval every epoch (30-min floor). Every knob is an env override, e.g.
-#   mkdir -p slurm_scripts/logs/$(date +%Y%m%d) && sbatch --output=slurm_scripts/logs/$(date +%Y%m%d)/hierarchical_fm_%j.log \
+#   mkdir -p outputs/logs/$(date +%Y%m%d) && sbatch --output=outputs/logs/$(date +%Y%m%d)/hierarchical_fm_%j.log \
 #          slurm_scripts/train_hierarchical_flow_matching.sh                       # plain: this recipe, 2 GPUs, geminigrp; log in today's folder
 #   sbatch --partition=low --account=publicgrp --gres=gpu:a100:4 --time=7-00:00:00 \
 #          --requeue --export=ALL,AUTO_RESUME=1 slurm_scripts/train_hierarchical_flow_matching.sh
@@ -27,7 +27,7 @@
 
 set -e
 
-REPO_ROOT="/home/lion397/codes/image-to-l-system"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="/home/lion397/.conda/envs/digital-crops/bin/python"
 TORCHRUN_BIN="/home/lion397/.conda/envs/digital-crops/bin/torchrun"
 
@@ -38,11 +38,11 @@ TORCHRUN_BIN="/home/lion397/.conda/envs/digital-crops/bin/torchrun"
 BATCH_ARG=${FORCE_BATCH_SIZE:-48}
 TARGET_RATIO=0.88
 
-# Image backbone for scaling A/B (see diffusion_based/models/dinov2_ray_encoder.py):
+# Image backbone for scaling A/B (see plant_recon/models/dinov2_ray_encoder.py):
 #   dinov2_vits14 (control) | dinov2_vitb14 | dinov2_vitl14 |
 #   dinov3_vits16 | dinov3_vitb16 | dinov3_vitl16 | dinov3_vitl16_sat
 BACKBONE=${BACKBONE:-dinov2_vits14}
-OUTPUT_DIR=${OUTPUT_DIR:-diffusion_based/checkpoints/hierarchical_fm_v9}
+OUTPUT_DIR=${OUTPUT_DIR:-outputs/checkpoints/hierarchical_fm_v9}
 EPOCHS=${EPOCHS:-500}
 SAVE_EVERY=${SAVE_EVERY:-5}
 FREEZE_BACKBONE=${FREEZE_BACKBONE:-1}
@@ -118,7 +118,7 @@ if [ "${EXIST_COUNT_WEIGHT:-0}" != "0" ]; then
     STAGE3_ARGS="${STAGE3_ARGS} --exist_count_weight ${EXIST_COUNT_WEIGHT}"
 fi
 
-mkdir -p "${REPO_ROOT}/slurm_scripts/logs"
+mkdir -p "${REPO_ROOT}/outputs/logs"
 cd ${REPO_ROOT}
 mkdir -p "${OUTPUT_DIR}"
 
@@ -129,15 +129,15 @@ mkdir -p "${OUTPUT_DIR}"
 # rather than moved (it is appended to for the life of the job).
 RUN_TAG="${SLURM_JOB_ID:-local_$(date +%Y%m%d_%H%M%S)}"
 # Logs are organized by start date (Heesup, 2026-09-15): this run's panels go under logs/<YYYYMMDD>/run_<tag>/.
-# The SBATCH --output path above is static; submit with --output=slurm_scripts/logs/$(date +%Y%m%d)/hierarchical_fm_%j.log
+# The SBATCH --output path above is static; submit with --output=outputs/logs/$(date +%Y%m%d)/hierarchical_fm_%j.log
 # (directory created here) or let tools/organize_logs.py file top-level logs into their date folder later.
 LOG_DAY="$(date +%Y%m%d)"
-mkdir -p "${REPO_ROOT}/slurm_scripts/logs/${LOG_DAY}"
-RUN_DIR="${REPO_ROOT}/slurm_scripts/logs/${LOG_DAY}/run_${RUN_TAG}"
+mkdir -p "${REPO_ROOT}/outputs/logs/${LOG_DAY}"
+RUN_DIR="${REPO_ROOT}/outputs/logs/${LOG_DAY}/run_${RUN_TAG}"
 mkdir -p "${RUN_DIR}"
 if [ -n "${SLURM_JOB_ID}" ]; then
     # relative link: valid whether the job log sits at the top level or in this date folder
-    if [ -f "${REPO_ROOT}/slurm_scripts/logs/${LOG_DAY}/hierarchical_fm_${SLURM_JOB_ID}.log" ]; then
+    if [ -f "${REPO_ROOT}/outputs/logs/${LOG_DAY}/hierarchical_fm_${SLURM_JOB_ID}.log" ]; then
         ln -sfn "../hierarchical_fm_${SLURM_JOB_ID}.log" "${RUN_DIR}/run.log"
     else
         ln -sfn "../../hierarchical_fm_${SLURM_JOB_ID}.log" "${RUN_DIR}/run.log"
@@ -148,6 +148,7 @@ echo "Run artifacts: ${RUN_DIR} (self-consistency panels + run.log symlink)"
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=4
 export PYTHONPATH=.
+export WANDB_DIR="${WANDB_DIR:-${REPO_ROOT}/outputs/wandb}"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # Packet leaflet order must match the VAE and the cache: "1" (terminal leaflet
 # last) for v9_tl_* VAEs and _pkt_v9; "0" (bottom-to-top) for v8 and _pkt.
@@ -165,10 +166,10 @@ NPROC=${SLURM_GPUS_ON_NODE:-$(nvidia-smi --list-gpus | wc -l)}
 # when the packet format changes, not per run. The recipe below is the one
 # v9_tl_rw4_20k was trained with (rot weight 4, 20,000 files, 120 epochs).
 if [ "${TRAIN_VAE:-0}" = "1" ]; then
-    VAE_DIR=${VAE_CHECKPOINT_DIR:-diffusion_based/checkpoints/phytomer_vae_$(date +%Y%m%d_%H%M)}
+    VAE_DIR=${VAE_CHECKPOINT_DIR:-outputs/checkpoints/phytomer_vae_$(date +%Y%m%d_%H%M)}
     mkdir -p "${VAE_DIR}"
     echo ">>> [VAE] training PhytomerVAE-${VAE_LATENT_DIM:-128}D into ${VAE_DIR} (files ${VAE_MAX_FILES:-20000}, epochs ${VAE_EPOCHS:-120}, rot weight ${VAE_ROT_WEIGHT:-4}, terminal-last ${PHYTOMER_TERMINAL_LAST})"
-    ${PYTHON_BIN} diffusion_based/training/train_phytomer_vae.py \
+    ${PYTHON_BIN} plant_recon/training/train_phytomer_vae.py \
         --cache-dir "${CACHE_DIR:-dataset/cache/cowpea_curv26}" \
         --latent-dim "${VAE_LATENT_DIM:-128}" \
         --residual-dim "${VAE_RESIDUAL_DIM:-8}" \
@@ -197,7 +198,7 @@ echo "Render gate: fast warmup bypass (epochs 1-3) -> active at epoch ${RENDER_G
 echo "Eval cadence: every ${EVAL_EVERY:-1} epochs OR every ${EVAL_MIN_INTERVAL_MINUTES:-30} min (time fallback)"
 echo "Render fraction: ${RENDER_FRACTION:-0.167} of batch per step (batch-relative; 2-scale pyramid 1x/2x — profiling 2026-09-09: render was 70% of step time)${RENDER_FRACTION_FINAL:+ -> ramping to ${RENDER_FRACTION_FINAL} over ${RENDER_FRACTION_RAMP_EPOCHS:-0} epochs}"
 echo "Flow granularity: ${FLOW_GRANULARITY:-phytomer} (hybrid decoupled: 128D VAE latent flow + Stage 2 3D scaffold)"
-echo "Phytomer VAE: ${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt}"
+echo "Phytomer VAE: ${PHYTOMER_VAE_CHECKPOINT:-outputs/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt}"
 echo "Pkt cache dir: ${PKT_CACHE_DIR:-dataset/cache/cowpea_curv26_pkt_v9} (missing samples fall back to on-the-fly) | PHYTOMER_TERMINAL_LAST=${PHYTOMER_TERMINAL_LAST}"
 echo "LR: ${LR:-1e-4} | Save every ${SAVE_EVERY} epochs | Stage 3 geometry: ${STAGE3_GEOMETRY:-0} | GT nodes: ${STAGE3_GT_NODES:-0} (p ${STAGE3_GT_NODES_P:-1.0}, jitter ${STAGE3_GT_NODES_JITTER_CM:-0.0} cm) | render->latent: ${RENDER_TO_LATENT:-0} | render->exist: ${RENDER_TO_EXIST:-0} | latent norm: ${LATENT_NORM:-0} | coverage w: ${COVERAGE_WEIGHT:-0} | multizoom: ${MULTIZOOM:-0} | token window: ${NODE_TOKEN_WINDOW:-1} | t0 frac: ${T0_FRAC:-0} | count w: ${EXIST_COUNT_WEIGHT:-0} | Git: $(git rev-parse --short HEAD 2>/dev/null)"
 echo "EMA decay: ${EMA_DECAY:-0} (0 = off)"
@@ -237,7 +238,7 @@ if [ -n "${INIT_CHECKPOINT}" ] && [ -f "${INIT_CHECKPOINT}" ]; then
 fi
 
 ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
-    diffusion_based/training/train_hierarchical_flow_matching.py \
+    plant_recon/training/train_hierarchical_flow_matching.py \
     ${EXTRA_ARGS} \
     --data_dir dataset/helios_data/cowpea \
     --cache_dir "${CACHE_DIR:-dataset/cache/cowpea_curv26}" \
@@ -252,7 +253,7 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     --dap_weight "${DAP_WEIGHT:-0.05}" \
     --init_phytomer_count "${INIT_PHYTOMER_COUNT:-50.0}" \
     --node_dim 16 \
-    --organ_vae_checkpoint diffusion_based/checkpoints/organ_vae/organ_latent_vae_best.pt \
+    --organ_vae_checkpoint outputs/checkpoints/organ_vae/organ_latent_vae_best.pt \
     --flow_granularity "${FLOW_GRANULARITY:-phytomer}" \
     --backbone "${BACKBONE}" \
     --matcher_type "${MATCHER_TYPE:-greedy}" \
@@ -261,7 +262,7 @@ ${TORCHRUN_BIN} --nproc_per_node=$NPROC --master_port=$MASTER_PORT \
     ${STAGE3_ARGS} \
     --phytomer_latent_dim "${PHYTOMER_LATENT_DIM:-128}" \
     --phytomer_residual_dim "${PHYTOMER_RESIDUAL_DIM:-8}" \
-    --phytomer_vae_checkpoint "${PHYTOMER_VAE_CHECKPOINT:-diffusion_based/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt}" \
+    --phytomer_vae_checkpoint "${PHYTOMER_VAE_CHECKPOINT:-outputs/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt}" \
     --pkt_cache_dir "${PKT_CACHE_DIR:-dataset/cache/cowpea_curv26_pkt_v9}" \
     --max_phytomers 512 \
     --slots_per_phytomer "${SLOTS_PER_PHYTOMER:-10}" \

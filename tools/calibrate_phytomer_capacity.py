@@ -3,7 +3,7 @@
 Samples GT phytomer cluster counts per DAP bucket (matcher-consistent: petiole
 bases + standalone internodes, mirroring HierarchicalBotanicalMatcher), fits a
 logistic curve to the rolling-max-smoothed p97.5 envelope, and prints constants
-for PHYTOMER_CURVE_{L,K,X0,N0} in diffusion_based/models/hierarchical_part_flow_matching.py.
+for PHYTOMER_CURVE_{L,K,X0,N0} in plant_recon/models/hierarchical_part_flow_matching.py.
 
 Usage (from workspace root):
     /home/lion397/.conda/envs/digital-crops/bin/python tools/calibrate_phytomer_capacity.py \

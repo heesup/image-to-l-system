@@ -8,13 +8,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import torch
 
-from diffusion_based.models.plant_organ_array import (
+from plant_recon.models.plant_organ_array import (
     ORGAN_LEAF, PlantOrganArray, T_COL_EXISTENCE, T_COL_ORGAN_TYPE, T_COL_PITCH, T_COL_ROLL, T_COL_YAW,
 )
-from diffusion_based.models.part_tensor_to_40d import PartTensorTo40DConverter, rotation_6d_to_matrix
-from diffusion_based.models.part_tensor_stem_ik import refine_stem_to_part_tensor
-from diffusion_based.models.part_tensor_leaf_ik import refine_leaf_orientation, leaf_rotation_error_deg
-from diffusion_based.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
+from plant_recon.models.part_tensor_to_40d import PartTensorTo40DConverter, rotation_6d_to_matrix
+from plant_recon.models.part_tensor_stem_ik import refine_stem_to_part_tensor
+from plant_recon.models.part_tensor_leaf_ik import refine_leaf_orientation, leaf_rotation_error_deg
+from plant_recon.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
 
 _XMLS = sorted(glob.glob(os.path.join(os.path.dirname(__file__), "..", "dataset", "helios_data", "cowpea",
                                       "cowpea_dap01[5-7]_*_0000_plant_0000.xml")))

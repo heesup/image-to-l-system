@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import torch
 
-from diffusion_based.training.train_hierarchical_flow_matching import WeightEMA
+from plant_recon.training.train_hierarchical_flow_matching import WeightEMA
 
 
 class _Net(torch.nn.Module):

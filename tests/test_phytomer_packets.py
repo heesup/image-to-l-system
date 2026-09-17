@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import torch
 
-from diffusion_based.dataset.phytomer_packets import (
+from plant_recon.dataset.phytomer_packets import (
     build_phytomer_packets,
     cluster_organs,
     decode_packet,
@@ -15,9 +15,9 @@ from diffusion_based.dataset.phytomer_packets import (
     assemble_packets,
     LEAFLET_TERMINAL_RATIO,
 )
-from diffusion_based.dataset.part_array_dataset import FM_SCALE_START
-from diffusion_based.models.plant_organ_array import P_COL_ORGAN_TYPE
-from diffusion_based.dataset.part_array_dataset import (
+from plant_recon.dataset.part_array_dataset import FM_SCALE_START
+from plant_recon.models.plant_organ_array import P_COL_ORGAN_TYPE
+from plant_recon.dataset.part_array_dataset import (
     FM_OT_END,
     FM_BASE_START,
     FM_NODE_DIM,

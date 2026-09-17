@@ -7,10 +7,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import torch
 
-from diffusion_based.dataset.phytomer_roll import (
+from plant_recon.dataset.phytomer_roll import (
     _canonical_frame, _least_parallel_axis, encode_roll, roll_to_matrix, derive_forward,
 )
-from diffusion_based.dataset.phytomer_topology import chain_phytomers
+from plant_recon.dataset.phytomer_topology import chain_phytomers
 
 
 def _random_rotations(n: int, seed: int = 0) -> torch.Tensor:

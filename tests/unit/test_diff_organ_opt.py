@@ -25,11 +25,11 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 import numpy as np
 
-from diffusion_based.models.plant_organ_array import (
+from plant_recon.models.plant_organ_array import (
     ORGAN_NONE, ORGAN_INTERNODE, ORGAN_PETIOLE, ORGAN_LEAF, NUM_ORGAN_TYPES,
 )
-from diffusion_based.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
-from diffusion_based.models.helios_pytorch_renderer import HeliosPyTorchRenderer
+from plant_recon.models.helios_pytorch_geometry import HeliosPlantGeometryBuilder
+from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 
 
 def run_diff_organ_opt_test():
@@ -134,7 +134,7 @@ def run_diff_organ_opt_test():
     # -------------------------------------------------------------
     # 3. OPTIMIZATION LOOP
     # -------------------------------------------------------------
-    from diffusion_based.models.helios_pytorch_geometry import diff_mixture_to_part_tensor_14d
+    from plant_recon.models.helios_pytorch_geometry import diff_mixture_to_part_tensor_14d
 
     num_steps = 60
     history = {

@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""Organize slurm_scripts/logs/ into one folder per start date (YYYYMMDD).
+"""Organize outputs/logs/ into one folder per start date (YYYYMMDD).
 
 Moves job logs (hierarchical_fm_<jobid>.log), local-run logs (local_*.log), per-run figure folders
 (run_<jobid>/, run_local_<timestamp>/) and evaluation folders (run_sub10_* etc.) from the top level into
-slurm_scripts/logs/<YYYYMMDD>/ by their start date; re-links each run folder's run.log symlink relatively.
+outputs/logs/<YYYYMMDD>/ by their start date; re-links each run folder's run.log symlink relatively.
 Items modified within --live-minutes (default 20) are left alone so running jobs are never touched.
 Dry-run by default; --apply performs the moves. Nothing is ever deleted.
 """
@@ -15,7 +15,7 @@ import sys
 import time
 from datetime import datetime
 
-LOGS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "slurm_scripts", "logs")
+LOGS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "outputs", "logs")
 DATE_RE = re.compile(r"^\d{8}$")
 DATE_LINE = re.compile(r"^Date: (\w{3}) (\w{3}) +(\d+) .* (\d{4})$")
 

@@ -22,7 +22,7 @@ import subprocess
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-BUILD_DIR = os.path.join(REPO_ROOT, "Digital-Crops", "projects", "syntheticdata_generation", "build")
+BUILD_DIR = os.path.join(REPO_ROOT, "submodules/Digital-Crops", "projects", "syntheticdata_generation", "build")
 MAIN_BIN = os.path.join(BUILD_DIR, "main")
 BASE_PARAMS = os.path.join(BUILD_DIR, "params.json")
 
@@ -44,7 +44,7 @@ def _sample_name(plant_type: str, dap: int, seed: int, genotype: str = "") -> st
 def _complete(target_dir: str, name: str, renderer: str = "radiation") -> bool:
     """Is this sample already generated? The rendered image only counts when the chosen renderer
     actually produces one -- `--renderer none` writes the structure XML alone (used when the plant is
-    wanted as geometry rather than as a training image, e.g. real_world/dataset/helios_cold_start.py),
+    wanted as geometry rather than as a training image, e.g. use_cases/real_world/dataset/helios_cold_start.py),
     and requiring a .jpeg there would re-run a ~20 s growth simulation on every call."""
     if renderer not in ("none", "vis") and not os.path.exists(os.path.join(target_dir, f"{name}_0000_rad.jpeg")):
         return False
@@ -67,7 +67,7 @@ def render_one(job_args):
     os.makedirs(tmp_dir, exist_ok=True)
 
     # Resolve species-specific config if available
-    sp_cfg = os.path.join(REPO_ROOT, "Digital-Crops", "projects", "syntheticdata_generation", "configs", f"params_{plant_type}.json")
+    sp_cfg = os.path.join(REPO_ROOT, "submodules/Digital-Crops", "projects", "syntheticdata_generation", "configs", f"params_{plant_type}.json")
     if os.path.exists(sp_cfg):
         params_file = sp_cfg
 

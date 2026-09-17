@@ -18,7 +18,7 @@ import numpy as np
 import torch
 import xml.etree.ElementTree as ET
 
-from diffusion_based.models.plant_organ_array import (
+from plant_recon.models.plant_organ_array import (
     PlantOrganArray,
     ORGAN_NONE,
     ORGAN_ROOT_META,
@@ -76,8 +76,8 @@ from diffusion_based.models.plant_organ_array import (
     T_COL_EXISTENCE,
     rotation_6d_to_matrix,
 )
-from diffusion_based.models.part_tensor_to_40d import solve_helios_shoot_base
-from diffusion_based.models.part_tensor_to_40d import _invert_helios_zxz_rotation
+from plant_recon.models.part_tensor_to_40d import solve_helios_shoot_base
+from plant_recon.models.part_tensor_to_40d import _invert_helios_zxz_rotation
 
 def convert_with_reproductive_fix(part_tensor: torch.Tensor, plant_id: int = 0) -> torch.Tensor:
     if torch.is_tensor(part_tensor):
@@ -426,9 +426,9 @@ def convert_with_reproductive_fix(part_tensor: torch.Tensor, plant_id: int = 0) 
     return out_40d
 
 if __name__ == "__main__":
-    from diffusion_based.eval.eval_13d_xml_organ_masks import render_helios_full, compute_iou_per_class, ORGAN_CLASSES
+    from plant_recon.eval.eval_13d_xml_organ_masks import render_helios_full, compute_iou_per_class, ORGAN_CLASSES
     dap_str = "090"
-    gt_xml = f"Digital-Crops/projects/syntheticdata_generation/build/output/exact_gt_renders/rad_dap{dap_str}_0000_plant_0000.xml"
+    gt_xml = f"submodules/Digital-Crops/projects/syntheticdata_generation/build/output/exact_gt_renders/rad_dap{dap_str}_0000_plant_0000.xml"
     arr = PlantOrganArray.from_xml_file(gt_xml)
     part = arr.to_part_tensor()
 

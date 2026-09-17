@@ -10,7 +10,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 
-from diffusion_based.eval.eval_13d_xml_organ_masks import render_helios_full
+from plant_recon.eval.eval_13d_xml_organ_masks import render_helios_full
 
 def main():
     xml_dir = "archive/scratch/20260903_phase1_basics/xml_outputs"

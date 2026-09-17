@@ -5,11 +5,11 @@ Unit tests for Hierarchical Matryoshka Botanical Flow Matching System.
 import unittest
 import torch
 
-from diffusion_based.models.hierarchical_part_flow_matching import (
+from plant_recon.models.hierarchical_part_flow_matching import (
     HierarchicalPartFlowMatchingModel,
     compute_matryoshka_slice,
 )
-from diffusion_based.training.hierarchical_hungarian_matcher import (
+from plant_recon.training.hierarchical_hungarian_matcher import (
     HierarchicalBotanicalMatcher,
 )
 
@@ -131,8 +131,8 @@ class TestHierarchicalFlowMatching(unittest.TestCase):
         self.assertIn("phytomer_pos", sample_out)
 
     def test_forward_backward_step(self):
-        from diffusion_based.training.train_hierarchical_flow_matching import forward_backward_step
-        from diffusion_based.training.flow_matching import FlowMatchingScheduler
+        from plant_recon.training.train_hierarchical_flow_matching import forward_backward_step
+        from plant_recon.training.flow_matching import FlowMatchingScheduler
 
         scheduler = FlowMatchingScheduler()
         matcher = HierarchicalBotanicalMatcher(slots_per_phytomer=self.slots_per_phytomer)
