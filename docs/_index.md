@@ -13,6 +13,7 @@ Single RGB-D drone image → 3D plant organ parameter reconstruction via Hierarc
 
 ## 🚀 Start Here
 
+- [Developer Onboarding — Where to Start](handovers/developer-onboarding.md) — One page for the next agent
 - [Current System Status](handovers/current-status.md) — Live system state, active SLURM jobs, next steps
 - [Agent Takeover Guide](handovers/agent-takeover-guide/agent-takeover-guide.md) — Master handover & execution manual
 - [Stage 2/3 Boundary Redesign](handovers/20260912-stage2-stage3-boundary/20260912-stage2-stage3-boundary.md) — Primary engineering record since 2026-09-12
