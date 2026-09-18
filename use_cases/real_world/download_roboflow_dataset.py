@@ -1,7 +1,7 @@
 """Download the real cowpea field dataset from Roboflow (project t4_plant_weed_seg).
 
 Resolves the workspace from the API key, finds the project, and downloads the requested
-export format to real_world/data/roboflow_<project>/<version>/. Never prints or logs the
+export format to use_cases/real_world/data/roboflow_<project>/<version>/. Never prints or logs the
 API key. Run once, then inspect the result (data.yaml, class names, a few images) before
 writing anything downstream that assumes a particular format.
 """
@@ -12,7 +12,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(REPO_ROOT / "real_world" / ".env")
 
 
@@ -49,7 +49,7 @@ def main():
 
     api_key = os.environ.get("ROBOFLOW_API_KEY", "")
     if not api_key:
-        raise SystemExit("ROBOFLOW_API_KEY not set. Put it in real_world/.env (see .env.example).")
+        raise SystemExit("ROBOFLOW_API_KEY not set. Put it in use_cases/real_world/.env (see .env.example).")
 
     from roboflow import Roboflow
     rf = Roboflow(api_key=api_key)

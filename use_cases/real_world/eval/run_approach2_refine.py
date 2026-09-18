@@ -1,5 +1,5 @@
 """Approach 2 (DAP-conditioned test-time refinement): start from Approach 1's cold sample
-(real_world/eval/run_approach1_cold.py), then refine node positions/scales/phytomer latents
+(use_cases/real_world/eval/run_approach1_cold.py), then refine node positions/scales/phytomer latents
 for a few AdamW steps against the REAL crop's own pseudo-CHM depth + detector segmentation
 mask, using the differentiable HeliosPyTorchRenderer — the analysis-by-synthesis loop already
 proven on synthetic inputs in plant_recon/eval/eval_test_time_refinement.py, extended here
@@ -9,10 +9,10 @@ test-time refinement):
   - optimizer is AdamW (small weight_decay) instead of plain Adam, per the user's request; the
     loop's own reg_scale/reg_latent quadratic priors are kept (found necessary in the synthetic
     experiments: without them, leaves inflate into flat polygons to fill the silhouette).
-  - target is the real crop's own depth-anything pseudo-CHM (real_world/dataset/depth_anything_calib.py)
+  - target is the real crop's own depth-anything pseudo-CHM (use_cases/real_world/dataset/depth_anything_calib.py)
     at zooms 1/2/4/8, gated by --no_depth_loss (pseudo-depth has no ground-truth anchor — see
     the plan's open risks); the silhouette Dice target is the detector's own segmentation mask
-    (real_world/dataset/real_plant_crop_utils.py::build_mask_pyramid) when available, falling
+    (use_cases/real_world/dataset/real_plant_crop_utils.py::build_mask_pyramid) when available, falling
     back to depth-threshold silhouette like the synthetic script otherwise.
   - camera is always focus_plant=True at camera_height=1.5 (the rover's real height) — the
     synthetic script's --input_camera/gt_center concept (a cached GT-bbox-centred camera) has
@@ -44,16 +44,16 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
 
 from plant_recon.dataset.phytomer_roll import derive_forward, roll_to_matrix
 from plant_recon.dataset.phytomer_packets import matrix_to_rot6d
 from plant_recon.eval.eval_gt_substitution_ablation import plant_from_nodes
-from real_world.dataset.dap_from_timestamp import dap_from_filename
-from real_world.dataset.real_field_dataset import RealFieldPlantDataset
-from real_world.eval.run_approach1_cold import load_pipeline, sample_cold
-from real_world.eval.viz_utils import colorize_depth, colorize_mask
+from use_cases.real_world.dataset.dap_from_timestamp import dap_from_filename
+from use_cases.real_world.dataset.real_field_dataset import RealFieldPlantDataset
+from use_cases.real_world.eval.run_approach1_cold import load_pipeline, sample_cold
+from use_cases.real_world.eval.viz_utils import colorize_depth, colorize_mask
 
 _ZOOM_TO_CHANNEL = {1.0: 3, 2.0: 7, 4.0: 11, 8.0: 15}
 
@@ -162,7 +162,7 @@ def refine_one(model, pvae, renderer, item, pos0, rot, scale0, lat0, exist, par,
     if return_state:
         # the optimized state itself, for callers that need to re-decode it differently -- e.g. an
         # XML export, which needs the shoot structure plant_from_nodes flattens away
-        # (real_world/dataset/helios_cold_start.part_tensor_with_shoots)
+        # (use_cases/real_world/dataset/helios_cold_start.part_tensor_with_shoots)
         return parts1, moved, best[4], (pos.detach(), rot_c.detach(), scale.detach(), lat.detach(),
                                          exist.detach(), par_c.detach())
     return parts1, moved, best[4]
@@ -172,7 +172,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", default=str(REPO_ROOT / "outputs/checkpoints/hierarchical_fm_v10_cam/hierarchical_fm_epoch_085.pt"))
     ap.add_argument("--detector_weights", default=str(REPO_ROOT / "outputs/logs/20260915/real_plant_detector/weights/best.pt"))
-    ap.add_argument("--images", default=str(REPO_ROOT / "real_world/data/roboflow_t4_plant_weed_seg/1/test/images/*.jpg"))
+    ap.add_argument("--images", default=str(REPO_ROOT / "use_cases/real_world/data/roboflow_t4_plant_weed_seg/1/test/images/*.jpg"))
     ap.add_argument("--limit", type=int, default=10)
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--steps", type=int, default=80)
@@ -222,6 +222,11 @@ def main():
     ap.add_argument("--planted_date", default="", help="YYYY-MM-DD; see run_approach1_cold.py's --planted_date docstring "
                      "-- overrides Stage 1's self-predicted DAP clue with the timestamp-derived one for both the cold "
                      "sample and (implicitly, since refinement starts from it) this script.")
+    ap.add_argument("--plot_width_m", type=float, default=1.3,
+                    help="Frame width in metres across the margin-cropped image; sets the pixels-per-metre so each "
+                         "plant is cropped in a FIXED 1.2 m ground window, the convention generate_cache.py renders "
+                         "and the network was trained on. 0 restores the legacy window of 1.2x the detector box, "
+                         "which makes every real plant read several times too large (assessment 1.3).")
     ap.add_argument("--out", default=str(REPO_ROOT / "use_cases/real_world/eval/output/approach2_refine"))
     a = ap.parse_args()
 
@@ -230,7 +235,7 @@ def main():
     planted_date = datetime.date.fromisoformat(a.planted_date) if a.planted_date else None
 
     paths = sorted(glob.glob(a.images))
-    ds = RealFieldPlantDataset(paths, a.detector_weights, conf=a.conf)
+    ds = RealFieldPlantDataset(paths, a.detector_weights, conf=a.conf, plot_width_m=a.plot_width_m)
     os.makedirs(a.out, exist_ok=True)
     opt_set = set(a.opt.split(","))
     target_zooms = [float(z) for z in a.target_zooms.split(",")]

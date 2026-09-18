@@ -1,7 +1,7 @@
 """Download a real cowpea/bean field dataset from AgML (https://github.com/Project-AgML/AgML) and
-convert it to the same on-disk layout real_world/download_roboflow_dataset.py's Roboflow export used
+convert it to the same on-disk layout use_cases/real_world/download_roboflow_dataset.py's Roboflow export used
 (images/ + labels/ YOLO .txt + data.yaml, train/valid/test split), so every downstream script
-(real_world/detector/train_yolo_detector.py, real_plant_crop_utils.py, real_field_dataset.py) reads
+(use_cases/real_world/detector/train_yolo_detector.py, real_plant_crop_utils.py, real_field_dataset.py) reads
 either source unchanged.
 
 Default dataset: `gemini_plant_detection_2022` -- object-detection (COCO bounding boxes, no
@@ -37,7 +37,7 @@ import random
 import shutil
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def convert_coco_to_yolo(agml_dir: Path, out_dir: Path, val_frac: float, test_frac: float, seed: int) -> None:

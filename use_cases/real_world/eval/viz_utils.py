@@ -30,7 +30,7 @@ MASK_BG_COLOR = (245, 245, 240)
 
 def colorize_mask(mask: np.ndarray, fg=MASK_FG_COLOR, bg=MASK_BG_COLOR) -> np.ndarray:
     """mask: (H, W) float/bool in [0, 1] — the detector segmentation mask used as the Dice-loss
-    foreground target (real_world/dataset/real_plant_crop_utils.py::build_mask_pyramid).
+    foreground target (use_cases/real_world/dataset/real_plant_crop_utils.py::build_mask_pyramid).
     Returns (H, W, 3) uint8, foreground tinted green on a light background."""
     m = np.clip(np.nan_to_num(np.asarray(mask, dtype=np.float32), nan=0.0), 0.0, 1.0)[..., None]
     fg_a = np.asarray(fg, dtype=np.float32)

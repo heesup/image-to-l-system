@@ -3,7 +3,7 @@ the inference-only path: one item per DETECTED plant crop, not per XML file, and
 (no `nodes`/`existence_mask` ground truth exists for a real photo). Does not subclass
 PartArrayDataset — none of its XML/cache machinery applies here.
 
-Returns the subset of keys real_world/eval/run_approach1_cold.py and run_approach2_refine.py
+Returns the subset of keys use_cases/real_world/eval/run_approach1_cold.py and run_approach2_refine.py
 actually read at inference: "image" (16,128,128, matching generate_cache.py's convention),
 "dap" (a placeholder — Stage 1 self-predicts DAP from the image, this key is never read as
 model input), "prefix", "jpeg" (bookkeeping for saved outputs).
@@ -16,8 +16,8 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
-from real_world.dataset.depth_anything_calib import pseudo_chm_for_crop
-from real_world.dataset.real_plant_crop_utils import (DEFAULT_ROVER_MARGINS, PlantDetection,
+from use_cases.real_world.dataset.depth_anything_calib import pseudo_chm_for_crop
+from use_cases.real_world.dataset.real_plant_crop_utils import (DEFAULT_PLOT_WIDTH_M, DEFAULT_ROVER_MARGINS, PlantDetection,
                                                         build_mask_pyramid, build_pyramid_16ch,
                                                         crop_rover_margins, detect_plants)
 
@@ -26,7 +26,7 @@ class RealFieldPlantDataset(Dataset):
     def __init__(self, image_paths: List[str], detector_weights: str,
                  margins: Tuple[float, float, float, float] = DEFAULT_ROVER_MARGINS,
                  conf: float = 0.25, camera_height_m: float = 1.5, image_size: int = 128,
-                 depth_downsample: int = 3):
+                 depth_downsample: int = 3, plot_width_m: float = DEFAULT_PLOT_WIDTH_M):
         """
         image_paths: source field images (pre rover-margin-crop).
         depth_downsample: Depth-Anything runs on a `1/depth_downsample`-scaled copy of the
@@ -40,6 +40,8 @@ class RealFieldPlantDataset(Dataset):
         self.camera_height_m = camera_height_m
         self.image_size = image_size
         self.depth_downsample = depth_downsample
+        # >0: crop a fixed 1.2 m ground window like the training cache; 0: the legacy box-relative window
+        self.plot_width_m = float(plot_width_m)
         self.items: List[Tuple[str, Image.Image, PlantDetection]] = []
         for p in image_paths:
             img = Image.open(p).convert("RGB")
@@ -62,8 +64,9 @@ class RealFieldPlantDataset(Dataset):
         chm_t = torch.from_numpy(chm_small).float()[None, None]
         chm_full = torch.nn.functional.interpolate(chm_t, size=cropped.size[::-1], mode="bilinear",
                                                      align_corners=False)[0, 0].numpy()
-        image = build_pyramid_16ch(cropped, det, chm_full, image_size=self.image_size)
-        mask_pyr = build_mask_pyramid(det, image_size=self.image_size)  # (4, S, S) or None
+        image = build_pyramid_16ch(cropped, det, chm_full, image_size=self.image_size,
+                                    plot_width_m=self.plot_width_m)
+        mask_pyr = build_mask_pyramid(det, image_size=self.image_size, plot_width_m=self.plot_width_m)
         prefix = f"{Path(path).stem}_plant{i}"
         return {
             "image": image,

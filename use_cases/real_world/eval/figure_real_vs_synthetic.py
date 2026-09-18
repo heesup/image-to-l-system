@@ -8,7 +8,7 @@ target run_approach2_refine.py optimizes against (see docs/experiments/20260915-
 failure diagnosed there). No IoU column — there is no ground truth for a real photo; the DAP
 shown is Stage 1's own self-predicted estimate, flagged as such since the DAP head was trained
 only on Helios-simulated appearances. All depth panels share one fixed color scale
-(real_world/eval/viz_utils.DEPTH_VMAX_M) so a degenerate flat/inflated prediction is visually
+(use_cases/real_world/eval/viz_utils.DEPTH_VMAX_M) so a degenerate flat/inflated prediction is visually
 obvious as a near-uniform patch, not auto-scaled away.
 
 Reads the outputs of run_approach1_cold.py and/or run_approach2_refine.py (matched by the
@@ -29,8 +29,8 @@ import matplotlib.colors
 import matplotlib.pyplot as plt
 from PIL import Image
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from real_world.eval.viz_utils import DEPTH_CMAP, DEPTH_VMAX_M
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from use_cases.real_world.eval.viz_utils import DEPTH_CMAP, DEPTH_VMAX_M
 
 
 def _load(path):

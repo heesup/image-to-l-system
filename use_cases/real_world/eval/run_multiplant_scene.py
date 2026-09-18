@@ -6,15 +6,15 @@ outputs/logs/20260916/agml_plant_detector/train_batch*.jpg), and the useful prod
 whole plot, so this script runs the full loop end to end:
 
   real frame
-    -> YOLO detection (real_world/dataset/real_plant_crop_utils.detect_plants): N plant boxes
+    -> YOLO detection (use_cases/real_world/dataset/real_plant_crop_utils.detect_plants): N plant boxes
     -> pixel centres mapped to plot metres, written as a Helios params.json `plants` list
     -> Helios grows one plant per detection at the estimated DAP (the same binary and config that
        produced this project's synthetic training set) -> one structure XML per plant
     -> each XML becomes the (pos, rot, scale, latent, exist, parent) state our model optimizes
-       (real_world/dataset/helios_cold_start.py), OR the trained network's own image-conditioned
+       (use_cases/real_world/dataset/helios_cold_start.py), OR the trained network's own image-conditioned
        sample is used instead (--init network), so the two cold starts are directly comparable
     -> differentiable-renderer refinement against that plant's own real crop
-       (real_world/eval/run_approach2_refine.refine_one)
+       (use_cases/real_world/eval/run_approach2_refine.refine_one)
     -> refined 14D part tensor exported back to XML (assemble_part_tensor_to_xml)
     -> params.json rewritten with those XML paths, which Helios loads verbatim
        (readPlantStructureXML, main.cpp) and renders as one plot for comparison with the frame.
@@ -24,7 +24,7 @@ established by the Image2PlantArchitecture VLM work (Yun et al. 2026), where a V
 config from an image; here object detection supplies the plant count and positions instead.
 
 Pixel -> metre caveat: the rover camera has no intrinsic calibration in this project (the one known
-quantity is its 1.5 m height, see real_world/dataset/depth_anything_calib.py), so the frame's real
+quantity is its 1.5 m height, see use_cases/real_world/dataset/depth_anything_calib.py), so the frame's real
 width is an ASSUMPTION exposed as --plot_width_m. Its default (1.3 m) is the Davis cowpea plot width
 used by the VLM pipeline for the same field; it sets the scene's absolute scale and nothing else.
 """
@@ -35,6 +35,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 import sys
 from pathlib import Path
 
@@ -42,19 +43,19 @@ import numpy as np
 import torch
 from PIL import Image
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
 
 from plant_recon.models.part_tensor_to_40d import assemble_part_tensor_to_xml
 from plant_recon.dataset.phytomer_packets import part_tensor_with_shoots
 from plant_recon.dataset.phytomer_topology import chain_phytomers
-from real_world.dataset.helios_cold_start import BUILD_DIR, MAIN_BIN, helios_state_from_xml
-from real_world.dataset.dap_from_timestamp import dap_from_filename
-from real_world.dataset.real_plant_crop_utils import (
+from use_cases.real_world.dataset.helios_cold_start import BUILD_DIR, MAIN_BIN, helios_state_from_xml
+from use_cases.real_world.dataset.dap_from_timestamp import dap_from_filename
+from use_cases.real_world.dataset.real_plant_crop_utils import (
     DEFAULT_ROVER_MARGINS, build_mask_pyramid, build_pyramid_16ch, crop_rover_margins, detect_plants)
-from real_world.dataset.depth_anything_calib import pseudo_chm_for_crop
-from real_world.eval.run_approach1_cold import load_pipeline, sample_cold
-from real_world.eval.run_approach2_refine import refine_one
+from use_cases.real_world.dataset.depth_anything_calib import pseudo_chm_for_crop
+from use_cases.real_world.eval.run_approach1_cold import load_pipeline, sample_cold
+from use_cases.real_world.eval.run_approach2_refine import refine_one
 
 PARAMS_TEMPLATE = REPO_ROOT / "submodules/Digital-Crops" / "projects" / "syntheticdata_generation" / "configs" / "params_cowpea.json"
 
@@ -177,10 +178,13 @@ def main():
                                 camera_height=a.camera_height)
     # horizontal FOV that makes a nadir camera at this height see exactly the plot width
     fov_deg = 2.0 * float(np.degrees(np.arctan((a.plot_width_m / 2.0) / a.camera_height)))
+    _t = {}
+    _t0 = time.time()
     print(f"growing {len(dets)} Helios plants at DAP {dap} (~20 s each), scene FOV {fov_deg:.1f} deg ...", flush=True)
     cold_xmls, cold_render = run_helios(cold_params, out / "helios_cold", "scene_cold", dap, a.scene_renderer,
                                          fov_deg=fov_deg, camera_height=a.camera_height)
-    print(f"  -> {len(cold_xmls)} plant XMLs, scene render: {cold_render}")
+    _t["helios_growth_and_cold_render"] = time.time() - _t0; _t0 = time.time()
+    print(f"  -> {len(cold_xmls)} plant XMLs, scene render: {cold_render}  [{_t['helios_growth_and_cold_render']:.0f} s]")
 
     # 2) per-plant: cold state -> refinement against that plant's own crop -> refined XML
     lrs = {"pos": 3e-3, "scale": 2e-2, "latent": 2e-2, "roll": 2e-2, "weight_decay": 1e-4}
@@ -189,6 +193,8 @@ def main():
     rows, refined_xml_by_mode = [], {}
     for mode in modes:
         refined_xmls = []
+        scene_parts = []
+        prior_parts = []
         for i, d in enumerate(dets):
             item = {"image": build_pyramid_16ch(img, d, depth), "mask_pyramid": build_mask_pyramid(d)}
             images = item["image"].unsqueeze(0).to(dev)
@@ -239,10 +245,46 @@ def main():
             assemble_part_tensor_to_xml(parts_world, plant_id=i, xml_filepath=str(xml_out),
                                           stem_ik=False, leaf_ik=False)
             refined_xmls.append(xml_out)
+            # Keep the optimised 14D tensor itself, already placed in plot coordinates. Rendering THIS is
+            # what the optimiser actually produced; everything downstream (XML export, Helios forward
+            # kinematics) is a second conversion that can and does lose information -- the per-plant plot
+            # offset among it (2026-09-17: only 1 of 3 plants kept its base_position through the export).
+            scene_parts.append(parts_world.clone())
+            prior_world = parts0.detach().cpu().clone()
+            prior_world[:, 1] += float(plants_xy[i][0]); prior_world[:, 2] += float(plants_xy[i][1])
+            prior_parts.append(prior_world)
             print(f"  [{mode} {i}] organs {parts0.shape[0]} -> {parts1.shape[0]}, moved {moved:.1f} cm, data_loss {dl:.3f}", flush=True)
             rows.append({"mode": mode, "plant": i, "organs_cold": int(parts0.shape[0]),
                           "organs_refined": int(parts1.shape[0]), "moved_cm": float(moved), "data_loss": float(dl)})
         refined_xml_by_mode[mode] = refined_xmls
+        _t[f"refine_{mode}"] = time.time() - _t0; _t0 = time.time()
+        print(f"  [{mode}] refinement of {len(refined_xmls)} plants took {_t[f'refine_{mode}']:.0f} s", flush=True)
+        for tag, plist in (("prior", prior_parts), ("opt", scene_parts)):
+            if not plist:
+                continue
+            _a = torch.cat(plist, 0).to(dev)
+            _m = renderer.geo_builder.build_mesh_from_part_tensor(_a, device=dev)
+            with torch.no_grad():
+                _r = renderer.forward(_m, azimuth_deg=0.0, elevation_deg=90.0, camera_height=a.camera_height,
+                                      background="ground", focus_plant=False, include_depth=True, image_size=640,
+                                      zoom_factor=1.0, reference_window_size=a.plot_width_m,
+                                      center_override=torch.zeros(3, device=dev))
+            Image.fromarray((_r[:3].permute(1, 2, 0).clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
+                            ).save(out / f"pytorch_{tag}_{mode}.png")
+            torch.save(_a.cpu(), out / f"scene_parts_{tag}_{mode}.pt")
+        if False:
+            allp = torch.cat(scene_parts, 0).to(dev)
+            mesh_s = renderer.geo_builder.build_mesh_from_part_tensor(allp, device=dev)
+            with torch.no_grad():
+                rgbd_s = renderer.forward(mesh_s, azimuth_deg=0.0, elevation_deg=90.0,
+                                          camera_height=a.camera_height, background="ground",
+                                          focus_plant=False, include_depth=True, image_size=640,
+                                          zoom_factor=1.0, reference_window_size=a.plot_width_m,
+                                          center_override=torch.zeros(3, device=dev))
+            Image.fromarray((rgbd_s[:3].permute(1, 2, 0).clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
+                            ).save(out / f"pytorch_scene_{mode}.png")
+            torch.save(allp.cpu(), out / f"scene_parts_{mode}.pt")
+            print(f"  [{mode}] optimiser's own render -> {out / f'pytorch_scene_{mode}.png'}", flush=True)
 
     # 3) rebuild the plot from the refined plants and render it as one scene
     scene_renders = {"cold": str(cold_render) if cold_render else ""}
@@ -255,12 +297,18 @@ def main():
             _, render = run_helios(p, out / f"helios_refined_{mode}", f"scene_{mode}", dap, a.scene_renderer,
                                     fov_deg=fov_deg, camera_height=a.camera_height)
             scene_renders[mode] = str(render) if render else ""
-            print(f"refined scene ({mode}): {render}")
+            _t[f"helios_scene_{mode}"] = time.time() - _t0; _t0 = time.time()
+            print(f"refined scene ({mode}): {render}  [{_t[f'helios_scene_{mode}']:.0f} s]")
         except RuntimeError as e:
             print(f"refined scene ({mode}) failed: {str(e)[:300]}")
 
     img.save(out / "real_frame.png")
     json.dump({"image": a.image, "dap": dap, "num_detected": len(dets), "plot_width_m": a.plot_width_m,
+                "camera_height_m": a.camera_height,
+                "pytorch_scenes": {f"{t}_{m}": str(out / f"pytorch_{t}_{m}.png")
+                                    for m in refined_xml_by_mode for t in ("prior", "opt")
+                                    if (out / f"pytorch_{t}_{m}.png").exists()},
+                "stage_seconds": {k: round(v, 1) for k, v in _t.items()},
                 "plot_height_m": plot_h, "plants_xy": plants_xy, "scene_renders": scene_renders, "rows": rows},
                open(out / "results.json", "w"), indent=1)
     print(f"Done -> {out}")

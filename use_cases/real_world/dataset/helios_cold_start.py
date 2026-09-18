@@ -1,7 +1,7 @@
 """Helios-procedural cold start: build a "typical plant of this age" from a DAP estimate ALONE
 (no image conditioning at all) and hand it to the same refinement loop Approach 2 already runs.
 
-Why this exists. Approach 1 (real_world/eval/run_approach1_cold.py) starts refinement from the
+Why this exists. Approach 1 (use_cases/real_world/eval/run_approach1_cold.py) starts refinement from the
 trained network's own image-conditioned sample. On real crops that sample is often very sparse
 (measured 2026-09-16 on 20 AgML crops: 14 of 20 plants came back with a single live phytomer),
 which leaves the differentiable renderer optimizing from a starting point that barely resembles a
@@ -23,7 +23,7 @@ from typing import Optional, Tuple
 
 import torch
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 _HELIOS_ROOT = REPO_ROOT / "submodules/Digital-Crops" / "projects" / "syntheticdata_generation"
 BUILD_DIR = _HELIOS_ROOT / "build"
 MAIN_BIN = BUILD_DIR / "main"

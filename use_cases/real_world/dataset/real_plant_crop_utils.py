@@ -3,7 +3,7 @@ detect individual cowpea plants, and build a 16-channel (RGB+pseudo-CHM, 4-zoom 
 matching plant_recon/dataset/generate_cache.py's exact convention so the trained model can
 consume a real crop the same way it consumes a synthetic cache sample.
 
-Rover-margin defaults come from visually inspecting real_world/data/roboflow_t4_plant_weed_seg
+Rover-margin defaults come from visually inspecting use_cases/real_world/data/roboflow_t4_plant_weed_seg
 samples (2026-09-15): the images are nadir shots from inside a tunnel-cart rig (GEMINI "MAGIC"
 imaging cart) with metal rails + LED light bars occupying the left/right edges. Roboflow's own
 plant/weed polygon annotations stay within roughly x in [0.11, 0.92] of the frame (1st-99th
@@ -21,7 +21,9 @@ from PIL import Image
 DEFAULT_ROVER_MARGINS = (0.11, 0.14, 0.0, 0.0)
 
 PYRAMID_ZOOMS = (1.0, 2.0, 4.0, 8.0)
-REFERENCE_WINDOW_SIZE = 1.2  # matches generate_cache.py's zoom-1x window == 1.2x the plant's own extent
+REFERENCE_WINDOW_SIZE = 1.2  # legacy box-relative window (see base_window_px)
+CACHE_WINDOW_M = 1.2         # generate_cache.py renders a FIXED 1.2 m ground window at zoom 1x
+DEFAULT_PLOT_WIDTH_M = 1.3   # Davis plot width across the margin-cropped frame (run_multiplant_scene.py)
 
 
 def crop_rover_margins(img: Image.Image, margins: Tuple[float, float, float, float] = DEFAULT_ROVER_MARGINS) -> Image.Image:
@@ -41,11 +43,11 @@ class PlantDetection:
 
 
 def detect_plants(img: Image.Image, weights_path: str, conf: float = 0.25, plant_class_id: int = 0) -> List[PlantDetection]:
-    """Runs the fine-tuned YOLO11n-seg detector (real_world/detector/train_yolo_detector.py
+    """Runs the fine-tuned YOLO11n-seg detector (use_cases/real_world/detector/train_yolo_detector.py
     output) and keeps only the 'plant' class (id 0 in data.yaml: [plant, weed]) — weeds are
     detected too but excluded from the crops fed to the reconstruction pipeline. Also carries
     each detection's segmentation mask (the model is trained as -seg): Approach 2
-    (real_world/eval/run_approach2_refine.py) uses it as a cleaner silhouette target than
+    (use_cases/real_world/eval/run_approach2_refine.py) uses it as a cleaner silhouette target than
     thresholding the noisy pseudo-depth channel."""
     from ultralytics import YOLO
     model = YOLO(weights_path)
@@ -100,18 +102,44 @@ def _crop_square_resize(arr: np.ndarray, center: Tuple[float, float], window_px:
     return t.squeeze(0).permute(1, 2, 0).numpy()  # (out_size, out_size, C)
 
 
+def base_window_px(det: "PlantDetection", img_w: int, plot_width_m: float = 0.0,
+                    window_m: float = CACHE_WINDOW_M,
+                    reference_window_size: float = REFERENCE_WINDOW_SIZE) -> float:
+    """Width in pixels of the zoom-1x crop window.
+
+    Two conventions, and only one of them matches training:
+
+    * `plot_width_m > 0` (**the default, correct one**): a FIXED ground window of `window_m` metres,
+      exactly what `generate_cache.py` renders (`reference_window_size=1.2` at `camera_height=5.0`).
+      The frame's pixels-per-metre comes from its margin-cropped width over `plot_width_m`.
+    * `plot_width_m == 0` (legacy): `reference_window_size` times the detector's own box. This is what
+      the real-image pipeline used until 2026-09-17, and it is a mismatch: every real plant then fills
+      ~80% of the zoom-1x frame while a synthetic plant of the same true size fills a fraction of it, so
+      the network -- whose Stage 1 head reads plant size out of a fixed window -- sees every real plant
+      as far larger than it is. That is the most likely mechanism behind the "predicted DAP uncorrelated
+      with the true DAP, and higher in 7 of 8 cases" finding of 2026-09-15.
+    """
+    if plot_width_m > 0:
+        return window_m * (img_w / plot_width_m)
+    x1, y1, x2, y2 = det.bbox
+    return max(x2 - x1, y2 - y1) * reference_window_size
+
+
 def build_pyramid_16ch(img_rgb: Image.Image, det: PlantDetection, depth_m: np.ndarray,
                         image_size: int = 128, zooms: Tuple[float, ...] = PYRAMID_ZOOMS,
-                        reference_window_size: float = REFERENCE_WINDOW_SIZE) -> torch.Tensor:
+                        reference_window_size: float = REFERENCE_WINDOW_SIZE,
+                        plot_width_m: float = DEFAULT_PLOT_WIDTH_M,
+                        window_m: float = CACHE_WINDOW_M) -> torch.Tensor:
     """Builds a (4*len(zooms), image_size, image_size) tensor: per zoom level, RGB normalized to
     [-1,1] (matching generate_cache.py: clamp[0,1] then (x-0.5)/0.5) concatenated with the
     pseudo-CHM depth channel (clamp(min=0), meters). `depth_m` must already be aligned to
     `img_rgb` (same crop, same resolution) — see depth_anything_calib.pseudo_chm_for_crop.
+
+    The crop window follows base_window_px: a fixed `window_m` ground window by default (the training
+    convention), or the legacy box-relative one with `plot_width_m=0`.
     """
     rgb = np.asarray(img_rgb.convert("RGB"), dtype=np.float32) / 255.0
-    x1, y1, x2, y2 = det.bbox
-    bbox_size = max(x2 - x1, y2 - y1)
-    base_window = bbox_size * reference_window_size
+    base_window = base_window_px(det, img_rgb.width, plot_width_m, window_m, reference_window_size)
     channel_imgs = []
     for z in zooms:
         window = base_window / z
@@ -125,15 +153,16 @@ def build_pyramid_16ch(img_rgb: Image.Image, det: PlantDetection, depth_m: np.nd
 
 
 def build_mask_pyramid(det: PlantDetection, image_size: int = 128, zooms: Tuple[float, ...] = PYRAMID_ZOOMS,
-                        reference_window_size: float = REFERENCE_WINDOW_SIZE) -> Optional[torch.Tensor]:
+                        reference_window_size: float = REFERENCE_WINDOW_SIZE,
+                        plot_width_m: float = DEFAULT_PLOT_WIDTH_M,
+                        window_m: float = CACHE_WINDOW_M) -> Optional[torch.Tensor]:
     """Same per-zoom crop/resize as build_pyramid_16ch, applied to the detector's own
     segmentation mask instead of RGB/depth — a cleaner real silhouette target for Approach 2's
     Dice loss than thresholding the pseudo-depth channel. Returns None if `det.mask` is absent
     (a plain-box, non-seg detector) — callers fall back to depth-threshold silhouette."""
     if det.mask is None:
         return None
-    x1, y1, x2, y2 = det.bbox
-    base_window = max(x2 - x1, y2 - y1) * reference_window_size
+    base_window = base_window_px(det, det.mask.shape[1], plot_width_m, window_m, reference_window_size)
     mask_f = det.mask.astype(np.float32)
     out = []
     for z in zooms:

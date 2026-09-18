@@ -3,7 +3,7 @@ with NO optimization — a direct test of how well the pipeline generalizes to r
 Mirrors the checkpoint-loading and initial-sampling code in
 plant_recon/eval/eval_test_time_refinement.py (lines 62-110) exactly, minus everything
 GT/scoring-related (there is no ground truth for a real photo) and minus the optimization loop
-(that is Approach 2, real_world/eval/run_approach2_refine.py, which continues from here).
+(that is Approach 2, use_cases/real_world/eval/run_approach2_refine.py, which continues from here).
 """
 import argparse
 import datetime
@@ -17,7 +17,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
 
 from plant_recon.eval.eval_gt_substitution_ablation import plant_from_nodes
@@ -27,14 +27,15 @@ from plant_recon.models.organ_latent_vae import OrganLatentVAE
 from plant_recon.models.phytomer_vae import PhytomerVAE
 from plant_recon.models.plant_organ_array import NUM_ORGAN_TYPES
 from plant_recon.dataset.phytomer_topology import chain_phytomers
-from real_world.dataset.dap_from_timestamp import dap_from_filename
-from real_world.dataset.real_field_dataset import RealFieldPlantDataset
-from real_world.eval.viz_utils import colorize_depth, colorize_mask
+from use_cases.real_world.dataset.dap_from_timestamp import dap_from_filename
+from use_cases.real_world.dataset.real_field_dataset import RealFieldPlantDataset
+from use_cases.real_world.eval.viz_utils import colorize_depth, colorize_mask
+from plant_recon.eval.ckpt_compat import fix_ckpt_args
 
 
 def load_pipeline(checkpoint: str, device: torch.device):
     ck = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    args = ck["args"] if isinstance(ck["args"], dict) else vars(ck["args"])
+    args = fix_ckpt_args(ck["args"] if isinstance(ck["args"], dict) else vars(ck["args"]))
     model = HierarchicalPartFlowMatchingModel(
         max_phytomers=args["max_phytomers"], slots_per_phytomer=args["slots_per_phytomer"], node_dim=args["node_dim"],
         num_classes=NUM_ORGAN_TYPES, image_size=128, patch_size=8, embed_dim=args["embed_dim"], vit_layers=args["vit_layers"],
@@ -42,7 +43,7 @@ def load_pipeline(checkpoint: str, device: torch.device):
         flow_granularity=args["flow_granularity"], phytomer_latent_dim=args["phytomer_latent_dim"], backbone=args["backbone"],
         freeze_backbone=True, init_phytomer_count=args.get("init_phytomer_count", 50.0),
         stage3_geometry=bool(args.get("stage3_geometry", False)), multizoom=bool(args.get("multizoom", False)),
-        node_token_window=int(args.get("node_token_window", 1))).to(device)
+        node_token_window=int(args.get("node_token_window", 1)), stage3_regression=bool(args.get("stage3_regression", False))).to(device)
     model.load_state_dict(ck["model_state_dict"], strict=False); model.eval()
     M = args["slots_per_phytomer"]
     pvae = PhytomerVAE(latent_dim=args["phytomer_latent_dim"], residual_dim=args.get("phytomer_residual_dim", 8), hidden_dim=256).to(device).eval()
@@ -73,7 +74,7 @@ def sample_cold(model, pvae, ovae, images: torch.Tensor, device: torch.device, M
     max(k_pred, k_dap) — the capacity floor also applies, but active_k can only WIDEN, never
     shrink, below Stage 1's self-prediction). 2026-09-15 finding: on this real dataset Stage 1's
     self-predicted DAP is essentially uncorrelated with the true calendar DAP (computed from the
-    filename timestamp + a known planting date, real_world/dataset/dap_from_timestamp.py) and is
+    filename timestamp + a known planting date, use_cases/real_world/dataset/dap_from_timestamp.py) and is
     higher in 7/8 tested cases — so capacity never needs widening here, but the conditioning
     clue itself is very likely wrong regardless, which this argument corrects independently."""
     with torch.no_grad():
@@ -100,16 +101,21 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", default=str(REPO_ROOT / "outputs/checkpoints/hierarchical_fm_v10_cam/hierarchical_fm_epoch_085.pt"))
     ap.add_argument("--detector_weights", default=str(REPO_ROOT / "outputs/logs/20260915/real_plant_detector/weights/best.pt"))
-    ap.add_argument("--images", default=str(REPO_ROOT / "real_world/data/roboflow_t4_plant_weed_seg/1/test/images/*.jpg"))
+    ap.add_argument("--images", default=str(REPO_ROOT / "use_cases/real_world/data/roboflow_t4_plant_weed_seg/1/test/images/*.jpg"))
     ap.add_argument("--limit", type=int, default=10, help="max detected plants to process")
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--planted_date", default="", help="YYYY-MM-DD; if given, overrides Stage 1's self-predicted "
-                     "DAP with one computed from each image's filename timestamp (real_world/dataset/dap_from_timestamp.py). "
+                     "DAP with one computed from each image's filename timestamp (use_cases/real_world/dataset/dap_from_timestamp.py). "
                      "2026-09-15 finding: on this dataset Stage 1's self-predicted DAP is essentially uncorrelated with "
                      "the true calendar DAP and higher in 7/8 tested cases, so this rarely changes organ COUNT (capacity "
                      "can only widen, never shrink, below Stage 1's self-prediction) -- it corrects the DAP conditioning "
                      "clue itself, which is a real but separate effect from capacity; kept available since it's the "
                      "correct age signal even when it doesn't change the output much.")
+    ap.add_argument("--plot_width_m", type=float, default=1.3,
+                    help="Frame width in metres across the margin-cropped image; sets the pixels-per-metre so each "
+                         "plant is cropped in a FIXED 1.2 m ground window, the convention generate_cache.py renders "
+                         "and the network was trained on. 0 restores the legacy window of 1.2x the detector box, "
+                         "which makes every real plant read several times too large (assessment 1.3).")
     ap.add_argument("--out", default=str(REPO_ROOT / "use_cases/real_world/eval/output/approach1_cold"))
     a = ap.parse_args()
 
@@ -120,7 +126,7 @@ def main():
     paths = sorted(glob.glob(a.images))
     if not paths:
         raise SystemExit(f"No images matched {a.images}")
-    ds = RealFieldPlantDataset(paths, a.detector_weights, conf=a.conf)
+    ds = RealFieldPlantDataset(paths, a.detector_weights, conf=a.conf, plot_width_m=a.plot_width_m)
     os.makedirs(a.out, exist_ok=True)
 
     n = min(a.limit, len(ds))

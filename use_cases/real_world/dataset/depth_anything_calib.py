@@ -6,7 +6,7 @@ channel: 0 at the ground, increasing with canopy height, in METERS, consistent w
 synthetic Helios camera convention (ground=0, canopy up to ~0.5 m). Real images have no depth
 sensor, so this module estimates it monocularly and converts it to that convention using the
 one confirmed real-camera parameter: the rover's nadir camera sits 1.5 m above the ground
-(real_world/eval/run_approach2_refine.py and friends pass this as camera_height_m).
+(use_cases/real_world/eval/run_approach2_refine.py and friends pass this as camera_height_m).
 
 Calibration has no automatic ground-truth anchor in a real photo (see the plan's open risks) —
 this is a documented heuristic, not a trusted metric signal. Treat its output as a soft prior;
