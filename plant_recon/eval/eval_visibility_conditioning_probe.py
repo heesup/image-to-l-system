@@ -96,6 +96,8 @@ def main():
     ap.add_argument("--backbone", default="dinov2_vits14@224")
     ap.add_argument("--max_nodes_per_plant", type=int, default=150)
     ap.add_argument("--min_visible_px", type=int, default=1, help="an organ counts as visible at or above this")
+    ap.add_argument("--depth_patch", type=int, default=5, help="side of the local CHM patch appended as a depth feature")
+    ap.add_argument("--depth_window_cm", type=float, default=12.0, help="ground size that patch covers")
     ap.add_argument("--out", default="outputs/logs/20260918/visibility_probe.json")
     a = ap.parse_args()
 
@@ -117,7 +119,7 @@ def main():
     g = torch.Generator().manual_seed(0)
     picks = torch.randperm(len(ds), generator=g)[: a.n_plants].tolist()
 
-    FEAT, LAT, POS, VIS, PID, DAP = [], [], [], [], [], []
+    FEAT, DFEAT, LAT, POS, VIS, PID, DAP = [], [], [], [], [], [], []
     for pi, idx in enumerate(picks):
         it = ds[idx]
         nodes = it["nodes"].to(dev)
@@ -162,13 +164,46 @@ def main():
         with torch.no_grad():
             feat = token_features(backbone, kind, rgb, uvn, px, dev)
 
+        # Local CHM patch at each node. The encoder currently DROPS depth -- DINORayEncoder.forward
+        # takes x[:, 4*l : 4*l+3] per pyramid level, i.e. the RGB of each level and never channel 3 --
+        # even though the design documents specify an RGB-D input throughout. This asks what that
+        # discarded channel would have been worth, without training anything: if the shape latent is
+        # recoverable from depth where it is not from RGB tokens, restoring the design's RGB-D input is
+        # the fix; if not, depth is not the missing information either.
+        d = rgbd[3:4].unsqueeze(0)
+        win = max(2, int(round(a.depth_window_cm / 100.0 / CACHE_WINDOW_M * a.render_px)))
+        k = a.depth_patch
+        offs = torch.linspace(-win / 2, win / 2, k, device=dev) / a.render_px * 2.0
+        gy, gx = torch.meshgrid(offs, offs, indexing="ij")
+        grid = (uvn.to(dev).view(-1, 1, 1, 2)
+                + torch.stack([gx, gy], -1).unsqueeze(0))            # (N, k, k, 2)
+        with torch.no_grad():
+            dpatch = F.grid_sample(d.expand(grid.shape[0], -1, -1, -1), grid,
+                                   mode="bilinear", align_corners=False)   # (N, 1, k, k)
+        draw = dpatch.reshape(grid.shape[0], -1).cpu()
+        # Two normalisations, because the choice is not neutral. PER-NODE standardisation is what the
+        # project's "always normalise depth before comparing" rule implies, but it subtracts each node's
+        # own height -- which is precisely the signal a canopy height map carries. PER-PLANT keeps a
+        # node's height relative to its own plant while staying invariant to the rig's absolute bias.
+        dfeat_node = (draw - draw.mean(1, keepdim=True)) / draw.std(1, keepdim=True).clamp(min=1e-6)
+        lo, hi = draw.min(), draw.max()
+        dfeat_plant = (draw - lo) / (hi - lo).clamp(min=1e-6)
+        dfeat = torch.cat([dfeat_node, dfeat_plant], 1)
+
         keep = torch.arange(n)[: a.max_nodes_per_plant]
-        FEAT.append(feat[keep]); LAT.append(lat[keep].float().cpu()); POS.append(base[keep].float().cpu())
+        FEAT.append(feat[keep]); DFEAT.append(dfeat[keep])
+        LAT.append(lat[keep].float().cpu()); POS.append(base[keep].float().cpu())
         VIS.append(vis[keep]); PID.append(torch.full((len(keep),), pi)); DAP.append(int(it["dap"].item()))
         if (pi + 1) % 20 == 0:
             print(f"  {pi+1}/{len(picks)} plants", flush=True)
 
-    X = torch.cat(FEAT); Y_lat = torch.cat(LAT); Y_pos = torch.cat(POS)
+    X = torch.cat(FEAT); XD = torch.cat(DFEAT); Y_lat = torch.cat(LAT); Y_pos = torch.cat(POS)
+    k2 = XD.shape[1] // 2
+    XD_node, XD_plant = XD[:, :k2], XD[:, k2:]
+    COND = {"rgb token": X,
+            "depth node-norm": XD_node,
+            "depth plant-norm": XD_plant,
+            "rgb+depth plant": torch.cat([X, XD_plant], 1)}
     V = torch.cat(VIS); P = torch.cat(PID)
     visible = V >= a.min_visible_px
     print(f"\n{len(X)} organs from {int(P.max())+1} plants | visible {int(visible.sum())} "
@@ -180,18 +215,20 @@ def main():
     te = torch.tensor([int(p) in te_plants for p in P])
 
     res = {}
-    print(f"\n{'target':<10}{'subset':<12}{'n train':>9}{'n test':>8}{'held-out R^2':>15}{'retrieval top1':>16}{'chance':>9}")
+    print(f"\n{'target':<10}{'conditioning':<13}{'subset':<11}{'n tr':>8}{'n te':>8}{'held-out R^2':>14}{'retrieval':>15}{'chance':>9}")
     for tname, Y in (("latent", Y_lat), ("position", Y_pos)):
-        for sname, sel in (("all", torch.ones_like(visible)), ("visible", visible), ("occluded", ~visible)):
-            tr = (~te) & sel
-            ts = te & sel
-            if int(tr.sum()) < 50 or int(ts.sum()) < 20:
-                continue
-            r2, _ = ridge_r2(X[tr], Y[tr], X[ts], Y[ts])
-            acc, ch, ntot = retrieval_top1(X[tr], Y[tr], X[ts], Y[ts], P[ts])
-            res[f"{tname}_{sname}"] = {"r2": round(r2, 4), "retrieval_top1": round(acc, 4),
-                                       "chance": round(ch, 4), "n_train": int(tr.sum()), "n_test": int(ts.sum())}
-            print(f"{tname:<10}{sname:<12}{int(tr.sum()):>9}{int(ts.sum()):>8}{r2:>+15.4f}{acc:>16.3f}{ch:>9.3f}")
+        for cname, XC in COND.items():
+            for sname, sel in (("all", torch.ones_like(visible)), ("visible", visible), ("occluded", ~visible)):
+                tr = (~te) & sel
+                ts = te & sel
+                if int(tr.sum()) < 50 or int(ts.sum()) < 20:
+                    continue
+                r2, _ = ridge_r2(XC[tr], Y[tr], XC[ts], Y[ts])
+                acc, ch, _n = retrieval_top1(XC[tr], Y[tr], XC[ts], Y[ts], P[ts])
+                res[f"{tname}|{cname}|{sname}"] = {"r2": round(r2, 4), "retrieval_top1": round(acc, 4),
+                                                   "chance": round(ch, 4), "n_test": int(ts.sum())}
+                print(f"{tname:<10}{cname:<13}{sname:<11}{int(tr.sum()):>8}{int(ts.sum()):>8}"
+                      f"{r2:>+14.4f}{acc:>15.3f}{ch:>9.3f}")
 
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
     json.dump(res, open(a.out, "w"), indent=2)
