@@ -33,6 +33,7 @@ from plant_recon.dataset.phytomer_topology import chain_phytomers
 from plant_recon.eval.eval_hierarchical_self_consistency import decode_predictions_to_part_tensor
 from plant_recon.eval.eval_gt_substitution_ablation import plant_from_nodes, render_depth, score
 from plant_recon.eval.eval_test_time_refinement import refine_plant
+from plant_recon.eval.ckpt_compat import fix_ckpt_args
 
 _ZI = {1.0: 3, 2.0: 7, 4.0: 11, 8.0: 15}
 
@@ -110,7 +111,7 @@ def main():
     a = ap.parse_args()
     dev = torch.device("cuda:0")
     ck = torch.load(a.checkpoint, map_location="cpu", weights_only=False)
-    args = ck["args"] if isinstance(ck["args"], dict) else vars(ck["args"])
+    args = fix_ckpt_args(ck["args"] if isinstance(ck["args"], dict) else vars(ck["args"]))
     model = HierarchicalPartFlowMatchingModel(
         max_phytomers=args["max_phytomers"], slots_per_phytomer=args["slots_per_phytomer"], node_dim=args["node_dim"],
         num_classes=NUM_ORGAN_TYPES, image_size=128, patch_size=8, embed_dim=args["embed_dim"], vit_layers=args["vit_layers"],
@@ -118,7 +119,7 @@ def main():
         flow_granularity=args["flow_granularity"], phytomer_latent_dim=args["phytomer_latent_dim"], backbone=args["backbone"],
         freeze_backbone=True, init_phytomer_count=args.get("init_phytomer_count", 50.0),
         stage3_geometry=bool(args.get("stage3_geometry", False)), multizoom=bool(args.get("multizoom", False)),
-        node_token_window=int(args.get("node_token_window", 1))).to(dev)
+        node_token_window=int(args.get("node_token_window", 1)), stage3_regression=bool(args.get("stage3_regression", False))).to(dev)
     model.load_state_dict(ck["model_state_dict"], strict=False); model.eval()
     D = args["phytomer_latent_dim"]; M = args["slots_per_phytomer"]
     pvae = PhytomerVAE(latent_dim=D, residual_dim=args.get("phytomer_residual_dim", 8), hidden_dim=256).to(dev).eval()

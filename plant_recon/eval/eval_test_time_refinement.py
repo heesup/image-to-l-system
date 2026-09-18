@@ -6,6 +6,7 @@ Reads the same checkpoint / eval set as eval_gt_substitution_ablation.py; prints
 the mean, for the variable sets given by --opt (e.g. pos,scale,latent). Nothing is trained or saved."""
 import argparse
 import json
+import math
 import os
 import sys
 
@@ -25,6 +26,7 @@ from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer
 from plant_recon.models.plant_organ_array import NUM_ORGAN_TYPES
 from plant_recon.eval.eval_hierarchical_self_consistency import decode_predictions_to_part_tensor
 from plant_recon.eval.eval_gt_substitution_ablation import plant_from_nodes, render_depth, score
+from plant_recon.eval.ckpt_compat import fix_ckpt_args
 
 
 def refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, scale0, lat0, exist, parent_idx, live_m, has_par_m, opt_set, a, exist_prob0=None):
@@ -89,9 +91,34 @@ def refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, sca
     if "roll" in opt_set: params.append({"params": [roll_v], "lr": a.lr_roll})
     if "exist" in opt_set: params.append({"params": [exist_logit], "lr": a.lr_exist})
     opt = torch.optim.Adam(params)
+    # Cosine decay of every group's lr to --lr_final_frac of its initial value. With the constant lr the
+    # search keeps taking full-size steps after it has essentially arrived, so the last steps jitter around
+    # the optimum instead of settling into it; that jitter is why --keep_best was needed to avoid ending on
+    # a worse step than the best one seen. Matters more the longer the run.
+    lr0 = [g["lr"] for g in opt.param_groups]
+    def _set_lr(step):
+        if getattr(a, "lr_schedule", "const") != "cosine":
+            return
+        f = getattr(a, "lr_final_frac", 0.05)
+        t = min(1.0, step / max(1, a.steps))
+        m = f + (1.0 - f) * 0.5 * (1.0 + math.cos(math.pi * t))
+        for g, l0 in zip(opt.param_groups, lr0):
+            g["lr"] = l0 * m
+    refine_px = int(getattr(a, "refine_px", 128))
     # input CHM at the two training zooms (cache channels 3 and 7)
     _zi = {1.0: 3, 2.0: 7, 4.0: 11, 8.0: 15}
-    tgt = {float(z): images[0, _zi[float(z)]] for z in a.target_zooms.split(",") if images.shape[1] > _zi[float(z)]}
+    hires = getattr(a, "_hires_tgt", None)      # (4, P, P) CHM pyramid re-rendered by tools/render_hires_targets.py
+    if hires is not None:
+        _zl = [1.0, 2.0, 4.0, 8.0]
+        tgt = {float(z): hires[_zl.index(float(z))].to(dev).float() for z in a.target_zooms.split(",")}
+    else:
+        tgt = {float(z): images[0, _zi[float(z)]] for z in a.target_zooms.split(",") if images.shape[1] > _zi[float(z)]}
+    if refine_px != next(iter(tgt.values())).shape[-1]:
+        # the cached input CHM is stored at the dataset's image_size; match the render grid so the loss is
+        # pixel-aligned. Upsampling the target does not add information -- it lets the finer render be
+        # compared without resampling the PREDICTION, which would blur the gradient it carries.
+        tgt = {z: F.interpolate(t.view(1, 1, *t.shape), size=(refine_px, refine_px), mode="bilinear",
+                                align_corners=False)[0, 0] for z, t in tgt.items()}
     best = (float("inf"), pos0.clone(), scale0.clone(), lat0.clone(), roll.clone(), (exist_logit.detach().clone() if exist_logit is not None else None))
     for step in range(a.steps + (1 if a.keep_best else 0)):
         opt.zero_grad()
@@ -109,11 +136,11 @@ def refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, sca
         for z, t in tgt.items():
             if a.plant_centered:
                 pred = renderer.forward(mesh, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, background="ground",
-                                        focus_plant=True, include_depth=True, differentiable=True, image_size=128,
+                                        focus_plant=True, include_depth=True, differentiable=True, image_size=refine_px,
                                         zoom_factor=z, reference_window_size=1.2)[3]
             else:
                 pred = renderer.render_batched([mesh], azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0, differentiable=True,
-                                               image_size=128, zoom_factor=z, reference_window_size=1.2,
+                                               image_size=refine_px, zoom_factor=z, reference_window_size=1.2,
                                                centers=([gt_center] if gt_center is not None else None))[0, 3]
             canopy = (t > 0.005) | (pred > 0.005)
             l1 = F.smooth_l1_loss(pred, t, beta=0.02, reduction="none")
@@ -132,7 +159,7 @@ def refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, sca
                     (exist_logit.detach().clone() if exist_logit is not None else None))
         if step == a.steps:
             break
-        loss.backward(); opt.step()
+        loss.backward(); _set_lr(step); opt.step()
     if a.keep_best:
         with torch.no_grad():
             pos, scale, lat, roll_v = best[1], best[2], best[3], best[4]
@@ -177,6 +204,24 @@ def main():
     ap.add_argument("--reg_exist", type=float, default=0.3, help="penalty weight on (existence_prob - sampled existence_prob)^2, keeps refinement from turning on every candidate slot")
     ap.add_argument("--reg_scale", type=float, default=5.0, help="penalty weight on (scale - sampled scale)^2, keeps leaves from inflating to fill the silhouette")
     ap.add_argument("--reg_latent", type=float, default=0.5, help="penalty weight on mean (latent - sampled latent)^2")
+    ap.add_argument("--target_dir", default="",
+                    help="Folder of <prefix>_chm<PX>.pt CHM pyramids re-rendered at high resolution "
+                         "(tools/render_hires_targets.py). Replaces the cached CHM as the refinement target, which "
+                         "is the only way a render finer than the cache's 256 px can show a real gain.")
+    ap.add_argument("--input_px", type=int, default=128,
+                    help="Resolution the cached input is loaded at -- which is what the refinement's CHM TARGET is. "
+                         "The cache holds 256 px on disk, so the default 128 discards half of it for free. Raising "
+                         "the RENDER (--refine_px) past the target only sharpens the prediction against a blurry "
+                         "target; raising this is what adds real information. The backbone is unaffected either way "
+                         "(it resizes to 224), except that 256 reaches it as a downsample instead of an upsample.")
+    ap.add_argument("--lr_schedule", default="const", choices=["const", "cosine"],
+                    help="Decay every optimised variable's learning rate along the run (cosine, to --lr_final_frac). "
+                         "The constant default keeps taking full-size steps after the search has arrived.")
+    ap.add_argument("--lr_final_frac", type=float, default=0.05)
+    ap.add_argument("--refine_px", type=int, default=128,
+                    help="Render resolution INSIDE the refinement loop (the strict protocol scores at 256 either "
+                         "way). At 128 px a 1.2 m window is 9.4 mm per pixel, so a cowpea leaflet is ~4 px and the "
+                         "gradient is dominated by the global silhouette; 256 halves that.")
     ap.add_argument("--rgb_override_dir", default="",
                     help="folder of <prefix>_helios_rgb.pt files ((12, S, S): level-major RGB in the cache's [-1, 1] convention, written by "
                          "render_helios_eval_crops.py). When given, the 12 RGB planes of each plant's 16-channel input are replaced by them and "
@@ -189,7 +234,8 @@ def main():
     if a.origin_camera:
         a.input_camera = False
     dev = torch.device("cuda:0")
-    ck = torch.load(a.checkpoint, map_location="cpu", weights_only=False); args = ck["args"] if isinstance(ck["args"], dict) else vars(ck["args"])
+    ck = torch.load(a.checkpoint, map_location="cpu", weights_only=False)
+    args = fix_ckpt_args(ck["args"] if isinstance(ck["args"], dict) else vars(ck["args"]))
     model = HierarchicalPartFlowMatchingModel(
         max_phytomers=args["max_phytomers"], slots_per_phytomer=args["slots_per_phytomer"], node_dim=args["node_dim"],
         num_classes=NUM_ORGAN_TYPES, image_size=128, patch_size=8, embed_dim=args["embed_dim"], vit_layers=args["vit_layers"],
@@ -197,7 +243,7 @@ def main():
         flow_granularity=args["flow_granularity"], phytomer_latent_dim=args["phytomer_latent_dim"], backbone=args["backbone"],
         freeze_backbone=True, init_phytomer_count=args.get("init_phytomer_count", 50.0),
         stage3_geometry=bool(args.get("stage3_geometry", False)), multizoom=bool(args.get("multizoom", False)),
-        node_token_window=int(args.get("node_token_window", 1))).to(dev)
+        node_token_window=int(args.get("node_token_window", 1)), stage3_regression=bool(args.get("stage3_regression", False))).to(dev)
     model.load_state_dict(ck["model_state_dict"], strict=False); model.eval()
     M = args["slots_per_phytomer"]
     pvae = PhytomerVAE(latent_dim=args["phytomer_latent_dim"], residual_dim=args.get("phytomer_residual_dim", 8), hidden_dim=256).to(dev).eval()
@@ -208,7 +254,7 @@ def main():
     sd = torch.load(args["organ_vae_checkpoint"], map_location=dev, weights_only=False); ovae.load_state_dict(sd.get("model_state_dict", sd))
     renderer = HeliosPyTorchRenderer(image_size=256).to(dev)
     ds = PartArrayDataset(data_root=args["data_dir"], max_nodes=args["max_phytomers"] * M, cache_dir=args["cache_dir"],
-                          pkt_cache_dir=args.get("pkt_cache_dir") or None, species="cowpea", image_size=128)
+                          pkt_cache_dir=args.get("pkt_cache_dir") or None, species="cowpea", image_size=a.input_px)
     idxs = json.load(open(a.eval_set))["indices"]
     if a.only:
         idxs = [int(x) for x in a.only.split(",")]
@@ -264,6 +310,12 @@ def main():
             live_m = exist > 0.5; has_par_m = parent_idx >= 0
             parts0 = plant_from_nodes(pvae, pos0, rot, scale0, lat0, exist, par, M)
             iou0, _ = score(render_depth(renderer, parts0, zoom, dev), gt_depth)
+        a._hires_tgt = None
+        if a.target_dir:
+            import glob as _glob
+            _m = _glob.glob(os.path.join(a.target_dir, f"{ds.samples[i]['prefix']}_chm*.pt"))
+            if _m:
+                a._hires_tgt = torch.load(_m[0], map_location="cpu", weights_only=True)
         pos, scale, lat, roll_v, rot_c, par_c, loss_a, exist_after = refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, scale0, lat0, exist, parent_idx, live_m, has_par_m, opt_set, a, exist_prob0=exist_prob0)
         if a.multi_start:
             # second start from the DAP-spanning mean latent; keep whichever start ends with the lower INPUT loss

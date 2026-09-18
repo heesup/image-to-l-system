@@ -48,6 +48,7 @@ sys.path.insert(0, str(REPO))
 from plant_recon.dataset.part_array_dataset import PartArrayDataset  # noqa: E402
 from plant_recon.models.helios_pytorch_renderer import HeliosPyTorchRenderer  # noqa: E402
 from plant_recon.models.plant_organ_array import PlantOrganArray  # noqa: E402
+from plant_recon.eval.ckpt_compat import fix_ckpt_args
 
 HELIOS_ROOT = REPO / "submodules/Digital-Crops" / "projects" / "syntheticdata_generation"
 BUILD_DIR = HELIOS_ROOT / "build"
@@ -215,7 +216,7 @@ def main():
 
     dev = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     ck = torch.load(a.checkpoint, map_location="cpu", weights_only=False)
-    args = ck["args"] if isinstance(ck["args"], dict) else vars(ck["args"])
+    args = fix_ckpt_args(ck["args"] if isinstance(ck["args"], dict) else vars(ck["args"]))
     M = args["slots_per_phytomer"]
     ds = PartArrayDataset(data_root=args["data_dir"], max_nodes=args["max_phytomers"] * M, cache_dir=args["cache_dir"],
                           pkt_cache_dir=args.get("pkt_cache_dir") or None, species="cowpea", image_size=256)

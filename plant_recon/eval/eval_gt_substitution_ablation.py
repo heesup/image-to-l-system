@@ -44,6 +44,7 @@ from plant_recon.training.hierarchical_hungarian_matcher import HierarchicalBota
 from plant_recon.eval.eval_hierarchical_self_consistency import decode_predictions_to_part_tensor
 from plant_recon.dataset.phytomer_roll import encode_roll
 from plant_recon.dataset.phytomer_packets import rot6d_to_matrix as _rot6d_to_matrix
+from plant_recon.eval.ckpt_compat import fix_ckpt_args
 
 EMPTY_IDX = 0
 
@@ -124,7 +125,7 @@ def main():
     dev = torch.device("cuda:0")
     ckpt_path = a.checkpoint or sorted(glob.glob("outputs/checkpoints/hierarchical_fm_v9/hierarchical_fm_epoch_*.pt"))[-1]
     ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    args = ck["args"] if isinstance(ck["args"], dict) else vars(ck["args"])
+    args = fix_ckpt_args(ck["args"] if isinstance(ck["args"], dict) else vars(ck["args"]))
     print(f"checkpoint {ckpt_path} (epoch {ck.get('epoch')})")
     model = HierarchicalPartFlowMatchingModel(
         max_phytomers=args["max_phytomers"], slots_per_phytomer=args["slots_per_phytomer"], node_dim=args["node_dim"],
@@ -132,8 +133,8 @@ def main():
         vit_heads=args["vit_heads"], coarse_layers=args["coarse_layers"], fine_layers=args["fine_layers"],
         flow_granularity=args["flow_granularity"], phytomer_latent_dim=args["phytomer_latent_dim"], backbone=args["backbone"],
         freeze_backbone=True, init_phytomer_count=args.get("init_phytomer_count", 50.0),
-        stage3_geometry=bool(args.get("stage3_geometry", False)), multizoom=bool(args.get("multizoom", False)), node_token_window=int(args.get("node_token_window", 1))).to(dev)
-    print(f"  stage3_geometry: {bool(args.get('stage3_geometry', False))} (flow width {model.flow_dim})")
+        stage3_geometry=bool(args.get("stage3_geometry", False)), multizoom=bool(args.get("multizoom", False)), node_token_window=int(args.get("node_token_window", 1)), stage3_regression=bool(args.get("stage3_regression", False))).to(dev)
+    print(f"  stage3_geometry: {bool(args.get('stage3_geometry', False))} (flow width {model.flow_dim}) | stage3_regression: {bool(args.get('stage3_regression', False))}")
     missing, unexpected = model.load_state_dict(ck["model_state_dict"], strict=False)
     if missing or unexpected:
         print("  state dict: missing", missing[:5], "unexpected", unexpected[:5])
