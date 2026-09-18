@@ -263,6 +263,7 @@ def evaluate_self_consistency_batch(
     num_samples_to_plot: int = 3,
     vae: Optional[torch.nn.Module] = None,
     phytomer_vae: Optional[torch.nn.Module] = None,
+    dump_masks_dir: Optional[str] = None,
 ) -> Dict[str, float]:
     """Runs end-to-end self-consistency check on validation batch.
 
@@ -295,6 +296,7 @@ def evaluate_self_consistency_batch(
     peak_height_diffs = []
     dice_losses = []
     panels_data = []
+    node_rmses = []   # every scored plant; panels_data holds only the plotted subset
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -302,8 +304,17 @@ def evaluate_self_consistency_batch(
     # evenly spaced in between), not just the first `num_samples_to_plot` —
     # the eval set is DAP-stratified and sorted, so taking the head would always
     # show only the youngest plants.
-    plot_idx = np.linspace(0, B - 1, min(B, num_samples_to_plot)).round().astype(int)
-    for b in sorted(set(plot_idx.tolist())):
+    plot_idx = set(np.linspace(0, B - 1, min(B, num_samples_to_plot)).round().astype(int).tolist())
+
+    # SCORE every plant, PLOT only `num_samples_to_plot` of them.
+    #
+    # Until 2026-09-18 this loop ran over `plot_idx` alone, so `ious`/`depth_maes` averaged the 4 plotted
+    # plants while the caller printed "(n=20 fixed-set)" from len(eval_indices) -- every reported IoU was a
+    # 4-plant mean wearing a 20-plant label. That is the same artefact that made the 2026-09-07/08 "45.4%"
+    # panel look like a result (its series ran 39/26/34/27/45/49 on 4-plant batches), and it is why the A/B
+    # holdout curves swung +-8 points epoch to epoch. Scoring all B costs a render per plant and makes the
+    # numbers mean what their label says.
+    for b in range(B):
         # 1. Decode predicted lateral phytomer parts (petiole, leaflets, repro)
         if "part_14d" in sample_out:
             pred_14d_b = sample_out["part_14d"][b]
@@ -413,6 +424,25 @@ def evaluate_self_consistency_batch(
         intersection = np.logical_and(pred_mask, gt_mask).sum()
         union = np.logical_or(pred_mask, gt_mask).sum()
         iou = float(intersection / max(union, 1))
+
+        if dump_masks_dir:
+            # Write the SAME two masks the IoU above is computed from, so the shape metrics
+            # (boundary F / solidity / hull ratio) are measured on exactly what produced the IoU
+            # rather than on a second, separately rendered silhouette. Green-on-black because
+            # eval_silhouette_shape_metrics.mask_of() keys on the green channel.
+            import json as _json, os as _os
+            from PIL import Image as _Image
+            _os.makedirs(dump_masks_dir, exist_ok=True)
+            def _png(mask):
+                a = np.zeros((*mask.shape, 3), dtype=np.uint8)
+                a[..., 1] = np.where(mask, 255, 0)
+                return _Image.fromarray(a)
+            _png(gt_mask).save(_os.path.join(dump_masks_dir, f"{b}_gt.png"))
+            _png(pred_mask).save(_os.path.join(dump_masks_dir, f"{b}_before.png"))
+            _png(pred_mask).save(_os.path.join(dump_masks_dir, f"{b}_after.png"))  # no refinement here
+            _json.dump({"index": b, "dap": dap_val, "iou": iou,
+                        "prefix": (val_batch.get("prefix") or [None] * (b + 1))[b]},
+                       open(_os.path.join(dump_masks_dir, f"{b}_meta.json"), "w"))
 
         # Depth MAE across 3D ground truth footprint
         canopy_mask = np.logical_or(pred_mask, gt_mask)
@@ -598,6 +628,11 @@ def evaluate_self_consistency_batch(
 
         pred_num_phy = float(sample_out["pred_num_phytomers"][b].item()) if ("pred_num_phytomers" in sample_out and sample_out["pred_num_phytomers"] is not None) else None
 
+        node_rmses.append(node_rmse_cm)
+
+        if b not in plot_idx:
+            continue   # scored; the panel payload below is only for the figure rows
+
         panels_data.append({
             "dap": dap_val,
             "im_helios": im_helios,
@@ -630,7 +665,7 @@ def evaluate_self_consistency_batch(
         fig = plt.figure(figsize=(24.5, 3.5 * n_rows), facecolor="white")
         gs = fig.add_gridspec(n_rows, 7, wspace=0.14, hspace=0.25, left=0.03, right=0.97, top=0.84, bottom=0.04)
 
-        mean_node_rmse = np.mean([d["node_rmse_cm"] for d in panels_data])
+        mean_node_rmse = np.mean(node_rmses) if node_rmses else 0.0
         fig.suptitle(
             f"Hierarchical Flow Matching: 3D Reconstruction, Real Mesh & Botanical Skeleton (Epoch {epoch:03d})\n"
             f"Mean silhouette IoU {np.mean(ious)*100:.1f}%, depth MAE {np.mean(depth_maes)*100:.2f} cm, node RMSE {mean_node_rmse:.1f} cm",
@@ -797,7 +832,7 @@ def evaluate_self_consistency_batch(
         "val/depth_mae": float(np.mean(depth_maes)) if depth_maes else 0.0,
         "val/peak_height_error": float(np.mean(peak_height_diffs)) if peak_height_diffs else 0.0,
         "val/dice_loss": float(np.mean(dice_losses)) if dice_losses else 0.0,
-        "val/node_rmse_cm": float(np.mean([d["node_rmse_cm"] for d in panels_data])) if panels_data else 0.0,
+        "val/node_rmse_cm": float(np.mean(node_rmses)) if node_rmses else 0.0,
         "silhouette_iou": float(np.mean(ious)) if ious else 0.0,
         "depth_mae": float(np.mean(depth_maes)) if depth_maes else 0.0,
         "peak_height_error": float(np.mean(peak_height_diffs)) if peak_height_diffs else 0.0,

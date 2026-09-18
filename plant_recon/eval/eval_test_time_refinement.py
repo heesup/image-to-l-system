@@ -255,7 +255,26 @@ def main():
     renderer = HeliosPyTorchRenderer(image_size=256).to(dev)
     ds = PartArrayDataset(data_root=args["data_dir"], max_nodes=args["max_phytomers"] * M, cache_dir=args["cache_dir"],
                           pkt_cache_dir=args.get("pkt_cache_dir") or None, species="cowpea", image_size=a.input_px)
-    idxs = json.load(open(a.eval_set))["indices"]
+    # Resolve the eval set by PREFIX, not by the stored "indices".
+    #
+    # Two reasons. A holdout_set.json has no "indices" at all -- held-out plants are excluded from the
+    # training subset, so they have no position in its index space -- and without this the script died with
+    # KeyError: 'indices'. More quietly, the stored indices of an eval_set.json are relative to the SUBSET the
+    # run trained on (MAX_TRAIN_SAMPLES), while `ds` here is built over the full data_dir: the same 20 plants
+    # are indices 148/263/1089... in a 10k-sample run and 1354/2616/10833... in a full-data one, so indexing
+    # the full dataset with subset indices silently evaluates 20 different plants (2026-09-18).
+    # Prefixes are the stable identity across both files and both index spaces.
+    _es = json.load(open(a.eval_set))
+    _by_prefix = {smp["prefix"]: i for i, smp in enumerate(ds.samples)}
+    _wanted = [smp["prefix"] for smp in _es["samples"]]
+    _missing = [q for q in _wanted if q not in _by_prefix]
+    if _missing:
+        raise SystemExit(f"{len(_missing)} of {len(_wanted)} eval prefixes are absent from {args['data_dir']}, "
+                         f"first: {_missing[0]}")
+    idxs = [_by_prefix[q] for q in _wanted]
+    if "indices" in _es and idxs != _es["indices"]:
+        print(f"note: resolved {len(idxs)} plants by prefix; the stored indices differ (they are relative to "
+              f"that run's training subset, not to the full dataset)", flush=True)
     if a.only:
         idxs = [int(x) for x in a.only.split(",")]
     opt_set = set(a.opt.split(","))

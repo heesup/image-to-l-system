@@ -9,6 +9,11 @@ leaf gap and every arm of the canopy. Three metrics that do not:
                LOW; a blob scores near 1. Compared as |pred - gt|, so matching the GT's own value is what
                counts, not being high or low.
   perimeter    boundary length relative to the GT's. A blob of the right area has a much shorter outline.
+  hull ratio   the mask's convex hull area over the GT's. This is SPREAD: >1 means the prediction reaches
+               further than the plant does, <1 means it is too compact. Distinct from solidity, which is
+               each mask's own area/hull and says how gappy it is. The 2026-09-07/08 lineage scored 4.35x
+               here (wildly over-spread) while the 2026-09-15/16 phytomer runs sat at 0.5-0.7x (too
+               compact), so a value near 1.0 is what "the right size canopy" looks like.
 
 Run on the renders saved by eval_test_time_refinement.py --save_renders (gt / before / after per plant).
 """
@@ -43,16 +48,22 @@ def boundary_f(pred, gt, tol=2):
     return 0.0 if prec + rec == 0 else 2 * prec * rec / (prec + rec)
 
 
-def solidity(m):
+def hull_area(m):
+    """Convex hull area of a mask in pixels (ConvexHull.volume is the area in 2D)."""
     if m.sum() < 8:
         return float("nan")
     from scipy.spatial import ConvexHull
-    pts = np.argwhere(m)
     try:
-        h = ConvexHull(pts)
+        return float(ConvexHull(np.argwhere(m)).volume)
     except Exception:
         return float("nan")
-    return float(m.sum() / max(h.volume, 1e-6))
+
+
+def solidity(m):
+    h = hull_area(m)
+    if not np.isfinite(h):
+        return float("nan")
+    return float(m.sum() / max(h, 1e-6))
 
 
 def main():
@@ -71,13 +82,15 @@ def main():
             continue
         m = {k: mask_of(p) for k, p in paths.items()}
         gt = m["gt"]
-        row = {"index": idx, "dap": meta["dap"], "sol_gt": solidity(gt), "per_gt": int(boundary(gt).sum())}
+        row = {"index": idx, "dap": meta["dap"], "sol_gt": solidity(gt),
+               "per_gt": int(boundary(gt).sum()), "hull_gt": hull_area(gt)}
         for k in ("before", "after"):
             inter = (m[k] & gt).sum(); union = (m[k] | gt).sum()
             row[f"iou_{k}"] = float(inter / max(union, 1))
             row[f"bf_{k}"] = boundary_f(m[k], gt, a.tol)
             row[f"sol_{k}"] = solidity(m[k])
             row[f"per_{k}"] = int(boundary(m[k]).sum())
+            row[f"hull_{k}"] = hull_area(m[k])
         rows.append(row)
 
     def agg(sel, name):
@@ -88,10 +101,12 @@ def main():
               f"{f('iou_before')*100:>9.1f}{f('iou_after')*100:>9.1f}"
               f"{f('bf_before')*100:>11.1f}{f('bf_after')*100:>11.1f}"
               f"{f('sol_gt'):>9.3f}{f('sol_before'):>10.3f}{f('sol_after'):>10.3f}"
-              f"{f('per_before')/max(f('per_gt'),1):>11.2f}{f('per_after')/max(f('per_gt'),1):>10.2f}")
+              f"{f('per_before')/max(f('per_gt'),1):>11.2f}{f('per_after')/max(f('per_gt'),1):>10.2f}"
+              f"{f('hull_before')/max(f('hull_gt'),1):>10.2f}{f('hull_after')/max(f('hull_gt'),1):>9.2f}")
 
     print(f"{'plants':<12}{'n':>4}{'IoU raw':>9}{'IoU ref':>9}{'bF raw':>11}{'bF ref':>11}"
-          f"{'sol GT':>9}{'sol raw':>10}{'sol ref':>10}{'per raw':>11}{'per ref':>10}")
+          f"{'sol GT':>9}{'sol raw':>10}{'sol ref':>10}{'per raw':>11}{'per ref':>10}"
+          f"{'hull raw':>10}{'hull ref':>9}")
     agg([r for r in rows if r["dap"] <= 15], "DAP<=15")
     agg([r for r in rows if 16 <= r["dap"] <= 45], "16-45")
     agg([r for r in rows if 46 <= r["dap"] <= 75], "46-75")
