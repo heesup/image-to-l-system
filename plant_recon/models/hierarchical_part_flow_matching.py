@@ -550,7 +550,23 @@ class MacroBiologicalHead(nn.Module):
         t = tau if tau is not None else self.default_tau
 
         h = self.net(cls_token)
-        pred_dap = F.relu(self.dap_head(h)) * 100.0  # (B, 1)
+        # DAP is a plain regression target in [1, 100], so this head carries NO activation.
+        # It used to be `F.relu(self.dap_head(h)) * 100.0`, and on 2026-09-18 that head died in
+        # both A/B runs the moment the LR warmup peaked at epoch 3: once the linear output is
+        # negative for every input, ReLU returns exactly 0 and so does its gradient, so no later
+        # batch and no LR decay can revive it. That is not merely a broken auxiliary metric --
+        # pred_dap feeds back as the dap_clue conditioning added to every phytomer query, so a
+        # dead head conditions every plant as DAP 0 whatever its real maturity. Holdout
+        # silhouette IoU fell to 1.7-4.6% and depth MAE rose monotonically, while node RMSE
+        # stayed clean because node positions are supervised directly.
+        #
+        # Soft-positive activations do not fix this. `F.elu(x) + 1.0` -- the idiom the count head
+        # below uses -- is exactly 0.0 for x <= -40 in float32, because elu(x) = exp(x) - 1 rounds
+        # to -1.0 once exp(x) falls under the precision of 1.0, and its gradient exp(x) has
+        # vanished by then anyway. Softplus saturates the same way. A linear head is the only form
+        # whose gradient does not depend on the pre-activation at all; positivity is enforced by
+        # the DAP regression loss, which is what actually knows the target.
+        pred_dap = self.dap_head(h) * 100.0  # (B, 1) linear: gradient is h, never vanishes
         pred_num_phytomers = F.elu(self.phy_head(h)) + 1.0  # (B, 1) >= 0.0
 
         # Soft tapering margin schedule across slots 0..max_k-1
@@ -1658,13 +1674,28 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         # Width of the per-phytomer flow state Stage 3 integrates.
         self.flow_dim = (self.fine_stage.node_flow_dim if flow_granularity == "phytomer" else node_dim)
 
+    #: Physical bounds of days-after-planting in the cowpea datasets, used to clamp the
+    #: value handed to callers that treat it as a real plant age.
+    DAP_RANGE = (1.0, 100.0)
+
     def probe_pred_dap(self, image_tokens: torch.Tensor) -> torch.Tensor:
         """Two-pass helper: reads Stage 1's predicted DAP from the CLS token (no grad
         needed for the clue itself — the clue is an input, loss_dap keeps the head
-        supervised)."""
+        supervised).
+
+        The value is clamped to DAP_RANGE here rather than in the head. The head itself is a
+        linear regression with no activation, because every activation bounded below by zero has
+        a vanishing derivative at that bound and can therefore die — which is exactly what killed
+        the old `F.relu(...)` head on 2026-09-18. Clamping at the head would reintroduce the same
+        dead zone, so the raw value stays linear for `loss_dap` and for the dap_clue embedding
+        (a learned Linear, which takes a transient negative without trouble), and only this
+        accessor — the one whose callers treat the number as a real plant age, deriving `k_dap`
+        from it and printing it in figures — is made physical.
+        """
         cls_token = image_tokens[:, 0]
         with torch.no_grad():
-            return self.coarse_stage.macro_head(cls_token, max_k=self.max_phytomers)["pred_dap"]
+            raw = self.coarse_stage.macro_head(cls_token, max_k=self.max_phytomers)["pred_dap"]
+        return raw.clamp(*self.DAP_RANGE)
 
     def forward(
         self,

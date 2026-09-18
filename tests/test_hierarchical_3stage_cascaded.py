@@ -68,7 +68,12 @@ class TestHierarchical3StageCascaded(unittest.TestCase):
         self.assertEqual(init_logits.shape, (B, K, 1))
 
         # Check positivity
-        self.assertTrue((pred_dap >= 0.0).all())
+        # The macro head's pred_dap is a raw linear regression and MAY be negative: every
+        # activation bounded below by zero has a vanishing derivative at that bound, so enforcing
+        # non-negativity in the head is what let the old F.relu version die permanently on
+        # 2026-09-18 (see tests/test_dap_head_cannot_die.py). Physical bounds are applied by
+        # probe_pred_dap, the accessor whose callers treat the number as a real plant age.
+        self.assertTrue(torch.isfinite(pred_dap).all())
         self.assertTrue((pred_phy >= 0.0).all())
         self.assertTrue((soft_weights >= 0.0).all() and (soft_weights <= 1.0).all())
 
