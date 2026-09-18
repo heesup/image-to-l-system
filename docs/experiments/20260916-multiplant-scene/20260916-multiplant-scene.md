@@ -97,10 +97,14 @@ Re-running the six AgML plants of the previous report with these defaults:
 with the best multiplicative-clip attempt (`scale_clip_mult=1.1`). Figure:
 [`assets/20260916_agml_real_image_test_scale_abs_max_calibrated.png`](assets/20260916_agml_real_image_test_scale_abs_max_calibrated.png).
 
+![Agml real image test scale abs max calibrated](assets/20260916_agml_real_image_test_scale_abs_max_calibrated.png)
+
 ## 5. First whole-frame run, and why its headline number is not a win
 
 One AgML frame (`..._camA_000055.jpg`, 4 plants detected, DAP 25 assumed), both cold starts refined
 against each plant's own crop. Figure: [`assets/20260916_multiplant_scene.png`](assets/20260916_multiplant_scene.png).
+
+![Multiplant scene](assets/20260916_multiplant_scene.png)
 
 | plant | Helios init: organs / moved / data loss | network init: organs / moved / data loss |
 |---|---|---|

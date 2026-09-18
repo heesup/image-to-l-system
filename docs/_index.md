@@ -13,10 +13,10 @@ Single RGB-D drone image → 3D plant organ parameter reconstruction via Hierarc
 
 ## 🚀 Start Here
 
-- [Developer Onboarding — Where to Start](handovers/developer-onboarding.md) — One page for the next agent
-- [Current System Status](handovers/current-status.md) — Live system state, active SLURM jobs, next steps
-- [Agent Takeover Guide](handovers/agent-takeover-guide/agent-takeover-guide.md) — Master handover & execution manual
-- [Stage 2/3 Boundary Redesign](handovers/20260912-stage2-stage3-boundary/20260912-stage2-stage3-boundary.md) — Primary engineering record since 2026-09-12
+- [Current State](current-state/current-state.md) — What is running now, what is being built, and what the evidence says
+- [Agent Handover Guide](agent-handover-guide/agent-handover-guide.md) — Master manual; §0 is the one-page orientation for a new agent
+- [Stage 2/3 Boundary Redesign](engineering/20260912-stage2-stage3-boundary/20260912-stage2-stage3-boundary.md) — Primary engineering record since 2026-09-12
+- [Sim-to-real Assessment & Plan (2026-09-16)](experiments/20260916-sim-to-real-assessment/20260916-sim-to-real-assessment.md) — Ranked next steps for both tracks and the appearance-gap measurement
 
 ---
 
@@ -38,7 +38,6 @@ _System design documents, mathematical specifications, and camera geometry_
 
 _Training runs, benchmark results, and milestone reports (newest first)_
 
-- [Minimal Direct Opt Chamfer](experiments/minimal-direct-opt-chamfer/minimal-direct-opt-chamfer.md)
 - [20260916 Multiplant Scene (2026-09-16)](experiments/20260916-multiplant-scene/20260916-multiplant-scene.md)
 - [20260916 Agml Dataset Swap (2026-09-16)](experiments/20260916-agml-dataset-swap/20260916-agml-dataset-swap.md)
 - [20260915 Real Image First Test (2026-09-15)](experiments/20260915-real-image-first-test/20260915-real-image-first-test.md)
@@ -50,19 +49,8 @@ _Training runs, benchmark results, and milestone reports (newest first)_
 - [20260908 3D Spatial Vision Milestone (2026-09-08)](experiments/20260908-3d-spatial-vision-milestone/20260908-3d-spatial-vision-milestone.md)
 - [20260907 Latent Fm 500Epoch (2026-09-07)](experiments/20260907-latent-fm-500epoch/20260907-latent-fm-500epoch.md)
 - [20260825 Direct Opt Cowpea Dap10 (2026-08-25)](experiments/20260825-direct-opt-cowpea-dap10/20260825-direct-opt-cowpea-dap10.md)
-- [15 Strategies Benchmark](experiments/15-strategies-benchmark/15-strategies-benchmark.md)
-
----
-
-## 🔄 Session Handovers & Operational Status
-
-_Live dashboard, master execution manual, and session transitions_
-
-- [Current System Status](handovers/current-status.md) — Live system state, active SLURM jobs, next steps
-- [Agent Takeover Guide](handovers/agent-takeover-guide/agent-takeover-guide.md)
-- [20260911 Grad Norm Fix Roundtrip (2026-09-11)](handovers/20260911-grad-norm-fix-roundtrip/20260911-grad-norm-fix-roundtrip.md)
-- [20260912 Stage2 Stage3 Boundary (2026-09-12)](handovers/20260912-stage2-stage3-boundary/20260912-stage2-stage3-boundary.md)
-- [20260916 Sim To Real Assessment (2026-09-16)](handovers/20260916-sim-to-real-assessment/20260916-sim-to-real-assessment.md)
+- [Minimal Direct Opt Chamfer (2026-08-25)](experiments/minimal-direct-opt-chamfer/minimal-direct-opt-chamfer.md)
+- [15 Strategies Benchmark (2026-08-25)](experiments/15-strategies-benchmark/15-strategies-benchmark.md)
 
 ---
 

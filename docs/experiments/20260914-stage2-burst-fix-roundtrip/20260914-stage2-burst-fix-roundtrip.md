@@ -9,7 +9,7 @@ status: done
 
 > **Session Date**: 2026-09-13 ~ 2026-09-14 (PDT)  
 > **Relevant Runs**: Local v9 run (`outputs/logs/local_v9_run2.log` → `local_v9_run2b.log`, checkpoint `outputs/checkpoints/hierarchical_fm_v9_local2/`), cluster queue jobs `38249632` / `38250275` (`low` / `publicgrp`)  
-> **Detailed Record**: [`docs/handovers/20260912-stage2-stage3-boundary/20260912-stage2-stage3-boundary.md`](../../handovers/20260912-stage2-stage3-boundary/20260912-stage2-stage3-boundary.md) §1.9.2 (burst), §2.4-2.6 (roundtrip)  
+> **Detailed Record**: [`docs/../../engineering/20260912-stage2-stage3-boundary/20260912-stage2-stage3-boundary.md`](../../engineering/20260912-stage2-stage3-boundary/20260912-stage2-stage3-boundary.md) §1.9.2 (burst), §2.4-2.6 (roundtrip)  
 > **Commits**: `a524816` (final LayerNorm + fp32 self-attention), `ea7bb58` (ablation documentation), `0472284` (dataset plant roundtrip fix), `3fc48b7`
 
 ---

@@ -12,6 +12,8 @@ status: done
 **Checkpoint:** `outputs/checkpoints/hierarchical_latent_fm/hierarchical_fm_epoch_050.pt`  
 **Author:** Antigravity Autonomous Agent (Pair programming with Heesup Yun)  
 
+![Hierarchical self consistency epoch 050](../20260907-latent-fm-500epoch/assets/hierarchical_self_consistency_epoch_050.png)
+
 ---
 
 ## 1. Executive Summary

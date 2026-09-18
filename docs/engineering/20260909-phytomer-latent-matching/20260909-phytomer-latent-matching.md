@@ -266,6 +266,8 @@ becomes the accepted phytomer-level bridge. Rationale:
 top-view, packeted organ set, IoU vs GT mesh):
 `docs/archive/unreferenced-assets/fig_phytomer_vae_roundtrip.png`
 
+![Fig phytomer vae roundtrip](../../archive/unreferenced-assets/fig_phytomer_vae_roundtrip.png)
+
 | DAP | PhytomerVAE IoU | OrganLatentVAE IoU |
 |---:|---:|---:|
 | 78 | 85.0% | 92.4% |
@@ -415,6 +417,8 @@ DIFFERENCE (not absolute azimuth/pose), so no capacity is spent on global pose.
 Class 99.99%, base 0.16cm, scale 0.062. The render roundtrip flips to
 PhytomerVAE-64 **73.4%** vs OrganLatentVAE 65.1% mean IoU (packeted set, seed 3)
 — figure `docs/archive/unreferenced-assets/fig_phytomer_vae_relative_roundtrip.png`.
+
+![Fig phytomer vae relative roundtrip](../../archive/unreferenced-assets/fig_phytomer_vae_relative_roundtrip.png)
 
 NOTE: `--rot-branch` is REQUIRED for the tuned checkpoints (the dedicated rot
 branch is used at training; eval without it uses the shared head -> garbage rot).

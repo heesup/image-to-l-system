@@ -1,6 +1,6 @@
 ---
 title: "Minimal 3-Organ Direct Optimization: Chamfer Pulls Leaf Outward"
-date: unknown
+date: 2026-08-25
 tags: [experiment, results]
 status: done
 ---
@@ -10,6 +10,8 @@ status: done
 **Script**: `scripts/minimal_direct_opt_depth_chamfer_demo.py` (historical demo script)  
 **Figure**: [`assets/minimal_direct_opt_depth_chamfer_demo.png`](assets/minimal_direct_opt_depth_chamfer_demo.png)  
 **Metrics JSON**: [`assets/minimal_direct_opt_depth_chamfer_demo.json`](assets/minimal_direct_opt_depth_chamfer_demo.json)
+
+![Minimal direct opt depth chamfer demo](assets/minimal_direct_opt_depth_chamfer_demo.png)
 
 ---
 

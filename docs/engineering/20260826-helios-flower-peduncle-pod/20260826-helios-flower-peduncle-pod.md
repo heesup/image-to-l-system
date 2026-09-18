@@ -107,6 +107,8 @@ python plant_recon/eval/generate_multimodal_outputs.py
 # 2. Inspect generated comparison figure
 # Output saved at: docs/experiments/15-strategies-benchmark/assets/fig8_multimodal_depth_mask.png
 
+![Figure 8 multimodal depth mask](../../experiments/15-strategies-benchmark/assets/fig8_multimodal_depth_mask.png)
+
 # 3. Verify exact quantitative metrics (IoU, MAE, 3D vertex error vs C++ GT)
 python plant_recon/eval/test_eval_exact_gt.py
 ```

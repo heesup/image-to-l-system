@@ -198,3 +198,6 @@ Access: VNC browser `localhost:7860` or SSH tunnel `ssh -L 7860:localhost:7860`.
     scatters to matching packets; click→idx mapping is updated to the visible
     subset (global indices preserved). Counts: flower 11,760 / fruit 11,923 /
     repro 23,683 of 250k packets.
+
+
+![Fig phytomer trifoliate structure](../../archive/unreferenced-assets/fig_phytomer_trifoliate_structure.png)

@@ -10,7 +10,7 @@ status: active
 - **Author**: Claude (pair programming with Heesup Yun)
 - **Date**: 2026-09-11 (continuation, later same day)
 - **Status**: PhytomerVAE v8 trained and validated | pkt cache regenerated (v6, with `keys`) | render-loss internode fix committed and smoke-tested clean | gradient guard made canary-only | **NEXT**: cheap topology-recovery measurement (no training) to decide between (b) shrinking Stage 2's rotation head to a 1D roll, (c) a learned graph/PAF connectivity mechanism, or the refined (b)/(c) hybrid in §6.1 -- Stage 2 rotation+scale as an explicit parent-relative PDF instead of a point estimate, giving Stage 3's flow an adaptive per-node bridge-noise scale and `chain_phytomers` a likelihood-weighted cost instead of one fixed hyperparameter
-- **Supersedes**: [`20260911_takeover_grad_norm_fix_roundtrip_diagnosis_10slot_restore.md`](../../handovers/20260911-grad-norm-fix-roundtrip/20260911-grad-norm-fix-roundtrip.md) for the PhytomerVAE checkpoint lineage (that doc's "MUST be retrained from scratch" instruction is now satisfied by v8 below)
+- **Supersedes**: [`20260911_takeover_grad_norm_fix_roundtrip_diagnosis_10slot_restore.md`](../20260911-grad-norm-fix-roundtrip/20260911-grad-norm-fix-roundtrip.md) for the PhytomerVAE checkpoint lineage (that doc's "MUST be retrained from scratch" instruction is now satisfied by v8 below)
 
 ---
 

@@ -1,13 +1,13 @@
 ---
 title: "Agent Takeover & Engineering Handover Guide"
-date: unknown
+date: 2026-09-16
 tags: [handover, session]
 status: active
 ---
 
 # Agent Takeover & Engineering Handover Guide
 **Project: Image-to-L-System / 3D Inverse Procedural Plant Reconstruction**  
-**Last Updated:** 2026-09-14 ~11:30 PDT (see §0-A below — it is the live handover state for the **Claude Code** session that takes over next; the sections after it are the 2026-09-11 state and are superseded where §0 says so)  
+**Last Updated:** 2026-09-16 (§0-C is the newest state; §0-B is the 2026-09-14 state, §0-A the 2026-09-13 state; the numbered sections after them are the 2026-09-11 state and are superseded where §0 says so)  
 **Primary Author/Agent:** Antigravity Autonomous Agent → **Claude Code** (since 2026-09-14; pair programming with Heesup Yun)  
 **Environment:** Linux, Python 3.10+, Mamba (`mamba activate digital-crops`), CUDA, PyTorch, `nvdiffrast`, Helios C++ OptiX Raytracer.
 
@@ -16,20 +16,144 @@ status: active
 > wandb to `outputs/wandb/`, the real-image track to `use_cases/real_world/`, Digital-Crops to
 > `submodules/Digital-Crops/`, and the VLM track to `archive/lm_based/`. Paths in this guide
 > have been bulk-updated accordingly; see
-> [`docs/architecture/code-structure/code-structure.md`](../../architecture/code-structure/code-structure.md).
+> [`docs/architecture/code-structure/code-structure.md`](../architecture/code-structure/code-structure.md).
 
 > **Takeover for Claude Code (2026-09-14):** this guide is the handover doc. Claude Code session
 > memory additionally lives outside the repo at `~/.claude/projects/-home-lion397-codes-image-to-l-system/memory/*.md`
 > (launcher layout, terminology, run-log conventions, HPC partition rules, VAE round-trip rules).
-> Read §0-B first (live handover state), then `docs/handovers/current-status.md` (status dashboard) and
-> `docs/handovers/20260912-stage2-stage3-boundary/20260912-stage2-stage3-boundary.md` (§5 reading order).  
+> Read §0-B first (live handover state), then `docs/../current-state/current-state.md` (status dashboard) and
+> `docs/../engineering/20260912-stage2-stage3-boundary/20260912-stage2-stage3-boundary.md` (§5 reading order).  
 
 ---
 
 
+## 0. Orientation — start here
+
+Absorbed from the former `developer-onboarding.md` (2026-09-17) so there is one entry point rather than two overlapping ones. The live experiment and engineering state is NOT repeated here — it lives in [`current-state.md`](../current-state/current-state.md), which is the first thing to read.
+
+### 0.1 The repo in 60 seconds
+
+| Where | What |
+| :--- | :--- |
+| `plant_recon/` | The library — `models/` (Stages 0–4, renderer, XML export), `training/`, `dataset/`, `eval/` |
+| `use_cases/real_world/` | Sim-to-real application: detectors, real-field datasets, multi-plant pipeline |
+| `submodules/Digital-Crops/` | Helios C++ OptiX engine (git submodule, pinned) |
+| `dataset/` | Data only: 100k Helios XMLs + `.pt` caches (gitignored) |
+| `outputs/` | Everything generated: `checkpoints/`, `logs/`, `wandb/`, `weights/`, `eval/` |
+| `scripts/` | The 3 cluster launchers (`.sh` only) |
+| `docs/` | `current-state/` (live dashboard) + `agent-handover-guide/` (this manual) |
+
+**Environment**: `mamba activate digital-crops`, `export PYTHONPATH=.` from the repo root.
+**Sanity check**: `pytest tests/` → 99 collected (2 pre-existing stale failures: `test_dinov2_3d_spatial.py`,
+`tests/unit/test_ik_fix.py` — old model API, not your problem unless you touch them).
+
+### 0.2 Where to start developing (ranked)
+
+#### A. Close the appearance gap in training — the top item
+
+The network reads **RGB only** (`DINORayEncoder.forward` takes channels 0:3); training RGB is
+flat-shaded green on uniform tan with **zero augmentation**, while 100k Helios raytraced renders
+(`dataset/helios_data/cowpea/*_rad.jpeg`, textured soil, shadows, specular) sit unused.
+
+1. Fine-tune from `hierarchical_fm_v10_cam` ep160 on Helios raytraced crops at the cache's fixed
+   1.2 m window framing (`plant_recon/eval/render_helios_eval_crops.py` shows the exact recipe).
+2. Add ordinary augmentation: colour jitter, blur, sensor noise, random shadows, real soil
+   composites under the flat render mask.
+3. Re-measure with the same flat-vs-Helios protocol used in the assessment (§4 there) — that is the
+   number that must move. Watch the **DAP probe error** and **active-node count**, not just P.
+
+#### B. Fix the real-image crop framing (one line, then a measurement)
+
+`use_cases/real_world/dataset/real_plant_crop_utils.py::build_pyramid_16ch` uses 1.2× the *detector
+bbox* as the zoom-1× window; the training cache uses a **fixed 1.2 m ground window**. Every plant on
+a real crop therefore looks ~4× too big, and Stage 1's DAP head reads size in a fixed window — the
+reported "DAP uncorrelated with truth" follows. Fix: `window_px = 1.2 m × (frame_px / plot_width_m)`
+(the multi-plant script already assumes the 1.3 m plot width).
+
+#### C. Refinement safety on real crops
+
+- **Bound realized organ size in metres**, not the phytomer scale `s_a` — refinement currently
+  inflates leaf scale 2.4–2.6× against a loose blob-mask target.
+- **Make existence continuous** in refinement (soft compositing weight on Stage 2's logits) so the
+  optimiser can switch nodes on/off; lowering the threshold alone adds false positives it can't remove.
+
+#### D. Lower-priority / don't bother
+
+- **Stop investing in the Stage 3 latent.** Refinement from a mean latent reaches the same 66.5 as
+  the sampled latent; the network's real contribution is node positions/existence/topology. If
+  Stage 3 stays, a deterministic regression head is enough.
+- **Guided sampling is not worth it** (neutral alone, *hurts* when chained with refinement).
+- Larger backbone with multizoom (`dinov2_vitb14`) is one flag away if node error (4–6 cm at 7.5 cm
+  per token) ever becomes the binding constraint.
+- Use 50–100 eval plants for decisions — epoch spread is ±3 points on the current 20-plant set.
+
+### 0.3 Everyday workflows
+
+```bash
+# Evaluate a checkpoint under the strict protocol + refinement (200 steps, not the 40-step default:
+# 2026-09-17 measured 66.3 -> 73.7 by step count alone)
+python plant_recon/eval/eval_test_time_refinement.py --checkpoint outputs/checkpoints/hierarchical_fm_v10_cam/hierarchical_fm_epoch_160_ema.pt --steps 200
+
+# Self-consistency panels
+python plant_recon/eval/eval_hierarchical_self_consistency.py --help
+
+# Train (cluster): one launcher, env overrides for every knob
+sbatch scripts/train_hierarchical_flow_matching.sh            # current v9/v10 recipe
+TRAIN_VAE=1 sbatch scripts/train_hierarchical_flow_matching.sh # fresh PhytomerVAE first
+
+# Real image: one frame -> detections -> per-plant XML -> refinement -> rendered plot
+python use_cases/real_world/eval/run_multiplant_scene.py --image <frame.jpg>
+```
+
+### 0.4 Gotchas worth memorising
+
+- `PYTHONPATH=.` from the repo root is mandatory; the package imports as `plant_recon.*`.
+- CHM depth = height **above ground** (ground 0, apex max) — inverted vs camera distance.
+- Helios XML with any scale/radius ≤ 0 segfaults the C++ binary; clamp at export.
+- Packet cache order must match the VAE (`PHYTOMER_TERMINAL_LAST=1` ⇔ `_pkt_v9` cache). Never edit
+  cache files in place — bump `PKT_VERSION` and regenerate.
+- Don't stack a foreground eval on the same GPU as a live local training run (two stalls this week).
+- A checkpoint written before the 2026-09-16 restructure stores `diffusion_based/...` paths inside its
+  own args; `plant_recon/eval/ckpt_compat.py` remaps them, and every eval script calls it.
+- Never cancel Heesup's `regen_*` jobs or the OnDemand desktop jobs; training goes on
+  `gpu-6000_ada-h`/`low`.
+
+---
+
+## 0-C. State as of 2026-09-16 (newest; read this first)
+
+The live dashboard is [`current-status.md`](../current-state/current-state.md); the plan and the measurement of the day are in
+[`20260916-sim-to-real-assessment.md`](../experiments/20260916-sim-to-real-assessment/20260916-sim-to-real-assessment.md).
+What §0-A and §0-B do not know:
+
+- **Synthetic track (2026-09-15/16).** The `hierarchical_fm_v10_cam` lineage (v10 flags + `RENDER_INPUT_CAMERA=1` + EMA,
+  from the s3geom ep78 checkpoint) ran to ep160 on the cluster (`38275054` → `38279147` → `38332343`, checkpoints
+  `outputs/checkpoints/hierarchical_fm_v10_cam/`). Strict-protocol P plateaus at 33–39 for every training lever tried
+  (Stage 3 geometry, teacher forcing, latent normalisation, multizoom, node-token window, existence-count weight,
+  render-to-latent / -exist, a render-fraction curriculum, 10% vs 100% of the data). **Test-time refinement**
+  (`plant_recon/eval/eval_test_time_refinement.py`: 40 Adam steps on nodes / scales / latents against the input CHM;
+  defaults `--input_camera`, four zoom targets, `reg_scale 5`, `reg_latent 0.5`) lifts ep160 EMA from 38.7 to **68.3**
+  and is the deployable path; the flow-sampled latent adds nothing over the mean latent once refinement runs; guided
+  sampling inside the ODE does not compose with it. Chronology: §0-B.9 below and the 2026-09-14 report §11.
+- **Real-image track (2026-09-15/16).** `use_cases/real_world/`: Roboflow and AgML GEMINI cowpea sources, YOLO
+  detectors (mAP50 0.84 / 0.975), Depth Anything pseudo-CHM, per-crop cold start and refinement, and the whole-frame
+  multi-plant pipeline (`eval/run_multiplant_scene.py`). Nothing is geometrically usable yet: the network's cold start
+  collapses to a single phytomer on most real crops and refinement inflates leaves against loose targets. Reports:
+  `docs/experiments/20260915-real-image-first-test/`, `20260916-agml-dataset-swap/`, `20260916-multiplant-scene/`.
+- **Appearance gap measured (2026-09-16 evening).** The network reads only the RGB planes (`DINORayEncoder.forward`),
+  training RGB is a flat render with no augmentation, and swapping it for a Helios raytraced re-render of the same 20
+  eval plants at the same framing (`plant_recon/eval/render_helios_eval_crops.py`) costs strict P 38.1 → 28.6 raw and
+  66.3 → 59.2 refined, with the DAP probe and the existence gate failing on seedlings and mature plants exactly as on
+  real crops. Next bet: fine-tune on Helios RGB with augmentation; fix the real crop framing (a fixed 1.2 m window, not
+  1.2× the detector box) before the next real-image test.
+- **Repository restructure (2026-09-16).** `plant_recon/` package, `use_cases/real_world/`,
+  `outputs/{checkpoints,logs,wandb,weights,eval}`, `scripts/` launchers only, `submodules/Digital-Crops/`, docs as a
+  topic tree with co-located assets (`docs/_index.md`). Map: `docs/architecture/code-structure/code-structure.md`.
+  Paths in §0-A / §0-B were bulk-rewritten; the §6 source map is the 2026-09-11 tree with the moved locations annotated.
+
 ## 0-A. State as of 2026-09-13 (read this first; supersedes the older sections where they disagree)
 
-The full record is `docs/handovers/20260912-stage2-stage3-boundary/20260912-stage2-stage3-boundary.md`
+The full record is `docs/../engineering/20260912-stage2-stage3-boundary/20260912-stage2-stage3-boundary.md`
 (§0 status, §1.9.2 the training blocker, §2.4-2.5 the round-trip, §2.6 the dataset-plant round-trip, §5 reading order, §6 commit log); the 2026-09-14 report is `docs/experiments/20260914-stage2-burst-fix-roundtrip/20260914-stage2-burst-fix-roundtrip.md`.
 
 **Round-trip (the "very important" requirement): solved.** `docs/experiments/20260914-stage2-burst-fix-roundtrip/assets/fig14_phytomer_vae_helios_roundtrip.png`
@@ -47,6 +171,8 @@ reads IK-only 99.9 / 99.6 / 97.7% and VAE round-trip **93.7 / 98.3 / 95.8%** FG 
   checkpoint. The *legacy* `_unreferenced/phytomer_9slot_roundtrip_comparison.png` is the old soft-rasterizer pipeline;
   ignore it.
 
+![Figure 14 phytomer vae helios roundtrip](../experiments/20260914-stage2-burst-fix-roundtrip/assets/fig14_phytomer_vae_helios_roundtrip.png)
+
 **Dataset plants (2026-09-14, design doc §2.6).** fig14 above is measured on the exact_gt trio, which is generated with
 the converter's own default angles; on dataset plants (DAP 15/40/75 in the regenerated
 `docs/experiments/20260914-stage2-burst-fix-roundtrip/assets/fig12_phytomer_10slot_helios_roundtrip.png`, script `plant_recon/eval/eval_phytomer_10slot_assembly_views.py`)
@@ -56,6 +182,8 @@ requires a parent below its child (drooping laterals were cut; cycles are now br
 branch point from the decoded slot-0 base (66 -> 98% of laterals right -- the training call site passes it, so every
 earlier run trained on wrong parent/depth targets for a third of the laterals); and `part_tensor_leaf_ik.py` inverts the
 FK's leaf rotation per leaf (`PART_TENSOR_LEAF_IK=0` disables). Packet path on those plants: **98.3 / 98.2 / 95.6%**, VAE round-trip **95.1 / 96.8 / 95.6%**.
+
+![Figure 12 phytomer 10slot helios roundtrip](../experiments/20260914-stage2-burst-fix-roundtrip/assets/fig12_phytomer_10slot_helios_roundtrip.png)
 
 **VAE / cache lineage.** Every FM checkpoint so far read its Stage-3 target latents from a packet cache stamped with a VAE's latents. Since 2026-09-14 that coupling is gone: `train_hierarchical_flow_matching.py` encodes the target latent on the fly from the cached packets with the VAE the run loads, so `dataset/cache/cowpea_curv26_pkt_v9/` (pkt_version 7, terminal-last) and `cowpea_curv26_pkt/` (pkt_version 6, bottom-to-top) hold only packets/presence/centers/refs/keys and are VAE-independent. What still binds VAE ↔ cache is the packet ORDER (terminal-last vs bottom-to-top), via `PHYTOMER_TERMINAL_LAST`. So: bump `PKT_VERSION` and regenerate ONLY when the packet format changes; to swap the VAE, point `PHYTOMER_VAE_CHECKPOINT` at it (or `TRAIN_VAE=1` in the launcher) with `PKT_VERSION` matching its packets. The old standalone launchers `archive/slurm_scripts/train_phytomer_vae.sh` and `generate_phytomer_packets_jobs.sh` are folded into `train_hierarchical_flow_matching.sh` (`TRAIN_VAE=1`) and `generate_helios_dataset_jobs.sh` (`--packets-only`), and now live under `archive/slurm_scripts/`.
 
@@ -375,6 +503,8 @@ first; read its latent probe (`scratchpad/latent_probe.py`, R² at t = 0) before
 `docs/experiments/20260907-latent-fm-500epoch/assets/hierarchical_self_consistency_epoch_125.png` (Option B, organ-level 16D latent, job
 `38145444`, epoch 125) was a coincidence and whether to go back to it. Measured, not argued:
 
+![Hierarchical self consistency epoch 125](../experiments/20260907-latent-fm-500epoch/assets/hierarchical_self_consistency_epoch_125.png)
+
 - That number was the mean over the **first 4 plants of one random batch** (DAP 17/42/72/49, no seedlings; the eval of
   that era used `num_samples_to_plot=4` on `next(iter(dataloader))`, different plants every time). The job evaluated
   six times in all — epochs 25/50/75/100/125/150 → 39.1 / 26.4 / 33.8 / 26.9 / 45.4 / 49.2 — a series dominated by
@@ -430,6 +560,8 @@ noisily (EMA 35 → 38), the refined level is flat at 65–68. ep128: raw 38.1 /
 slot on gpu-10-54 would otherwise go to other groups, the lineage continues (`AUTO_RESUME` from ep128, `EPOCHS=160`,
 same flags, EMA restored from the checkpoint) under job `38332343`, log `outputs/logs/20260916/hierarchical_fm_38332343.log` (the first attempt, `38332310`, resumed from `hierarchical_fm_epoch_128_ema.pt` because the launcher's AUTO_RESUME took the newest `hierarchical_fm_epoch_*.pt`, which the EMA files now match — no optimizer state, fresh warm-up; cancelled after 3 min, launcher fixed with `grep -v '_ema\.pt$'`, commit `ce8f150`);
 a detached loop scores its EMA files ep130–160 (`full_ema_readings2.log` in the session scratchpad). ep130 EMA: 37.5, refined 66.0; ep135 EMA: 35.9, refined 64.9; ep140 EMA: 37.3, refined 65.5; ep145 EMA: 38.3, refined 65.7; ep150 EMA: 36.5, refined 63.8 — flat at 35-38 / 64-66 since ep135. Job `38332343` is still running (ep154 at 09:11 on 2026-09-16); ep140/145/150 EMA readings recovered from JSON on disk (37.3/65.5, 38.3/65.7, 36.5/63.8 -- flat). The detached scorer loops and the local `cnt2` run died when the session restarted around 09:00.
+
+![Optionb vs today same plants](../archive/unreferenced-assets/20260915_optionb_vs_today_same_plants.png)
 
 **09:15 relaunch note:** the local machine turned out to be a different node than before -- a single TITAN RTX with 24 GB VRAM, not the ~49 GB Ada card the earlier local runs profiled against (`Per-GPU VRAM: 49140 MiB` in the old logs). Resuming `cnt2` with the old fixed `--batch_size 48` OOM'd immediately; relaunched with `FORCE_BATCH_SIZE=auto` (runtime VRAM probe) instead, which is now the way to resume any local run whose original node is unknown. Both scorer loops were restarted from the first unscored epoch: `full_ema_readings3.sh` (full lineage, ep155/160) and `cnt2_readings2.sh` (cnt2, ep110 onward).
 
@@ -563,6 +695,12 @@ the same six plants go 39.6 → 70.4 and the inflated polygons are gone (now the
 On all 20 plants with the prior: **35.8 → 63.9** strict P (DAP > 15: 39.3 → 72.2) — the best deployable number so far, with plausible geometry. With all four cache zoom levels as targets (`--target_zooms 1,2,4,8`, now the default together with `--input_camera` and the prior; `--origin_camera` restores the old frame): **35.8 → 67.6** (DAP > 15: 41.1 → 74.0), the young plants finally gaining (DAP 2/3/11/12: 0/11/21/27 → 35/22/53/58). 80 steps with the defaults: 36.0 → 69.1 (DAP > 15 41.3 → 78.6). `--recompute_rot` (rotation and parent position re-derived from the moving nodes) 33.5 → 60.0 and roll as a fourth variable 35.1 → 61.4: both worse than the frozen-rotation default, so rotation stays fixed at the sampled node positions. Baseline ep135 (full data) with the defaults: 27.0 → 63.1 (DAP > 15 31.7 → 72.4) — the training-side gap to v10 shrinks from 8.8 to 4.5 after refinement. Lesson: silhouette IoU alone is not sufficient, the
 refinement needs a prior on scale/latent — and the same GT-bbox camera must go into the training render block.
 
+![Test time refinement before after input camera noprior](assets/20260915_test_time_refinement_before_after_input_camera_noprior.png)
+
+![Test time refinement before after](assets/20260915_test_time_refinement_before_after.png)
+
+![Test time refinement before after origin frame](assets/20260915_test_time_refinement_before_after_origin_frame.png)
+
 **13:00 — the render loss has been comparing against a shifted target.** The cached input CHM (`generate_cache.py`,
 `focus_plant=True`) is framed on the **GT plant's bounding-box centre**, while the training render block
 (`render_batched`, `focus_plant=False` + `reference_window_size`) and every evaluation render frame the plant at the
@@ -626,12 +764,12 @@ latent path is starved by node error after all.
 - Cluster etiquette: Heesup's `regen_*` jobs (geminigrp) hold the group GPU quota — do not cancel; training goes on
   `gpu-6000_ada-h` / `low`. The OnDemand desktop (38252204) must not be killed.
 
-## 0. Quick State Check (Run This First)
+## 0-D. Quick state check (commands; the 2026-09-11 section list follows)
 
 ```bash
-# Where is training right now? (latest job log)
-ls -t outputs/logs/hierarchical_fm_*.log | head -3
-tail -n 30 outputs/logs/hierarchical_fm_$(ls -t outputs/logs/ | grep ^hierarchical_fm | head -1 | sed 's/hierarchical_fm_//;s/.log//').log
+# Where is training right now? (latest job log; logs sit in one folder per start date)
+ls -t outputs/logs/*/hierarchical_fm_*.log | head -3
+tail -n 30 "$(ls -t outputs/logs/*/hierarchical_fm_*.log | head -1)"
 
 # All running/pending jobs
 squeue -u lion397
@@ -641,8 +779,8 @@ find dataset/helios_data/cowpea -name "*.xml" | wc -l   # 100,000
 find dataset/cache/cowpea_curv26 -name "*.pt" | wc -l   # 100,000 (all have phytomer_ids)
 
 # Available checkpoints
-ls -lh outputs/checkpoints/hierarchical_latent_fm/*.pt
-ls -lh outputs/checkpoints/phytomer_vae_v3/*.pt   # v3 is the DEFAULT now
+ls -lh outputs/checkpoints/hierarchical_fm_v10_cam/*.pt        # current lineage (ep160 raw + _ema files)
+ls -lh outputs/checkpoints/phytomer_vae_v9_tl_rw4_20k/*.pt   # current VAE (v9, terminal-last packets)
 ```
 
 ---
@@ -794,7 +932,9 @@ Execution results for `plant_recon/eval/eval_13d_xml_organ_masks.py` (`fig10_hel
 - At DAP 50, Internode IoU = 0.0% → stems rendered at entirely different positions
 - **Next Step**: Numerically compare world pose in `extract_part_tensor` ↔ Helios XML inverse kinematics (IK) transform agreement
 
-*(Result figure: [`docs/handovers/agent-takeover-guide/assets/fig10_helios_per_organ_mask_comparison.png`](assets/fig10_helios_per_organ_mask_comparison.png))*
+*(Result figure: [`docs/assetsfig10_helios_per_organ_mask_comparison.png`](assets/fig10_helios_per_organ_mask_comparison.png))*
+
+![Figure 10 helios per organ mask comparison](assets/fig10_helios_per_organ_mask_comparison.png)
 
 ---
 
@@ -871,7 +1011,7 @@ sbatch scripts/train_hierarchical_flow_matching.sh
 | **P0** | **Fix grad_norm=inf deadlock & resubmit** | Cancel 38237555. Patch `init_logits` clamp [-15,+15] in `hierarchical_part_flow_matching.py`, verify `z_0.detach()` in `train_hierarchical_flow_matching.py`, add `torch.nan_to_num` on render outputs. Run local smoke test then `sbatch` |
 | **P1** | **Diagnose Internode/Petiole IoU=0~15%** | Compare `extract_part_tensor` world pose → Helios IK → XML → re-render numerically. Check coordinate convention (Z-up vs Y-up) between PyTorch mesh builder and Helios XML parser in `part_tensor_to_40d.py` |
 | **P2** | **Verify 10-slot ordered assembly roundtrip** | Run `test_phytomer_ordered_assembly.py` with DAP 15/40/75; confirm Δ-parts=0 across all growth stages |
-| **P3** | Epoch-1 sanity after resubmit | Check `outputs/logs/run_<jobid>/hierarchical_self_consistency_epoch_001.png` (each run's panels sit beside its own `run.log` symlink; they used to overwrite each other under `docs/results/assets`): loss ↓, pred count ~50, ClsAcc rising, no Recovery-skip lines |
+| **P3** | Epoch-1 sanity after resubmit | Check `outputs/logs/<YYYYMMDD>/run_<jobid>/hierarchical_self_consistency_epoch_001.png` (each run's panels sit beside its own `run.log` symlink; they used to overwrite each other under `docs/results/assets`): loss ↓, pred count ~50, ClsAcc rising, no Recovery-skip lines |
 | **P4** | Monitor 6D rotation convergence | Panels epoch 25/50; s_a (petiole len) should track DAP growth |
 | **P5** | Evaluate Bidirectional Chamfer Distance | Add max/mean distance GT→Pred to avoid one-way clustering metric bias |
 | **P6** | Backbone A/B (DINOv2-scale vs frozen runs) | `archive/slurm_scripts/submit_backbone_ablation.sh` — only after single-run training is stable |
@@ -904,7 +1044,7 @@ sbatch scripts/train_hierarchical_flow_matching.sh
 │   ├── eval/
 │   │   ├── eval_hierarchical_self_consistency.py ← 7-column diagnostic panel generator (DAP-spread samples)
 │   │   └── eval_13d_xml_organ_masks.py           ← [NEW 2026-09-11] Per-organ COCO mask IoU + Depth PSNR roundtrip eval
-│   └── checkpoints/
+│   └── checkpoints/                              ← MOVED 2026-09-16 to outputs/checkpoints/ (2026-09-11 entries below; current: hierarchical_fm_v10_cam/, phytomer_vae_v9_tl_rw4_20k/)
 │       ├── hierarchical_latent_fm/               ← epoch_025~100 (390MB, new 3-stage arch); epoch_125~500 (552MB, OLD arch — incompatible)
 │       ├── organ_vae/organ_latent_vae_best.pt    ← frozen OrganLatentVAE bridge
 │       └── phytomer_vae_v3/                      ← [ACCEPTED DEFAULT] PhytomerVAE-64 v3, 10-slot normalized (val recon 0.070, cls 100%)
@@ -917,16 +1057,15 @@ sbatch scripts/train_hierarchical_flow_matching.sh
 │   ├── cache/cowpea_curv26/                      ← 100,000 cached .pt (image+nodes+phytomer_ids, complete)
 │   ├── cache/cowpea_curv26_pkt/                  ← 100,000 pkt v3 (10-slot, absolute packets + normalized latent)
 │   └── cache/cowpea_curv26_subset4k/             ← 4,000 symlinks (40/DAP × 100 DAP) for fast smoke tests
-└── docs/
-    ├── ongoing/
-    │   ├── README.md                             ← ongoing status dashboard
-    │   └── AGENT_TAKEOVER_GUIDE.md               ← [THIS FILE] master handoff
-    └── results/
-        ├── 20260910_gradient_explosion_debug_and_architecture_comparison.md ← grad explosion root cause
-        ├── 20260910_current_architecture.md      ← full math derivation of 4-stage pipeline
-        └── assets/
-            ├── fig10_helios_per_organ_mask_comparison.png  ← [NEW 2026-09-11] Per-organ IoU diagnosis (DAP 10/50/90)
-            └── fig12_phytomer_10slot_helios_roundtrip.png  ← [2026-09-14] dataset plants DAP 15/40/75: GT + 10-slot assembly (nadir, 45°), Helios round-trips
+└── docs/                                         ← restructured 2026-09-16; docs/_index.md is the map
+    ├── handovers/
+    │   ├── current-status.md                     ← live status dashboard (was docs/ongoing/README.md)
+    │   └── agent-takeover-guide/agent-takeover-guide.md  ← [THIS FILE] master handoff
+    ├── experiments/                              ← results reports (was docs/results/), figures in each report's assets/
+    │   ├── 20260910-gradient-explosion-debug/    ← grad explosion root cause
+    │   └── 20260914-stage2-burst-fix-roundtrip/assets/fig12_phytomer_10slot_helios_roundtrip.png  ← [2026-09-14] dataset plants DAP 15/40/75, Helios round-trips
+    ├── architecture/current-architecture/        ← full math derivation of the 4-stage pipeline
+    └── assetsfig10_helios_per_organ_mask_comparison.png  ← [2026-09-11] per-organ IoU diagnosis (DAP 10/50/90)
 ```
 
 ---
@@ -976,11 +1115,11 @@ sbatch scripts/train_hierarchical_flow_matching.sh
 
 | File | Date | Summary |
 | :--- | :--- | :--- |
-| [`docs/engineering/20260909-phytomer-latent-matching/20260909-phytomer-latent-matching.md`](../../engineering/20260909-phytomer-latent-matching/20260909-phytomer-latent-matching.md) | 2026-09-09/10 | **[MASTER ENGINEERING LOG]** §4.6–4.9: pipeline refactor, backbone A/B, fruit fix, v3 scale-normalized packets + 76D flow, render-pipeline timing |
-| [`docs/experiments/20260907-latent-fm-500epoch/20260907-latent-fm-500epoch.md`](../../experiments/20260907-latent-fm-500epoch/20260907-latent-fm-500epoch.md) | 2026-09-07 | Option B 500-epoch report: 55.1% IoU, 2.49cm height error |
-| [`docs/experiments/20260908-3d-spatial-vision-milestone/20260908-3d-spatial-vision-milestone.md`](../../experiments/20260908-3d-spatial-vision-milestone/20260908-3d-spatial-vision-milestone.md) | 2026-09-08 | Epoch 150 spatial vision breakthrough: 49.2% mean IoU, 2.6cm RMSE |
-| [`docs/experiments/20260908-3stage-cascaded-milestone/20260908-3stage-cascaded-milestone.md`](../../experiments/20260908-3stage-cascaded-milestone/20260908-3stage-cascaded-milestone.md) | 2026-09-08 | 3-stage cascaded architecture scaling: batch 192, dormant slot damping |
-| [`docs/experiments/20260908-skeleton-geometry-chamfer/20260908-skeleton-geometry-chamfer.md`](../../experiments/20260908-skeleton-geometry-chamfer/20260908-skeleton-geometry-chamfer.md) | 2026-09-08 | Root cause analysis of Epoch 50 skeleton geometry vs AncPos loss |
-| [`docs/experiments/20260910-gradient-explosion-debug/20260910-gradient-explosion-debug.md`](../../experiments/20260910-gradient-explosion-debug/20260910-gradient-explosion-debug.md) | 2026-09-10 | **[KEY]** Gradient explosion diagnosis: Float32 overflow + z0 detach bug + deadlock mechanism |
-| `docs/handovers/agent-takeover-guide/assets/fig10_helios_per_organ_mask_comparison.png` | **2026-09-11** | **[NEW]** Per-organ COCO mask IoU + Depth PSNR roundtrip: Leaf ✅, Internode/Petiole ❌ |
+| [`docs/engineering/20260909-phytomer-latent-matching/20260909-phytomer-latent-matching.md`](../engineering/20260909-phytomer-latent-matching/20260909-phytomer-latent-matching.md) | 2026-09-09/10 | **[MASTER ENGINEERING LOG]** §4.6–4.9: pipeline refactor, backbone A/B, fruit fix, v3 scale-normalized packets + 76D flow, render-pipeline timing |
+| [`docs/experiments/20260907-latent-fm-500epoch/20260907-latent-fm-500epoch.md`](../experiments/20260907-latent-fm-500epoch/20260907-latent-fm-500epoch.md) | 2026-09-07 | Option B 500-epoch report: 55.1% IoU, 2.49cm height error |
+| [`docs/experiments/20260908-3d-spatial-vision-milestone/20260908-3d-spatial-vision-milestone.md`](../experiments/20260908-3d-spatial-vision-milestone/20260908-3d-spatial-vision-milestone.md) | 2026-09-08 | Epoch 150 spatial vision breakthrough: 49.2% mean IoU, 2.6cm RMSE |
+| [`docs/experiments/20260908-3stage-cascaded-milestone/20260908-3stage-cascaded-milestone.md`](../experiments/20260908-3stage-cascaded-milestone/20260908-3stage-cascaded-milestone.md) | 2026-09-08 | 3-stage cascaded architecture scaling: batch 192, dormant slot damping |
+| [`docs/experiments/20260908-skeleton-geometry-chamfer/20260908-skeleton-geometry-chamfer.md`](../experiments/20260908-skeleton-geometry-chamfer/20260908-skeleton-geometry-chamfer.md) | 2026-09-08 | Root cause analysis of Epoch 50 skeleton geometry vs AncPos loss |
+| [`docs/experiments/20260910-gradient-explosion-debug/20260910-gradient-explosion-debug.md`](../experiments/20260910-gradient-explosion-debug/20260910-gradient-explosion-debug.md) | 2026-09-10 | **[KEY]** Gradient explosion diagnosis: Float32 overflow + z0 detach bug + deadlock mechanism |
+| `docs/assetsfig10_helios_per_organ_mask_comparison.png` | **2026-09-11** | **[NEW]** Per-organ COCO mask IoU + Depth PSNR roundtrip: Leaf ✅, Internode/Petiole ❌ |
 | `docs/experiments/20260914-stage2-burst-fix-roundtrip/assets/fig12_phytomer_10slot_helios_roundtrip.png` | **2026-09-14** | Dataset plants DAP 15/40/75: GT mesh and 10-slot assembly under the same nadir and 45° cameras, Helios round-trip via packets and via the VAE (`eval_phytomer_10slot_assembly_views.py`) |

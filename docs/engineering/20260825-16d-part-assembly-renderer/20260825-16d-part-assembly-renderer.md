@@ -116,6 +116,8 @@ Higher-fidelity mesh = better gradient signal for Direct Optimization; rasteriza
 
 Figure: [`docs/experiments/15-strategies-benchmark/assets/fig8_multimodal_depth_mask.png`](../../experiments/15-strategies-benchmark/assets/fig8_multimodal_depth_mask.png)
 
+![Figure 8 multimodal depth mask](../../experiments/15-strategies-benchmark/assets/fig8_multimodal_depth_mask.png)
+
 ---
 
 ## 6. Root Causes of Previous Broken 16D Renders

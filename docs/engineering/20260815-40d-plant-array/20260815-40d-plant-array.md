@@ -103,6 +103,8 @@ When converting the 40D Plant Organ Array to a latent vector $z \in \mathbb{R}^{
 Visual rendering equivalence and XML round-trip fidelity are verified in:
 - [`docs/engineering/20260815-40d-plant-array/assets/fig_40d_helios_render_comparison.png`](assets/fig_40d_helios_render_comparison.png)
 
+![Fig 40d helios render comparison](assets/fig_40d_helios_render_comparison.png)
+
 ```
 Test Results:
   - Cowpea DAP 10 (Seedling):  Round-trip error = 0.00000000 | mSSIM = 0.451

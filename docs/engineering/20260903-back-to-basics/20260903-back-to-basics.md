@@ -74,6 +74,8 @@ Rather than the hack of reducing existence (alpha) to erase organs, we **fully o
 - **Evaluation & Visualization**:
   - 3D point cloud alignment trajectory, 14D Part Tensor reconstruction error (MSE), final Helios XML re-render (`docs/archive/unreferenced-assets/exp1_icp_alignment.png`).
 
+![Exp1 icp alignment](../../archive/unreferenced-assets/exp1_icp_alignment.png)
+
 #### Step 3. Method 2: Differentiable Renderer Multi-Loss Direct Optimization (`archive/scratch/20260903_phase1_basics/exp2_diff_render_opt.py`)
 - **Blank-canvas local minima prevention**:
   - Pure RGB L1 loss collapses to the trivial zero-transparency local minimum, so we use a **multi-objective loss**:
@@ -90,6 +92,8 @@ Rather than the hack of reducing existence (alpha) to erase organs, we **fully o
 - **Evaluation & Visualization**:
   - Step 0 / 15 / 30 / 45 / 60 / 75 rendering progression, pyramid loss convergence curve, 14D parameter error trace (`docs/archive/unreferenced-assets/exp2_diff_render_progression.png`).
 
+![Exp2 diff render progression](../../archive/unreferenced-assets/exp2_diff_render_progression.png)
+
 #### Step 4. Method 3: Conditional Flow Matching Vector Field (`archive/scratch/20260903_phase1_basics/exp3_toy_flow_matching.py`)
 - **Architecture**:
   - Input: 4-channel RGB-D top-view image ($256 \times 256 \times 4$).
@@ -102,6 +106,8 @@ Rather than the hack of reducing existence (alpha) to erase organs, we **fully o
   - Sampling: Starting from $x_0 \sim \mathcal{N}(0, I)$, generate $x_1$ via 15 Euler ODE steps → decode via `diff_node_to_part_tensor_14d`.
 - **Evaluation & Visualization**:
   - ODE trajectory snapshots at $t \in \{0, 5, 10, 15\}$, 14D Part Tensor generation accuracy (`docs/archive/unreferenced-assets/exp3_flow_matching_trajectory.png`).
+
+![Exp3 flow matching trajectory](../../archive/unreferenced-assets/exp3_flow_matching_trajectory.png)
 
 #### Step 5. Phase 1 Synthesis & Helios C++ Raytracing Verification (`archive/scratch/20260903_phase1_basics/eval_phase1_comparison.py`)
 - **Phase 1 Benchmark Final Results (Canonical 14D + 7-Row Target with Metadata)**:
@@ -144,6 +150,8 @@ Extending the fixed-organ Phase 1 problem to the case where organ count is varia
      - $1.0\times$ (1.2 m window, global metric scale preserved) + $4.0\times$ (0.3 m window, canopy alignment) + $8.0\times$ (0.15 m window, dense 256×256 pixel gradients for seedlings).
   2. **Validated**: Visualization at `docs/archive/unreferenced-assets/fig13_progressive_multiscale_pyramid.png`. Method 2 achieves 81.61% IoU and 2.29 mm Chamfer distance by default.
 
+![Figure 13 progressive multiscale pyramid](../../archive/unreferenced-assets/fig13_progressive_multiscale_pyramid.png)
+
 ---
 
 ### Verification & Deliverables
@@ -154,6 +162,9 @@ Extending the fixed-organ Phase 1 problem to the case where organ count is varia
   - `PYTHONPATH=. python archive/scratch/20260903_phase1_basics/exp3_toy_flow_matching.py`: Method 3 Flow Matching
   - `PYTHONPATH=. python archive/scratch/20260903_phase1_basics/eval_phase1_comparison.py`: Synthesis benchmark evaluation and Figure 12
 - **Visual Deliverables**:
-  - `docs/handovers/agent-takeover-guide/assets/fig10_helios_per_organ_mask_comparison.png`: Full lifecycle Helios raytracing verification (DAP 10: 95.1%, DAP 50: 92.8%, DAP 90: 86.5%)
+  - `docs/../../agent-handover-guide/assetsfig10_helios_per_organ_mask_comparison.png`: Full lifecycle Helios raytracing verification (DAP 10: 95.1%, DAP 50: 92.8%, DAP 90: 86.5%)
   - `docs/archive/unreferenced-assets/fig12_back_to_basics_benchmark_summary.png`: Phase 1 three-method comparison grid
   - `docs/archive/unreferenced-assets/fig13_progressive_multiscale_pyramid.png`: Multi-scale pyramid validation
+
+
+![Figure 12 back to basics benchmark summary](../../archive/unreferenced-assets/fig12_back_to_basics_benchmark_summary.png)

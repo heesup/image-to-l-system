@@ -13,8 +13,10 @@ status: done
 - **Key Artifacts**:
   - Core Converter: `plant_recon/models/part_tensor_to_40d.py`
   - Lifecycle Evaluator: `plant_recon/eval/eval_13d_xml_organ_masks.py`
-  - Multi-Modal Comparison: `docs/handovers/agent-takeover-guide/assets/fig10_helios_per_organ_mask_comparison.png`
+  - Multi-Modal Comparison: `docs/../../agent-handover-guide/assetsfig10_helios_per_organ_mask_comparison.png`
   - Pipeline Debug View: `docs/archive/unreferenced-assets/fig11_xml_reconstruction_pipeline_debug.png`
+
+![Figure 11 xml reconstruction pipeline debug](../../archive/unreferenced-assets/fig11_xml_reconstruction_pipeline_debug.png)
 
 ---
 
@@ -102,7 +104,7 @@ $$\theta = \text{atan2}(\mathbf{u} \cdot (\mathbf{p}_1 \times \mathbf{p}_2), \ma
 
 ## 4. Visual Confirmation & Assets
 
-- **Figure 10** (`docs/handovers/agent-takeover-guide/assets/fig10_helios_per_organ_mask_comparison.png`):
+- **Figure 10** (`docs/../../agent-handover-guide/assetsfig10_helios_per_organ_mask_comparison.png`):
   Comprehensive multi-modal comparison across DAP 10, DAP 50, and DAP 90 showing Ground Truth Raytrace RGB, COCO Organ Masks, Raytrace Depth, Reconstructed 13D XML Raytrace RGB, Reconstructed Organ Masks, Reconstructed Depth, and PyTorch 13D Differentiable Renders.
 - **Figure 11** (`docs/archive/unreferenced-assets/fig11_xml_reconstruction_pipeline_debug.png`):
   Detailed 13D to XML pipeline architectural diagram and debug validation.

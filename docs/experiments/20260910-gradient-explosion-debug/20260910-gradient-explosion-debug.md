@@ -269,3 +269,8 @@ loss = (
 
 - [`assets/hierarchical_self_consistency_epoch_008.png`](assets/hierarchical_self_consistency_epoch_008.png) — Job 38235969, epoch 8 output
 - [`assets/hierarchical_self_consistency_epoch_125_20260908.png`](assets/hierarchical_self_consistency_epoch_125_20260908.png) — Option B epoch 125 result
+
+
+![Hierarchical self consistency epoch 008](assets/hierarchical_self_consistency_epoch_008.png)
+
+![Hierarchical self consistency epoch 125 20260908](assets/hierarchical_self_consistency_epoch_125_20260908.png)

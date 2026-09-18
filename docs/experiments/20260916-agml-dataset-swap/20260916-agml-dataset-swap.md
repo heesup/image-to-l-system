@@ -71,6 +71,8 @@ detector has no segmentation output at all, so `build_mask_pyramid` fell all the
 thresholding the blurry Depth-Anything pseudo-CHM — an even looser Dice target than the "canvas
 inflation" bug's original cause on 2026-09-15 (a real but zoom-saturated segmentation mask).
 
+![Agml real image test](assets/20260916_agml_real_image_test.png)
+
 **Fix attempt: `bbox_to_mask`** — gave `detect_plants` a bounding-box-rectangle mask fallback so a
 box-only detector still has *some* real silhouette bound, tighter than a depth threshold. Re-ran
 ([`assets/20260916_agml_real_image_test_bboxmask.png`](assets/20260916_agml_real_image_test_bboxmask.png)): **the inflation is still there**
@@ -79,6 +81,8 @@ already-undersized seedling is itself loose — most of the box is bare soil, no
 it still costs the optimizer little more than filling a depth blob did. The existing hard clamp
 (`scale_clip_mult=1.5`) multiplies an already very small cold-start scale, and 1.5x of "very small"
 can still read as "one large flat leaf" against a target this loose.
+
+![Agml real image test bboxmask](assets/20260916_agml_real_image_test_bboxmask.png)
 
 ## 5. A tighter clip helps partially, not fully
 
@@ -98,6 +102,8 @@ metres" the way the name suggests -- picking a naive positive ceiling without un
 actual packing (`denormalize_packet_scales`) risks clamping something that was never the problem,
 or missing the axis that actually is. Left for whoever next revisits this to check that convention
 first.
+
+![Agml real image test tightclip](assets/20260916_agml_real_image_test_tightclip.png)
 
 ## 6.5. Calibrating and applying the absolute scale cap
 
@@ -144,6 +150,8 @@ refinement is doing essentially all of its work through scale/latent against the
 bounding-box mask target, not repositioning nodes; whether that undersells the achievable fit
 against a real mask (as opposed to a bbox) is untested, since this source still has no real
 segmentation output (§1, §2).
+
+![Agml real image test scale abs max calibrated](assets/20260916_agml_real_image_test_scale_abs_max_calibrated.png)
 
 ## 6. Conclusion
 

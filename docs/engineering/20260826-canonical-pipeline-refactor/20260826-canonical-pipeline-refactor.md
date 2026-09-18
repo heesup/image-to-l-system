@@ -86,6 +86,8 @@ conda run -n digital-crops python plant_recon/eval/generate_multimodal_outputs.p
 ```
 - Runs to completion and regenerates `docs/experiments/15-strategies-benchmark/assets/fig8_multimodal_depth_mask.png`.
 
+![Figure 8 multimodal depth mask](../../experiments/15-strategies-benchmark/assets/fig8_multimodal_depth_mask.png)
+
 ### Native-FK equivalence
 - `extract_part_tensor()` (native 40D) == old 94D-based extract, **max abs diff = 0.0** across all roundtrip XMLs.
 
@@ -202,6 +204,8 @@ Two remaining bugs were found by comparing **GT-XML masks vs RT-XML masks** (sam
 | 090 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
 
 All organs round-trip at **IoU 1.0000**; RGB mean abs diff `DAP050 0.00446`, `DAP090 0.00571` (OptiX noise). This was a **known unsolved problem** in prior docs (`20260826_helios_flower_peduncle_pod_alignment_and_cleanup_report.md` §4: "Exact pod transforms were sampled during original GT generation and lost"; `20260826_canonical_pipeline_refactor_progress.md` §7.5: flower IoU 0.139, pod 0.035). **Round-trip figure:** `docs/archive/unreferenced-assets/fig_helios_17d_roundtrip.png` regenerated (`GT XML | PT 17D | Depth | Mask | RT XML | diff`, same `fov 8.78` camera).
+
+![Fig helios 17d roundtrip](../../archive/unreferenced-assets/fig_helios_17d_roundtrip.png)
 
 ### 8.7 Benchmark
 

@@ -8,7 +8,7 @@ status: done
 # Agent Handoff Notes — FM Curvature-26D & Pyramid Conditioning (2026-09-05)
 
 **Purpose**: Session log + next-step roadmap for the agent continuing this work.
-**Read first**: [`docs/handovers/agent-takeover-guide/agent-takeover-guide.md`](../../handovers/agent-takeover-guide/agent-takeover-guide.md) (single source of truth for
+**Read first**: [`docs/../../agent-handover-guide/agent-handover-guide.md`](../../agent-handover-guide/agent-handover-guide.md) (single source of truth for
 data contracts, 5 golden rules, gotchas §7.1–7.17, benchmark tables). This document adds the FM-curvature
 session details on top of it.
 

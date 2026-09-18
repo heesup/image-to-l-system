@@ -13,6 +13,8 @@ status: done
 **Cluster Job**: `38145444` (4× NVIDIA RTX 6000 Ada Generation, 192 GB total VRAM)  
 **Model Architecture**: DINOv2-S/14 + 3D Ray PE (PETR) + 3D Reference Query Scaffold (DETR3D) + Intra-Phytomer Flow Matching (16D Latents)
 
+![Hierarchical self consistency epoch 125 20260908](../20260907-latent-fm-500epoch/assets/hierarchical_self_consistency_epoch_125_20260908.png)
+
 ---
 
 ## 1. Executive Summary

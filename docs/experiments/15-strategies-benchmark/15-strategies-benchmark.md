@@ -1,6 +1,6 @@
 ---
 title: "Deep Multi-DAP Benchmark Report: 15 Loss-Reduction Strategies on 14D Part Assembly"
-date: unknown
+date: 2026-08-25
 tags: [experiment, results]
 status: done
 ---

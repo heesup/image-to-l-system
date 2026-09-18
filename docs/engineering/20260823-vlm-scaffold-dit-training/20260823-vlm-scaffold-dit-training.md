@@ -182,6 +182,10 @@ Every epoch, the evaluation pipeline generates and logs a full 6-column benchmar
 * **Local Evaluation Figure Path**: [`docs/engineering/20260823-vlm-scaffold-dit-training/assets/fig_cowpea_100k_lifespan_benchmark.png`](assets/fig_cowpea_100k_lifespan_benchmark.png)
 * **Latest Training Epoch Visuals**: [`docs/engineering/20260823-vlm-scaffold-dit-training/assets/fig_vlm_scaffold_latest_eval.png`](assets/fig_vlm_scaffold_latest_eval.png)
 
+![Fig cowpea 100k lifespan benchmark](assets/fig_cowpea_100k_lifespan_benchmark.png)
+
+![Fig vlm scaffold latest eval](assets/fig_vlm_scaffold_latest_eval.png)
+
 ---
 
 ## 6. Active Distributed Training Specifications

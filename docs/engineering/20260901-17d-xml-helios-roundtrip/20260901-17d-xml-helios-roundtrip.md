@@ -11,7 +11,7 @@ status: done
 > **SUPERSEDED ON 2026-09-03 / 2026-09-04**:
 > The earlier hypothesis in this document that *"17D → XML → Helios is structurally lossy and cannot be inverted"* has been **completely resolved**.
 > By solving the exact closed-form Shoot Base IK (`solve_helios_shoot_base`), dynamic phyllotactic angle inversion, Shoot 0 base internode pitch 0 isolation, and dynamic reproductive pitch/scale extraction, Helios XML roundtrip now achieves **95.10% IoU on DAP 10**, **92.85% IoU on DAP 50**, and **86.47% IoU on DAP 90** in native OptiX physical raytracing.
-> See [20260903-14d-part-tensor-ik.md](../20260903-14d-part-tensor-ik/20260903-14d-part-tensor-ik.md) and [agent-takeover-guide.md](../../handovers/agent-takeover-guide/agent-takeover-guide.md) for the active reference implementation.
+> See [20260903-14d-part-tensor-ik.md](../20260903-14d-part-tensor-ik/20260903-14d-part-tensor-ik.md) and [agent-takeover-guide.md](../../agent-handover-guide/agent-handover-guide.md) for the active reference implementation.
 
 **Date:** 2026-09-01 (Superseded 2026-09-03)
 **Status:** Historical / Superseded by 14D Analytical IK Converter
@@ -113,6 +113,12 @@ to output `(base_rotation, internode_pitch, gravity, ...)` directly (large repre
 | `docs/archive/unreferenced-assets/fig_oneway_17d_to_xml_helios_exhaustive.png` | 17D→XML→Helios exhaustive (grav=200) |
 | `docs/engineering/20260831-pr-gravitropic-curvature/assets/fig_grav_curvature_ab_test.png` | gravitropic tag A/B (load-path) |
 | `docs/engineering/20260831-pr-gravitropic-curvature/20260831-pr-gravitropic-curvature.md` | PR draft (superseded by `gravitropic=200` fix) |
+
+![Fig python world reconstruction](../../archive/unreferenced-assets/fig_python_world_reconstruction.png)
+
+![Fig oneway 17d to xml helios exhaustive](../../archive/unreferenced-assets/fig_oneway_17d_to_xml_helios_exhaustive.png)
+
+![Fig grav curvature ab test](../20260831-pr-gravitropic-curvature/assets/fig_grav_curvature_ab_test.png)
 
 ---
 

@@ -164,7 +164,7 @@ if torch.isnan(grad_norm) or torch.isinf(grad_norm):
 
 ### 4. Recent Architecture & Kinematics Enhancements (2026-09-12 — 2026-09-14)
 
-Following root-cause investigations documented in [`handovers/20260912-stage2-stage3-boundary/`](../../handovers/20260912-stage2-stage3-boundary/20260912-stage2-stage3-boundary.md) and [`experiments/20260914-stage2-burst-fix-roundtrip/`](../../experiments/20260914-stage2-burst-fix-roundtrip/20260914-stage2-burst-fix-roundtrip.md), five major structural improvements were integrated into the active model:
+Following root-cause investigations documented in [`handovers/20260912-stage2-stage3-boundary/`](../../engineering/20260912-stage2-stage3-boundary/20260912-stage2-stage3-boundary.md) and [`experiments/20260914-stage2-burst-fix-roundtrip/`](../../experiments/20260914-stage2-burst-fix-roundtrip/20260914-stage2-burst-fix-roundtrip.md), five major structural improvements were integrated into the active model:
 
 1. **Coarse Decoder Final LayerNorm (`bf16` Burst Fix)**:
    - *Problem*: The coarse transformer decoder previously lacked a final LayerNorm, allowing raw unbounded residual streams to feed directly into `bf16` phytomer self-attention, triggering severe periodic gradient bursts.

@@ -11,6 +11,8 @@ status: planned
 > **Target Components**: [`plant_recon/models/helios_pytorch_geometry.py`](../../plant_recon/models/helios_pytorch_geometry.py) (`extract_part_tensor`), [`plant_recon/models/plant_organ_array.py`](../../plant_recon/models/plant_organ_array.py) (`from_xml_file`)  
 > **Related Figure**: [`docs/experiments/15-strategies-benchmark/assets/fig1_helios_vs_torch_rendering_benchmark.png`](../experiments/15-strategies-benchmark/assets/fig1_helios_vs_torch_rendering_benchmark.png)
 
+![Figure 1 helios vs torch rendering benchmark](../experiments/15-strategies-benchmark/assets/fig1_helios_vs_torch_rendering_benchmark.png)
+
 ---
 
 ## 1. Problem Statement & Empirical Bottleneck

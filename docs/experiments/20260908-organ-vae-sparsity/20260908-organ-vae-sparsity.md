@@ -13,6 +13,8 @@ status: done
 **Measured Summary**: [`docs/experiments/20260908-organ-vae-sparsity/assets/fig_organ_vae_sparsity_gradient_balance.json`](assets/fig_organ_vae_sparsity_gradient_balance.json)
 **Generator Script**: `scripts/generate_fig_vae_sparsity_gradient_balance.py`
 
+![Fig organ vae sparsity gradient balance](assets/fig_organ_vae_sparsity_gradient_balance.png)
+
 ---
 
 ## 1. Purpose
