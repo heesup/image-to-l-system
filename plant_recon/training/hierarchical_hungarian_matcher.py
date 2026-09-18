@@ -459,6 +459,13 @@ class HierarchicalBotanicalMatcher(nn.Module):
 
             # GT role membership as boolean columns (no per-organ python filtering).
             # Half-open ranges: role membership is lo <= label < hi (exact old semantics).
+            # Re-read this sample's targets: `t_label` and `t_geom` are also loop variables of pass 1,
+            # so without this the pass-3 loop silently used the LAST sample's targets for every b. Any earlier sample with
+            # more organs than the last one then indexed past the end of `t_label` and the kernel raised
+            # "index out of bounds" (2026-09-17, organ mode; the phytomer path uses the batched matcher
+            # instead and never reached here, which is why it went unnoticed).
+            t_label = tgt_labels[b]
+            t_geom = tgt_geoms[b]
             label_is = {r: ((t_label >= lo) & (t_label < hi)) for r, (lo, hi) in self._label_to_role_ranges.items()}
 
             all_fine_src = []
