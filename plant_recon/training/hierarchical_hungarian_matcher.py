@@ -471,18 +471,37 @@ class HierarchicalBotanicalMatcher(nn.Module):
             all_fine_src = []
             all_fine_tgt = []
 
+            # Hoist the two per-pair host syncs out of the loop below (2026-09-18).
+            #
+            # Profiled at B=4 with ~100 phytomers per plant, this pass cost 420 ms/call with 309 ms of it
+            # `tottime` INSIDE this function -- Python and synchronisation, not the assignment algorithm:
+            # `linear_sum_assignment` did not even reach the top of the profile (cdist 9 ms, nonzero 15 ms).
+            # The cost was `slot_starts[pair_i].item()`, a GPU->host sync once per phytomer (~400 per training
+            # step), plus a `nonzero` kernel per phytomer to find that cluster's GT organs.
+            #
+            # Both are computed once per sample instead. Cluster membership comes from ONE stable argsort:
+            # sorting the per-organ cluster ids groups each cluster into a contiguous slice, and stability
+            # keeps the indices within a slice ascending, which is exactly what `torch.nonzero` returned --
+            # so the matching is unchanged, not merely equivalent in aggregate.
+            slot_starts_l = slot_starts.tolist()          # one sync, not one per pair
+            node_tgt_l = node_tgt.tolist()
+            gca_order = torch.argsort(gt_cluster_assignments, stable=True)
+            gca_counts = torch.bincount(gt_cluster_assignments, minlength=num_gt_clusters)
+            gca_starts_l = (torch.cumsum(gca_counts, 0) - gca_counts).tolist()
+            gca_counts_l = gca_counts.tolist()
+
             for pair_i in range(len(node_src)):
-                c_idx = node_tgt[pair_i]
+                c_idx = node_tgt_l[pair_i]
                 # Child slots for predicted phytomer a_idx: contiguous block [a*M, a*M+M).
-                # a_idx = node_src[pair_i]; slot block derived via tensor arithmetic then a
-                # single host sync for the python range (1 sync/pair vs 16 previously).
-                slot_start = int(slot_starts[pair_i].item())
+                slot_start = slot_starts_l[pair_i]
                 slot_indices = torch.arange(slot_start, slot_start + M, device=device)  # (M,)
 
-                # GT organs assigned to cluster c_idx
-                cluster_gt_indices = torch.nonzero(gt_cluster_assignments == c_idx, as_tuple=True)[0]
-                if len(cluster_gt_indices) == 0:
+                # GT organs assigned to cluster c_idx: a contiguous slice of the sorted order
+                n_c = gca_counts_l[c_idx] if 0 <= c_idx < len(gca_counts_l) else 0
+                if n_c == 0:
                     continue
+                off = gca_starts_l[c_idx]
+                cluster_gt_indices = gca_order[off:off + n_c]
 
                 cluster_labels = t_label[cluster_gt_indices]
 
