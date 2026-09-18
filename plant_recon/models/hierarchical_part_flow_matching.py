@@ -1463,6 +1463,59 @@ class PhytomerFlowMatchingDecoder(nn.Module):
         }
 
 
+class RenderFeedbackCorrector(nn.Module):
+    """A LEARNED correction from the render residual -- the one per-node image signal the conditioning
+    does not carry.
+
+    Why this exists (2026-09-17). The cascade is coarse-to-fine in STRUCTURE but never measures how far
+    its own output is from the input image: Stage 1 counts, Stage 2 places, Stage 3 shapes, each once.
+    There is a test-time hook (`sample_ode(guidance_fn=)`, DPS-style render guidance) but it pushes a
+    network that was never trained on a render residual, and it measured neutral alone and harmful when
+    chained with refinement. Meanwhile test-time refinement, which optimises against exactly this residual,
+    is worth +35 IoU -- so the signal is enormously informative and the model simply never sees it.
+
+    The residual is also per-NODE information in a way the image tokens are not: one 7.5 cm token holds
+    7-15 phytomers, so "what does this patch look like" cannot say which of them is wrong, while
+    "the render is 3 cm too low HERE" can.
+
+    Shapes: residual (B, 1, H, W) -> a feature map, bilinearly sampled at each node's projected position,
+    concatenated with the node's own state, and mapped to a correction. The output layer is zero-initialised,
+    so an untrained corrector is the identity and a checkpoint without one loads unchanged.
+    """
+
+    def __init__(self, embed_dim: int = 384, latent_dim: int = 128, hidden: int = 128, feat_dim: int = 64):
+        super().__init__()
+        self.feat_dim = feat_dim
+        self.enc = nn.Sequential(
+            nn.Conv2d(2, 32, 5, stride=2, padding=2), nn.GELU(),      # [residual, predicted depth]
+            nn.Conv2d(32, 64, 3, stride=2, padding=1), nn.GELU(),
+            nn.Conv2d(64, feat_dim, 3, stride=1, padding=1),
+        )
+        self.head = nn.Sequential(
+            nn.Linear(feat_dim + 3 + 3 + latent_dim, hidden), nn.GELU(),
+            nn.Linear(hidden, hidden), nn.GELU(),
+            nn.Linear(hidden, 3 + 3 + latent_dim),
+        )
+        nn.init.zeros_(self.head[-1].weight); nn.init.zeros_(self.head[-1].bias)
+
+    def forward(self, residual, pred_depth, pos, scale, latent, window_m: float = 1.2):
+        """residual/pred_depth: (B, H, W). pos (B,K,3) metres, scale (B,K,3), latent (B,K,D).
+
+        Returns (dpos, dscale, dlatent), each zero at initialisation.
+        """
+        B, K, _ = pos.shape
+        x = torch.stack([residual, pred_depth], 1).float()                    # (B, 2, H, W)
+        fmap = self.enc(x)                                                     # (B, C, h, w)
+        # node position -> normalised image coordinate of the render's fixed ground window
+        u = (pos[..., 0] / (window_m * 0.5)).clamp(-1, 1)
+        v = -(pos[..., 1] / (window_m * 0.5)).clamp(-1, 1)                     # +y is up in the render
+        grid = torch.stack([u, v], -1).view(B, K, 1, 2).to(fmap.dtype)
+        f = F.grid_sample(fmap, grid, mode="bilinear", align_corners=False)    # (B, C, K, 1)
+        f = f.squeeze(-1).permute(0, 2, 1)                                     # (B, K, C)
+        d = self.head(torch.cat([f, pos.to(f.dtype), scale.to(f.dtype), latent.to(f.dtype)], -1))
+        return d[..., 0:3], d[..., 3:6], d[..., 6:]
+
+
 class HierarchicalPartFlowMatchingModel(nn.Module):
     """End-to-End 3-Stage Cascaded Hierarchical Botanical Flow Matching System.
 
@@ -1492,9 +1545,17 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         stage3_geometry: bool = False,
         multizoom: bool = False,
         node_token_window: int = 1,
+        stage3_regression: bool = False,
+        render_feedback: bool = False,
     ):
         super().__init__()
+        self.render_feedback = bool(render_feedback)
         self.stage3_geometry = bool(stage3_geometry)
+        # --stage3_regression (2026-09-16): Stage 3 keeps its decoder and conditioning but reads the
+        # flow state out in ONE evaluation at (x = 0, t = 0). Training sets z_0 = 0 and t = 0, so the
+        # velocity target z_1 - z_0 is the state itself: a direct regression of the conditional mean
+        # instead of a velocity field whose target is ~85% noise (latent per-dim std 0.41 vs unit noise).
+        self.stage3_regression = bool(stage3_regression)
         self.node_token_window = int(node_token_window)
         # multizoom (design doc §2.7): all four cache zoom levels (1x/2x/4x/8x, plant-centred) go through
         # the frozen backbone; Stage 2/3 attend over all levels' tokens (with a learned level embedding)
@@ -1591,6 +1652,9 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                 num_heads=vit_heads,
                 num_layers=fine_layers,
             )
+        self.feedback = (RenderFeedbackCorrector(embed_dim=embed_dim, latent_dim=phytomer_latent_dim)
+                         if self.render_feedback else None)
+
         # Width of the per-phytomer flow state Stage 3 integrates.
         self.flow_dim = (self.fine_stage.node_flow_dim if flow_granularity == "phytomer" else node_dim)
 
@@ -1743,6 +1807,45 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         }
 
     @torch.no_grad()
+    def apply_render_feedback(self, renderer, pos, roll, scale, latent, exist, parent_pos, target_chm,
+                              phytomer_vae, M, centers=None, window_m: float = 1.2, image_size: int = 128):
+        """One learned correction step: render what the model just produced, compare it with the input
+        canopy height map, and let the corrector move each node from the residual at its own position.
+
+        Depth is compared AFTER normalising both sides (the rig's depth is real but inaccurate, so only
+        its shape is trusted -- the standing rule for every depth comparison in this project).
+
+        Returns (pos, scale, latent) corrected, or the inputs unchanged when the model has no corrector.
+        """
+        if self.feedback is None:
+            return pos, scale, latent
+        from plant_recon.eval.eval_gt_substitution_ablation import plant_from_nodes
+        B = pos.shape[0]
+        preds = []
+        for b in range(B):
+            parts = plant_from_nodes(phytomer_vae, pos[b], roll[b], scale[b], latent[b], exist[b], parent_pos[b], M)
+            if parts.shape[0] == 0:
+                preds.append(torch.zeros_like(target_chm[b])); continue
+            mesh = renderer.geo_builder.build_mesh_from_part_tensor(parts, device=pos.device)
+            d = renderer.render_batched([mesh], azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0,
+                                        differentiable=True, image_size=image_size, zoom_factor=1.0,
+                                        reference_window_size=window_m,
+                                        centers=([centers[b]] if centers is not None else None))[0, 3]
+            preds.append(d)
+        pred_depth = torch.stack(preds)
+        tgt = target_chm
+        if tgt.shape[-1] != pred_depth.shape[-1]:
+            tgt = F.interpolate(tgt.unsqueeze(1), size=pred_depth.shape[-2:], mode="bilinear",
+                                align_corners=False).squeeze(1)
+
+        def _norm(x):
+            m = x.flatten(1).mean(1).view(-1, 1, 1)
+            sd = x.flatten(1).std(1).view(-1, 1, 1).clamp(min=1e-4)
+            return (x - m) / sd
+        residual = _norm(pred_depth) - _norm(tgt)
+        dpos, dscale, dlat = self.feedback(residual, _norm(pred_depth), pos, scale, latent, window_m=window_m)
+        return pos + dpos, scale + dscale, latent + dlat
+
     def set_latent_norm(self, mu: torch.Tensor, sigma: torch.Tensor) -> None:
         # sigma floor 0.05: the VAE has near-constant (KL-collapsed) dims with sigma ~1e-3 (smoke 2026-09-15:
         # min 0.001, mean 0.18, max 1.44); dividing by their true sigma would turn their noise into O(1)
@@ -1877,6 +1980,12 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                 forward_kwargs["phytomer_parent_rel"] = parent_relative(phytomer_pos, chain_parent_pos, live)
             else:
                 forward_kwargs["phytomer_parent_rel"] = parent_relative(phytomer_pos, chain_parent_pos, None)
+        if self.flow_granularity == "phytomer" and self.stage3_regression:
+            # Regression readout: one evaluation at (x = 0, t = 0); with z_0 = 0 the velocity is the state.
+            num_steps = 0
+            x = torch.zeros_like(x)
+            out_r = self.fine_stage(noisy_flow=x, timesteps=torch.zeros((B,), device=device), **forward_kwargs)
+            x = out_r["pred_velocity"]
         for step in range(num_steps):
             t_curr = step * dt
             t_next = (step + 1) * dt

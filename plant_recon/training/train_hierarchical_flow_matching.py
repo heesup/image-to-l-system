@@ -159,6 +159,7 @@ def forward_backward_step(
     stem_dir_weight: float = 0.5,
     coverage_weight: float = 0.0,
     exist_count_weight: float = 0.0,
+    spread_weight: float = 0.0,
     render_grad: bool = True,
 ) -> Optional[Dict[str, float]]:
     images = batch["image"].to(device)
@@ -256,6 +257,9 @@ def forward_backward_step(
         D = raw_model.phytomer_latent_dim
         D_flow = getattr(raw_model, "flow_dim", D)   # latent, or [geometry(8) | latent] with stage3_geometry
         s3geom = bool(getattr(raw_model, "stage3_geometry", False))
+        # --stage3_regression: z_0 = 0 and t = 0 throughout, so tgt_velocity = z_1 and clean_z1 = pred_velocity;
+        # every downstream consumer (matched-node MSE, geometry weight, idle regularizer, render block) is unchanged.
+        s3reg = bool(getattr(raw_model, "stage3_regression", False))
         # FAST PATH: precomputed pkt cache (packets/presence/centers/refs/keys
         # per sample, from generate_cache.py). The batch carries a 'pkt' list of
         # per-sample dicts (or None where the pkt cache is missing — those
@@ -350,6 +354,8 @@ def forward_backward_step(
             # velocity target z1 - z0 can only be met from the conditioning -- the same quantity the latent
             # probe measures. Uniform t lets the flow loss be met by denoising x_t instead (2026-09-15).
             t = torch.where(torch.rand(B, device=device) < t0_frac, torch.zeros_like(t), t)
+        if s3reg:
+            z_0 = torch.zeros_like(z_0); t = torch.zeros_like(t)
         z_t = z_0.clone()
     else:
         _sync_cuda()
@@ -649,6 +655,8 @@ def forward_backward_step(
         _sync_cuda(); prof["tgt_loop"] = time.time() - _t_tgt; _t_tgt = time.time()
         # Decoupled Flow Matching: standard normal Gaussian prior z_0 ~ N(0, I_D)
         z_0 = torch.randn(B, K_eff, D_flow, device=device)
+        if s3reg:
+            z_0 = torch.zeros_like(z_0)   # regression readout: the target is the state, not a displacement
         # Noise on the fixed parent (§2.1): position jitter at Stage 2's node
         # error, and substitution -- a random other matched node's GT position
         # stands in for the parent -- at the rate the chain picks the wrong
@@ -819,7 +827,8 @@ def forward_backward_step(
         # active on the eval set).
         loss_coverage = torch.tensor(0.0, device=device)
         loss_exist_count = torch.tensor(0.0, device=device)
-        if coverage_weight > 0 or exist_count_weight > 0:
+        loss_spread = torch.tensor(0.0, device=device)
+        if coverage_weight > 0 or exist_count_weight > 0 or spread_weight > 0:
             _centers = [pt_["centers"] for pt_ in phyto_targets if pt_ is not None and pt_["centers"].shape[0] > 0]
             P_max = max([c.shape[0] for c in _centers] + [0])
             if P_max > 0:
@@ -834,6 +843,24 @@ def forward_backward_step(
                     d_ = torch.cdist(gt_c, pred_phytomer_pos.float()).masked_fill(~active_.unsqueeze(1), float("inf"))
                     dmin_ = d_.min(dim=2).values[gt_v]                                     # (sum P_b,) metres
                     loss_coverage = F.smooth_l1_loss(dmin_, torch.zeros_like(dmin_), beta=0.02, reduction="mean")
+                if spread_weight > 0:
+                    # 5d. Spread loss: match the SIZE of the predicted node cloud to the GT's, directly.
+                    # The coverage loss pulls nodes toward GT phytomers and measured no effect on spread;
+                    # this instead asks the cloud's own second moment to be right, which is what the
+                    # deficit actually is (hull 0.5-0.7x GT, 2026-09-15). Existence-weighted so it stays
+                    # differentiable through the gate, and per axis so a flat canopy is not asked to be tall.
+                    w_ = torch.sigmoid(pred_phytomer_logits.squeeze(-1))                  # (B, K), gradient kept
+                    w_ = w_ / w_.sum(dim=1, keepdim=True).clamp(min=1e-3)
+                    mu_p = (w_.unsqueeze(-1) * pred_phytomer_pos.float()).sum(1, keepdim=True)
+                    var_p = (w_.unsqueeze(-1) * (pred_phytomer_pos.float() - mu_p) ** 2).sum(1)
+                    gt_w = gt_v.float(); gt_w = gt_w / gt_w.sum(dim=1, keepdim=True).clamp(min=1e-3)
+                    mu_g = (gt_w.unsqueeze(-1) * gt_c).sum(1, keepdim=True)
+                    var_g = (gt_w.unsqueeze(-1) * (gt_c - mu_g) ** 2).sum(1)
+                    has_ = gt_v.sum(dim=1) >= 3
+                    if bool(has_.any()):
+                        loss_spread = F.smooth_l1_loss(var_p[has_].clamp(min=1e-8).sqrt(),
+                                                       var_g[has_].clamp(min=1e-8).sqrt(),
+                                                       beta=0.02, reduction="mean")
                 if exist_count_weight > 0:
                     n_gt_ = gt_v.sum(dim=1).float()
                     n_pred_ = torch.sigmoid(pred_phytomer_logits.squeeze(-1).clamp(min=-10.0, max=10.0)).sum(dim=1)
@@ -1023,6 +1050,7 @@ def forward_backward_step(
         loss_stem_dir = torch.tensor(0.0, device=device)
         loss_coverage = torch.tensor(0.0, device=device)
         loss_exist_count = torch.tensor(0.0, device=device)
+        loss_spread = torch.tensor(0.0, device=device)   # organ mode never enters the phytomer spread block
 
     # Stage 1: Macro Losses (Phytomer Count & DAP)
     loss_phy_count = torch.tensor(0.0, device=device)
@@ -1057,7 +1085,12 @@ def forward_backward_step(
             loss_depth_acc = torch.tensor(0.0, device=device)
             loss_dice_acc = torch.tensor(0.0, device=device)
 
-            pyramid_scales = [1.0, 2.0]
+            # Zoom levels the render loss compares at. The default 1x/2x is 9.4 and 4.7 mm per pixel at
+            # 128 px, where a cowpea leaflet is a few pixels and the gradient is dominated by the global
+            # silhouette. Test-time refinement's single biggest gain came from adding 4x and 8x
+            # (63.9 -> 67.6, 2026-09-15), which is 2.3 and 1.2 mm per pixel -- organ-level gradient.
+            # RENDER_PYRAMID_SCALES=1,2,4,8 turns the same lever on in training.
+            pyramid_scales = [float(z) for z in os.environ.get("RENDER_PYRAMID_SCALES", "1,2").split(",")]
             num_scales = len(pyramid_scales)
 
             _rz = clean_z1 if render_grad_on else clean_z1.detach()
@@ -1264,6 +1297,7 @@ def forward_backward_step(
         + stem_dir_weight * loss_stem_dir
         + coverage_weight * loss_coverage
         + exist_count_weight * loss_exist_count
+        + spread_weight * loss_spread
         + 1.0 * loss_phytomer_exist
         + 1.0 * loss_fine_vel
         + 1.0 * loss_fine_exist
@@ -1317,6 +1351,7 @@ def forward_backward_step(
         "stem_dir_loss": loss_stem_dir.item(),
         "coverage_loss": loss_coverage.item(),
         "exist_count_loss": loss_exist_count.item(),
+        "spread_loss": loss_spread.item(),
         "phy_count_loss": loss_phy_count.item(),
         "dap_loss": loss_dap.item(),
         "pred_phy_mean": pred_num_phytomers.mean().item() if pred_num_phytomers is not None else 0.0,
@@ -1369,6 +1404,7 @@ def probe_optimal_batch_size(
     stem_dir_weight: float = 0.5,
     coverage_weight: float = 0.0,
     exist_count_weight: float = 0.0,
+    spread_weight: float = 0.0,
 ) -> int:
     """
     Directly measures base model/optimizer memory and per-sample activation memory on this GPU
@@ -1440,6 +1476,7 @@ def probe_optimal_batch_size(
         stem_dir_weight=stem_dir_weight,
         coverage_weight=coverage_weight,
         exist_count_weight=exist_count_weight,
+        spread_weight=spread_weight,
         render_grad=True,
     )
 
@@ -1572,6 +1609,7 @@ def train_one_epoch(
     stem_dir_weight: float = 0.5,
     coverage_weight: float = 0.0,
     exist_count_weight: float = 0.0,
+    spread_weight: float = 0.0,
     render_grad_start_epoch: int = 4,
     render_fraction_final: Optional[float] = None,
     render_fraction_ramp_epochs: int = 0,
@@ -1658,6 +1696,7 @@ def train_one_epoch(
             stem_dir_weight=stem_dir_weight,
             coverage_weight=coverage_weight,
             exist_count_weight=exist_count_weight,
+            spread_weight=spread_weight,
             render_grad=render_grad,
         )
         if os.environ.get("FM_SPIKE_DUMP", "0") == "1" and rank == 0:
@@ -1962,6 +2001,23 @@ def main():
     parser.add_argument("--stage3_geometry", action="store_true",
                         help="Stage 3 generates the child's position (relative to its fixed parent), roll and scale "
                              "in the flow state with the latent (design doc §2.1; GT-substitution ablation 2026-09-14).")
+    parser.add_argument("--appearance_augment", action="store_true",
+                        help="Augment the TRAINING images' RGB planes only (real soil background from the rover "
+                             "frames, geometric shading and cast shadow from the CHM channel, photometric jitter); "
+                             "evaluation stays on clean pixels. Measured 2026-09-17: this moves the training "
+                             "distribution toward real photos at every zoom level (DINOv2 MMD 0.61->0.42, 0.54->0.34, "
+                             "0.55->0.43, 0.54->0.47), while the Helios raytraced render -- the other candidate "
+                             "target -- is FURTHER from real than the flat render at zooms 2x-8x.")
+    parser.add_argument("--soil_bank", default="dataset/soil_bank_agml",
+                        help="Bare-soil patch bank for --appearance_augment (tools/build_soil_bank.py). "
+                             "Empty or missing: augment without the background replacement.")
+    parser.add_argument("--augment_p", type=float, default=0.8,
+                        help="Fraction of training samples that get the appearance augmentation.")
+    parser.add_argument("--stage3_regression", action="store_true",
+                        help="Stage 3 regresses the flow state directly (z_0 = 0, t = 0 in training; one decoder evaluation "
+                             "at inference) instead of flow-matching it. Same decoder, conditioning and losses; only the "
+                             "objective changes (2026-09-16: the flow's velocity target was ~85%% noise and its sampled latent "
+                             "carried no per-node image information).")
     parser.add_argument("--node_token_window", type=int, default=1,
                         help="Node-local image token = mean over a WxW block of tokens around the node's projected "
                              "position instead of one bilinear sample (design doc §2.7 follow-up).")
@@ -1974,6 +2030,11 @@ def main():
     parser.add_argument("--coverage_weight", type=float, default=0.0,
                         help="Weight of the one-sided Chamfer loss GT phytomer centre -> nearest active predicted node "
                              "(smooth-L1, beta 2 cm). 0 = off. Pulls nodes onto GT phytomers the matcher never pairs.")
+    parser.add_argument("--spread_weight", type=float, default=0.0,
+                        help="Weight on |std(predicted node cloud) - std(GT node cloud)| per axis, existence-weighted. "
+                             "Targets the measured deficit directly: the predicted hull is 0.5-0.7x the GT's and only "
+                             "25%% of GT phytomers have a node within 3 cm, while the coverage loss (which pulls nodes "
+                             "toward GT phytomers) moved neither. 0 = off.")
     parser.add_argument("--exist_count_weight", type=float, default=0.0,
                         help="Weight of |sum sigmoid(exist) - N_gt| / N_gt per sample. 0 = off.")
     parser.add_argument("--latent_norm", action="store_true",
@@ -2085,7 +2146,10 @@ def main():
                              "epoch 3 of another under identical settings. Set it when chasing "
                              "one.")
     args = parser.parse_args()
-    if args.stage3_gt_nodes and args.stage3_geometry:
+    # 2026-09-17: with --stage3_regression the override is a conditioning diagnostic (does the local token gathered
+    # at the RIGHT node position carry per-node shape?); the geometry targets stay relative to the parent, so the
+    # two flags are compatible there. The refusal stays for the flow objective, as originally decided.
+    if args.stage3_gt_nodes and args.stage3_geometry and not getattr(args, "stage3_regression", False):
         raise SystemExit("--stage3_gt_nodes (teacher forcing of Stage 3's node conditioning) is a diagnostic for the "
                          "latent-only Stage 3; with --stage3_geometry Stage 3 generates the node geometry itself.")
 
@@ -2234,6 +2298,7 @@ def main():
         multizoom=bool(getattr(args, 'multizoom', False)),
         node_token_window=int(getattr(args, 'node_token_window', 1)),
         stage3_geometry=args.stage3_geometry,
+        stage3_regression=bool(getattr(args, "stage3_regression", False)),
     ).to(device)
 
     # Frozen PhytomerVAE (flow_granularity=phytomer): encodes/decodes the
@@ -2450,6 +2515,7 @@ def main():
             stem_dir_weight=args.stem_dir_weight,
             coverage_weight=args.coverage_weight,
             exist_count_weight=args.exist_count_weight,
+            spread_weight=args.spread_weight,
         )
     else:
         resolved_batch_size = int(args.batch_size)
@@ -2459,6 +2525,24 @@ def main():
         batch_tensor = torch.tensor([resolved_batch_size], dtype=torch.long, device=device)
         dist.broadcast(batch_tensor, src=0)
         resolved_batch_size = int(batch_tensor.item())
+
+    # --appearance_augment: wrap the TRAINING stream only. Evaluation and the held-out set read from
+    # `dataset` directly (collate_eval_set), so they stay on clean pixels and remain comparable with
+    # every earlier reading. The soil bank is loaded here, in the parent process, so the forked
+    # DataLoader workers share its buffers copy-on-write.
+    train_stream = dataset
+    if getattr(args, "appearance_augment", False):
+        from plant_recon.dataset.appearance_augment import AppearanceAugmentedDataset, AugmentConfig, SoilBank
+        _soil = None
+        if args.soil_bank and os.path.isdir(args.soil_bank):
+            _soil = SoilBank(args.soil_bank)
+        elif rank == 0:
+            print(f"appearance_augment: no soil bank at {args.soil_bank}; augmenting without background replacement")
+        train_stream = AppearanceAugmentedDataset(dataset, _soil, AugmentConfig(p_apply=args.augment_p),
+                                                  seed=(args.seed or 0) * 97 + rank)
+        if rank == 0:
+            print(f"appearance_augment: ON (p={args.augment_p}, soil patches="
+                  f"{len(_soil.patches) if _soil else 0}) -- training stream only, evaluation stays clean")
 
     # Build DataLoader with resolved batch size
     # DAP-bucketed batching keeps each mini-batch developmentally homogeneous so the
@@ -2477,7 +2561,7 @@ def main():
             rank=rank,
         )
         dataloader = DataLoader(
-            dataset,
+            train_stream,
             batch_sampler=sampler,
             num_workers=args.num_workers,
             pin_memory=True,
@@ -2488,7 +2572,7 @@ def main():
     else:
         sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True) if is_ddp else None
         dataloader = DataLoader(
-            dataset,
+            train_stream,
             batch_size=resolved_batch_size,
             sampler=sampler,
             shuffle=(sampler is None),
@@ -2604,6 +2688,7 @@ def main():
             stem_dir_weight=args.stem_dir_weight,
             coverage_weight=args.coverage_weight,
             exist_count_weight=args.exist_count_weight,
+            spread_weight=args.spread_weight,
             render_grad_start_epoch=args.render_grad_start_epoch,
             render_fraction_final=args.render_fraction_final,
             render_fraction_ramp_epochs=args.render_fraction_ramp_epochs,

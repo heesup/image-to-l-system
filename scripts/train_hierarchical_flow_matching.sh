@@ -71,6 +71,12 @@ if [ "${STAGE3_GT_NODES:-0}" = "1" ]; then
     STAGE3_ARGS="${STAGE3_ARGS} --stage3_gt_nodes --stage3_gt_nodes_p ${STAGE3_GT_NODES_P:-1.0} --stage3_gt_nodes_jitter_cm ${STAGE3_GT_NODES_JITTER_CM:-0.0}"
 fi
 # RENDER_TO_LATENT=1: the render loss also trains Stage 3's shape latent (default: flow loss only).
+if [ "${APPEARANCE_AUGMENT:-0}" = "1" ]; then
+    STAGE3_ARGS="${STAGE3_ARGS} --appearance_augment --augment_p ${AUGMENT_P:-0.8} --soil_bank ${SOIL_BANK:-dataset/soil_bank_agml}"
+fi
+if [ "${STAGE3_REGRESSION:-0}" = "1" ]; then
+    STAGE3_ARGS="${STAGE3_ARGS} --stage3_regression"
+fi
 if [ "${RENDER_TO_LATENT:-0}" = "1" ]; then
     STAGE3_ARGS="${STAGE3_ARGS} --render_to_latent"
 fi
@@ -200,7 +206,8 @@ echo "Render fraction: ${RENDER_FRACTION:-0.167} of batch per step (batch-relati
 echo "Flow granularity: ${FLOW_GRANULARITY:-phytomer} (hybrid decoupled: 128D VAE latent flow + Stage 2 3D scaffold)"
 echo "Phytomer VAE: ${PHYTOMER_VAE_CHECKPOINT:-outputs/checkpoints/phytomer_vae_v9_tl_rw4_20k/phytomer_vae_128d_best.pt}"
 echo "Pkt cache dir: ${PKT_CACHE_DIR:-dataset/cache/cowpea_curv26_pkt_v9} (missing samples fall back to on-the-fly) | PHYTOMER_TERMINAL_LAST=${PHYTOMER_TERMINAL_LAST}"
-echo "LR: ${LR:-1e-4} | Save every ${SAVE_EVERY} epochs | Stage 3 geometry: ${STAGE3_GEOMETRY:-0} | GT nodes: ${STAGE3_GT_NODES:-0} (p ${STAGE3_GT_NODES_P:-1.0}, jitter ${STAGE3_GT_NODES_JITTER_CM:-0.0} cm) | render->latent: ${RENDER_TO_LATENT:-0} | render->exist: ${RENDER_TO_EXIST:-0} | latent norm: ${LATENT_NORM:-0} | coverage w: ${COVERAGE_WEIGHT:-0} | multizoom: ${MULTIZOOM:-0} | token window: ${NODE_TOKEN_WINDOW:-1} | t0 frac: ${T0_FRAC:-0} | count w: ${EXIST_COUNT_WEIGHT:-0} | Git: $(git rev-parse --short HEAD 2>/dev/null)"
+echo "LR: ${LR:-1e-4} | Save every ${SAVE_EVERY} epochs | Stage 3 geometry: ${STAGE3_GEOMETRY:-0} | Stage 3 regression: ${STAGE3_REGRESSION:-0} | appearance augment: ${APPEARANCE_AUGMENT:-0} (p ${AUGMENT_P:-0.8}) | GT nodes: ${STAGE3_GT_NODES:-0} (p ${STAGE3_GT_NODES_P:-1.0}, jitter ${STAGE3_GT_NODES_JITTER_CM:-0.0} cm) | render->latent: ${RENDER_TO_LATENT:-0} | render->exist: ${RENDER_TO_EXIST:-0} | latent norm: ${LATENT_NORM:-0} | coverage w: ${COVERAGE_WEIGHT:-0} | multizoom: ${MULTIZOOM:-0} | token window: ${NODE_TOKEN_WINDOW:-1} | t0 frac: ${T0_FRAC:-0} | count w: ${EXIST_COUNT_WEIGHT:-0} | Git: $(git rev-parse --short HEAD 2>/dev/null)"
+echo "Render pyramid scales: ${RENDER_PYRAMID_SCALES:-1,2} (refinement uses 1,2,4,8; its largest single gain)"
 echo "EMA decay: ${EMA_DECAY:-0} (0 = off)"
 echo "Render camera: ${RENDER_INPUT_CAMERA:-0} (1 = cached input's GT-bbox-centred frame, 0 = origin window)"
 echo "Backbone: ${BACKBONE}${FREEZE_ARGS:+ (frozen)} | Output: ${OUTPUT_DIR} | Epochs: ${EPOCHS}"
