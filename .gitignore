@@ -71,3 +71,7 @@ use_cases/real_world/eval/output/
 
 # Scratch images and ad-hoc debug output
 tmp/
+
+# Compat symlink -> submodules/Digital-Crops (the restructure moved it; old checkpoints and the
+# Helios asset manager still resolve <repo>/Digital-Crops/libs/Helios/... at an absolute path)
+/Digital-Crops
