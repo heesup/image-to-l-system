@@ -42,6 +42,8 @@ dataset/helios_test_bush/
 dataset/cache/
 dataset/cache_cowpea_100k/
 dataset/cache*/
+# Soil patches cut from the AgML frames by tools/build_soil_bank.py (regenerable)
+dataset/soil_bank*/
 plant_recon/eval/output/*
 plant_recon/eval/roundtrip_outputs/
 plant_recon/eval/debug_outputs/
@@ -50,6 +52,7 @@ logs/
 
 # Centralized storage (checkpoints, job logs, wandb, detector weights, eval dumps)
 outputs/
+wandb/
 
 # Runtime benchmark caches
 plant_recon/eval/benchmark_cache*.json
