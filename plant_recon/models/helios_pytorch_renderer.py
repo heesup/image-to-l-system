@@ -322,6 +322,27 @@ class HeliosPyTorchRenderer(nn.Module):
 
                 mask = rast_out[..., 3:4] > 0  # (1, H, W, 1)
 
+                if getattr(self, "collect_part_visibility", False):
+                    # Visible pixels per individual organ, read straight off the rasterizer.
+                    # nvdiffrast packs (triangle id + 1) into rast_out[..., 3], with 0 for background,
+                    # so the winning triangle at each covered pixel is known for free -- no extra pass,
+                    # no ID-render. Mapping that triangle to its first vertex and through the mesh's
+                    # per-vertex `part_indices` gives an exact occlusion-aware pixel count per organ.
+                    #
+                    # This is what visibility-weighted losses need: on a mature plant roughly 60% of
+                    # organs contribute ZERO pixels, and supervising their shape against the image can
+                    # only push the shared patch feature toward the dataset mean.
+                    _pidx = mesh_dict.get("part_indices", None)
+                    if _pidx is not None and _pidx.numel() > 0:
+                        _n = int(_pidx.max().item()) + 1
+                        _vis = mask[0, :, :, 0]
+                        if bool(_vis.any()):
+                            _tri = (rast_out[0, :, :, 3].long() - 1).clamp(min=0)[_vis]
+                            _v0 = faces_i32[_tri, 0].long()
+                            self.last_part_visibility = torch.bincount(_pidx[_v0], minlength=_n)
+                        else:
+                            self.last_part_visibility = torch.zeros(_n, dtype=torch.long, device=_pidx.device)
+
                 opacities = mesh_dict.get('opacities', None)
                 if opacities is None:
                     opacities = torch.ones((verts.shape[0], 1), device=device, dtype=torch.float32)

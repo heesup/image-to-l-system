@@ -645,6 +645,25 @@ def generate_cone_tube_mesh_torch(
     return verts_t, faces_t, normals, colors_t
 
 
+def _part_index_for_group(sel: "torch.Tensor", n_verts: int) -> "torch.Tensor":
+    """Per-vertex part id for one organ group, guaranteed to be exactly `n_verts` long.
+
+    Each group lays its vertices out part-major (`expand(M, V).reshape(-1)`), so the id is just each
+    selected part repeated V times. Three of the twenty evaluation plants have a group whose vertex
+    count is not an exact multiple of its part count -- off by 4 to 21 vertices out of 55k-157k, from a
+    prototype that varies within the group -- so the tail is padded with the group's first part id
+    rather than left short. Mis-attributing <0.02% of vertices is harmless for visibility counting;
+    letting the per-vertex arrays fall out of alignment is not, and silently indexes the wrong organ.
+    """
+    if sel.numel() == 0:
+        return sel.new_zeros((n_verts,))
+    per = n_verts // sel.numel()
+    pi = sel.repeat_interleave(per) if per > 0 else sel.new_empty((0,))
+    if pi.numel() < n_verts:
+        pi = torch.cat([pi, pi.new_full((n_verts - pi.numel(),), int(sel[0]))])
+    return pi[:n_verts]
+
+
 class HeliosPlantGeometryBuilder:
     """Builds complete PyTorch 3D plant meshes directly from PlantOrganArray Tensor (N, 93)."""
 
@@ -1491,6 +1510,11 @@ class HeliosPlantGeometryBuilder:
         all_colors = []
         all_opacities = []
         all_organs = []
+        # Per-vertex index of the PART each vertex came from. `organ_types` says what kind of organ a
+        # vertex belongs to; this says WHICH ONE. With it, nvdiffrast's triangle id (rast_out[..., 3])
+        # gives visible-pixel counts per individual organ, which is what visibility-weighted losses and
+        # the occlusion probes need. Costs one int64 per vertex and nothing at render time.
+        all_part_idx = []
         all_probs = []
         vert_offset = 0
 
@@ -1597,6 +1621,8 @@ class HeliosPlantGeometryBuilder:
             all_colors.append(c_flat)
             all_opacities.append(op_flat)
             all_organs.append(o_flat)
+            _sel = torch.nonzero(leaf_mask, as_tuple=True)[0]
+            all_part_idx.append(_part_index_for_group(_sel, v_flat.shape[0]))
             all_probs.append(p_flat)
             vert_offset += v_flat.shape[0]
 
@@ -1740,6 +1766,8 @@ class HeliosPlantGeometryBuilder:
             all_colors.append(c_flat)
             all_opacities.append(op_flat)
             all_organs.append(o_flat)
+            _sel = torch.nonzero(tube_mask, as_tuple=True)[0]
+            all_part_idx.append(_part_index_for_group(_sel, v_flat.shape[0]))
             all_probs.append(p_flat)
             vert_offset += v_flat.shape[0]
 
@@ -1842,6 +1870,8 @@ class HeliosPlantGeometryBuilder:
             all_colors.append(c_flat)
             all_opacities.append(op_flat)
             all_organs.append(o_flat)
+            _sel = torch.nonzero(ped_mask, as_tuple=True)[0]
+            all_part_idx.append(_part_index_for_group(_sel, v_flat.shape[0]))
             all_probs.append(p_flat)
             vert_offset += v_flat.shape[0]
 
@@ -1884,6 +1914,8 @@ class HeliosPlantGeometryBuilder:
                 all_colors.append(c_flat)
                 all_opacities.append(op_flat)
                 all_organs.append(o_flat)
+                _sel = torch.nonzero(pod_mask, as_tuple=True)[0]
+                all_part_idx.append(_part_index_for_group(_sel, v_flat.shape[0]))
                 all_probs.append(p_flat)
                 vert_offset += v_flat.shape[0]
             except Exception:
@@ -1933,6 +1965,8 @@ class HeliosPlantGeometryBuilder:
                     all_colors.append(c_flat)
                     all_opacities.append(op_flat)
                     all_organs.append(o_flat)
+                    _sel = torch.nonzero(fl_mask, as_tuple=True)[0]
+                    all_part_idx.append(_part_index_for_group(_sel, v_flat.shape[0]))
                     all_probs.append(p_flat)
                     vert_offset += v_flat.shape[0]
                 except Exception:
@@ -1944,7 +1978,7 @@ class HeliosPlantGeometryBuilder:
             empty_op = torch.zeros((0, 1), dtype=torch.float32, device=device)
             empty_o = torch.zeros((0,), dtype=torch.int64, device=device)
             empty_p = torch.zeros((0, num_classes), dtype=torch.float32, device=device)
-            return {'vertices': empty3, 'faces': empty_f, 'normals': empty3, 'colors': empty3, 'opacities': empty_op, 'organ_types': empty_o, 'organ_probs': empty_p}
+            return {'vertices': empty3, 'faces': empty_f, 'normals': empty3, 'colors': empty3, 'opacities': empty_op, 'part_indices': empty_f.new_zeros((0,)), 'organ_types': empty_o, 'organ_probs': empty_p}
 
         all_probs_cat = torch.cat(all_probs, dim=0) if all_probs else torch.zeros((0, num_classes), device=device)
         if color_palette is not None and all_probs_cat.shape[0] > 0:
@@ -1963,6 +1997,7 @@ class HeliosPlantGeometryBuilder:
             'colors': colors_out,
             'opacities': torch.cat(all_opacities, dim=0),
             'organ_types': torch.cat(all_organs, dim=0),
+            'part_indices': torch.cat(all_part_idx, dim=0),
             'organ_probs': all_probs_cat,
         }
 
