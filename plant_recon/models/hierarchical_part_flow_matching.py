@@ -1600,6 +1600,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         freeze_backbone: bool = False,
         init_phytomer_count: float = 50.0,
         stage3_geometry: bool = False,
+        stage3_absolute: bool = False,
         multizoom: bool = False,
         node_token_window: int = 1,
         stage3_regression: bool = False,
@@ -1609,6 +1610,10 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         super().__init__()
         self.render_feedback = bool(render_feedback)
         self.stage3_geometry = bool(stage3_geometry)
+        # Hybrid layout: the flow carries ABSOLUTE pos + rot6d instead of parent-relative
+        # dpos + roll, so no chain is resolved while sampling. Only meaningful with
+        # stage3_geometry (there is no geometry block to change otherwise).
+        self.stage3_absolute = bool(stage3_absolute) and bool(stage3_geometry)
         # --stage3_regression (2026-09-16): Stage 3 keeps its decoder and conditioning but reads the
         # flow state out in ONE evaluation at (x = 0, t = 0). Training sets z_0 = 0 and t = 0, so the
         # velocity target z_1 - z_0 is the state itself: a direct regression of the conditional mean
@@ -1694,7 +1699,10 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
                 num_levels=self.num_levels,
                 node_token_window=self.node_token_window,
                 base_dim=3 if self.stage3_geometry else 0,
-                rot_dim=2 if self.stage3_geometry else 0,
+                # rot6d(6) when the state is absolute, roll(2) when it is parent-relative: with no
+                # chain resolved at sampling time there is no forward axis to derive, so the node has
+                # to carry its whole rotation (see stage3_geom_dim).
+                rot_dim=(6 if self.stage3_absolute else 2) if self.stage3_geometry else 0,
                 scale_dim=3 if self.stage3_geometry else 0,
                 num_classes=num_classes,
                 embed_dim=embed_dim,
