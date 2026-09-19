@@ -1,0 +1,77 @@
+{
+ "note": "seedling-enriched set, DAP<=15, built 2026-09-19 to test the n=4 reg_latent claim; includes the 4 seedlings of hierarchical_fm_v9/eval_set.json",
+ "samples": [
+  {
+   "prefix": "cowpea_dap001_seed877_caz000_h1.0_se045_saz180_0000"
+  },
+  {
+   "prefix": "cowpea_dap001_seed992_caz000_h1.0_se045_saz180_0000"
+  },
+  {
+   "prefix": "cowpea_dap002_seed413_caz000_h1.0_se045_saz180_0000"
+  },
+  {
+   "prefix": "cowpea_dap002_seed44_caz000_h1.0_se045_saz180_0000"
+  },
+  {
+   "prefix": "cowpea_dap002_seed535_caz000_h1.0_se045_saz180_0000"
+  },
+  {
+   "prefix": "cowpea_dap003_seed424_caz000_h1.0_se045_saz180_0000"
+  },
+  {
+   "prefix": "cowpea_dap003_seed651_caz000_h1.0_se045_saz180_0000"
+  },
+  {
+   "prefix": "cowpea_dap003_seed797_caz000_h1.0_se045_saz180_0000"
+  },
+  {
+   "prefix": "cowpea_dap004_seed634_caz000_h1.0_se045_saz180_0000"
+  },
+  {
+   "prefix": "cowpea_dap004_seed91_caz000_h1.0_se045_saz180_0000"
+  },
+  {
+   "prefix": "cowpea_dap005_seed482_caz000_h1.0_se045_saz180_0000"
+  },
+  {
+   "prefix": "cowpea_dap005_seed921_caz000_h1.0_se045_saz180_0000"
+  },
+  {
+   "prefix": "cowpea_dap006_seed129_caz000_h1.0_se045_saz180_0000"
+  },
+  {
+   "prefix": "cowpea_dap007_seed332_caz000_h1.0_se045_saz180_0000"
+  },
+  {
+   "prefix": "cowpea_dap008_seed98_caz000_h1.0_se045_saz180_0000"
+  },
+  {
+   "prefix": "cowpea_dap009_seed567_caz000_h1.0_se045_saz180_0000"
+  },
+  {
+   "prefix": "cowpea_dap010_seed543_caz000_h1.0_se045_saz180_0000"
+  },
+  {
+   "prefix": "cowpea_dap011_seed468_caz000_h1.0_se045_saz180_0000"
+  },
+  {
+   "prefix": "cowpea_dap011_seed849_caz000_h1.0_se045_saz180_0000"
+  },
+  {
+   "prefix": "cowpea_dap012_seed544_caz000_h1.0_se045_saz180_0000"
+  },
+  {
+   "prefix": "cowpea_dap012_seed946_caz000_h1.0_se045_saz180_0000"
+  },
+  {
+   "prefix": "cowpea_dap013_seed820_caz000_h1.0_se045_saz180_0000"
+  },
+  {
+   "prefix": "cowpea_dap014_seed863_caz000_h1.0_se045_saz180_0000"
+  },
+  {
+   "prefix": "cowpea_dap015_seed373_caz000_h1.0_se045_saz180_0000"
+  }
+ ]
+}

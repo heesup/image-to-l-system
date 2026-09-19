@@ -5,7 +5,8 @@ checked, and the noise floor that should have been measured first.
 
 Checkpoint `outputs/checkpoints/hierarchical_fm_v10_cam/hierarchical_fm_epoch_160.pt`, eval set
 `outputs/checkpoints/hierarchical_fm_v9/eval_set.json` (20 plants), `--steps 200 --sample_seed 0`.
-Seedling set `outputs/eval_sets/seedlings24.json` (24 plants, DAP 1-15). Logs and per-plant JSON in
+Seedling set `outputs/eval_sets/seedlings24.json` (24 plants, DAP 1-15; tracked copy at
+`assets/seedlings24.json`, since `outputs/` is gitignored). Logs and per-plant JSON in
 `outputs/logs/20260919/{s_*,sd_*,rep_*}.{log,json}`. Figure: `assets/refinement_levers.png`
 (regenerate with `assets/plot_refinement_levers.py`).
 
