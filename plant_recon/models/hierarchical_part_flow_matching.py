@@ -1563,6 +1563,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
         node_token_window: int = 1,
         stage3_regression: bool = False,
         render_feedback: bool = False,
+        use_depth: bool = False,
     ):
         super().__init__()
         self.render_feedback = bool(render_feedback)
@@ -1602,6 +1603,7 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             freeze_backbone=freeze_backbone,
             embed_dim=embed_dim,
             num_levels=self.num_levels,
+            use_depth=use_depth,
         )
 
         # Semantic color palette (13, 3): learnable per-organ-type RGB used by the

@@ -59,6 +59,7 @@ def main():
         multizoom=bool(args.get("multizoom", False)),
         node_token_window=int(args.get("node_token_window", 1)),
         stage3_regression=bool(args.get("stage3_regression", False)),
+        use_depth=bool(args.get("use_depth", False)),
     ).to(dev)
     model.load_state_dict(ck["model_state_dict"], strict=False)
     model.eval()

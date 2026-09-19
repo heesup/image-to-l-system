@@ -160,6 +160,19 @@ def refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, sca
         if step == a.steps:
             break
         loss.backward(); _set_lr(step); opt.step()
+        # Absolute realized-scale ceilings (FM units, packet convention), applied after every step, on top of the
+        # soft reg_scale penalty. Mirrors use_cases/real_world/eval/run_approach2_refine.py: the multiplicative
+        # scale bound is on the WRONG thing (s_a), and a leaf's area grows quadratically with scale, so the soft
+        # penalty alone cannot stop inflation against a loose target. Absolute metres-like ceilings stop far-OOD
+        # growth regardless of how wrong the cold start already was. 0 = off.
+        _smax_len = float(getattr(a, "scale_abs_max_len", 0.0))
+        _smax_rad = float(getattr(a, "scale_abs_max_rad", 0.0))
+        if _smax_len > 0 or _smax_rad > 0:
+            with torch.no_grad():
+                if _smax_len > 0:
+                    scale[..., 0].clamp_(min=0.25, max=_smax_len)
+                if _smax_rad > 0:
+                    scale[..., 1].clamp_(min=0.025, max=_smax_rad)
     if a.keep_best:
         with torch.no_grad():
             pos, scale, lat, roll_v = best[1], best[2], best[3], best[4]
@@ -168,7 +181,12 @@ def refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, sca
     with torch.no_grad():
         rot_c, par_c = _rot_par(pos, roll_v)
         if exist_logit is not None:
-            exist = (torch.sigmoid(exist_logit) > 0.5).float()   # final materialisation is a crisp in/out decision;
+            # Final materialisation is a crisp in/out decision, but the threshold must match what the search
+            # optimised against. The old hardcoded >0.5 ignored --exist_thresh, so a node that settled at 0.49
+            # (with --exist_thresh 0.3) still vanished from the scored plant: the 2026-09-17 "continuous
+            # existence costs 1.8 points" finding is exactly this mismatch, not the idea itself.
+            _thr = float(getattr(a, "exist_thresh", 0.5))
+            exist = (torch.sigmoid(exist_logit) > _thr).float()
             # scale is returned unmodified -- alpha only faded the RENDER during the search, it never touched shape
     final_loss = best[0] if a.keep_best else float(loss)
     return pos.detach(), scale.detach(), lat.detach(), roll_v.detach(), rot_c, par_c, final_loss, exist.detach() if torch.is_tensor(exist) else exist
@@ -197,6 +215,12 @@ def main():
     ap.add_argument("--target_zooms", default="1,2,4,8", help="comma list of cache zoom levels (1,2,4,8) whose depth channels are the refinement targets; the 4x/8x levels add signal for plants that are only a few pixels wide at 1x/2x")
     ap.add_argument("--exist_thresh", type=float, default=0.5, help="node existence threshold applied to the sampled existence probabilities (default 0.5; the trained models activate ~60 of 73 GT nodes at 0.5, so a lower threshold adds nodes for the refinement to place)")
     ap.add_argument("--multi_start", action="store_true", help="refine twice, from the sampled latent and from the DAP-spanning mean latent, and keep the start with the lower final input loss")
+    ap.add_argument("--n_starts", type=int, default=1,
+                    help="Multi-hypothesis render-and-select: draw this many plants from the flow (each a different "
+                         "latent draw), refine each against the INPUT, keep the start with the lowest final input "
+                         "loss. 1 = the old single-sample behaviour. The flow is the only readout with realistic "
+                         "spread, so selection over its samples is how the ill-posed per-organ shape is answered "
+                         "without a second viewpoint (20260918-stage3-conditioning-settled §6).")
     ap.add_argument("--init_mean_latent", action="store_true", help="start the refinement from the training-set mean latent (the model's latent_mu buffer) instead of the flow-sampled latent; on full data the sampled latent scored 6-7 points below the mean latent")
     ap.add_argument("--recompute_rot", action="store_true", help="LEGACY, underperforms: re-derive each node's rotation from the CURRENT (moving) parent->node segment every step, instead of the frozen axis refine_plant uses by default and for --opt roll. Ignored whenever roll is in --opt.")
     ap.add_argument("--lr_roll", type=float, default=2e-2)
@@ -204,6 +228,13 @@ def main():
     ap.add_argument("--reg_exist", type=float, default=0.3, help="penalty weight on (existence_prob - sampled existence_prob)^2, keeps refinement from turning on every candidate slot")
     ap.add_argument("--reg_scale", type=float, default=5.0, help="penalty weight on (scale - sampled scale)^2, keeps leaves from inflating to fill the silhouette")
     ap.add_argument("--reg_latent", type=float, default=0.5, help="penalty weight on mean (latent - sampled latent)^2")
+    ap.add_argument("--scale_abs_max_len", type=float, default=0.0,
+                    help="Hard ABSOLUTE ceiling on scale's length component (FM units, packet convention), applied "
+                         "after every refinement step; 0 = off. Bounds the REALIZED organ size in metres-like units "
+                         "rather than the multiplicative s_a bound, so a leaf cannot inflate regardless of how small "
+                         "the cold start was (mirrors run_approach2_refine.py; the GT training ceiling is ~4.0).")
+    ap.add_argument("--scale_abs_max_rad", type=float, default=0.0,
+                    help="Same as --scale_abs_max_len for the radius component (live range ~[-0.11, 0.18] FM).")
     ap.add_argument("--target_dir", default="",
                     help="Folder of <prefix>_chm<PX>.pt CHM pyramids re-rendered at high resolution "
                          "(tools/render_hires_targets.py). Replaces the cached CHM as the refinement target, which "
@@ -243,7 +274,8 @@ def main():
         flow_granularity=args["flow_granularity"], phytomer_latent_dim=args["phytomer_latent_dim"], backbone=args["backbone"],
         freeze_backbone=True, init_phytomer_count=args.get("init_phytomer_count", 50.0),
         stage3_geometry=bool(args.get("stage3_geometry", False)), multizoom=bool(args.get("multizoom", False)),
-        node_token_window=int(args.get("node_token_window", 1)), stage3_regression=bool(args.get("stage3_regression", False))).to(dev)
+        node_token_window=int(args.get("node_token_window", 1)), stage3_regression=bool(args.get("stage3_regression", False)),
+        use_depth=bool(args.get("use_depth", False))).to(dev)
     model.load_state_dict(ck["model_state_dict"], strict=False); model.eval()
     M = args["slots_per_phytomer"]
     pvae = PhytomerVAE(latent_dim=args["phytomer_latent_dim"], residual_dim=args.get("phytomer_residual_dim", 8), hidden_dim=256).to(dev).eval()
@@ -314,34 +346,60 @@ def main():
                 gt_center = 0.5 * (gv.min(0).values + gv.max(0).values) if gv.shape[0] > 0 else None
             tok = model.image_encoder(images); clue = model.probe_pred_dap(tok)
             co0 = model.coarse_stage(tok, capacity_mode="pred_phyto", pred_dap=clue); K = int(co0["active_k"]); co = model.coarse_stage(tok, active_k=K, pred_dap=clue)
-            so = model.sample_ode(images=images, daps=None, num_steps=20, vae=ovae, phytomer_vae=pvae)
-            pos0 = so["phytomer_pos"][0].float(); exist_prob0 = so["phytomer_existence"][0].float(); roll = so["phytomer_roll"][0].float()
-            exist = (exist_prob0 > a.exist_thresh).float()
-            ordn = co["phytomer_ordinal"][0].float(); base = co["phytomer_base_logits"][0].float()
-            scale0 = (so.get("phytomer_scale") if so.get("phytomer_scale") is not None else co.get("phytomer_scale"))[0].float(); lat0 = so["pred_latent"][0].float()
-            if a.init_mean_latent:
-                lat0 = mean_lat.reshape(1, -1).expand_as(lat0).clone()
-            rot, par = reconstruct_phytomer_rot(pos0.unsqueeze(0), roll.unsqueeze(0), ordn.unsqueeze(0), base.unsqueeze(0), exist=(exist > 0.5).float().unsqueeze(0))
-            rot, par = rot[0].float(), par[0].float()
-            # topology chained once from the sampled positions (discrete, non-differentiable); the rotation and
-            # parent position can then be re-derived differentiably from the current pos / roll (--recompute_rot)
-            parent_idx, _, _ = chain_phytomers(pos0, ordinal=ordn, is_base=(base > 0).float(), exist=(exist > 0.5).float())
-            live_m = exist > 0.5; has_par_m = parent_idx >= 0
-            parts0 = plant_from_nodes(pvae, pos0, rot, scale0, lat0, exist, par, M)
-            iou0, _ = score(render_depth(renderer, parts0, zoom, dev), gt_depth)
         a._hires_tgt = None
         if a.target_dir:
             import glob as _glob
             _m = _glob.glob(os.path.join(a.target_dir, f"{ds.samples[i]['prefix']}_chm*.pt"))
             if _m:
                 a._hires_tgt = torch.load(_m[0], map_location="cpu", weights_only=True)
-        pos, scale, lat, roll_v, rot_c, par_c, loss_a, exist_after = refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, scale0, lat0, exist, parent_idx, live_m, has_par_m, opt_set, a, exist_prob0=exist_prob0)
+
+        # Multi-hypothesis render-and-select (--n_starts, 2026-09-18 Phase G): the flow is a PROPOSAL
+        # distribution -- its wrong-but-right-variance latents are worth ~8 IoU under GT geometry and it is
+        # the only readout with realistic spread (20260918-stage3-conditioning-settled §6). So sample N
+        # plants from it, refine each against the INPUT (never GT), and keep the start whose refined render
+        # fits the input best. Selection is on refine_plant's final INPUT loss, so the deployable path
+        # stays GT-free. --multi_start adds one further start from the DAP-spanning mean latent, on the
+        # selected sample's own scaffold (latent swapped only).
+        best_run = None
+        for _s in range(max(1, a.n_starts)):
+            with torch.no_grad():
+                so = model.sample_ode(images=images, daps=None, num_steps=20, vae=ovae, phytomer_vae=pvae)
+                pos0 = so["phytomer_pos"][0].float(); exist_prob0 = so["phytomer_existence"][0].float(); roll = so["phytomer_roll"][0].float()
+                exist = (exist_prob0 > a.exist_thresh).float()
+                ordn = co["phytomer_ordinal"][0].float(); base = co["phytomer_base_logits"][0].float()
+                scale0 = (so.get("phytomer_scale") if so.get("phytomer_scale") is not None else co.get("phytomer_scale"))[0].float(); lat0 = so["pred_latent"][0].float()
+                if a.init_mean_latent:
+                    lat0 = mean_lat.reshape(1, -1).expand_as(lat0).clone()
+                rot, par = reconstruct_phytomer_rot(pos0.unsqueeze(0), roll.unsqueeze(0), ordn.unsqueeze(0), base.unsqueeze(0), exist=(exist > 0.5).float().unsqueeze(0))
+                rot, par = rot[0].float(), par[0].float()
+                # topology chained once from the sampled positions (discrete, non-differentiable); the rotation and
+                # parent position can then be re-derived differentiably from the current pos / roll (--recompute_rot)
+                parent_idx, _, _ = chain_phytomers(pos0, ordinal=ordn, is_base=(base > 0).float(), exist=(exist > 0.5).float())
+                live_m = exist > 0.5; has_par_m = parent_idx >= 0
+                parts0 = plant_from_nodes(pvae, pos0, rot, scale0, lat0, exist, par, M)
+                iou0, _ = score(render_depth(renderer, parts0, zoom, dev), gt_depth)
+            pos, scale, lat, roll_v, rot_c, par_c, loss_a, exist_after = refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, scale0, lat0, exist, parent_idx, live_m, has_par_m, opt_set, a, exist_prob0=exist_prob0)
+            if best_run is None or loss_a < best_run["loss"]:
+                best_run = {"loss": loss_a, "pos": pos, "scale": scale, "lat": lat, "roll": roll_v, "rot": rot_c, "par": par_c,
+                            "exist_after": exist_after, "pos0": pos0, "exist": exist, "iou0": iou0, "start": _s,
+                            "rot0": rot, "par0": par, "roll0": roll, "scale0": scale0, "parent_idx": parent_idx,
+                            "exist_prob0": exist_prob0, "lat0": lat0, "parts0": parts0}
         if a.multi_start:
-            # second start from the DAP-spanning mean latent; keep whichever start ends with the lower INPUT loss
-            lat_m = mean_lat.reshape(1, -1).expand_as(lat0).clone()
-            out_b = refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, scale0, lat_m, exist, parent_idx, live_m, has_par_m, opt_set, a, exist_prob0=exist_prob0)
-            if out_b[6] < loss_a:
-                pos, scale, lat, roll_v, rot_c, par_c, _, exist_after = out_b
+            # extra start from the DAP-spanning mean latent on the SELECTED sample's scaffold (everything
+            # except the latent is the selected start's own sampled state); keep whichever ends with the
+            # lower final INPUT loss. Same semantics as the pre-Phase-G behaviour at n_starts=1.
+            lat_m = mean_lat.reshape(1, -1).expand_as(best_run["lat0"]).clone()
+            out_b = refine_plant(renderer, pvae, M, images, gt_center, best_run["pos0"], best_run["rot0"], best_run["par0"],
+                                 best_run["roll0"], best_run["scale0"], lat_m, best_run["exist"], best_run["parent_idx"],
+                                 best_run["exist"] > 0.5, best_run["parent_idx"] >= 0, opt_set, a,
+                                 exist_prob0=best_run["exist_prob0"])
+            if out_b[6] < best_run["loss"]:
+                best_run.update({"loss": out_b[6], "pos": out_b[0], "scale": out_b[1], "lat": out_b[2], "roll": out_b[3],
+                                 "rot": out_b[4], "par": out_b[5], "exist_after": out_b[7], "start": -1})
+        loss_a = best_run["loss"]; pos = best_run["pos"]; scale = best_run["scale"]; lat = best_run["lat"]; roll_v = best_run["roll"]
+        rot_c = best_run["rot"]; par_c = best_run["par"]; exist_after = best_run["exist_after"]
+        pos0 = best_run["pos0"]; exist = best_run["exist"]; iou0 = best_run["iou0"]; sel = best_run["start"]
+        parts0 = best_run["parts0"]
         with torch.no_grad():
             parts1 = plant_from_nodes(pvae, pos, rot_c, scale, lat, exist_after, par_c, M)
             iou1, _ = score(render_depth(renderer, parts1, zoom, dev), gt_depth)
@@ -365,8 +423,9 @@ def main():
         n_gt_phyto = int(torch.unique(pid_[(exist_gt.cpu() > 0.5) & (pid_[:, 0] >= 0)], dim=0).shape[0]) if pid_ is not None else -1
         rows.append({"index": i, "dap": dap, "iou_before": iou0, "iou_after": iou1, "mean_node_move_cm": moved,
                     "n_nodes_before": n_before, "n_nodes_after": n_after, "n_phytomers_gt": n_gt_phyto,
-                    "n_organs_gt": int(exist_gt.sum().item()), "pred_dap": pred_dap})
+                    "n_organs_gt": int(exist_gt.sum().item()), "pred_dap": pred_dap, "sel_start": sel})
         extra = f"  nodes {n_before:>3d} -> {n_after:>3d}" if "exist" in opt_set else f"  nodes {n_before:>3d}"
+        extra += f"  start {sel}/{max(1, a.n_starts)}" if a.n_starts > 1 or a.multi_start else ""
         print(f"idx {i:6d} DAP {dap:3d} (pred {pred_dap:5.1f}) IoU {iou0*100:5.1f} -> {iou1*100:5.1f}  (nodes moved {moved:.1f} cm){extra}", flush=True)
     b = np.array([r["iou_before"] for r in rows]); c = np.array([r["iou_after"] for r in rows]); d = np.array([r["dap"] for r in rows])
     print(f"MEAN over {len(rows)} plants: {b.mean()*100:.1f} -> {c.mean()*100:.1f}  (DAP>15: {b[d>15].mean()*100:.1f} -> {c[d>15].mean()*100:.1f}) | opt={a.opt} steps={a.steps}")

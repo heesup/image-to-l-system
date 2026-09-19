@@ -119,7 +119,8 @@ def main():
         flow_granularity=args["flow_granularity"], phytomer_latent_dim=args["phytomer_latent_dim"], backbone=args["backbone"],
         freeze_backbone=True, init_phytomer_count=args.get("init_phytomer_count", 50.0),
         stage3_geometry=bool(args.get("stage3_geometry", False)), multizoom=bool(args.get("multizoom", False)),
-        node_token_window=int(args.get("node_token_window", 1)), stage3_regression=bool(args.get("stage3_regression", False))).to(dev)
+        node_token_window=int(args.get("node_token_window", 1)), stage3_regression=bool(args.get("stage3_regression", False)),
+        use_depth=bool(args.get("use_depth", False))).to(dev)
     model.load_state_dict(ck["model_state_dict"], strict=False); model.eval()
     D = args["phytomer_latent_dim"]; M = args["slots_per_phytomer"]
     pvae = PhytomerVAE(latent_dim=D, residual_dim=args.get("phytomer_residual_dim", 8), hidden_dim=256).to(dev).eval()

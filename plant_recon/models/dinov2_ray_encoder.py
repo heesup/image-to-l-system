@@ -97,6 +97,7 @@ class DINORayEncoder(nn.Module):
         embed_dim: int = 384,
         weights_path: Optional[str] = None,
         num_levels: int = 1,
+        use_depth: bool = False,
     ):
         super().__init__()
         # num_levels > 1: the input carries the cache's zoom pyramid (4 channels per level, RGB + depth,
@@ -104,6 +105,7 @@ class DINORayEncoder(nn.Module):
         # tokens come back level-major after the level-0 CLS: [CLS_0 | patches_0 | patches_1 | ...].
         # Level identity is added by the consumers (trainable), the ray embedding is shared.
         self.num_levels = int(num_levels)
+        self.use_depth = bool(use_depth)
         if backbone not in BACKBONES:
             raise KeyError(f"Unknown backbone '{backbone}'. Available: {sorted(BACKBONES)}")
         self.backbone_name = backbone
@@ -143,9 +145,26 @@ class DINORayEncoder(nn.Module):
             sinusoidal_ray_embed = F.pad(sinusoidal_ray_embed, (0, pad))
         self.register_buffer("canonical_ray_embed", sinusoidal_ray_embed.view(1, self.num_patches, embed_dim))
 
+        # Depth adaptor (--use_depth): the design specifies an RGB-D input but the backbone is RGB-only
+        # (see 20260918-stage3-conditioning-settled §5). Rather than rebuild DINO's patch embedding for a
+        # 4th channel, encode each level's CHM/depth channel through a small stem into a per-patch embedding
+        # and ADD it to the RGB patch tokens. Depth is plant-normalised (per-sample shift-scale over the
+        # level's own spatial extent) so RELATIVE height is preserved and absolute depth scale (the rig's
+        # depth is inaccurate) cannot dominate -- per-node normalisation would subtract each node's own
+        # height, which is the entire signal a canopy height map carries.
+        if self.use_depth:
+            self.depth_adapt = nn.Conv2d(1, embed_dim, kernel_size=1)
+        else:
+            self.depth_adapt = None
+
         if freeze_backbone:
             for p in self.parameters():
                 p.requires_grad = False
+            if self.depth_adapt is not None:
+                # the depth adaptor is the new, untrained RGB-D pathway; it must stay live even though the
+                # pretrained backbone is frozen.
+                for p in self.depth_adapt.parameters():
+                    p.requires_grad = True
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -162,8 +181,11 @@ class DINORayEncoder(nn.Module):
         L = self.num_levels if (self.num_levels > 1 and x.shape[1] >= 4 * self.num_levels) else 1
         if L == 1:
             rgb = x[:, :3].float()
+            depth = x[:, 3:4].float() if (self.use_depth and x.shape[1] >= 4) else None
         else:
             rgb = torch.cat([x[:, 4 * l:4 * l + 3] for l in range(L)], dim=0).float()   # (L*B, 3, H, W), level-major
+            depth = (torch.cat([x[:, 4 * l + 3:4 * l + 4] for l in range(L)], dim=0).float()
+                     if self.use_depth else None)                                      # (L*B, 1, H, W)
         if rgb.shape[-1] != self.input_size or rgb.shape[-2] != self.input_size:
             rgb = F.interpolate(rgb, size=(self.input_size, self.input_size),
                                 mode="bilinear", align_corners=False)
@@ -176,6 +198,24 @@ class DINORayEncoder(nn.Module):
             raise RuntimeError(
                 f"Backbone '{self.backbone_name}' produced {patch_tokens.shape[1]} patch tokens "
                 f"at input {self.input_size}, expected {self.num_patches}.")
+
+        # Depth pathway (--use_depth): per-sample shift-scale normalisation (plant-relative height), then
+        # a 1x1 conv into embed_dim, pooled to the patch grid, and ADDED to the RGB patch tokens. Depth is
+        # appearance-independent, so it is the channel that survives when RGB is degraded (real frames /
+        # Helios). Off by default -- the frozen checkpoints were trained RGB-only and load unchanged.
+        if depth is not None:
+            if depth.shape[-1] != self.input_size or depth.shape[-2] != self.input_size:
+                depth = F.interpolate(depth, size=(self.input_size, self.input_size),
+                                      mode="bilinear", align_corners=False)
+            # per-sample shift-scale (plant-normalised): preserve relative height, drop absolute scale.
+            d_flat = depth.flatten(1)                                   # (L*B, H*W)
+            d_mu = d_flat.mean(dim=1, keepdim=True)
+            d_sd = d_flat.std(dim=1, keepdim=True).clamp(min=1e-4)
+            depth_n = ((depth - d_mu.view(-1, 1, 1, 1)) / d_sd.view(-1, 1, 1, 1))
+            d_emb = self.depth_adapt(depth_n)                           # (L*B, embed_dim, H, W)
+            grid = int(math.isqrt(self.num_patches))
+            d_pool = F.adaptive_avg_pool2d(d_emb, (grid, grid)).flatten(2).transpose(1, 2)  # (L*B, N, embed_dim)
+            patch_tokens = patch_tokens + d_pool
 
         patch_tokens = patch_tokens + self.canonical_ray_embed.to(dtype=patch_tokens.dtype)
         if L > 1:

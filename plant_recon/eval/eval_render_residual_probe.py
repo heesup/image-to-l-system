@@ -82,7 +82,7 @@ def main():
         phytomer_latent_dim=args["phytomer_latent_dim"], backbone=args["backbone"], freeze_backbone=True,
         init_phytomer_count=args.get("init_phytomer_count", 50.0),
         stage3_geometry=bool(args.get("stage3_geometry", False)), multizoom=bool(args.get("multizoom", False)),
-        node_token_window=int(args.get("node_token_window", 1))).to(dev)
+        node_token_window=int(args.get("node_token_window", 1)), use_depth=bool(args.get("use_depth", False))).to(dev)
     model.load_state_dict(ck["model_state_dict"], strict=False); model.eval()
     pvae = PhytomerVAE(latent_dim=args["phytomer_latent_dim"], residual_dim=args.get("phytomer_residual_dim", 8),
                        hidden_dim=256).to(dev).eval()

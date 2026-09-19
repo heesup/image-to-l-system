@@ -39,6 +39,7 @@ _System design documents, mathematical specifications, and camera geometry_
 _Training runs, benchmark results, and milestone reports (newest first)_
 
 - [Stage 3 Conditioning, Settled (2026-09-18)](experiments/20260918-stage3-conditioning-settled/20260918-stage3-conditioning-settled.md)
+- [Verification Gates: Appearance Gap Closed (2026-09-18)](experiments/20260918-verification-gates/20260918-verification-gates.md)
 - [20260916 Multiplant Scene (2026-09-16)](experiments/20260916-multiplant-scene/20260916-multiplant-scene.md)
 - [20260916 Agml Dataset Swap (2026-09-16)](experiments/20260916-agml-dataset-swap/20260916-agml-dataset-swap.md)
 - [20260915 Real Image First Test (2026-09-15)](experiments/20260915-real-image-first-test/20260915-real-image-first-test.md)

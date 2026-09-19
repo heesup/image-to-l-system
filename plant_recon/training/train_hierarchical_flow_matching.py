@@ -2027,6 +2027,12 @@ def main():
     parser.add_argument("--multizoom", action="store_true",
                         help="Feed all four cache zoom levels through the backbone; Stage 2/3 attend over all levels and "
                              "each node reads its local token from the finest level containing it (design doc §2.7).")
+    parser.add_argument("--use_depth", action="store_true",
+                        help="Add the CHM/depth channel to the backbone input via a trainable depth adaptor (per-sample "
+                             "plant-normalised, 1x1 conv into embed_dim, added to the RGB patch tokens). Restores the "
+                             "specified RGB-D input; depth is appearance-independent so it survives where RGB is degraded "
+                             "(real frames / Helios). 20260918-stage3-conditioning-settled §5: redundant on clean synthetic "
+                             "RGB, but the appearance-gap case (flat vs Helios) is the open question.")
     parser.add_argument("--coverage_weight", type=float, default=0.0,
                         help="Weight of the one-sided Chamfer loss GT phytomer centre -> nearest active predicted node "
                              "(smooth-L1, beta 2 cm). 0 = off. Pulls nodes onto GT phytomers the matcher never pairs.")
@@ -2299,6 +2305,7 @@ def main():
         node_token_window=int(getattr(args, 'node_token_window', 1)),
         stage3_geometry=args.stage3_geometry,
         stage3_regression=bool(getattr(args, "stage3_regression", False)),
+        use_depth=bool(getattr(args, "use_depth", False)),
     ).to(device)
 
     # Frozen PhytomerVAE (flow_granularity=phytomer): encodes/decodes the
