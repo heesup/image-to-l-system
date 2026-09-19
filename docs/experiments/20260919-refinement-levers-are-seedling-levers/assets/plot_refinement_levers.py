@@ -1,9 +1,12 @@
-"""Figure: every refinement lever in the 2026-09-19 sweep is a seedling lever.
+"""Figure: the refinement noise floor, and which levers clear it.
 
-(a) the reg_latent ladder, seedlings vs mature, showing the monotone prior effect
-(b) all nine runs as DAP<=15 vs DAP>15, showing mature plants are flat
+(a) four replicates each of the default and --reg_latent 0: the run-to-run spread of the 20-plant
+    mean, and the gap between configs measured against it
+(b) every config in the sweep against the replicated default mean, with the +-2 SD noise band that
+    a single-run difference has to clear to mean anything
+(c) the seedling prior ladder re-measured on 24 plants after the n=4 version failed to replicate
 """
-import json, os
+import json
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -17,59 +20,67 @@ plt.rcParams.update({
     "xtick.major.width": 0.6, "ytick.major.width": 0.6,
 })
 
-LOG = "outputs/logs/20260919"
-BLUE, ORANGE = "#1f4e79", "#d1761c"
+L = "outputs/logs/20260919"
+BLUE, ORANGE, GREY = "#1f4e79", "#d1761c", "#777777"
 
-def band(name):
-    rows = json.load(open(f"{LOG}/{name}.json"))["rows"]
-    lo = [r for r in rows if r["dap"] <= 15]
-    hi = [r for r in rows if r["dap"] > 15]
-    f = lambda s, k: 100 * np.mean([r[k] for r in s])
-    return f(lo, "iou_after"), f(hi, "iou_after")
+def mean_iou(n):
+    return 100 * np.mean([x["iou_after"] for x in json.load(open(f"{L}/{n}.json"))["rows"]])
 
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.1, 2.9))
+base = np.array([mean_iou(n) for n in ("s_base", "rep_base1", "rep_base2", "rep_base3")])
+pr0 = np.array([mean_iou(n) for n in ("s_pr0", "rep_pr01", "rep_pr02", "rep_pr03")])
+sd = np.sqrt((base.var(ddof=1) + pr0.var(ddof=1)) / 2)
 
-# (a) prior ladder
-priors = [0.0, 0.25, 0.5, 2.0]
-runs = ["s_pr0", "s_pr025", "s_base", "s_pr2"]
-lo = [band(r)[0] for r in runs]
-hi = [band(r)[1] for r in runs]
-x = np.arange(len(priors))
-ax1.plot(x, lo, "o-", color=ORANGE, lw=1.4, ms=5, label="seedlings (DAP $\\leq$ 15, n=4)")
-ax1.plot(x, hi, "s-", color=BLUE, lw=1.4, ms=4.5, label="mature (DAP > 15, n=16)")
-ax1.set_xticks(x); ax1.set_xticklabels([f"{p:g}" for p in priors])
-ax1.set_xlabel("latent prior weight  (--reg_latent)")
-ax1.set_ylabel("refined silhouette IoU (%)")
-ax1.set_ylim(0, 100)
-ax1.annotate("default", xy=(2, lo[2]), xytext=(2, lo[2] + 13), ha="center", color="#444444",
-             arrowprops=dict(arrowstyle="->", lw=0.6, color="#444444"))
-ax1.legend(loc="lower left", frameon=True, framealpha=1, edgecolor="#bbbbbb", fancybox=False)
-ax1.set_title("(a) stronger prior, worse seedlings", loc="left", fontsize=8.5)
+fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(7.3, 2.75),
+                                    gridspec_kw={"width_ratios": [1, 1.5, 1]})
 
-# (b) all runs
-allruns = [("s_base", "default"), ("s_res256", "256 px"), ("s_res384", "384 px"),
-           ("s_pr0", "prior 0"), ("s_pr025", "prior 0.25"), ("s_pr2", "prior 2.0"),
-           ("s_noreg", "no priors"), ("s_n8", "8 starts"), ("s_pr0_n8", "prior 0\n+ 8 starts")]
-lo2 = [band(r)[0] for r, _ in allruns]
-hi2 = [band(r)[1] for r, _ in allruns]
-x2 = np.arange(len(allruns))
-w = 0.38
-ax2.bar(x2 - w/2, lo2, w, color=ORANGE, edgecolor="none", label="seedlings (DAP $\\leq$ 15)")
-ax2.bar(x2 + w/2, hi2, w, color=BLUE, edgecolor="none", label="mature (DAP > 15)")
-ax2.set_xticks(x2); ax2.set_xticklabels([l for _, l in allruns], rotation=45, ha="right")
-ax2.set_ylabel("refined silhouette IoU (%)")
-ax2.set_ylim(0, 100)
-ax2.axhspan(min(hi2), max(hi2), color=BLUE, alpha=0.10, zorder=0)
-ax2.legend(loc="upper center", ncol=2, frameon=True, framealpha=1, edgecolor="#bbbbbb",
-           fancybox=False, bbox_to_anchor=(0.5, 1.0))
-ax2.set_title("(b) mature plants are flat; all variance is in seedlings", loc="left", fontsize=8.5)
+# (a) replicates
+for k, (v, col, lab) in enumerate(((base, BLUE, "default\n(reg_latent 0.5)"),
+                                   (pr0, ORANGE, "reg_latent 0"))):
+    ax1.scatter(np.full(len(v), k) + np.linspace(-.07, .07, len(v)), v, s=22, color=col,
+                zorder=3, clip_on=False)
+    ax1.hlines(v.mean(), k - .22, k + .22, color=col, lw=1.6, zorder=4)
+    ax1.text(k, v.mean() + 0.55, f"{v.mean():.2f}", ha="center", fontsize=7.5, color=col)
+ax1.set_xticks([0, 1]); ax1.set_xticklabels(["default\n(0.5)", "reg_latent 0"])
+ax1.set_xlim(-.45, 1.45); ax1.set_ylabel("refined IoU, 20-plant mean (%)")
+ax1.set_title(f"(a) 4 runs each\nnoise SD {sd:.2f}", loc="left", fontsize=8.5)
 
-for ax in (ax1, ax2):
+# (b) every config vs the replicated default, with the noise band
+cfgs = [("8 starts", 74.3), ("prior 0 + 8 starts", 74.6), ("prior 0", pr0.mean()),
+        ("no priors", 72.5), ("prior 0.25", 71.9), ("prior 2.0", 70.2),
+        ("384 px", 69.8), ("256 px", 69.2)]
+lab = [c[0] for c in cfgs]
+val = np.array([c[1] for c in cfgs]) - base.mean()
+y = np.arange(len(cfgs))[::-1]
+cols = [ORANGE if abs(v) > 2 * sd else GREY for v in val]
+ax2.barh(y, val, 0.62, color=cols, edgecolor="none", zorder=3)
+ax2.axvspan(-2 * sd, 2 * sd, color=GREY, alpha=0.20, zorder=1,
+            label=f"$\\pm$2 SD noise ({2*sd:.1f} pts)")
+ax2.axvline(0, color="#444444", lw=0.7, zorder=2)
+ax2.set_yticks(y); ax2.set_yticklabels(lab)
+ax2.set_xlabel("change vs replicated default (points)")
+ax2.legend(loc="upper left", frameon=True, framealpha=1, edgecolor="#bbbbbb", fancybox=False)
+ax2.set_title("(b) orange clears the noise floor, grey does not", loc="left", fontsize=8.5)
+
+# (c) seedling ladder, n=24
+sdl = [("2.0", "sd_pr2"), ("0.5", "sd_pr05"), ("0", "sd_pr0")]
+sv = [mean_iou(n) for _, n in sdl]
+ax3.plot(range(3), sv, "o-", color=ORANGE, lw=1.4, ms=5)
+for k, v in enumerate(sv):
+    ax3.text(k, v + 1.6, f"{v:.1f}", ha="center", fontsize=7.5, color=ORANGE)
+ax3.set_xticks(range(3)); ax3.set_xticklabels([s for s, _ in sdl])
+ax3.set_xlim(-.35, 2.35); ax3.set_ylim(0, 50)
+ax3.set_xlabel("latent prior weight")
+ax3.set_ylabel("refined IoU (%)")
+ax3.set_title("(c) 24 seedlings\n(n=4 gave +18, not +5.8)", loc="left", fontsize=8.5)
+
+for ax in (ax1, ax2, ax3):
     ax.spines[["top", "right"]].set_visible(False)
-    ax.grid(axis="y", lw=0.4, color="#dddddd", zorder=0)
     ax.set_axisbelow(True)
+ax1.grid(axis="y", lw=0.4, color="#dddddd")
+ax2.grid(axis="x", lw=0.4, color="#dddddd")
+ax3.grid(axis="y", lw=0.4, color="#dddddd")
 
 fig.tight_layout()
-out = "docs/experiments/20260919-refinement-levers-are-seedling-levers/refinement_levers.png"
+out = "docs/experiments/20260919-refinement-levers-are-seedling-levers/assets/refinement_levers.png"
 fig.savefig(out, dpi=300, bbox_inches="tight")
 print("saved", out)
