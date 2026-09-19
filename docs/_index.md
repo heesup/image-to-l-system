@@ -38,6 +38,7 @@ _System design documents, mathematical specifications, and camera geometry_
 
 _Training runs, benchmark results, and milestone reports (newest first)_
 
+- [Merged Stage 2+3 Hybrid (2026-09-19)](experiments/20260919-merged-stage23-hybrid/20260919-merged-stage23-hybrid.md)
 - [Stage 3 Conditioning, Settled (2026-09-18)](experiments/20260918-stage3-conditioning-settled/20260918-stage3-conditioning-settled.md)
 - [Verification Gates: Appearance Gap Closed (2026-09-18)](experiments/20260918-verification-gates/20260918-verification-gates.md)
 - [20260916 Multiplant Scene (2026-09-16)](experiments/20260916-multiplant-scene/20260916-multiplant-scene.md)

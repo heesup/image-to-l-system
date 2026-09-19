@@ -133,7 +133,8 @@ def main():
         vit_heads=args["vit_heads"], coarse_layers=args["coarse_layers"], fine_layers=args["fine_layers"],
         flow_granularity=args["flow_granularity"], phytomer_latent_dim=args["phytomer_latent_dim"], backbone=args["backbone"],
         freeze_backbone=True, init_phytomer_count=args.get("init_phytomer_count", 50.0),
-        stage3_geometry=bool(args.get("stage3_geometry", False)), multizoom=bool(args.get("multizoom", False)), node_token_window=int(args.get("node_token_window", 1)), stage3_regression=bool(args.get("stage3_regression", False)), use_depth=bool(args.get("use_depth", False))).to(dev)
+        stage3_geometry=bool(args.get("stage3_geometry", False)),
+        stage3_absolute=bool(args.get("stage3_absolute", False)), multizoom=bool(args.get("multizoom", False)), node_token_window=int(args.get("node_token_window", 1)), stage3_regression=bool(args.get("stage3_regression", False)), use_depth=bool(args.get("use_depth", False))).to(dev)
     print(f"  stage3_geometry: {bool(args.get('stage3_geometry', False))} (flow width {model.flow_dim}) | stage3_regression: {bool(args.get('stage3_regression', False))}")
     missing, unexpected = model.load_state_dict(ck["model_state_dict"], strict=False)
     if missing or unexpected:

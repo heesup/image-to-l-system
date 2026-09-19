@@ -56,6 +56,7 @@ def main():
         backbone=args["backbone"], freeze_backbone=True,
         init_phytomer_count=args.get("init_phytomer_count", 50.0),
         stage3_geometry=bool(args.get("stage3_geometry", False)),
+        stage3_absolute=bool(args.get("stage3_absolute", False)),
         multizoom=bool(args.get("multizoom", False)),
         node_token_window=int(args.get("node_token_window", 1)),
         stage3_regression=bool(args.get("stage3_regression", False)),
