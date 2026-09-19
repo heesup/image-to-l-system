@@ -153,6 +153,13 @@ class DINORayEncoder(nn.Module):
         # depth is inaccurate) cannot dominate -- per-node normalisation would subtract each node's own
         # height, which is the entire signal a canopy height map carries.
         if self.use_depth:
+            # Kernel 1x1: commute the conv with the average pool into the patch grid -- pool the
+            # normalised DEPTH to (grid, grid) first, then conv. The two orders are identical in
+            # value (avg-pool then 1x1 conv == 1x1 conv then avg-pool) and this one keeps the
+            # activation (L*B, 1, g, g) instead of (L*B, embed_dim, 224, 224), ~200x less memory kept
+            # for backward -- the first Gate B attempt (2026-09-18, job 38430694) died with an
+            # illegal memory access at the first backward of a batch-48 render step with the
+            # un-pooled order stacked on top.
             self.depth_adapt = nn.Conv2d(1, embed_dim, kernel_size=1)
         else:
             self.depth_adapt = None
@@ -200,7 +207,7 @@ class DINORayEncoder(nn.Module):
                 f"at input {self.input_size}, expected {self.num_patches}.")
 
         # Depth pathway (--use_depth): per-sample shift-scale normalisation (plant-relative height), then
-        # a 1x1 conv into embed_dim, pooled to the patch grid, and ADDED to the RGB patch tokens. Depth is
+        # pooled to the patch grid and 1x1-conv'd into embed_dim, ADDED to the RGB patch tokens. Depth is
         # appearance-independent, so it is the channel that survives when RGB is degraded (real frames /
         # Helios). Off by default -- the frozen checkpoints were trained RGB-only and load unchanged.
         if depth is not None:
@@ -212,10 +219,11 @@ class DINORayEncoder(nn.Module):
             d_mu = d_flat.mean(dim=1, keepdim=True)
             d_sd = d_flat.std(dim=1, keepdim=True).clamp(min=1e-4)
             depth_n = ((depth - d_mu.view(-1, 1, 1, 1)) / d_sd.view(-1, 1, 1, 1))
-            d_emb = self.depth_adapt(depth_n)                           # (L*B, embed_dim, H, W)
             grid = int(math.isqrt(self.num_patches))
-            d_pool = F.adaptive_avg_pool2d(d_emb, (grid, grid)).flatten(2).transpose(1, 2)  # (L*B, N, embed_dim)
-            patch_tokens = patch_tokens + d_pool
+            # pool BEFORE the 1x1 conv (identical in value, ~200x less activation memory; see __init__)
+            d_pool = F.adaptive_avg_pool2d(depth_n, (grid, grid))       # (L*B, 1, g, g)
+            d_tok = self.depth_adapt(d_pool).flatten(2).transpose(1, 2)  # (L*B, N, embed_dim)
+            patch_tokens = patch_tokens + d_tok
 
         patch_tokens = patch_tokens + self.canonical_ray_embed.to(dtype=patch_tokens.dtype)
         if L > 1:

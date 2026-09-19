@@ -24,7 +24,26 @@ sections below are newest first and are kept for the record.
 
 ---
 
-## 🔬 Running now (2026-09-18 00:05)
+## 🔬 Running now (2026-09-18 23:30)
+
+**Experiments**
+
+| Experiment | State | What it found / decides |
+| :--- | :---: | :--- |
+| **Verification gates (C/D/G/B), the 2026-09-18 plan** | ✅ C PASS, G PASS, D partial, B fixed-queued | [Full report](../experiments/20260918-verification-gates/20260918-verification-gates.md). **Gate C: the appearance gap on the refined path is CLOSED** — aug ep190 refined P flat 71.0 / Helios 71.6 (base ep160: 66.3 / 59.2, a 7-pt drop); Helios +12.4, flat not traded away; raw drop shrank 10.0 -> 5.5 but the seedling DAP probe is still appearance-brittle (41 d error). **Gate G (`--n_starts 8`): 74.9** — first lever above the 73.7 plateau, GT-free (selection on final input loss), selected-start distribution spans all 8 (the flow's spread is real signal), one seedling rescued 23->40. **Gate D: existence optimisation still costs 1.2** and the node counts settle it: 60 -> 61.4 of 73 GT — the deficit is TRAINING-side (saturated existence logits), not refinement-side; spend on SPREAD_WEIGHT/existence-head training, not refinement machinery. **Gate B crashed at step 1** (CUDA IMA, job 38430694): the depth adaptor kept a (192, 384, 224, 224) activation for backward (~7.4 GB bf16); fixed by pooling the normalised depth to the 16x16 patch grid BEFORE the 1x1 conv (identical in value to 1e-6, ~200x less memory; `tests/test_use_depth.py` passes) — rerun from `scratch/20260918_verification_gates/` |
+| **Appearance fine-tune (`sub10_v10_cam_aug`)** | 🟢 RUNNING, ep224 | Clean restart from ep160 with the fixed `_shift_zero`; holdout IoU 41-46%, flat refined 71-73.9 at ep190. The seedling-DAP brittleness under appearance shift is its remaining open item |
+| **Next proposed experiment: refinement in the training loop** | ⚪ DESIGNED | Heesup's proposal, spec'd in the gates report: unroll K (~5-20) refinement steps inside the training render block and add the POST-refinement render loss to the objective — teach starts that refine well (Gate G showed start quality gates the outcome). `render_to_latent/-exist` are its K=1 special case. Gate: refined P must beat a matched-wall-clock control |
+| **Depth-input fine-tune (`sub10_v10_cam_depth`)** | ⚪ RERUN QUEUED | The gate-B arm (depth on, augment off — the single-variable complement of the aug run); resumes ep160, crashes fixed, `sbatch scratch/20260918_verification_gates/gate_b_train.sbatch` |
+
+**Engineering**
+
+| Change | State | Why |
+| :--- | :---: | :--- |
+| Depth adaptor memory order (pool-then-conv) | ✅ LANDED 2026-09-18 | Gate B's crash fix: 1x1 conv commutes with avg-pool; pooling first keeps the activation 200x smaller with identical output (verified 1e-6) |
+| `--use_depth` / `SPREAD_WEIGHT` / `--n_starts` / `--exist_thresh`-honoring materialisation / `--scale_abs_max_len/_rad` | ✅ LANDED, commit `a266c54` | The 2026-09-18 plan's code: RGB-D input path, spread launcher wiring, multi-hypothesis selection, refinement safety |
+| Committed with the gates | ✅ `a266c54` | 26 files: encoder/model/trainer/evals/launcher + `tests/test_use_depth.py` + the gates report and assets |
+
+---
 
 **Experiments**
 
@@ -40,9 +59,9 @@ sections below are newest first and are kept for the record.
 | **vs the 2026-09-07/08 Option B lineage** | ✅ ANSWERED 2026-09-18 | Both of today's runs beat it. Same metric (self-consistency silhouette IoU, fixed 20-plant set): Sep 7/8 scores **24.8%** with node RMSE **18.3 cm** and a hull **4.35x** GT, against today's **~31%** at node RMSE **1.7 cm**. The old model earned its silhouette by gross over-spread; today's earns a higher one with structurally correct nodes, and does it on 10k samples for 60 epochs rather than the full dataset for 125-500. The remembered "45.4%" panel was one lucky 4-plant batch from a series running 39/26/34/27/45/49. |
 | Option B's original checkpoints already exist | ✅ FOUND 2026-09-17 | `hierarchical_latent_fm/` holds the 2026-09-07/08 models, so the algorithm Heesup liked does **not** have to be retrained to be evaluated. Epochs 125–300 (written Sep 8–9) and 325–500 (Sep 7) are two different organ-mode runs: `slots_per_anchor=8`, `max_anchors=512`, no `flow_granularity` key at all, which predates the flag. **`hierarchical_fm_epoch_125.pt`, 2026-09-08 23:12, is the checkpoint behind the figure.** Epochs 025–100 are NOT Option B — a later phytomer run (Sep 11, `flow_granularity=phytomer`, 10 slots) overwrote them in the same directory. Three runs shared that folder and only the args stored inside each file distinguish them, which is why every new run now gets its own `OUTPUT_DIR`. Caveat for the A/B above: those runs used the **full** `cowpea_curv26` on a 500-epoch schedule, so the 10k/60-epoch pair answers "which algorithm learns better at equal budget", not "does this reproduce Sep 7". |
 | Refinement step count | ✅ DONE | **The default was 5x too small.** 40 / 80 / 200 / 400 steps give refined strict P 66.3 / 69.1 / **73.7** / 70.0 — the curve peaks near 200 (mature plants 80.7). Every refined number in this project's history was measured before the search converged. A cosine learning-rate schedule (−2.3) and continuous existence (−1.8) both hurt. Plan §8. |
-| Appearance gap | ✅ DONE | Pixels alone cost **38.1 → 28.6** raw and 66.3 → 59.2 refined on identical geometry, reproducing the real-image failures (wrong DAP, existence collapse) on synthetic plants. Plan §5. |
+| Appearance gap | ✅ DONE → **CLOSED (Gate C, refined path)** | Pixels alone cost **38.1 → 28.6** raw and 66.3 → 59.2 refined on identical geometry, reproducing the real-image failures (wrong DAP, existence collapse) on synthetic plants. Plan §5. The 2026-09-18 gates then showed the augmented fine-tune closes the refined-path gap (71.0 flat / 71.6 Helios) and halves the raw drop. |
 | Stage 3 readout | ✅ DONE, NOT PROMOTED | Regression, and regression with correct nodes, both collapse to the dataset mean (R² −0.064, **+0.001**). The conditioning is the limit: one 7.5 cm token holds 7–15 phytomers, a 12 cm ROI still 12–22, so the same input has many targets and the mean is the optimum. The flow stays — its latents have the only realistic spread and are the best refinement start. Plan §6.1–6.2. |
-| Appearance augmentation fine-tune (`sub10_v10_cam_aug`) | ⏸ PAUSED at ep165 | Whether training on real-soil/shaded pixels fixes the brittleness. Was recovering when paused (count 34 → 46 of 55, holdout back to 39–44%). Its ep161–165 saw the wrapped-shadow bug, so a clean restart from ep160 is the safer resume. |
+| Appearance augmentation fine-tune (`sub10_v10_cam_aug`) | 🟢 RESTARTED 2026-09-18, ep224 | Whether training on real-soil/shaded pixels fixes the brittleness. Was recovering when paused (count 34 → 46 of 55, holdout back to 39–44%). Its ep161–165 saw the wrapped-shadow bug, so the 2026-09-18 restart is a clean resume from ep160 with the fixed `_shift_zero`; Gate C read its ep190 EMA. |
 | Whole-frame multi-plant pipeline | 🟡 RUNNING | 4 frames at `--init helios --steps 200`, no plant cap. Figure: `docs/experiments/20260916-multiplant-scene/assets/20260917_multiplant_pipeline.png`. Plan §9.4–9.5. |
 | Backbone ladder (latent ceiling) | ⚪ QUEUED | Whether a finer feature grid recovers per-node information: DINOv2 224 (75 mm/cell) → 448 (37.5) → DINOv3-satellite → Swin V2 stride 8 (18.8) and 4 (9.4), plus a 12 cm ROI crop as the ceiling. Pure ridge probe, no training. |
 | Resolution of the refinement target | ⚪ QUEUED | The target is loaded at 128 px while the cache holds 256; raising the render past the target only sharpens a prediction against a blurry target. A GT depth pyramid re-rendered at 512 is the decisive arm. |
