@@ -2435,9 +2435,52 @@ def main():
         # learned latent block of the flow projection / velocity head (last D
         # columns / rows) and start only the 8 geometry dims fresh.
         cur = model.state_dict()
+
+        def _block_map(old_w: int, new_w: int, latent_d: int):
+            """Per-dimension source index for widening a flow-state axis, or None to leave fresh.
+
+            The generic "copy the old block into the LAST slice" rule is right when the old state is
+            latent-only, because the latent is last in every layout. It is WRONG for 8+D -> 12+D
+            (parent-relative -> absolute): shifting by 4 lands the old dpos/roll in the new rot6d slots.
+            Scale and latent would still line up by coincidence, which is exactly what makes it hard to
+            notice. Map the blocks explicitly instead:
+
+                old [ dpos(3) | roll(2) | scale(3) | latent(D) ]
+                new [ pos (3) |   rot6d(6)         | scale(3) | latent(D) ]
+
+            dpos -> pos is a genuine head start (same units and scale, just re-referenced to the origin
+            instead of the parent); rot6d starts fresh because roll is a different parameterisation of
+            two of its six numbers, not a subset of them.
+            """
+            if old_w == latent_d:                       # latent-only source: last-slice rule is correct
+                return [None] * (new_w - latent_d) + list(range(latent_d))
+            if old_w == 8 + latent_d and new_w == 12 + latent_d:
+                return ([0, 1, 2]                        # dpos   -> pos
+                        + [None] * 6                     # roll   -> rot6d: fresh
+                        + [5, 6, 7]                      # scale  -> scale
+                        + list(range(8, 8 + latent_d)))  # latent -> latent
+            return None                                  # unknown transition: fall back to last-slice
+
         for k in list(state_dict.keys()):
             if k in cur and state_dict[k].shape != cur[k].shape:
                 old_t, new_t = state_dict[k], cur[k].clone()
+                D_lat = int(getattr(model, "fine_stage", model).__dict__.get("latent_dim", 0)) or 0
+                axis = 1 if k.endswith("fine_stage.geom_proj.weight") else 0
+                bmap = (_block_map(old_t.shape[axis], new_t.shape[axis], D_lat)
+                        if k.endswith(("fine_stage.geom_proj.weight", "fine_stage.velocity_head.2.weight",
+                                       "fine_stage.velocity_head.2.bias")) and D_lat else None)
+                if bmap is not None and len(bmap) == new_t.shape[axis]:
+                    src = [(i, j) for i, j in enumerate(bmap) if j is not None]
+                    for i, j in src:
+                        if axis == 1:
+                            new_t[:, i] = old_t[:, j].to(new_t.device)
+                        else:
+                            new_t[i] = old_t[j].to(new_t.device)
+                    state_dict[k] = new_t
+                    if rank == 0:
+                        print(f"  widened {k}: {tuple(old_t.shape)} -> {tuple(new_t.shape)} "
+                              f"(block-mapped: {len(src)}/{new_t.shape[axis]} dims carried over)")
+                    continue
                 if k.endswith("fine_stage.geom_proj.weight") and old_t.shape[0] == new_t.shape[0] and old_t.shape[1] < new_t.shape[1]:
                     new_t[:, -old_t.shape[1]:] = old_t.to(new_t.device)
                 elif k.endswith("fine_stage.velocity_head.2.weight") and old_t.shape[1] == new_t.shape[1] and old_t.shape[0] < new_t.shape[0]:
