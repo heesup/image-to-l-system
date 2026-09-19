@@ -32,6 +32,43 @@ surface is poor, so a small perturbation early sends the trajectory to a differe
 as having made runs comparable. It only fixed the starting point. Everything after it is still
 stochastic.
 
+### Can it be turned off? No — it is not PyTorch's to control
+
+`eval_test_time_refinement.py --deterministic` turns on every determinism switch PyTorch offers
+(`use_deterministic_algorithms(True, warn_only=True)`, `CUBLAS_WORKSPACE_CONFIG=:4096:8`,
+`cudnn.deterministic`, `cudnn.benchmark=False`). Three runs per mode on plant 10833, full float
+precision:
+
+```
+default        refined  0.6060  0.6065  0.5984
+deterministic  refined  0.6315  0.6301  0.6353
+```
+
+**It does not become reproducible.** Two things are worth reading off this. No
+"does not have a deterministic implementation" warning was raised, so PyTorch believes every op it
+owns is already deterministic — which places the nondeterminism in **nvdiffrast's custom CUDA
+kernels**, outside what `use_deterministic_algorithms` governs. And the switches *shift* the result
+(63.2 vs 60.4 on this plant) without *stabilising* it, most likely by changing convolution algorithm
+selection in the frozen backbone.
+
+`warn_only=True` was deliberate: a kernel with no deterministic implementation should be named
+rather than crash the diagnostic. Nothing was named, which is itself the finding.
+
+### It is amplification, not noise
+
+The spread is ~0.8 points on plant 10833 (DAP 11, refines to ~60) and ~30 points on plant 1354
+(DAP 2). The underlying float nondeterminism is the same in both — order-dependent atomic
+accumulation, order 1e-7. What differs is the conditioning of the loss surface: a well-formed plant
+absorbs the perturbation, a seedling covering few pixels lets it decide which optimum the trajectory
+falls into. This is sensitive dependence, not a large noise source, and it explains why the 20-plant
+mean is stable to SD 0.58 while individual seedlings are not reproducible at all.
+
+**Consequence for learned refinement.** Any scheme that trains a model on refinement *outputs* —
+imitating the optimiser, or a proposal-to-refined flow — inherits a target that cannot be reproduced,
+with tens of points of label noise concentrated on exactly the plants that need the most help. The
+fix is not a flag; it is to train toward **GT**, which is reproducible, rather than toward the
+optimiser's answer.
+
 **But the 20-plant mean is stable**, because independent per-plant noise averages down by sqrt(n).
 Four runs of each of two configs:
 

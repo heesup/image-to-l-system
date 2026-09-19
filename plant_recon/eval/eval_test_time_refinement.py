@@ -284,6 +284,9 @@ def main():
                          "Adam's single per-group lr cannot express that conditioning.")
     ap.add_argument("--lbfgs_lr", type=float, default=1.0)
     ap.add_argument("--lbfgs_history", type=int, default=20)
+    ap.add_argument("--deterministic", action="store_true",
+                    help="turn on PyTorch's determinism switches (warn_only) to test whether the refinement's "
+                         "run-to-run variation can be removed; see the 2026-09-19 refinement report")
     ap.add_argument("--sample_seed", type=int, default=-1,
                     help="Seed the flow's x0 draw so runs are comparable. -1 (default) keeps the previous "
                          "unseeded behaviour. Required for any A/B on refinement: without it the raw start "
@@ -337,6 +340,16 @@ def main():
     a = ap.parse_args()
     if a.origin_camera:
         a.input_camera = False
+    if a.deterministic:
+        # The 200-step refinement is NOT reproducible by default: identical commands reproduce the flow's
+        # raw sample bit-for-bit but not the refined result (plant 1354 scored 41.0 and 9.7 on two runs,
+        # 2026-09-19). This turns on every determinism switch PyTorch offers so the source can be located.
+        # warn_only=True because a kernel with no deterministic implementation should be NAMED, not crash
+        # the diagnostic -- the warning tells us where the nondeterminism lives.
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
     dev = torch.device("cuda:0")
     ck = torch.load(a.checkpoint, map_location="cpu", weights_only=False)
     args = fix_ckpt_args(ck["args"] if isinstance(ck["args"], dict) else vars(ck["args"]))
