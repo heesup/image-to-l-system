@@ -284,6 +284,10 @@ def main():
                          "Adam's single per-group lr cannot express that conditioning.")
     ap.add_argument("--lbfgs_lr", type=float, default=1.0)
     ap.add_argument("--lbfgs_history", type=int, default=20)
+    ap.add_argument("--sample_seed", type=int, default=-1,
+                    help="Seed the flow's x0 draw so runs are comparable. -1 (default) keeps the previous "
+                         "unseeded behaviour. Required for any A/B on refinement: without it the raw start "
+                         "varies by ~4 points between runs, which is larger than most effects being measured.")
     ap.add_argument("--n_starts", type=int, default=1,
                     help="Multi-hypothesis render-and-select: draw this many plants from the flow (each a different "
                          "latent draw), refine each against the INPUT, keep the start with the lowest final input "
@@ -433,6 +437,18 @@ def main():
         best_run = None
         for _s in range(max(1, a.n_starts)):
             with torch.no_grad():
+                # --sample_seed: make the flow's starting draw reproducible ACROSS RUNS.
+                #
+                # sample_ode draws x0 ~ N(0, I) from global RNG, so two runs of this script on the same
+                # checkpoint and the same plants start from different proposals. Measured 2026-09-19, that
+                # is worth 35.2-39.6 raw over the eval set -- a 4.4-point spread of pure sampling noise,
+                # which swamps the 1-2 point differences a refinement A/B is usually trying to resolve
+                # (the --refine_px and --reg_latent sweeps that day were confounded by exactly this).
+                #
+                # Seeding per (plant, start) rather than once per run keeps the starts within a
+                # --n_starts sweep distinct, while making start k of plant i identical in every run.
+                if getattr(a, "sample_seed", -1) >= 0:
+                    torch.manual_seed(int(a.sample_seed) * 100003 + i * 101 + _s)
                 so = model.sample_ode(images=images, daps=None, num_steps=20, vae=ovae, phytomer_vae=pvae)
                 pos0 = so["phytomer_pos"][0].float(); exist_prob0 = so["phytomer_existence"][0].float(); roll = so["phytomer_roll"][0].float()
                 exist = (exist_prob0 > a.exist_thresh).float()
