@@ -2759,9 +2759,24 @@ def main():
         if args.init_checkpoint and os.path.isfile(args.init_checkpoint):
             _ck = torch.load(args.init_checkpoint, map_location="cpu", weights_only=False)
             if isinstance(_ck, dict) and "ema_state_dict" in _ck:
-                ema.load_state_dict(_ck["ema_state_dict"])
+                # The EMA shadow is a full copy of the model, so a flow-state width change
+                # (8+D -> 12+D for --stage3_absolute) mismatches here exactly as it does for the
+                # model weights -- and unlike those, this load is strict enough to abort the job.
+                # Drop the mismatched flow tensors and let the EMA start them from the freshly
+                # widened model instead; every other shadow weight still restores.
+                _esd = _ck["ema_state_dict"]
+                _cur_ema = (model.module if hasattr(model, "module") else model).state_dict()
+                _dropped = [k for k, v in _esd.items()
+                            if k in _cur_ema and tuple(v.shape) != tuple(_cur_ema[k].shape)]
+                for k in _dropped:
+                    del _esd[k]
+                ema.load_state_dict(_esd)
                 if rank == 0:
-                    print("EMA: restored from checkpoint", flush=True)
+                    msg = "EMA: restored from checkpoint"
+                    if _dropped:
+                        msg += f" ({len(_dropped)} width-changed tensors left at the widened init: " \
+                               f"{', '.join(k.split('.')[-2] + '.' + k.split('.')[-1] for k in _dropped[:3])})"
+                    print(msg, flush=True)
             del _ck
         optimizer.register_step_post_hook(lambda opt, a_, k_: ema.update(model.module if hasattr(model, "module") else model))
         if rank == 0:
