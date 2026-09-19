@@ -156,7 +156,24 @@ def _make_layer_probe(label: str):
     return _hook
 
 
-STAGE3_GEOM_DIM = 8   # [dpos(3) * BASE_SCALE | roll (cos, sin) | scale(3), FM units]
+STAGE3_GEOM_DIM = 8       # parent-relative layout: [dpos(3) * BASE_SCALE | roll (cos, sin) | scale(3)]
+STAGE3_GEOM_DIM_ABS = 12  # absolute layout:        [pos(3)  * BASE_SCALE | rot6d(6)      | scale(3)]
+
+
+def stage3_geom_dim(absolute: bool) -> int:
+    """Width of the geometry block that precedes the latent in the Stage 3 flow state.
+
+    Two layouts, and the rotation width is what differs. Parent-relative carries only ROLL (2), because
+    the forward axis is recovered from the resolved chain (`reconstruct_phytomer_rot`): the node points
+    from its parent to itself, so only the twist about that axis is free. Absolute carries the full
+    rot6d (6), because with no chain resolved at sampling time there is nothing to derive the forward
+    axis from -- and 6 is also the part tensor's own rotation format (FM_ROT_START 16 -> FM_ROT_END 22),
+    so the state maps onto it without conversion.
+
+    The botany the chain encoded does not disappear in the absolute layout; it moves from the state
+    into the loss (internode length, forward-axis agreement) -- see the hybrid design, 2026-09-19.
+    """
+    return STAGE3_GEOM_DIM_ABS if absolute else STAGE3_GEOM_DIM
 
 
 def split_flow_state(x: torch.Tensor, latent_dim: int):
@@ -167,10 +184,15 @@ def split_flow_state(x: torch.Tensor, latent_dim: int):
     so the child's position is generated RELATIVE TO ITS FIXED PARENT (design doc
     §2.1; the 2026-09-14 GT-substitution ablation put node position first among the
     per-node errors, rotation and latent next). Without it the state is the latent alone.
+
+    With `stage3_absolute` the state is instead
+        [ pos * BASE_SCALE (3) | rot6d (6) | scale (3) | latent (D) ]
+    and no chain is resolved during sampling at all. The geometry block is whatever precedes the
+    latent, so this splits both layouts without being told which one it is.
     """
     if x.shape[-1] == latent_dim:
         return None, x
-    return x[..., :STAGE3_GEOM_DIM], x[..., -latent_dim:]
+    return x[..., :x.shape[-1] - latent_dim], x[..., -latent_dim:]
 
 
 def geometry_from_flow(geom: torch.Tensor, parent_pos: torch.Tensor):
@@ -181,6 +203,25 @@ def geometry_from_flow(geom: torch.Tensor, parent_pos: torch.Tensor):
     roll = safe_normalize(geom[..., 3:5], eps=1e-3)
     scale = geom[..., 5:8]
     return pos, roll, scale
+
+
+def geometry_from_flow_absolute(geom: torch.Tensor):
+    """(B, K, 12) absolute geometry block -> (pos (B, K, 3) m, rot6d (B, K, 6), scale (B, K, 3)).
+
+    The counterpart of `geometry_from_flow` for the hybrid layout: no parent is consulted, so a node's
+    position does not depend on any other node's sample. That is the whole point -- it removes both the
+    error compounding down the chain at inference and the gradient accumulation back up it during the
+    render pass, which is the likeliest source of the 1e13 asymmetry the Stage 2/3 barrier was added
+    for on 2026-09-12.
+
+    rot6d is returned RAW. Orthonormalisation belongs at decode, where the part tensor is assembled,
+    because six free numbers are not a rotation and Gram-Schmidt on a mid-trajectory x_t would be a
+    non-linearity inside the flow's own state space.
+    """
+    pos = geom[..., :3] / BASE_SCALE
+    rot6d = geom[..., 3:9]
+    scale = geom[..., 9:12]
+    return pos, rot6d, scale
 
 
 def parent_relative(pos: torch.Tensor, parent_pos: torch.Tensor,
