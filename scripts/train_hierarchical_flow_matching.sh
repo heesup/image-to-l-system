@@ -88,6 +88,13 @@ fi
 STAGE3_ARGS=""
 if [ "${STAGE3_GEOMETRY:-0}" = "1" ]; then
     STAGE3_ARGS="--stage3_geometry --stage3_geom_weight ${STAGE3_GEOM_WEIGHT:-4.0}"
+    # STAGE3_ABSOLUTE=1: the hybrid layout -- the flow carries ABSOLUTE pos(3) + rot6d(6) + scale(3)
+    # rather than parent-relative dpos(3) + roll(2) + scale(3), so no chain is resolved while
+    # sampling, and the botanical structure returns as the internode-length / forward-axis losses.
+    # Only meaningful with STAGE3_GEOMETRY=1, which is why it is nested here.
+    if [ "${STAGE3_ABSOLUTE:-0}" = "1" ]; then
+        STAGE3_ARGS="${STAGE3_ARGS} --stage3_absolute --stage3_botany_weight ${STAGE3_BOTANY_WEIGHT:-1.0}"
+    fi
 fi
 # STAGE3_GT_NODES=1: teacher forcing -- Stage 3 conditioned on the GT node geometry
 # of matched nodes (upper bound of the latent path; a diagnostic arm, not a recipe).

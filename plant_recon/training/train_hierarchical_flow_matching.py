@@ -143,6 +143,7 @@ def forward_backward_step(
     parent_jitter_m: float = 0.015,
     parent_substitution: float = 0.05,
     stage3_geom_weight: float = 4.0,
+    stage3_botany_weight: float = 1.0,
     stage3_gt_nodes: bool = False,
     stage3_gt_nodes_p: float = 1.0,
     stage3_gt_nodes_jitter_m: float = 0.0,
@@ -257,6 +258,7 @@ def forward_backward_step(
         D = raw_model.phytomer_latent_dim
         D_flow = getattr(raw_model, "flow_dim", D)   # latent, or [geometry(8) | latent] with stage3_geometry
         s3geom = bool(getattr(raw_model, "stage3_geometry", False))
+        s3abs = bool(getattr(raw_model, "stage3_absolute", False))
         # --stage3_regression: z_0 = 0 and t = 0 throughout, so tgt_velocity = z_1 and clean_z1 = pred_velocity;
         # every downstream consumer (matched-node MSE, geometry weight, idle regularizer, render block) is unchanged.
         s3reg = bool(getattr(raw_model, "stage3_regression", False))
@@ -508,6 +510,11 @@ def forward_backward_step(
         # loss anymore: with the forward axis no longer independently
         # predicted, nothing can disagree with it by construction.
         gt_phytomer_roll_target = torch.zeros(B, K_eff, 2, device=device)
+        # Full rotation target, for the ABSOLUTE (hybrid) layout. The roll target above is the
+        # rotation expressed relative to the chain's forward axis; with no chain resolved at
+        # sampling time there is nothing to express it relative to, so the node regresses its
+        # whole rot6d instead. Same source (`gt_rot`), just not projected onto the axis.
+        gt_phytomer_rot6d_target = torch.zeros(B, K_eff, 6, device=device)
         gt_phytomer_scl_target = torch.zeros(B, K_eff, 3, device=device)
         # Position along the shoot, and whether this phytomer starts one.
         gt_phytomer_ord_target = torch.zeros(B, K_eff, device=device)
@@ -647,6 +654,7 @@ def forward_backward_step(
             )
             gt_phytomer_roll_target[b, node_src] = encode_roll(
                 rot6d_to_matrix(gt_rot), fwd_for_roll)
+            gt_phytomer_rot6d_target[b, node_src] = gt_rot.to(gt_phytomer_rot6d_target.dtype)
 
             tgt_cls = pt["packets"][pkt_idx, :, :FM_OT_END].argmax(-1)
             pres = pt["presence"][pkt_idx]
@@ -677,13 +685,25 @@ def forward_backward_step(
                 parent_pos_in[b, swap] = gt_phytomer_pos_target[b, donors].float()
         parent_pos_in = torch.where(gt_parent_has_train.unsqueeze(-1), parent_pos_in, torch.zeros_like(parent_pos_in))
         if s3geom:
-            # Geometry block targets, RELATIVE to the (noised) parent the model is
-            # conditioned on, so parent_in + dpos lands on the GT node: the model
-            # learns to correct the parent's error from the image.
             m_ = matched_phytomer_mask.unsqueeze(-1)
-            tgt_z1_phyto[..., 0:3] = torch.where(m_, (gt_phytomer_pos_target - parent_pos_in) * BASE_SCALE, torch.zeros_like(parent_pos_in))
-            tgt_z1_phyto[..., 3:5] = torch.where(m_, gt_phytomer_roll_target, torch.zeros_like(gt_phytomer_roll_target))
-            tgt_z1_phyto[..., 5:8] = torch.where(m_, gt_phytomer_scl_target, torch.zeros_like(gt_phytomer_scl_target))
+            if s3abs:
+                # ABSOLUTE (hybrid) targets: the node regresses its own position and its whole
+                # rotation, depending on no other node. The parent-relative structure this drops is
+                # not lost -- it comes back as the internode-length and forward-axis LOSS terms below,
+                # which shape the distribution without making sampling depend on a resolved chain.
+                tgt_z1_phyto[..., 0:3] = torch.where(m_, gt_phytomer_pos_target * BASE_SCALE,
+                                                     torch.zeros_like(gt_phytomer_pos_target))
+                tgt_z1_phyto[..., 3:9] = torch.where(m_, gt_phytomer_rot6d_target,
+                                                     torch.zeros_like(gt_phytomer_rot6d_target))
+                tgt_z1_phyto[..., 9:12] = torch.where(m_, gt_phytomer_scl_target,
+                                                      torch.zeros_like(gt_phytomer_scl_target))
+            else:
+                # Geometry block targets, RELATIVE to the (noised) parent the model is
+                # conditioned on, so parent_in + dpos lands on the GT node: the model
+                # learns to correct the parent's error from the image.
+                tgt_z1_phyto[..., 0:3] = torch.where(m_, (gt_phytomer_pos_target - parent_pos_in) * BASE_SCALE, torch.zeros_like(parent_pos_in))
+                tgt_z1_phyto[..., 3:5] = torch.where(m_, gt_phytomer_roll_target, torch.zeros_like(gt_phytomer_roll_target))
+                tgt_z1_phyto[..., 5:8] = torch.where(m_, gt_phytomer_scl_target, torch.zeros_like(gt_phytomer_scl_target))
         z_t = scheduler.sample_xt(z_0, tgt_z1_phyto, t)
         _sync_cuda(); prof["par_noise"] = time.time() - _t_tgt
         # Re-run the model forward with the true x_t.
@@ -781,12 +801,47 @@ def forward_backward_step(
             pv_m, tv_m = pred_velocity[matched_phytomer_mask], tgt_velocity[matched_phytomer_mask]
             loss_fine_vel = F.mse_loss(pv_m[:, -D:], tv_m[:, -D:], reduction="sum") / (float(D) * float(norm_m))
             if s3geom:
-                # the 8 geometry dims would be 6% of a plain MSE next to 128 latent dims
-                loss_geom_vel = F.mse_loss(pv_m[:, :STAGE3_GEOM_DIM], tv_m[:, :STAGE3_GEOM_DIM], reduction="sum") / (
-                    float(STAGE3_GEOM_DIM) * float(norm_m))
+                # the geometry dims would be ~6% of a plain MSE next to 128 latent dims. Width is
+                # layout-dependent (8 parent-relative, 12 absolute), so slice by the state itself --
+                # a hardcoded 8 silently drops 4 of the absolute layout's rotation dims.
+                g_w = pv_m.shape[-1] - D
+                loss_geom_vel = F.mse_loss(pv_m[:, :g_w], tv_m[:, :g_w], reduction="sum") / (
+                    float(g_w) * float(norm_m))
                 loss_fine_vel = loss_fine_vel + stage3_geom_weight * loss_geom_vel
         else:
             loss_fine_vel = torch.tensor(0.0, device=device)
+
+        # 1b. Botanical structure, as LOSS rather than as state (hybrid layout only).
+        #
+        # The parent-relative layout encoded two facts structurally: a node sits a plausible distance
+        # from its parent, and its organ points along that branch. The absolute layout drops both from
+        # the state so that sampling needs no resolved chain -- these terms put them back as
+        # supervision, which is the whole trade the hybrid makes.
+        #
+        # The forward-axis target is DETACHED. Undetached it would couple a child's rotation error back
+        # into its parent's position, reintroducing exactly the up-the-chain gradient accumulation the
+        # absolute layout exists to remove; detached, the rotation is corrected to agree with the
+        # positions and not the reverse.
+        loss_botany = torch.tensor(0.0, device=device)
+        if s3abs and total_matched_nodes > 0:
+            geom_hat = split_flow_state(clean_z1, D)[0]
+            if geom_hat is not None:
+                m_bot = matched_phytomer_mask & gt_parent_has_train.bool()
+                if bool(m_bot.any()):
+                    pos_hat = geom_hat[..., 0:3][m_bot] / BASE_SCALE
+                    rot_hat = geom_hat[..., 3:9][m_bot]
+                    par = parent_pos_in[m_bot]
+                    d_hat = pos_hat - par
+                    d_gt = gt_phytomer_pos_target[m_bot] - par
+                    # internode length: how far a node sits from its parent
+                    loss_len = F.smooth_l1_loss(d_hat.norm(dim=-1), d_gt.norm(dim=-1), beta=0.02)
+                    # forward axis: rot6d's x column (rot6d_to_matrix normalises d6[..., 0:3]) should
+                    # point along the branch the node actually sits on
+                    fwd_hat = F.normalize(rot_hat[..., 0:3], dim=-1, eps=1e-6)
+                    fwd_tgt = F.normalize(d_hat.detach(), dim=-1, eps=1e-6)
+                    loss_axis = (1.0 - (fwd_hat * fwd_tgt).sum(-1)).mean()
+                    loss_botany = loss_len + loss_axis
+                    loss_fine_vel = loss_fine_vel + stage3_botany_weight * loss_botany
 
         # 2. Idle Phytomer Damping (Vectorized 1-shot per sample, properly normalized by num_idle)
         idle_mask = ~matched_phytomer_mask
@@ -1389,6 +1444,7 @@ def probe_optimal_batch_size(
     parent_jitter_m: float = 0.015,
     parent_substitution: float = 0.05,
     stage3_geom_weight: float = 4.0,
+    stage3_botany_weight: float = 1.0,
     stage3_gt_nodes: bool = False,
     stage3_gt_nodes_p: float = 1.0,
     stage3_gt_nodes_jitter_m: float = 0.0,
@@ -1461,6 +1517,7 @@ def probe_optimal_batch_size(
         parent_jitter_m=parent_jitter_m,
         parent_substitution=parent_substitution,
         stage3_geom_weight=stage3_geom_weight,
+        stage3_botany_weight=stage3_botany_weight,
         stage3_gt_nodes=stage3_gt_nodes,
         stage3_gt_nodes_p=stage3_gt_nodes_p,
         stage3_gt_nodes_jitter_m=stage3_gt_nodes_jitter_m,
@@ -1592,6 +1649,7 @@ def train_one_epoch(
     parent_jitter_m: float = 0.015,
     parent_substitution: float = 0.05,
     stage3_geom_weight: float = 4.0,
+    stage3_botany_weight: float = 1.0,
     stage3_gt_nodes: bool = False,
     stage3_gt_nodes_p: float = 1.0,
     stage3_gt_nodes_jitter_m: float = 0.0,
@@ -1998,6 +2056,16 @@ def main():
     parser.add_argument("--silhouette_weight", type=float, default=2.0, help="Weight for in-loop differentiable silhouette Dice loss")
     parser.add_argument("--parent_jitter_cm", type=float, default=1.5,
                         help="Stage 3 (parent, self) conditioning: Gaussian jitter (cm) on the GT-fixed parent position during training (§2.1; ~Stage 2's node RMSE)")
+    parser.add_argument("--stage3_absolute", action="store_true",
+                        help="Hybrid layout: the Stage 3 flow carries ABSOLUTE pos(3) + rot6d(6) + scale(3) "
+                             "instead of parent-relative dpos(3) + roll(2) + scale(3), so no chain is resolved "
+                             "while sampling -- which removes both the error compounding down the chain at "
+                             "inference and the gradient accumulation back up it. The structure the chain "
+                             "encoded returns as the --stage3_botany_weight loss terms. Requires "
+                             "--stage3_geometry (there is no geometry block to change otherwise).")
+    parser.add_argument("--stage3_botany_weight", type=float, default=1.0,
+                        help="Weight of the internode-length and forward-axis losses that carry the botanical "
+                             "structure in the --stage3_absolute layout.")
     parser.add_argument("--stage3_geometry", action="store_true",
                         help="Stage 3 generates the child's position (relative to its fixed parent), roll and scale "
                              "in the flow state with the latent (design doc §2.1; GT-substitution ablation 2026-09-14).")
@@ -2304,6 +2372,7 @@ def main():
         multizoom=bool(getattr(args, 'multizoom', False)),
         node_token_window=int(getattr(args, 'node_token_window', 1)),
         stage3_geometry=args.stage3_geometry,
+        stage3_absolute=args.stage3_absolute,
         stage3_regression=bool(getattr(args, "stage3_regression", False)),
         use_depth=bool(getattr(args, "use_depth", False)),
     ).to(device)
