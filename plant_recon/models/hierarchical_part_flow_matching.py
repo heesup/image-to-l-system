@@ -2112,9 +2112,16 @@ class HierarchicalPartFlowMatchingModel(nn.Module):
             N_fine = active_k * M    # flat slot surface for legacy callers
             stage2_pos, stage2_roll, stage2_scale = phytomer_pos, phytomer_roll, phytomer_scale
             if geom_block is not None:
-                # Stage 3 refined the child against its (chain) parent: these are
-                # the node position / roll / scale the plant is built from now.
-                phytomer_pos, phytomer_roll, phytomer_scale = geometry_from_flow(geom_block, chain_parent_pos)
+                if self.stage3_absolute:
+                    # Hybrid layout: the node carries its own absolute position and full rotation, so
+                    # nothing is resolved against a parent here. `phytomer_roll` keeps its name for the
+                    # callers downstream but now holds rot6d (6) rather than roll (2); the chain is
+                    # reconstructed once at XML export, not inside the sampling loop.
+                    phytomer_pos, phytomer_roll, phytomer_scale = geometry_from_flow_absolute(geom_block)
+                else:
+                    # Stage 3 refined the child against its (chain) parent: these are
+                    # the node position / roll / scale the plant is built from now.
+                    phytomer_pos, phytomer_roll, phytomer_scale = geometry_from_flow(geom_block, chain_parent_pos)
         else:
             final_out = self.fine_stage(
                 noisy_fine_nodes=x, timesteps=torch.ones((B,), device=device), **forward_kwargs)
