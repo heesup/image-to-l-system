@@ -148,3 +148,62 @@ saved args rather than output:
   every one of them failed to load a merged checkpoint until patched.
 - `EPOCHS=120` against a checkpoint restoring to epoch 161 produced an empty training loop that
   exited **COMPLETED** in 34 seconds.
+
+---
+
+## Final verdict at epoch 280 (2026-09-19, replicated)
+
+`merged_abs` finished its 280 epochs. Evaluated on the shared 20-plant set (its own `eval_set.json`
+is exactly `hierarchical_fm_v9/eval_set.json` — all 20 prefixes overlap, so this is a head-to-head
+on identical plants), `--steps 200 --sample_seed 0`, with replicates throughout because the
+refinement is nondeterministic (see
+[the refinement report](../20260919-refinement-levers-are-seedling-levers/20260919-refinement-levers-are-seedling-levers.md)).
+
+| | n | raw | refined | SD | lift |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| baseline (v10_cam ep160) default | 4 | 37.9 | 71.23 | 0.43 | +33.3 |
+| baseline **+ Gate G** | 5 | 38.0 | **74.65** | 1.02 | +36.7 |
+| merged default | 5 | 33.2 | 73.34 | 1.12 | +40.2 |
+| merged + Gate G | 5 | 34.7 | 73.56 | 0.61 | +38.8 |
+| merged, held-out plants | 2 | 27.9 | 71.93 | 1.62 | +44.0 |
+
+| comparison | delta | SE | verdict |
+| :--- | ---: | ---: | :--- |
+| merged vs baseline, default | +2.11 | 0.55 | **clear** (3.9 SE) |
+| merged vs baseline, with Gate G | −1.09 | 0.53 | suggestive (2.1 SE) |
+| Gate G on baseline | +3.42 | 0.50 | **clear** (6.8 SE) |
+| Gate G on merged | +0.22 | 0.57 | **nothing** (0.4 SE) |
+
+**Gate G succeeds; the merged architecture does not.** The goal was for both to succeed and only one
+did.
+
+Three findings, in order of how well they are established.
+
+**1. Gate G helps the baseline and does nothing for the merged model.** +3.42 at 6.8 SE against
++0.22 at 0.4 SE — the interaction is unambiguous even though the head-to-head under Gate G (−1.09,
+2.1 SE) is not. This is the cleanest result of the comparison.
+
+The mechanism is *not* collapsed sample diversity: both models spread their selections over all 8
+starts (baseline histogram 18/11/11/10/13/16/8/13, merged 23/7/6/21/9/20/6/8). It is that the merged
+model's refinement is **start-insensitive**. Selection improves its raw score (33.2 -> 34.7) but buys
+almost nothing refined (+0.2), whereas on the baseline selection barely moves raw (37.9 -> 38.0) and
+gains +3.4 refined. The baseline's outcome depends on where it starts, so choosing well pays; the
+merged model converges to ~73.5 from anywhere. Its larger lift (+40.2 vs +33.3) is the same fact
+seen from the other side — it refines hard enough to wash out its starting point, and that caps it.
+
+**2. The merged model still starts clearly worse.** Raw 33.2 vs 37.9, −4.7 points, reproducing the
+criterion-1 failure (−4.8 to −5.7) at full training length. Absolute geometry in the flow state with
+parent-relative supervision as a loss term did not fix the scaffold. Note the budget asymmetry:
+`merged_abs` trained on `max_train_samples = 10000`, the baseline on the full dataset, so this
+compares architectures at unequal budget, not outright.
+
+**3. At default settings the merged model is genuinely ahead** (+2.11, 3.9 SE) — it converts a worse
+start into a slightly better finish. That is a real result and it is the one that looked promising
+before Gate G was applied to both. It does not survive giving the baseline the better inference
+procedure.
+
+**Best configuration on the table: baseline + Gate G, 74.65.**
+
+Held-out: the merged model scores 71.93 refined against 73.34 in-sample, a gap not resolved at n=2,
+but its **raw** held-out score is 27.9 against 33.2 in-sample — a clearer 5.3-point generalisation
+gap in the feedforward prediction itself.
