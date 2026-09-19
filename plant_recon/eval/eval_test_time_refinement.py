@@ -90,7 +90,26 @@ def refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, sca
     if "latent" in opt_set: params.append({"params": [lat], "lr": a.lr_latent})
     if "roll" in opt_set: params.append({"params": [roll_v], "lr": a.lr_roll})
     if "exist" in opt_set: params.append({"params": [exist_logit], "lr": a.lr_exist})
-    opt = torch.optim.Adam(params)
+    # --optimizer lbfgs: second-order-ish fitting instead of first-order SGD.
+    #
+    # Adam is built for stochastic, high-dimensional, noisy-gradient TRAINING. Test-time refinement is a
+    # different problem: a deterministic least-squares fit of one plant to one fixed target, where the
+    # parameters are badly scaled relative to each other (a centimetre of position and a unit of latent
+    # do not deserve the same step). L-BFGS builds a curvature estimate from the gradient history and
+    # picks its own step size by line search, which is the standard answer to exactly that conditioning
+    # problem -- and it typically converges in tens of iterations where Adam needs hundreds.
+    #
+    # Full Gauss-Newton / Levenberg-Marquardt would be the textbook choice for inverse rendering, but it
+    # needs the residual Jacobian, which here is (pixels x parameters) with ~100 nodes x 134 params each.
+    # That needs matrix-free CG with Jacobian-vector products, which is a much bigger build; L-BFGS gets
+    # most of the curvature benefit as a drop-in and is the right thing to measure first.
+    if getattr(a, "optimizer", "adam") == "lbfgs":
+        flat = [q for g in params for q in g["params"]]
+        opt = torch.optim.LBFGS(flat, lr=float(getattr(a, "lbfgs_lr", 1.0)),
+                                max_iter=1, history_size=int(getattr(a, "lbfgs_history", 20)),
+                                line_search_fn="strong_wolfe")
+    else:
+        opt = torch.optim.Adam(params)
     # Cosine decay of every group's lr to --lr_final_frac of its initial value. With the constant lr the
     # search keeps taking full-size steps after it has essentially arrived, so the last steps jitter around
     # the optimum instead of settling into it; that jitter is why --keep_best was needed to avoid ending on
@@ -159,7 +178,51 @@ def refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, sca
                     (exist_logit.detach().clone() if exist_logit is not None else None))
         if step == a.steps:
             break
-        loss.backward(); _set_lr(step); opt.step()
+        if getattr(a, "optimizer", "adam") == "lbfgs":
+            # LBFGS evaluates the closure several times per step (the line search), so the forward has
+            # to be recomputed inside it rather than reusing the loss already built above.
+            def _closure():
+                opt.zero_grad()
+                _rc, _pc = _rot_par(pos, roll_v)
+                if exist_logit is not None:
+                    _ep = torch.sigmoid(exist_logit)
+                    _parts, _alpha = plant_from_nodes(pvae, pos, _rc, scale, lat, _ep, _pc, M, soft_exist=True)
+                else:
+                    _ep = None; _alpha = None
+                    _parts = plant_from_nodes(pvae, pos, _rc, scale, lat, exist, _pc, M)
+                if _parts.shape[0] == 0:
+                    return torch.zeros((), device=dev, requires_grad=True)
+                _mesh = renderer.geo_builder.build_mesh_from_part_tensor(_parts, existence=_alpha, device=dev)
+                _l = torch.zeros((), device=dev)
+                for _z, _t in tgt.items():
+                    if a.plant_centered:
+                        _pred = renderer.forward(_mesh, azimuth_deg=0.0, elevation_deg=90.0, camera_height=5.0,
+                                                 background="ground", focus_plant=True, include_depth=True,
+                                                 differentiable=True, image_size=refine_px, zoom_factor=_z,
+                                                 reference_window_size=1.2)[3]
+                    else:
+                        _pred = renderer.render_batched([_mesh], azimuth_deg=0.0, elevation_deg=90.0,
+                                                        camera_height=5.0, differentiable=True,
+                                                        image_size=refine_px, zoom_factor=_z,
+                                                        reference_window_size=1.2,
+                                                        centers=([gt_center] if gt_center is not None else None))[0, 3]
+                    _canopy = (_t > 0.005) | (_pred > 0.005)
+                    _l1 = F.smooth_l1_loss(_pred, _t, beta=0.02, reduction="none")
+                    _ld = (_l1 * _canopy).sum() / _canopy.sum().clamp(min=1)
+                    _pm = torch.sigmoid((_pred - 0.005) * 100.0); _gm = (_t > 0.005).float()
+                    _di = 1.0 - (2.0 * (_pm * _gm).sum() + 1e-4) / (_pm.sum() + _gm.sum() + 1e-4)
+                    _l = _l + 0.5 * _ld + 1.0 * _di
+                if a.reg_scale > 0:
+                    _l = _l + a.reg_scale * ((scale - scale0) ** 2).mean()
+                if a.reg_latent > 0:
+                    _l = _l + a.reg_latent * ((lat - lat0) ** 2).mean()
+                if _ep is not None and a.reg_exist > 0:
+                    _l = _l + a.reg_exist * ((_ep - exist_prob0) ** 2).mean()
+                _l.backward()
+                return _l
+            opt.step(_closure)
+        else:
+            loss.backward(); _set_lr(step); opt.step()
         # Absolute realized-scale ceilings (FM units, packet convention), applied after every step, on top of the
         # soft reg_scale penalty. Mirrors use_cases/real_world/eval/run_approach2_refine.py: the multiplicative
         # scale bound is on the WRONG thing (s_a), and a leaf's area grows quadratically with scale, so the soft
@@ -215,6 +278,12 @@ def main():
     ap.add_argument("--target_zooms", default="1,2,4,8", help="comma list of cache zoom levels (1,2,4,8) whose depth channels are the refinement targets; the 4x/8x levels add signal for plants that are only a few pixels wide at 1x/2x")
     ap.add_argument("--exist_thresh", type=float, default=0.5, help="node existence threshold applied to the sampled existence probabilities (default 0.5; the trained models activate ~60 of 73 GT nodes at 0.5, so a lower threshold adds nodes for the refinement to place)")
     ap.add_argument("--multi_start", action="store_true", help="refine twice, from the sampled latent and from the DAP-spanning mean latent, and keep the start with the lower final input loss")
+    ap.add_argument("--optimizer", choices=["adam", "lbfgs"], default="adam",
+                    help="lbfgs: curvature-aware line-searched fitting instead of first-order Adam. Refinement is a "
+                         "deterministic least-squares fit with badly-scaled parameters, which is what L-BFGS is for; "
+                         "Adam's single per-group lr cannot express that conditioning.")
+    ap.add_argument("--lbfgs_lr", type=float, default=1.0)
+    ap.add_argument("--lbfgs_history", type=int, default=20)
     ap.add_argument("--n_starts", type=int, default=1,
                     help="Multi-hypothesis render-and-select: draw this many plants from the flow (each a different "
                          "latent draw), refine each against the INPUT, keep the start with the lowest final input "
