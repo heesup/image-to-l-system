@@ -1,5 +1,19 @@
 # Every test-time-refinement lever we have is a seedling lever
 
+> **CORRECTION IN PROGRESS (2026-09-19, later the same day).** Two claims below are being revised.
+> (1) The "+18 seedling points" figure for `--reg_latent 0` came from n=4 and does **not** replicate:
+> on a purpose-built 24-plant seedling set the same ladder gives 29.4 / 30.8 / 36.6 for
+> `reg_latent` 2.0 / 0.5 / 0.0, i.e. **+5.8** over the default, 95% CI [+1.6, +10.1], improving 16
+> of 24 plants and hurting 7. The direction replicates and stays monotone; the magnitude is about a
+> third of what n=4 suggested. (2) More seriously, **the refinement optimisation is not
+> deterministic.** Re-running an identical command reproduces the raw sample bit-for-bit but not the
+> refined value: plant 1354 at `reg_latent 0` scored 41.0 in one run and 9.7 in another. The most
+> likely cause is order-nondeterministic atomic gradient accumulation in the nvdiffrast backward
+> pass, which compounds over 200 steps and does the most damage on seedlings, where the plant covers
+> few pixels and the loss surface is poor. Replicate runs are in flight to size that noise floor;
+> **until they report, treat every single-run difference below as provisional**, including the
+> headline 71.5 / 74.2 / 74.3 / 74.6 comparison, which was never replicated.
+
 2026-09-19. Nine seeded refinement runs on the same checkpoint and the same 20-plant eval set.
 Checkpoint `outputs/checkpoints/hierarchical_fm_v10_cam/hierarchical_fm_epoch_160.pt`, eval set
 `outputs/checkpoints/hierarchical_fm_v9/eval_set.json`, `--steps 200 --sample_seed 0`.
