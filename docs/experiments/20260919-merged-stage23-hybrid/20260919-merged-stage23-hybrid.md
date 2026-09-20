@@ -207,3 +207,42 @@ procedure.
 Held-out: the merged model scores 71.93 refined against 73.34 in-sample, a gap not resolved at n=2,
 but its **raw** held-out score is 27.9 against 33.2 in-sample — a clearer 5.3-point generalisation
 gap in the feedforward prediction itself.
+
+
+## Appearance augmentation: the clearest win of the day, but it does not close the gap
+
+`merged_aug` is `merged_abs` plus `APPEARANCE_AUGMENT=1, AUGMENT_P=0.8`, everything else identical,
+so the pair isolates augmentation. Evaluated on the flat cache render (the usual protocol) and on
+Helios raytraced re-renders at the cache's framing (`--rgb_override_dir`, the appearance-gap
+protocol), replicated.
+
+| | n | raw | refined | SD |
+| :--- | ---: | ---: | ---: | ---: |
+| merged_abs, flat | 5 | 33.2 | 73.34 | 1.12 |
+| merged_abs, **Helios** | 2 | 18.7 | **48.36** | 0.67 |
+| merged_aug, flat | 3 | 34.9 | 73.37 | 0.38 |
+| merged_aug, **Helios** | 2 | 22.0 | **59.11** | 0.42 |
+
+**Augmentation is worth +10.75 on Helios at 19.2 SE** — the largest and least ambiguous effect
+measured today. It costs nothing on the flat render (73.34 vs 73.37, identical).
+
+The appearance gap, flat minus Helios on the refined score:
+
+  merged_abs   -24.98
+  merged_aug   -14.26
+
+So augmentation removes about **43%** of the gap and leaves 14.3 points standing. Note the
+asymmetry: the RAW gap barely moves (-14.4 -> -13.0) while the REFINED gap almost halves. The
+network does not read shifted pixels much better; it produces starts that survive refinement under
+a shifted appearance. Refinement lift on Helios goes +29.7 -> +37.1.
+
+### An open discrepancy
+
+The 2026-09-18 verification-gates report records Gate C as **PASS** with the appearance gap "CLOSED
+on the refined path" for the non-merged appearance fine-tune: `sub10_v10_cam_aug` ep190 refined flat
+71.0 / Helios 71.6. Nothing here reproduces that. `merged_aug` sits at 73.4 / 59.1.
+
+Either the merged architecture is markedly more appearance-brittle than the plain lineage, or the
+Gate C measurement is not comparable to this one. `sub10_v10_cam_aug` ep230 is being evaluated under
+exactly this protocol (2 flat, 2 Helios, `--sample_seed 0`, 200 steps) to tell the two apart. Until
+that returns, treat "the appearance gap is closed" as unconfirmed for the merged lineage.
