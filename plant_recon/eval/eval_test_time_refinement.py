@@ -139,6 +139,16 @@ def refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, sca
         tgt = {z: F.interpolate(t.view(1, 1, *t.shape), size=(refine_px, refine_px), mode="bilinear",
                                 align_corners=False)[0, 0] for z, t in tgt.items()}
     best = (float("inf"), pos0.clone(), scale0.clone(), lat0.clone(), roll.clone(), (exist_logit.detach().clone() if exist_logit is not None else None))
+    # A plant can materialise ZERO organs -- existence collapse, which the appearance-gap work showed is
+    # exactly what a shifted input provokes. Before 2026-09-19 that broke out of the loop on step 0 with
+    # `loss` never assigned, and `float(loss)` below raised UnboundLocalError, killing the whole eval run
+    # (all four Helios override jobs died this way after two plants).
+    #
+    # `loss` therefore starts at +inf, not 0. Zero would be the BEST possible score, so a collapsed plant
+    # would beat every real one and --n_starts would deliberately select the empty hypothesis. An empty
+    # plant is the worst outcome available, and inf is what says so.
+    loss = torch.tensor(float("inf"), device=dev)
+    degenerate = False
     for step in range(a.steps + (1 if a.keep_best else 0)):
         opt.zero_grad()
         rot_c, par_c = _rot_par(pos, roll_v)
@@ -149,6 +159,9 @@ def refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, sca
             exist_p = None; alpha = None
             parts = plant_from_nodes(pvae, pos, rot_c, scale, lat, exist, par_c, M)
         if parts.shape[0] == 0:
+            # Whatever state we are in renders nothing; the loss from the previous step described a
+            # different (non-empty) plant and must not be carried forward as this one's score.
+            degenerate = True
             break
         mesh = renderer.geo_builder.build_mesh_from_part_tensor(parts, existence=alpha, device=dev)
         loss = torch.zeros((), device=dev)
@@ -251,7 +264,7 @@ def refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, sca
             _thr = float(getattr(a, "exist_thresh", 0.5))
             exist = (torch.sigmoid(exist_logit) > _thr).float()
             # scale is returned unmodified -- alpha only faded the RENDER during the search, it never touched shape
-    final_loss = best[0] if a.keep_best else float(loss)
+    final_loss = best[0] if a.keep_best else (float("inf") if degenerate else float(loss))
     return pos.detach(), scale.detach(), lat.detach(), roll_v.detach(), rot_c, par_c, final_loss, exist.detach() if torch.is_tensor(exist) else exist
 
 
