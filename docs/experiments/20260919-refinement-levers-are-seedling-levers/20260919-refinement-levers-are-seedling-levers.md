@@ -56,12 +56,28 @@ rather than crash the diagnostic. Nothing was named, which is itself the finding
 
 ### It is amplification, not noise
 
-The spread is ~0.8 points on plant 10833 (DAP 11, refines to ~60) and ~30 points on plant 1354
-(DAP 2). The underlying float nondeterminism is the same in both — order-dependent atomic
-accumulation, order 1e-7. What differs is the conditioning of the loss surface: a well-formed plant
-absorbs the perturbation, a seedling covering few pixels lets it decide which optimum the trajectory
-falls into. This is sensitive dependence, not a large noise source, and it explains why the 20-plant
-mean is stable to SD 0.58 while individual seedlings are not reproducible at all.
+Three plants, three runs each, fresh single-plant processes:
+
+| plant | spread across 3 identical runs |
+| :--- | :--- |
+| 2616 (DAP 3) | **none** — bit-identical, `moved` matching to 6 decimals |
+| 10833 (DAP 11) | ~0.8 points |
+| 1354 (DAP 2) | 8.5 vs 0.0 (and 13.0 vs 26.3 inside the 20-plant loop) |
+
+So it is **not** "seedlings are noisy" — 2616 is a DAP 3 seedling and it is perfectly reproducible.
+It is that **some plants sit at a bifurcation** and seedlings are likelier to be among them. 2616
+collapses to 0.0 at default settings every time: there is no branch for it to fall either side of.
+1354 sits exactly on one, and an order-1e-7 difference in atomic accumulation order decides which
+way it goes.
+
+The underlying float nondeterminism is the same in all three. What differs is the local conditioning
+of the loss surface. This is sensitive dependence, not a large noise source, which is how the
+20-plant mean stays stable at SD 0.58 while individual plants near a bifurcation are not reproducible
+at all.
+
+Note also that the two modes produce *different but internally reproducible* trajectories for 2616
+(`moved` 1.101985 vs 1.311843, three identical runs each). The determinism switches change which
+kernels run; they do not remove the nondeterminism where it matters.
 
 **Consequence for learned refinement.** Any scheme that trains a model on refinement *outputs* —
 imitating the optimiser, or a proposal-to-refined flow — inherits a target that cannot be reproduced,
