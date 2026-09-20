@@ -236,13 +236,39 @@ asymmetry: the RAW gap barely moves (-14.4 -> -13.0) while the REFINED gap almos
 network does not read shifted pixels much better; it produces starts that survive refinement under
 a shifted appearance. Refinement lift on Helios goes +29.7 -> +37.1.
 
-### An open discrepancy
+### The discrepancy, resolved: the merged architecture is what is brittle
 
 The 2026-09-18 verification-gates report records Gate C as **PASS** with the appearance gap "CLOSED
 on the refined path" for the non-merged appearance fine-tune: `sub10_v10_cam_aug` ep190 refined flat
 71.0 / Helios 71.6. Nothing here reproduces that. `merged_aug` sits at 73.4 / 59.1.
 
-Either the merged architecture is markedly more appearance-brittle than the plain lineage, or the
-Gate C measurement is not comparable to this one. `sub10_v10_cam_aug` ep230 is being evaluated under
-exactly this protocol (2 flat, 2 Helios, `--sample_seed 0`, 200 steps) to tell the two apart. Until
-that returns, treat "the appearance gap is closed" as unconfirmed for the merged lineage.
+`sub10_v10_cam_aug` ep230 was evaluated under exactly this protocol. **Gate C reproduces**, and the
+comparison isolates the cause: the two checkpoints share `max_train_samples=10000`,
+`appearance_augment=True, augment_p=0.8` and `stage3_geometry=True`, and differ **only** in
+`stage3_absolute`.
+
+| stage3_absolute | | n | raw | refined |
+| :--- | :--- | ---: | ---: | ---: |
+| None (plain) | flat | 2 | 38.5 | 72.65 |
+| None (plain) | **Helios** | 2 | 30.4 | **70.16** |
+| True (merged) | flat | 3 | 34.9 | 73.37 |
+| True (merged) | **Helios** | 2 | 22.0 | **59.11** |
+
+    appearance gap    plain  -2.49       merged -14.26
+    Helios, plain minus merged   +11.05   SE 0.32   (+34.4 SE)
+    flat,   plain minus merged    -0.72   SE 0.22   ( -3.3 SE)
+
+**The absolute flow state buys +0.7 on flat synthetic renders and costs 11.1 points on realistic
+appearance.** Both are statistically clear; they are not the same size. Since the project's actual
+target is real imagery, the Helios column is the one that matters, and on it the plain lineage wins
+by a margin no other lever measured today comes close to.
+
+This also explains the earlier `merged_abs` results without needing the start-insensitivity story to
+carry all the weight: an absolute-state model whose raw prediction degrades from 34.9 to 22.0 under
+an appearance shift is reading pixels much less robustly, and refinement was compensating on flat
+renders where the degradation does not appear.
+
+**Consequence.** `merged_full` and `merged_fullaug` (full data, ~63 h each) are training the
+architecture that loses on the metric that matters. They still answer the open data-budget question
+— whether 10x the data changes any of this — but the case for promoting the merged architecture is
+now much weaker than the flat-render numbers suggested.
