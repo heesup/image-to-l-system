@@ -11,6 +11,35 @@ Single RGB-D drone image → 3D plant organ parameter reconstruction via Hierarc
 
 ---
 
+## 📁 Where a new document goes
+
+**The category list below is closed. Do not create a new category folder.** Every document lives at
+
+    docs/<category>/<YYYYMMDD>-<slug>/<YYYYMMDD>-<slug>.md
+
+with its figures and generating scripts in an `assets/` subfolder beside it. That per-document
+folder is the only directory to create.
+
+| category | holds |
+| :--- | :--- |
+| `architecture/` | design documents, specifications, camera geometry |
+| `current-state/` | `current-state.md` only — what is running and what the evidence says |
+| `engineering/` | implementation records, bug investigations, infrastructure |
+| `experiments/` | training runs, measurements, results, campaign summaries |
+| `planning/` | plans and proposals |
+| `lab-meetings/` | meeting material |
+| `tools/` | tooling notes |
+| `agent-handover-guide/`, `archive/`, `_templates/` | as named |
+
+When a document does not obviously belong, pick the closest existing category rather than adding
+one — a measurement or results summary goes to `experiments/`, an implementation or infrastructure
+record to `engineering/`. A new category fragments this index and breaks the assumption that
+`experiments/` holds every result.
+
+Add the document to the relevant section of this map when you create it.
+
+---
+
 ## 🚀 Start Here
 
 - [Current State](current-state/current-state.md) — What is running now, what is being built, and what the evidence says
@@ -38,6 +67,7 @@ _System design documents, mathematical specifications, and camera geometry_
 
 _Training runs, benchmark results, and milestone reports (newest first)_
 
+- [2026-09-19→21 Measurement Campaign](experiments/20260921-measurement-campaign/20260921-measurement-campaign.md) — the rasterised/raytraced protocol finding, refinement's nondeterminism and the 0.58 noise floor, three bugs, and the nine conclusions the campaign corrected in itself
 - [Merged Stage 2+3 Hybrid (2026-09-19)](experiments/20260919-merged-stage23-hybrid/20260919-merged-stage23-hybrid.md)
 - [Stage 3 Conditioning, Settled (2026-09-18)](experiments/20260918-stage3-conditioning-settled/20260918-stage3-conditioning-settled.md)
 - [Verification Gates: Appearance Gap Closed (2026-09-18)](experiments/20260918-verification-gates/20260918-verification-gates.md)
