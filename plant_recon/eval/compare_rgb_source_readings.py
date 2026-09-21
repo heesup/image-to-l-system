@@ -1,5 +1,5 @@
 """Compare two eval_test_time_refinement.py result files that differ only in the RGB source of the input
-(flat cache render vs Helios raytraced re-render, see render_helios_eval_crops.py): the appearance-gap
+(RASTERISED cache render vs RAYTRACED re-render, see render_helios_eval_crops.py): the appearance-gap
 readout of docs/ongoing/20260916_sim_to_real_assessment_and_plan.md §4.
 
 Prints and writes (<out_dir>/compare.md) the per-plant table and DAP-bucket means of raw strict P,
@@ -12,7 +12,9 @@ import os
 
 import numpy as np
 
-SERIES = {"flat": ("#2a78d6", "flat cache render"), "helios": ("#eb6834", "Helios raytraced render")}
+SERIES = {"flat": ("#2a78d6", "rasterised cache render"), "helios": ("#eb6834", "raytraced render")}
+# The dict KEYS are on-disk series names from existing result files and are left alone; only what a
+# reader sees is renamed. "flat"/"Helios" were the old labels for these two protocols (2026-09-20).
 INK, INK2, MUTED, GRID, AXIS = "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7"
 BUCKETS = [("DAP <= 15", lambda d: d <= 15), ("16-45", lambda d: 16 <= d <= 45),
            ("46-75", lambda d: 46 <= d <= 75), ("> 75", lambda d: d > 75), ("all", lambda d: True)]

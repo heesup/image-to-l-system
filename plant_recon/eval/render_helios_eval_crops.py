@@ -2,7 +2,7 @@
 
 Purpose (docs/ongoing/20260916_sim_to_real_assessment_and_plan.md §4): measure the appearance gap on
 its own. The trained network reads only the RGB planes of its 16-channel input (DINORayEncoder.forward
-takes channels 0:3 of every zoom level), and every training image is a flat-shaded PyTorch render on a
+takes channels 0:3 of every zoom level), and every training image is a RASTERISED PyTorch render (flat-shaded, our own nvdiffrast pass) on a
 uniform tan ground. This script produces, for each eval plant, the same four zoom levels rendered by
 Helios's radiation renderer (textured soil, shading, cast shadows), so that
 eval_test_time_refinement.py --rgb_override_dir can score the same checkpoint on the same plants with

@@ -437,7 +437,9 @@ def main():
     for i in idxs:
         it = ds[i]; images = it["image"].unsqueeze(0).to(dev); dap = int(it["dap"].item()); zoom = 8.0 if dap <= 15 else 1.0
         if a.rgb_override_dir:
-            # appearance-gap measurement: Helios raytraced RGB in place of the flat cache render, CHM planes untouched
+            # appearance-gap measurement: RAYTRACED RGB (Helios) in place of the RASTERISED cache render, CHM planes
+            # untouched. Rasterised = our own nvdiffrast pass, the same renderer the training render loss uses,
+            # so it is in-domain by construction; raytraced is the out-of-domain protocol.
             ov = torch.load(os.path.join(a.rgb_override_dir, f"{ds.samples[i]['prefix']}_helios_rgb.pt"), map_location="cpu", weights_only=True).float()
             if ov.shape[-1] != images.shape[-1]:
                 ov = F.interpolate(ov.unsqueeze(0), size=images.shape[-2:], mode="bilinear", align_corners=False).squeeze(0)

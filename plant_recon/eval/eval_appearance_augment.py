@@ -1,13 +1,13 @@
 """Validate the appearance augmentation against the measured sim-to-real gap.
 
 For the 20 strict-protocol eval plants there are now pixels of the SAME plant at the SAME framing in
-two domains: the flat cache render the network trains on, and the Helios raytraced re-render that cost
+two domains: the RASTERISED cache render the network trains on, and the RAYTRACED re-render that cost
 it 10 points of raw strict P (render_helios_eval_crops.py). This script asks whether
-plant_recon/dataset/appearance_augment.py moves the flat render toward the raytraced one.
+plant_recon/dataset/appearance_augment.py moves the rasterised render toward the raytraced one.
 
 Outputs (--out_dir):
-  appearance_augment_panel.png   flat | augmented x2 | Helios, per plant and zoom level
-  appearance_augment_stats.json  DINOv2 feature distances between the domains (flat / augmented / Helios / real)
+  appearance_augment_panel.png   rasterised | augmented x2 | raytraced, per plant and zoom level
+  appearance_augment_stats.json  DINOv2 feature distances between the domains (rasterised / augmented / raytraced / real)
 
 The distance is computed on the frozen DINOv2 CLS+mean-patch features the model itself reads
 (dinov2_vits14 at 224 px): per-plant cosine distance to that plant's Helios render, and a
@@ -102,7 +102,7 @@ def panel(pairs, augs, path, n_plants=4, levels=(0, 2)):
         for li in levels:
             cols = [rgb_levels(img, True)[li], rgb_levels(augs[si][0], True)[li],
                     rgb_levels(augs[si][1], True)[li], rgb_levels(hel, False)[li]]
-            titles = ["flat cache render", "augmented: sunlight", "augmented: rover lamps", "Helios raytraced"]
+            titles = ["rasterised cache render", "augmented: sunlight", "augmented: rover lamps", "raytraced"]
             for c, (ax, im, t) in enumerate(zip(axes[r], cols, titles)):
                 ax.imshow(im.permute(1, 2, 0).numpy(), interpolation="nearest")
                 if r == 0:

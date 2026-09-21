@@ -8,15 +8,15 @@
 > six together, read only the first two as (cos, sin), discarded the rest, and rebuilt the forward
 > axis **from the chain** — what the absolute layout exists to avoid.
 >
-> Everything was re-run with the fix. **The effect turned out to be small** — flat moved −0.46 to
-> +2.35 and Helios −0.80 to +1.20, mostly within the 0.58 noise floor. **Raw moved more** (+1.2 to
-> +2.6 on flat), which is the expected shape: the model's own rot6d is a better starting rotation
+> Everything was re-run with the fix. **The effect turned out to be small** — rasterised moved −0.46 to
+> +2.35 and raytraced −0.80 to +1.20, mostly within the 0.58 noise floor. **Raw moved more** (+1.2 to
+> +2.6 on rasterised), which is the expected shape: the model's own rot6d is a better starting rotation
 > than a chain-reconstructed roll, and refinement compensates for most of the difference through
 > position, scale and latent.
 >
 > **Corrected figures, to be read in place of the originals below:**
 >
-> | checkpoint | flat | Helios | gap |
+> | checkpoint | rasterised | raytraced | gap |
 > | :--- | ---: | ---: | ---: |
 > | `merged_abs` ep280 | 72.88 | 49.52 | −23.35 |
 > | `merged_aug` ep280 | 73.82 | 58.31 | −15.50 |
@@ -24,7 +24,7 @@
 > | `merged_fullaug` ep170 | 72.58 | 66.19 | −6.39 |
 > | **relative + aug** (unaffected) | 72.65 | **70.16** | **−2.49** |
 >
-> Every conclusion in this report survives: relative still leads Helios by a wide margin, the
+> Every conclusion in this report survives: relative still leads raytraced by a wide margin, the
 > absolute layout is still far more appearance-brittle, and ten times the data still closes most of
 > its gap (−15.50 → −6.39).
 
@@ -41,7 +41,7 @@ of what looked architectural was **overfitting to a small training subset**.
 than `merged_abs`/`merged_aug` had seen at ep280 (120 x 10 000 = 1.2 M). So this is sample-matched
 or better, and the only thing that changed is how many distinct plants those samples came from.
 
-| variant | data | flat | Helios | gap |
+| variant | data | rasterised | raytraced | gap |
 | :--- | :--- | ---: | ---: | ---: |
 | absolute, no aug | 10k ep280 | 73.34 | 48.36 | −24.98 |
 | absolute, no aug | **full ep170** | 71.95 | **62.13** | **−9.82** |
@@ -55,14 +55,14 @@ or better, and the only thing that changed is how many distinct plants those sam
 That is larger than the effect of appearance augmentation itself (+2.2 on the relative lineage, +10.7
 on the absolute one), and it is the biggest single factor on the gap measured so far.
 
-## Flat goes DOWN while Helios goes UP
+## Rasterised goes DOWN while raytraced goes UP
 
-The full-data checkpoints score **lower** on flat (73.34 → 71.95, 73.37 → 70.92) and substantially
-**higher** on Helios. That is the signature of reduced memorisation: the eval plants are in-sample
+The full-data checkpoints score **lower** on rasterised (73.34 → 71.95, 73.37 → 70.92) and substantially
+**higher** on the raytraced protocol. That is the signature of reduced memorisation: the eval plants are in-sample
 for every full-data lineage here, and with ten times the data each individual plant is seen a tenth
 as often, so the memorisation-friendly score falls while the one that needs generalisation rises.
 
-This sharpens the 2026-09-19 protocol conclusion. The flat render does not merely fail to
+This sharpens the 2026-09-19 protocol conclusion. The rasterised render does not merely fail to
 discriminate architectures — **it actively rewards memorisation**, and every model in yesterday's
 2x2 was trained on 10 k and therefore memorising. Two separate reasons to stop quoting it as the
 headline.
@@ -73,7 +73,7 @@ headline.
 gap" was measured entirely at 10 k. At full data the absolute+aug gap is −5.93, against −2.49 for
 relative+aug *at 10 k*. Most of the penalty was data, not architecture.
 
-**Still standing.** On the Helios column as it stands today, the relative lineage still leads:
+**Still standing.** On the raytraced column as it stands today, the relative lineage still leads:
 
     relative, aug        10k    70.16
     relative, no aug     10k    66.53

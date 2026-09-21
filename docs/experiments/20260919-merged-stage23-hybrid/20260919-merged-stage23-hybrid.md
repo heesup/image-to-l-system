@@ -15,15 +15,15 @@ status: active
 > six together, read only the first two as (cos, sin), discarded the rest, and rebuilt the forward
 > axis **from the chain** — what the absolute layout exists to avoid.
 >
-> Everything was re-run with the fix. **The effect turned out to be small** — flat moved −0.46 to
-> +2.35 and Helios −0.80 to +1.20, mostly within the 0.58 noise floor. **Raw moved more** (+1.2 to
-> +2.6 on flat), which is the expected shape: the model's own rot6d is a better starting rotation
+> Everything was re-run with the fix. **The effect turned out to be small** — rasterised moved −0.46 to
+> +2.35 and raytraced −0.80 to +1.20, mostly within the 0.58 noise floor. **Raw moved more** (+1.2 to
+> +2.6 on rasterised), which is the expected shape: the model's own rot6d is a better starting rotation
 > than a chain-reconstructed roll, and refinement compensates for most of the difference through
 > position, scale and latent.
 >
 > **Corrected figures, to be read in place of the originals below:**
 >
-> | checkpoint | flat | Helios | gap |
+> | checkpoint | rasterised | raytraced | gap |
 > | :--- | ---: | ---: | ---: |
 > | `merged_abs` ep280 | 72.88 | 49.52 | −23.35 |
 > | `merged_aug` ep280 | 73.82 | 58.31 | −15.50 |
@@ -31,7 +31,7 @@ status: active
 > | `merged_fullaug` ep170 | 72.58 | 66.19 | −6.39 |
 > | **relative + aug** (unaffected) | 72.65 | **70.16** | **−2.49** |
 >
-> Every conclusion in this report survives: relative still leads Helios by a wide margin, the
+> Every conclusion in this report survives: relative still leads raytraced by a wide margin, the
 > absolute layout is still far more appearance-brittle, and ten times the data still closes most of
 > its gap (−15.50 → −6.39).
 
@@ -124,7 +124,7 @@ shape unrecoverable from a nadir view at any resolution.
 ## 4. Verdict
 
 - **Criterion 1 (trains clean, holdout >= baseline): FAILED.** −4.8 points, two independent runs
-  agreeing, flat rather than converging.
+  agreeing, rasterised rather than converging.
 - **Criterion 2 (Gate G > 74.9): FAILED narrowly**, 73.0. It depended on raw quality recovering,
   which across 70 combined epochs it did not.
 
@@ -241,21 +241,21 @@ gap in the feedforward prediction itself.
 ## Appearance augmentation: the clearest win of the day, but it does not close the gap
 
 `merged_aug` is `merged_abs` plus `APPEARANCE_AUGMENT=1, AUGMENT_P=0.8`, everything else identical,
-so the pair isolates augmentation. Evaluated on the flat cache render (the usual protocol) and on
-Helios raytraced re-renders at the cache's framing (`--rgb_override_dir`, the appearance-gap
+so the pair isolates augmentation. Evaluated on the rasterised cache render (the usual protocol) and on
+raytraced re-renders at the cache's framing (`--rgb_override_dir`, the appearance-gap
 protocol), replicated.
 
 | | n | raw | refined | SD |
 | :--- | ---: | ---: | ---: | ---: |
-| merged_abs, flat | 5 | 33.2 | 73.34 | 1.12 |
+| merged_abs, rasterised | 5 | 33.2 | 73.34 | 1.12 |
 | merged_abs, **Helios** | 2 | 18.7 | **48.36** | 0.67 |
-| merged_aug, flat | 3 | 34.9 | 73.37 | 0.38 |
+| merged_aug, rasterised | 3 | 34.9 | 73.37 | 0.38 |
 | merged_aug, **Helios** | 2 | 22.0 | **59.11** | 0.42 |
 
-**Augmentation is worth +10.75 on Helios at 19.2 SE** — the largest and least ambiguous effect
-measured today. It costs nothing on the flat render (73.34 vs 73.37, identical).
+**Augmentation is worth +10.75 on the raytraced protocol at 19.2 SE** — the largest and least ambiguous effect
+measured today. It costs nothing on the rasterised render (73.34 vs 73.37, identical).
 
-The appearance gap, flat minus Helios on the refined score:
+The appearance gap, rasterised minus raytraced on the refined score:
 
   merged_abs   -24.98
   merged_aug   -14.26
@@ -263,13 +263,13 @@ The appearance gap, flat minus Helios on the refined score:
 So augmentation removes about **43%** of the gap and leaves 14.3 points standing. Note the
 asymmetry: the RAW gap barely moves (-14.4 -> -13.0) while the REFINED gap almost halves. The
 network does not read shifted pixels much better; it produces starts that survive refinement under
-a shifted appearance. Refinement lift on Helios goes +29.7 -> +37.1.
+a shifted appearance. Refinement lift on the raytraced protocol goes +29.7 -> +37.1.
 
 ### The discrepancy, resolved: the merged architecture is what is brittle
 
 The 2026-09-18 verification-gates report records Gate C as **PASS** with the appearance gap "CLOSED
-on the refined path" for the non-merged appearance fine-tune: `sub10_v10_cam_aug` ep190 refined flat
-71.0 / Helios 71.6. Nothing here reproduces that. `merged_aug` sits at 73.4 / 59.1.
+on the refined path" for the non-merged appearance fine-tune: `sub10_v10_cam_aug` ep190 refined rasterised
+71.0 / raytraced 71.6. Nothing here reproduces that. `merged_aug` sits at 73.4 / 59.1.
 
 `sub10_v10_cam_aug` ep230 was evaluated under exactly this protocol. **Gate C reproduces**, and the
 comparison isolates the cause: the two checkpoints share `max_train_samples=10000`,
@@ -278,23 +278,23 @@ comparison isolates the cause: the two checkpoints share `max_train_samples=1000
 
 | stage3_absolute | | n | raw | refined |
 | :--- | :--- | ---: | ---: | ---: |
-| None (relative) | flat | 2 | 38.5 | 72.65 |
+| None (relative) | rasterised | 2 | 38.5 | 72.65 |
 | None (relative) | **Helios** | 2 | 30.4 | **70.16** |
-| True (merged) | flat | 3 | 34.9 | 73.37 |
+| True (merged) | rasterised | 3 | 34.9 | 73.37 |
 | True (merged) | **Helios** | 2 | 22.0 | **59.11** |
 
     appearance gap    relative  -2.49       merged -14.26
     Helios, relative minus merged   +11.05   SE 0.32   (+34.4 SE)
-    flat,   relative minus merged    -0.72   SE 0.22   ( -3.3 SE)
+    rasterised,   relative minus merged    -0.72   SE 0.22   ( -3.3 SE)
 
-**The absolute flow state buys +0.7 on flat synthetic renders and costs 11.1 points on realistic
+**The absolute flow state buys +0.7 on rasterised synthetic renders and costs 11.1 points on realistic
 appearance.** Both are statistically clear; they are not the same size. Since the project's actual
-target is real imagery, the Helios column is the one that matters, and on it the relative lineage wins
+target is real imagery, the raytraced column is the one that matters, and on it the relative lineage wins
 by a margin no other lever measured today comes close to.
 
 This also explains the earlier `merged_abs` results without needing the start-insensitivity story to
 carry all the weight: an absolute-state model whose raw prediction degrades from 34.9 to 22.0 under
-an appearance shift is reading pixels much less robustly, and refinement was compensating on flat
+an appearance shift is reading pixels much less robustly, and refinement was compensating on rasterised
 renders where the degradation does not appear.
 
 **Consequence.** `merged_full` and `merged_fullaug` (full data, ~63 h each) are training the
