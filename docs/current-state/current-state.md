@@ -24,7 +24,28 @@ sections below are newest first and are kept for the record.
 
 ---
 
-## 🔬 Running now (2026-09-18 23:30)
+## 🔬 Running now (2026-09-21 09:30)
+
+**Training — three full-data runs, the first fair relative-vs-absolute comparison**
+
+All three warm-start from `hierarchical_fm_v10_cam` ep160 on the full 100 000 plants
+(25 000 steps/epoch, ~63 min/epoch), `EPOCHS=220`, `SAVE_EVERY=5`.
+
+| run | job | layout | aug | at | latest ckpt |
+| :--- | :--- | :--- | :---: | :--- | :--- |
+| `relative_fullaug` | 38495672 | relative | ✅ | ep169, 15 h 30 m | ep165 |
+| `absolute_full` | 38496133 | absolute | — | ep166, 10 h 17 m | ep165 |
+| `absolute_fullaug` | 38496134 | absolute | ✅ | ep166, 10 h 17 m | ep165 |
+
+The two absolute runs were **restarted from the clean ep160 warm start** on 2026-09-20 after the
+botany forward-axis fix, not resumed from checkpoints trained under the broken term — so this is the
+first absolute training with a correct botany constraint, and the first comparison to be read
+through the fixed evaluation path. Compare at ep170 on the **raytraced** protocol.
+
+⚠️ `relative_fullaug` still carries the default 480 s NCCL watchdog timeout; the other two have
+`TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=1800`. Long runs die at ~21 h to that hang and neither `--requeue`
+nor `AUTO_RESUME=1` catches it — if it dies near 21 h, that is the bug, not the relative layout.
+Restart with the env var and it resumes from its latest checkpoint.
 
 **Experiments**
 
@@ -178,7 +199,22 @@ step count, optimiser, regularisation weights.
 
 ---
 
-## Next steps (2026-09-16)
+## Next steps (2026-09-21)
+
+| Priority | Task | Why now |
+| :--- | :--- | :--- |
+| **P0** | **Read the three full-data runs at ep170 on the raytraced protocol.** | First fair relative-vs-absolute comparison: correct botany constraint, fixed evaluation path, equal warm start. |
+| **P1** | **Replace gradient refinement with a closed-form solve** (ICP; Zhang et al., IJCAI 2025 reduce the SDS gradient to `(P_t − P*)` for rigid transforms). | Removes the nondeterminism, the 200 backward passes and the narrow-gradient-band failure at once. Correspondences already exist: `collect_part_visibility` + the depth channel. |
+| **P2** | **Ablate the coarse geometry heads.** | The duplication the 2026-09-12 design planned to remove and nobody has measured — the flow overwrites them at sampling. No flag exists yet. |
+| **P3** | **Discrete per-coordinate shape readout.** | Measured cost 2.4 points at 64 levels; makes the mean-collapse (R² +0.001) structurally impossible. |
+| **P4** | **Seedlings**, still ~19 % raw. | Every refinement lever found this year turned out to be a seedling lever. `--spread_weight` is implemented and never launched. |
+| **P5** | **Generative structure**, never measured. | Every comparison to date scores reconstruction, not whether sampled plants are plausible. `eval_generative_structure.py` exists. |
+| — | **Single-GPU jobs should build no process group.** | The real fix for the ~21 h NCCL hang that cost 42 GPU-hours. Deferred until the queue is clear. |
+
+The 2026-09-16 real-image ranked list below is **superseded for the synthetic track** but still
+current for the real-image one.
+
+## Next steps (2026-09-16, real-image track)
 
 The ranked lists live in [20260916-sim-to-real-assessment.md](../experiments/20260916-sim-to-real-assessment/20260916-sim-to-real-assessment.md) (§2 training side, §3 real-image side, §5 the measurement that set the order). In one line each:
 
