@@ -1,13 +1,63 @@
 ---
-title: "Image-to-L-System — Documentation Map"
-date: 2026-09-16
+title: "Image-to-L-System — Entry Point"
+date: 2026-09-21
 tags: [index, moc]
 status: active
 ---
 
-# 🗺️ Image-to-L-System — Documentation Map
+# Image-to-L-System — Entry Point
 
-Single RGB-D drone image → 3D plant organ parameter reconstruction via Hierarchical Botanical Flow Matching.
+Single nadir RGB-D image → 3D plant organ parameters → Helios XML, via Hierarchical Botanical Flow
+Matching. **This is the one document to open first.** Everything else is reference it points to.
+
+---
+
+## The three live documents, and what each is for
+
+| document | its one job | what it never contains |
+| :--- | :--- | :--- |
+| **this file** | entry point — orientation, what is running, where to go | detail; it routes |
+| [current-state.md](current-state/current-state.md) | **the evidence** — what is settled, what is open, with numbers | how-to instructions |
+| [agent-handover-guide.md](agent-handover-guide/agent-handover-guide.md) | **the manual** — repo layout, workflows, gotchas, source map | project state |
+
+Before 2026-09-21 all three tried to be the starting point, and the handover guide carried three
+dated state sections each saying "read this first" while contradicting one another. Those are now in
+[archive/20260921-superseded-state-sections](archive/20260921-superseded-state-sections/20260921-superseded-state-sections.md).
+**Keep the split**: state goes to `current-state.md`, instructions to the handover guide, and this
+file stays short enough to read in full.
+
+---
+
+## Where the project stands
+
+**Best measured configuration: relative layout + appearance augmentation + Gate G — 71.24 % refined
+silhouette IoU on the raytraced protocol.** Checkpoint
+`sub10_v10_cam_aug/hierarchical_fm_epoch_230_ema.pt`, inference `--steps 200 --n_starts 8`.
+Full recipe and what each ingredient is worth: [current-state.md](current-state/current-state.md).
+
+Two results that change how anything here should be read:
+
+- **Report the raytraced protocol, not the rasterised one.** The rasterised cache render comes from
+  the same renderer that computes the training render loss, so it is in-domain by construction: it
+  separates four architectures by 2.1 points where raytraced separates them by 21.8, and it rewards
+  memorising the eval set.
+- **Refinement is nondeterministic**; the 20-plant mean is stable to **SD 0.58**, so a single-run
+  difference under ~1.6 points means nothing and no per-plant claim is safe without replicates.
+
+Both, with the nine conclusions they overturned, are in the
+[2026-09-19→21 campaign report](experiments/20260921-measurement-campaign/20260921-measurement-campaign.md).
+
+---
+
+## New here?
+
+1. This file.
+2. [current-state.md](current-state/current-state.md) — the evidence and the glossary. The
+   **Terminology** table matters: several words in older documents mean something else now
+   (`relative`/`absolute`, `rasterised`/`raytraced`, `bulk`/`phytomer parameters`, and "merged",
+   which was retired for meaning two things).
+3. [agent-handover-guide.md §0](agent-handover-guide/agent-handover-guide.md) — repo in 60 seconds,
+   everyday commands, gotchas.
 
 ---
 
@@ -42,8 +92,8 @@ Add the document to the relevant section of this map when you create it.
 
 ## 🚀 Start Here
 
-- [Current State](current-state/current-state.md) — What is running now, what is being built, and what the evidence says
-- [Agent Handover Guide](agent-handover-guide/agent-handover-guide.md) — Master manual; §0 is the one-page orientation for a new agent
+- [Current State](current-state/current-state.md) — the evidence: what is settled, what is open
+- [Agent Handover Guide](agent-handover-guide/agent-handover-guide.md) — the manual: layout, workflows, gotchas
 - [Stage 2/3 Boundary Redesign](engineering/20260912-stage2-stage3-boundary/20260912-stage2-stage3-boundary.md) — Primary engineering record since 2026-09-12
 - [Sim-to-real Assessment & Plan (2026-09-16)](experiments/20260916-sim-to-real-assessment/20260916-sim-to-real-assessment.md) — Ranked next steps for both tracks and the appearance-gap measurement
 
