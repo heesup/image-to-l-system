@@ -7,6 +7,10 @@ status: active
 
 # Session Handoff: Gradient Explosion Root-Caused to the Learning Rate, Stage 2/3 Boundary Redesign Underway
 
+> **Cross-reference note (2026-09-21):** this document cites the takeover guide's §0-B.2 / .4 / .8 / .9.
+> Those sections were moved out of the handover guide on 2026-09-21 and now live in
+> [`archive/20260921-superseded-state-sections`](../../archive/20260921-superseded-state-sections/20260921-superseded-state-sections.md).
+
 - **Author**: Claude (pair programming with Heesup Yun)
 - **Date**: 2026-09-12 (continuation of 2026-09-11's work)
 - **Read this doc's own §5 first if you are starting a new session** — it lists exactly which prior docs to read and in what order.
