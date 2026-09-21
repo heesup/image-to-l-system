@@ -1,16 +1,32 @@
 # The flat render does not discriminate architectures, and it reversed two of today's conclusions
 
-> # ⚠️ EVERY ABSOLUTE NUMBER IN THIS REPORT IS INVALID (found 2026-09-20)
+> # ⚠️ The absolute numbers here were re-measured on 2026-09-20 — conclusions hold
 >
-> `sample_ode` returns the node's own **rot6d (6 components)** in `phytomer_roll` under
-> `--stage3_absolute`; the relative layout carries roll (2). `eval_test_time_refinement.py` never
-> branched on the layout, so the 6-wide rot6d went into `roll_to_matrix`, which normalises all six
-> together, reads only the first two as (cos, sin), discards the rest, and rebuilds the forward axis
-> **from the chain** — exactly what the absolute layout exists to avoid. Absolute models were
-> evaluated as relative ones with a corrupted roll.
+> A bug had absolute checkpoints evaluated through the relative rotation path: `sample_ode` returns
+> the node's own **rot6d (6)** in `phytomer_roll` under `--stage3_absolute` (relative carries roll, 2),
+> and `eval_test_time_refinement.py` never branched on the layout, so `roll_to_matrix` normalised all
+> six together, read only the first two as (cos, sin), discarded the rest, and rebuilt the forward
+> axis **from the chain** — what the absolute layout exists to avoid.
 >
-> **The relative numbers here are unaffected.** Every `merged_*` figure is not. Fixed and re-running;
-> conclusions about the absolute layout must wait for those results.
+> Everything was re-run with the fix. **The effect turned out to be small** — flat moved −0.46 to
+> +2.35 and Helios −0.80 to +1.20, mostly within the 0.58 noise floor. **Raw moved more** (+1.2 to
+> +2.6 on flat), which is the expected shape: the model's own rot6d is a better starting rotation
+> than a chain-reconstructed roll, and refinement compensates for most of the difference through
+> position, scale and latent.
+>
+> **Corrected figures, to be read in place of the originals below:**
+>
+> | checkpoint | flat | Helios | gap |
+> | :--- | ---: | ---: | ---: |
+> | `merged_abs` ep280 | 72.88 | 49.52 | −23.35 |
+> | `merged_aug` ep280 | 73.82 | 58.31 | −15.50 |
+> | `merged_full` ep170 | 74.30 | 61.81 | −12.48 |
+> | `merged_fullaug` ep170 | 72.58 | 66.19 | −6.39 |
+> | **relative + aug** (unaffected) | 72.65 | **70.16** | **−2.49** |
+>
+> Every conclusion in this report survives: relative still leads Helios by a wide margin, the
+> absolute layout is still far more appearance-brittle, and ten times the data still closes most of
+> its gap (−15.50 → −6.39).
 
 
 2026-09-19. Four checkpoints, each scored on the flat cache render (this project's standard protocol)
