@@ -9,6 +9,46 @@ Thirty-five commits. Everything below is replicated (2–5 runs) on the fixed 20
 
 ---
 
+## Best configuration measured
+
+**relative + appearance augmentation + Gate G — 71.24 % refined silhouette IoU on the raytraced
+protocol** (n=3, SD 1.43). Quote this from the raytraced column; the rasterised figure flatters the
+wrong designs.
+
+```
+checkpoint   outputs/checkpoints/sub10_v10_cam_aug/hierarchical_fm_epoch_230_ema.pt
+             (v10_cam ep160 lineage, 10 000 samples, APPEARANCE_AUGMENT=1 AUGMENT_P=0.8,
+              --stage3_geometry on, --stage3_absolute OFF)
+
+python plant_recon/eval/eval_test_time_refinement.py \
+  --checkpoint outputs/checkpoints/sub10_v10_cam_aug/hierarchical_fm_epoch_230_ema.pt \
+  --eval_set  outputs/checkpoints/hierarchical_fm_v9/eval_set.json \
+  --steps 200 --sample_seed 0 --n_starts 8 \
+  --rgb_override_dir outputs/logs/20260916/helios_eval_crops/rgb
+```
+
+What each ingredient is worth, measured separately:
+
+| ingredient | raytraced | note |
+| :--- | ---: | :--- |
+| base: relative layout, no augmentation | 66.53 | |
+| **+ appearance augmentation** | **70.16** | +3.6; also cuts the appearance gap −4.70 → −2.49 |
+| **+ Gate G (`--n_starts 8`)** | **71.24** | +1.08 at 1.3 SE — **not resolved** raytraced, though +3.42 at 6.8 SE rasterised |
+| 200 refinement steps (vs 40) | — | the default was 5× too small; the curve peaks near 200 |
+| `--reg_latent 0` | untested raytraced | +2.04 rasterised [+1.2, +2.9]; free, one flag |
+
+Two honest qualifications. **Gate G's contribution is not statistically resolved on the protocol
+that matters** — it survives here because it costs nothing to keep, not because raytraced evidence
+supports it. And **`--reg_latent 0` has only been measured rasterised**; it is the cheapest untested
+upgrade to this recipe.
+
+Tried and rejected for this configuration: higher render resolution (−2.0 at 256 px), L-BFGS
+(54.3 against Adam's 71.1 at 7.8× the cost), a cosine learning-rate schedule (−2.3), continuous
+existence (−1.8), and the absolute layout (−11.1 raytraced at 10k, though see the botany-loss caveat
+below).
+
+---
+
 ## 1. The measurement protocol was the problem
 
 **The single most consequential finding.** Four checkpoints forming a 2×2 over `stage3_absolute` ×
@@ -140,12 +180,6 @@ Four terms were fixed during the campaign, each because the old one named the wr
   once the flow carried geometry; only the first half shipped, and no flag exists for the second.
 
 ---
-
-## Best configuration measured
-
-**relative + appearance augmentation + Gate G = 71.24** on the raytraced protocol
-(`sub10_v10_cam_aug` ep230, `--n_starts 8`, 200 refinement steps). Quote this from the raytraced
-column; the rasterised figure flatters the wrong designs.
 
 ## Running
 

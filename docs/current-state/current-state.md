@@ -180,6 +180,20 @@ appearance-gap measurement, [20260916-sim-to-real-assessment.md §5](../experime
 
 ---
 
+## Best configuration measured (2026-09-21)
+
+**relative + appearance augmentation + Gate G — 71.24 % refined silhouette IoU, raytraced** (n=3,
+SD 1.43). Checkpoint `sub10_v10_cam_aug/hierarchical_fm_epoch_230_ema.pt`; inference
+`--steps 200 --sample_seed 0 --n_starts 8`. Ingredients, measured separately on the raytraced
+protocol: relative layout no aug **66.53** → + appearance augmentation **70.16** (+3.6, and the
+appearance gap −4.70 → −2.49) → + Gate G **71.24** (+1.08 at 1.3 SE, **not resolved** raytraced
+though +3.42 at 6.8 SE rasterised). `--reg_latent 0` is worth +2.04 rasterised and is the cheapest
+untested upgrade — it has never been measured raytraced. Rejected for this recipe: higher render
+resolution (−2.0 at 256 px), L-BFGS (54.3 vs Adam 71.1 at 7.8× cost), cosine LR (−2.3), continuous
+existence (−1.8), the absolute layout (−11.1 raytraced at 10k, with the botany-loss caveat).
+**Quote the raytraced column** — rasterised flatters the wrong designs.
+[Campaign report](campaigns/20260919-21-measurement-campaign.md)
+
 ## Terminology
 
 | term | meaning |
