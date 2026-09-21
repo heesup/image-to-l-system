@@ -186,11 +186,25 @@ appearance-gap measurement, [20260916-sim-to-real-assessment.md §5](../experime
 | :--- | :--- |
 | **rasterised** | the input appearance produced by `HeliosPyTorchRenderer.render_mesh` — our own nvdiffrast pass, per-organ flat colours, no shadows or texture. This is what `generate_cache.py` writes and what the training render loss is computed with, so it is **in-domain by construction**. Called "flat" before 2026-09-20. |
 | **raytraced** | the input appearance produced by Helios's C++ radiation renderer via `render_helios_eval_crops.py` — textured soil, shading, cast shadows. **Out-of-domain.** Called "Helios" before 2026-09-20, which was ambiguous because the rasteriser's own class is `HeliosPyTorchRenderer`. |
+| **bulk parameters** | plant-scale outputs: days after planting, phytomer count. The paper's term; formerly "Stage 1 / Macro". Training log prefix `[Bulk]`. |
+| **phytomer parameters** | per-phytomer outputs: position, rotation, scale and the shape latent. Formerly split across "Stage 2 / Scaffold" and "Stage 3 / Micro" — they were always the same category of parameter, which is why merging them is not a special case. Log prefixes `[Phytomer]` (direct supervision from the coarse stage) and `[Phytomer flow]` (the flow's velocity loss). |
+| **render** | assembly through the frozen PhytomerVAE to a 14-D part tensor and mesh, then the rasteriser or Helios. Formerly "Stage 4". Log prefix `[Render]`. |
+| **test-time fit** | the 200-step refinement. **Not a stage** — it re-solves the *same* phytomer parameters against the observation, so the forward pass and the fit are two mechanisms for setting one quantity. Formerly "Stage 4 refinement". |
 | **relative** | Stage 3 flow state `[dpos(3) \| roll(2) \| scale(3) \| latent]`; a node decodes as `pos = parent + dpos`, so its parent must be resolved first. Called "plain" before 2026-09-20. |
 | **absolute** | Stage 3 flow state `[pos(3) \| rot6d(6) \| scale(3) \| latent]` (`--stage3_absolute`); a node consults no other node. |
 | **merged** | Stage 3's flow state carries a geometry block at all (`--stage3_geometry`). **Every checkpoint in the current lineage is merged**, relative and absolute alike — the `merged_*` run names are historical and mean `absolute_*`. |
 | **run** | one branch of an experiment. Never "arm". |
 | **node position** | a per-phytomer slot Stage 2 predicts and the matcher pairs with a GT phytomer. Never "anchor". |
+
+**On stage numbers.** The architecture is named by the **scale of parameter** each part produces —
+`bulk parameters → phytomer parameters → render` — which is the paper's own vocabulary, so code,
+documents and publication agree. Numbering was never stable (Stage 0–4, then "Stage 2+3" once two
+of them shared a flow state, and a three-stage reading elsewhere) and it hid two things: only three
+parts are learned (the image encoder and the VAE are frozen, the render is deterministic, the fit
+has no parameters), and refinement is not a stage at all. Documents dated before 2026-09-20 use the
+old numbering and are left as written; map them with the rows above. The CLI flags and checkpoint
+argument keys (`--stage3_geometry`, `--stage3_absolute`) keep their names — renaming them would
+break every existing checkpoint's stored args.
 
 Report results from the **raytraced** column when comparing architectures or training recipes; the
 rasterised column is in-domain and both fails to separate them and rewards memorising the eval set.

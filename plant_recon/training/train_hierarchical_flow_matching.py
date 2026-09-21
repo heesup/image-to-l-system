@@ -1910,10 +1910,10 @@ def train_one_epoch(
             )
             print(
                 f"  [Epoch {epoch:02d}] Step {batch_idx+1:03d}/{len(dataloader):03d} | Loss: {step_metrics['loss']:.4f} | "
-                f"[S1 Macro] Phy: {step_metrics.get('phy_count_loss', 0.0):.4f} [P:{step_metrics.get('pred_phy_mean', 0.0):.1f}/G:{step_metrics.get('gt_phy_mean', 0.0):.1f}], DAP: {step_metrics.get('dap_loss', 0.0):.4f} [P:{step_metrics.get('pred_dap_mean', 0.0):.1f}/G:{step_metrics.get('gt_dap_mean', 0.0):.1f}] | "
-                f"[S2 Scaffold] Pos: {step_metrics['phytomer_pos_loss']:.4f}, Roll: {step_metrics.get('phytomer_rot_loss', 0.0):.4f}, Scl: {step_metrics.get('phytomer_scale_loss', 0.0):.4f}, Ord: {step_metrics.get('phytomer_order_loss', 0.0):.4f} (MAE {step_metrics.get('phytomer_ord_mae', 0.0):.2f}, step {step_metrics.get('phytomer_ord_step_mae', 0.0):.2f}), Ext: {step_metrics.get('phytomer_exist_loss', 0.0):.4f}, Cov: {step_metrics.get('coverage_loss', 0.0):.4f}, Cnt: {step_metrics.get('exist_count_loss', 0.0):.3f} | "
-                f"[S3 Micro] Vel: {step_metrics['fine_vel_loss']:.4f}, Ext: {step_metrics['fine_exist_loss']:.4f}, Acc: {step_metrics['cls_acc']*100:.1f}% | "
-                f"[S4 Render] {render_str} | "
+                f"[Bulk] Phy: {step_metrics.get('phy_count_loss', 0.0):.4f} [P:{step_metrics.get('pred_phy_mean', 0.0):.1f}/G:{step_metrics.get('gt_phy_mean', 0.0):.1f}], DAP: {step_metrics.get('dap_loss', 0.0):.4f} [P:{step_metrics.get('pred_dap_mean', 0.0):.1f}/G:{step_metrics.get('gt_dap_mean', 0.0):.1f}] | "
+                f"[Phytomer] Pos: {step_metrics['phytomer_pos_loss']:.4f}, Roll: {step_metrics.get('phytomer_rot_loss', 0.0):.4f}, Scl: {step_metrics.get('phytomer_scale_loss', 0.0):.4f}, Ord: {step_metrics.get('phytomer_order_loss', 0.0):.4f} (MAE {step_metrics.get('phytomer_ord_mae', 0.0):.2f}, step {step_metrics.get('phytomer_ord_step_mae', 0.0):.2f}), Ext: {step_metrics.get('phytomer_exist_loss', 0.0):.4f}, Cov: {step_metrics.get('coverage_loss', 0.0):.4f}, Cnt: {step_metrics.get('exist_count_loss', 0.0):.3f} | "
+                f"[Phytomer flow] Vel: {step_metrics['fine_vel_loss']:.4f}, Ext: {step_metrics['fine_exist_loss']:.4f}, Acc: {step_metrics['cls_acc']*100:.1f}% | "
+                f"[Render] {render_str} | "
                 f"fwd/bwd {t_step1-t_step0:.2f}s opt {t_step2-t_step1:.2f}s | "
                 f"pkt {p.get('packet_build',0):.2f} fwd1 {p.get('fwd1',0):.2f} fwd2 {p.get('fwd2',0):.2f} "
                 f"lists {p.get('tgt_lists',0):.2f} match {p.get('matcher',0):.2f} render {p.get('render',0):.2f} "
@@ -2855,10 +2855,10 @@ def main():
             )
             print(
                 f"Epoch {epoch:03d} | Loss: {epoch_metrics['loss']:.4f} | "
-                f"[S1 Macro] Phy: {epoch_metrics['phy_count_loss']:.4f} (P:{epoch_metrics['pred_phy_mean']:.1f}/G:{epoch_metrics['gt_phy_mean']:.1f}), DAP: {epoch_metrics.get('dap_loss', 0.0):.4f} (P:{epoch_metrics.get('pred_dap_mean', 0.0):.1f}/G:{epoch_metrics.get('gt_dap_mean', 0.0):.1f}) | "
-                f"[S2 Scaffold] Pos: {epoch_metrics['phytomer_pos_loss']:.4f}, Roll: {epoch_metrics.get('phytomer_rot_loss', 0.0):.4f}, Scl: {epoch_metrics.get('phytomer_scale_loss', 0.0):.4f}, Ord: {epoch_metrics.get('phytomer_order_loss', 0.0):.4f} (MAE {epoch_metrics.get('phytomer_ord_mae', 0.0):.2f}, step {epoch_metrics.get('phytomer_ord_step_mae', 0.0):.2f}), Ext: {epoch_metrics['phytomer_exist_loss']:.4f}, Cov: {epoch_metrics.get('coverage_loss', 0.0):.4f}, Cnt: {epoch_metrics.get('exist_count_loss', 0.0):.3f} | "
-                f"[S3 Micro] Vel: {epoch_metrics['fine_vel_loss']:.4f}, Ext: {epoch_metrics['fine_exist_loss']:.4f}, Acc: {epoch_metrics['cls_acc']*100:.1f}% | "
-                f"[S4 Render] {render_epoch_str} | "
+                f"[Bulk] Phy: {epoch_metrics['phy_count_loss']:.4f} (P:{epoch_metrics['pred_phy_mean']:.1f}/G:{epoch_metrics['gt_phy_mean']:.1f}), DAP: {epoch_metrics.get('dap_loss', 0.0):.4f} (P:{epoch_metrics.get('pred_dap_mean', 0.0):.1f}/G:{epoch_metrics.get('gt_dap_mean', 0.0):.1f}) | "
+                f"[Phytomer] Pos: {epoch_metrics['phytomer_pos_loss']:.4f}, Roll: {epoch_metrics.get('phytomer_rot_loss', 0.0):.4f}, Scl: {epoch_metrics.get('phytomer_scale_loss', 0.0):.4f}, Ord: {epoch_metrics.get('phytomer_order_loss', 0.0):.4f} (MAE {epoch_metrics.get('phytomer_ord_mae', 0.0):.2f}, step {epoch_metrics.get('phytomer_ord_step_mae', 0.0):.2f}), Ext: {epoch_metrics['phytomer_exist_loss']:.4f}, Cov: {epoch_metrics.get('coverage_loss', 0.0):.4f}, Cnt: {epoch_metrics.get('exist_count_loss', 0.0):.3f} | "
+                f"[Phytomer flow] Vel: {epoch_metrics['fine_vel_loss']:.4f}, Ext: {epoch_metrics['fine_exist_loss']:.4f}, Acc: {epoch_metrics['cls_acc']*100:.1f}% | "
+                f"[Render] {render_epoch_str} | "
                 f"VRAM: {max_vram_gb:.1f}/{total_vram_gb:.1f} GB ({vram_pct:.1f}%)"
                 + (f" | Recovery: {int(epoch_metrics.get('recovery_skips', 0))}/{int(epoch_metrics.get('steps_seen', 0))}"
                    if epoch_metrics.get('recovery_skips', 0) > 0 else "")
