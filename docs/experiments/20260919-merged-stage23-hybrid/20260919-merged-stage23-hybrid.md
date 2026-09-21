@@ -327,3 +327,28 @@ The three configurations the code actually supports are:
     stage3_geometry=True, absolute=True      [ pos(3)  | rot6d(6) | scale(3) | latent(D) ]
 
 Only the last two have been trained in this lineage.
+
+
+---
+
+## Second naming correction (2026-09-21): this report never tested a merge
+
+The 2026-09-20 note above retired the `merged_*` run names in favour of `absolute_*`. The word
+itself has to go too, because it was carrying two meanings:
+
+1. `--stage3_geometry` — the flow predicts geometry rather than only the shape latent. Every
+   checkpoint in the lineage has this on.
+2. "the two geometry predictions became one computation" — **never built, never tested.**
+
+Reading (2) is what "merged Stage 2+3" sounds like, and it is not what happened. The coarse stage
+still predicts position, roll and scale in every run: `pos_head`, `roll_head` and `scale_head` are
+live, `loss_phytomer_pos` is gated only on `total_matched_nodes > 0`, and the training log carries
+those losses next to the flow's. `sample_ode` keeps the coarse values as `stage2_*` and then
+overwrites them from the flow's geometry block. The relationship is a cascade.
+
+The 2026-09-12 design (`20260912-stage2-stage3-boundary.md` §485) proposed this in two steps —
+give Stage 3 the geometry, **then drop `roll_head`/`scale_head` from Stage 2**. Only the first
+shipped, and no flag exists for the second.
+
+**So nothing in this report rejects a merge.** What it rejects is the **absolute layout** of the
+flow's geometry block. The duplication between the coarse heads and the flow remains unmeasured.
