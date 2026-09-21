@@ -61,3 +61,22 @@ component that carries no recoverable image information; merging gave it the com
 These are ~ep95–100 checkpoints on 10 000 samples, so this settles the historical decision, not the
 current lineage's standing. The live question is the layout of the merged state — relative versus
 absolute — which `relative_fullaug`, `absolute_full` and `absolute_fullaug` are running now.
+
+
+## Correction (2026-09-21): "merge" is the project's word, not what the code does
+
+Asked whether the two are merged, the code says no. `loss_phytomer_pos` and its siblings are gated
+only on `total_matched_nodes > 0` — never on `stage3_geometry` — so the coarse stage keeps
+predicting position, roll and scale in every run, and the training log shows those losses live
+alongside the flow's. At sampling, `sample_ode` stores the coarse values as `stage2_*` and then
+**overwrites** `phytomer_pos / phytomer_roll / phytomer_scale` from the flow's geometry block.
+
+So the relationship is a **cascade, not a merge**: the coarse stage predicts the phytomer
+parameters, that prediction conditions the flow, and the flow predicts them again and wins. What
+`--stage3_geometry` changed was giving the flow geometry to predict at all; before it, the flow
+carried only the latent and the coarse geometry was final. That also explains why the relative
+layout's target is a displacement from a *noised* parent — the model is being taught to correct the
+scaffold's error from the image.
+
+The comparison above is unaffected: it contrasts a flow that predicts geometry against one that does
+not, which is exactly what the flag toggles.
