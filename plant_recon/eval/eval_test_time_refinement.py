@@ -77,6 +77,12 @@ def refine_plant(renderer, pvae, M, images, gt_center, pos0, rot, par, roll, sca
 
     def _rot_par(pos_c, roll_c):
         if "roll" in opt_set:
+            if roll_c.shape[-1] != 2:
+                raise SystemExit(
+                    "--opt roll optimises a 2-component (cos, sin) roll about a chain-derived forward axis, "
+                    f"but this checkpoint's flow state carries {roll_c.shape[-1]} rotation components "
+                    "(the absolute layout's rot6d). Optimising rot6d needs its own parameterisation; "
+                    "drop `roll` from --opt for absolute checkpoints.")
             R = roll_to_matrix(fwd0, roll_c)   # frozen axis (derived once from pos0), never re-derived from moving pos_c
             return matrix_to_rot6d(R), par     # parent_pos frozen too, matching the default pos-only path
         if a.recompute_rot:
@@ -409,6 +415,7 @@ def main():
               f"that run's training subset, not to the full dataset)", flush=True)
     if a.only:
         idxs = [int(x) for x in a.only.split(",")]
+    s3abs = bool(args.get("stage3_absolute", False))
     opt_set = set(a.opt.split(","))
     rows = []
     mean_lat = None
@@ -482,8 +489,25 @@ def main():
                 scale0 = (so.get("phytomer_scale") if so.get("phytomer_scale") is not None else co.get("phytomer_scale"))[0].float(); lat0 = so["pred_latent"][0].float()
                 if a.init_mean_latent:
                     lat0 = mean_lat.reshape(1, -1).expand_as(lat0).clone()
-                rot, par = reconstruct_phytomer_rot(pos0.unsqueeze(0), roll.unsqueeze(0), ordn.unsqueeze(0), base.unsqueeze(0), exist=(exist > 0.5).float().unsqueeze(0))
-                rot, par = rot[0].float(), par[0].float()
+                # LAYOUT SPLIT. For an absolute (`--stage3_absolute`) model, sample_ode returns the node's
+                # own rot6d in `phytomer_roll` -- the field keeps its name but carries 6 components, not the
+                # relative layout's 2 (see geometry_from_flow_absolute). Passing that straight into
+                # reconstruct_phytomer_rot silently evaluates an absolute model AS IF it were relative:
+                # roll_to_matrix normalises all 6 components together, reads only [0:1] and [1:2] as
+                # (cos, sin) roll, discards components 2-5, and rebuilds the forward axis FROM THE CHAIN --
+                # which is precisely what the absolute layout exists to avoid. Every absolute number
+                # measured before 2026-09-20 came through this path and is invalid.
+                #
+                # The chain is still needed for PARENT POSITIONS (assembly draws the internode from parent to
+                # node), so it still runs; only its rotation output is replaced by the model's own.
+                if s3abs:
+                    _roll_dummy = torch.zeros(roll.shape[0], 2, device=roll.device, dtype=roll.dtype)
+                    _roll_dummy[:, 0] = 1.0     # identity roll: this call is used only for `par`
+                    _, par = reconstruct_phytomer_rot(pos0.unsqueeze(0), _roll_dummy.unsqueeze(0), ordn.unsqueeze(0), base.unsqueeze(0), exist=(exist > 0.5).float().unsqueeze(0))
+                    rot, par = roll.float(), par[0].float()
+                else:
+                    rot, par = reconstruct_phytomer_rot(pos0.unsqueeze(0), roll.unsqueeze(0), ordn.unsqueeze(0), base.unsqueeze(0), exist=(exist > 0.5).float().unsqueeze(0))
+                    rot, par = rot[0].float(), par[0].float()
                 # topology chained once from the sampled positions (discrete, non-differentiable); the rotation and
                 # parent position can then be re-derived differentiably from the current pos / roll (--recompute_rot)
                 parent_idx, _, _ = chain_phytomers(pos0, ordinal=ordn, is_base=(base > 0).float(), exist=(exist > 0.5).float())

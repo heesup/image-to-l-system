@@ -7,6 +7,19 @@ status: active
 
 # Merging Stage 2 and 3: the hybrid absolute flow
 
+> # ⚠️ EVERY ABSOLUTE NUMBER IN THIS REPORT IS INVALID (found 2026-09-20)
+>
+> `sample_ode` returns the node's own **rot6d (6 components)** in `phytomer_roll` under
+> `--stage3_absolute`; the relative layout carries roll (2). `eval_test_time_refinement.py` never
+> branched on the layout, so the 6-wide rot6d went into `roll_to_matrix`, which normalises all six
+> together, reads only the first two as (cos, sin), discards the rest, and rebuilds the forward axis
+> **from the chain** — exactly what the absolute layout exists to avoid. Absolute models were
+> evaluated as relative ones with a corrupted roll.
+>
+> **The relative numbers here are unaffected.** Every `merged_*` figure is not. Fixed and re-running;
+> conclusions about the absolute layout must wait for those results.
+
+
 **Status**: implemented, trained in two independent runs, evaluated under Gate G. **Both acceptance
 criteria fail.** One positive result survives and is the thread worth pulling.
 
