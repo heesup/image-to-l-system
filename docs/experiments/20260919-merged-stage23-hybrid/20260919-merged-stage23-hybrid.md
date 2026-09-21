@@ -272,3 +272,29 @@ renders where the degradation does not appear.
 architecture that loses on the metric that matters. They still answer the open data-budget question
 — whether 10x the data changes any of this — but the case for promoting the merged architecture is
 now much weaker than the flat-render numbers suggested.
+
+
+---
+
+## Naming correction (2026-09-20)
+
+This report contrasts "the merged hybrid" with a "plain" baseline. That framing is wrong and the
+checkpoints say so:
+
+    v10_cam ep160             stage3_geometry=True   stage3_absolute=None
+    sub10_v10_cam_aug ep230   stage3_geometry=True   stage3_absolute=None
+    merged_abs ep280          stage3_geometry=True   stage3_absolute=True   botany=1.0
+
+**Every checkpoint in this lineage is merged Stage 2+3** — Stage 3's flow state carries a geometry
+block in all of them. The only axis that differs is `stage3_absolute` (and the botany loss that
+compensates for it). So nothing here rejects the merge; what it rejects is the **absolute layout** of
+a merged Stage 3. The `merged_*` run and checkpoint names are historical and should be read as
+`absolute_*`; the comparison lineage is `relative`, not "plain".
+
+The three configurations the code actually supports are:
+
+    stage3_geometry=False                    [ latent(D) ]              geometry stays Stage-2-only
+    stage3_geometry=True, absolute=False     [ dpos(3) | roll(2)  | scale(3) | latent(D) ]
+    stage3_geometry=True, absolute=True      [ pos(3)  | rot6d(6) | scale(3) | latent(D) ]
+
+Only the last two have been trained in this lineage.
