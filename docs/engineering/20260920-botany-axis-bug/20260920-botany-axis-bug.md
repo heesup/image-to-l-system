@@ -53,8 +53,20 @@ are a floor, not a verdict.
 forward axis (constructed from `roll_to_matrix` / `matrix_to_rot6d`, not asserted) and that the
 training loss uses it.
 
-## Consequence for the runs in flight
+## The runs, restarted (2026-09-20)
 
-`merged_full` and `merged_fullaug` are training with the broken term right now. Continuing spends
-~60 more GPU-hours each optimising a constraint that is 90 degrees wrong. `relative_fullaug` is
-unaffected.
+`merged_full` and `merged_fullaug` were cancelled and relaunched as **`absolute_full`** and
+**`absolute_fullaug`**, from `v10_cam` ep160 — **not** resumed from their own ep170. Those ep170
+checkpoints carry ten epochs trained under the 90-degree-wrong term; resuming them would have
+carried that forward into the very comparison the runs exist to settle. Ten epochs (~10 h each) is
+the price of a clean start, and the runs were only 1.5 h past that point anyway.
+
+The new names also retire the `merged_*` misnomer: every checkpoint in this lineage is merged
+Stage 2+3, and what these runs vary is the **absolute** layout.
+
+`outputs/checkpoints/merged_full/` and `merged_fullaug/` are left on disk for reference. **Do not
+resume or evaluate from them** — everything past ep160 in those directories was trained with the
+broken botany term.
+
+`relative_fullaug` was left running: the botany block is guarded by `if s3abs`, so the relative
+lineage never evaluated it.
