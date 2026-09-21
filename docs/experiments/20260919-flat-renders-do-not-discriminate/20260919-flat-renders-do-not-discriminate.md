@@ -10,8 +10,8 @@ The four form a clean 2x2 over `stage3_absolute` (the merged hybrid's flow state
 
 | | flat | **Helios** | gap |
 | :--- | ---: | ---: | ---: |
-| plain, no aug (`v10_cam` ep160) | 71.23 | 66.53 | −4.70 |
-| plain, **aug** (`sub10_v10_cam_aug` ep230) | 72.65 | **70.16** | −2.49 |
+| relative, no aug (`v10_cam` ep160) | 71.23 | 66.53 | −4.70 |
+| relative, **aug** (`sub10_v10_cam_aug` ep230) | 72.65 | **70.16** | −2.49 |
 | absolute, no aug (`merged_abs` ep280) | 73.34 | 48.36 | −24.98 |
 | absolute, aug (`merged_aug` ep280) | 73.37 | 59.11 | −14.26 |
 
@@ -38,7 +38,7 @@ landed within two or three points of each other.
 the absolute state.
 
 **"Gate G is the strongest lever."** On flat, `--n_starts 8` is worth +3.42 at 6.8 SE — the clearest
-effect of the sweep. On Helios, for the plain augmented lineage, it is worth **+1.08 at 1.3 SE**,
+effect of the sweep. On Helios, for the relative augmented lineage, it is worth **+1.08 at 1.3 SE**,
 i.e. not resolved. Its mechanism is selection among eight hypotheses on final input loss; under an
 appearance shift the hypotheses are apparently more uniformly poor, so there is less to select.
 That is the same shape as the start-insensitivity seen in `merged_abs`.
@@ -46,7 +46,7 @@ That is the same shape as the start-insensitivity seen in `merged_abs`.
 ## What the 2x2 says about the two factors
 
 ```
-effect of augmentation on the gap:   plain +2.21    absolute +10.72
+effect of augmentation on the gap:   relative +2.21    absolute +10.72
 effect of stage3_absolute on the gap:  no aug -20.28    aug -11.77
 ```
 
@@ -57,7 +57,7 @@ general weakness so much as partially compensating for one the absolute state in
 
 ## Best measured configuration on realistic appearance
 
-**plain + appearance augmentation + Gate G = 71.24.** That is the number a new architecture has to
+**relative + appearance augmentation + Gate G = 71.24.** That is the number a new architecture has to
 beat, and it should be quoted from the Helios column from now on.
 
 ## Consequence for protocol

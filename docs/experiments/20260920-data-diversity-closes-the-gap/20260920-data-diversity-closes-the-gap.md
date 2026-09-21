@@ -18,12 +18,12 @@ or better, and the only thing that changed is how many distinct plants those sam
 | absolute, no aug | **full ep170** | 71.95 | **62.13** | **−9.82** |
 | absolute, aug | 10k ep280 | 73.37 | 59.11 | −14.26 |
 | absolute, aug | **full ep170** | 70.92 | **64.99** | **−5.93** |
-| plain, aug | 10k ep230 | 72.65 | 70.16 | −2.49 |
-| plain, no aug | 10k ep160 | 71.23 | 66.53 | −4.70 |
+| relative, aug | 10k ep230 | 72.65 | 70.16 | −2.49 |
+| relative, no aug | 10k ep160 | 71.23 | 66.53 | −4.70 |
 
     effect of 10x unique data on the gap:  no aug +15.17    aug +8.33
 
-That is larger than the effect of appearance augmentation itself (+2.2 on the plain lineage, +10.7
+That is larger than the effect of appearance augmentation itself (+2.2 on the relative lineage, +10.7
 on the absolute one), and it is the biggest single factor on the gap measured so far.
 
 ## Flat goes DOWN while Helios goes UP
@@ -42,23 +42,23 @@ headline.
 
 **Revised.** "`stage3_absolute` is what makes the lineage appearance-brittle, costing 20.3 points of
 gap" was measured entirely at 10 k. At full data the absolute+aug gap is −5.93, against −2.49 for
-plain+aug *at 10 k*. Most of the penalty was data, not architecture.
+relative+aug *at 10 k*. Most of the penalty was data, not architecture.
 
-**Still standing.** On the Helios column as it stands today, the plain lineage still leads:
+**Still standing.** On the Helios column as it stands today, the relative lineage still leads:
 
-    plain, aug        10k    70.16
-    plain, no aug     10k    66.53
+    relative, aug        10k    70.16
+    relative, no aug     10k    66.53
     absolute, aug     full   64.99
     absolute, no aug  full   62.13
 
 But the comparison is now unfair in the opposite direction from yesterday: the full-data runs are
 **10 epochs into a 60-epoch schedule**, while `sub10_v10_cam_aug` had 70 epochs of fine-tuning. They
-are sample-matched to the 10 k runs, not to the plain lineage's training length, and they are still
+are sample-matched to the 10 k runs, not to the relative lineage's training length, and they are still
 improving.
 
-**Unknown, and the reason for the new run.** Nobody has trained the plain lineage with augmentation
-on full data. It is the current best configuration and the missing cell of the 2x2. `plain_fullaug`
-(job 38495668) was launched today with settings byte-identical to `merged_fullaug` except that
+**Unknown, and the reason for the new run.** Nobody has trained the relative lineage with augmentation
+on full data. It is the current best configuration and the missing cell of the 2x2. `relative_fullaug`
+(job 38495672) was launched today with settings byte-identical to `merged_fullaug` except that
 `STAGE3_ABSOLUTE` is absent, so the pair isolates the architecture at full data.
 
 ## Decision
@@ -67,3 +67,18 @@ on full data. It is the current best configuration and the missing cell of the 2
 rested on the 10 k comparison, which overstated the architectural penalty by roughly a factor of
 three. The gap is closing quickly, the runs are early, and they are now the only evidence on whether
 the absolute state is viable at scale.
+
+
+## Terminology
+
+These two layouts are **relative** and **absolute**, never "plain" and "absolute" (Heesup,
+2026-09-20). The relative layout carries `[dpos(3) | roll(2) | scale(3) | latent]` and decodes as
+`pos = parent + dpos`, so a node needs its parent resolved first; the absolute layout carries
+`[pos(3) | rot6d(6) | scale(3) | latent]` and consults no other node. "Plain" names neither half of
+that distinction — it only means "not the other one", and it implies the relative layout is a
+default or an absence rather than a deliberate parameterisation that carries the plant's chain
+structure as an inductive bias, which on this evidence is most of why it generalises better from a
+small subset.
+
+Note that older documents use "plain" in a *different* sense — without appearance augmentation — and
+those occurrences were left alone. That collision is itself the argument for the rename.

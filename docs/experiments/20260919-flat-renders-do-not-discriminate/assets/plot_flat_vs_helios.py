@@ -21,8 +21,8 @@ def m(ns):
                           for n in ns]))
 
 rows = [
-    ("plain\nno aug", ["s_base", "rep_base1", "rep_base2", "rep_base3"], ["base_hel1", "base_hel2"]),
-    ("plain\n+ aug", ["v10aug_flat1", "v10aug_flat2"], ["v10aug_hel1", "v10aug_hel2"]),
+    ("relative\nno aug", ["s_base", "rep_base1", "rep_base2", "rep_base3"], ["base_hel1", "base_hel2"]),
+    ("relative\n+ aug", ["v10aug_flat1", "v10aug_flat2"], ["v10aug_hel1", "v10aug_hel2"]),
     ("absolute\nno aug", ["mg_def1", "mg_def2", "mg_def3", "mg_def4", "mg_def5"], ["ab_hel1b", "ab_hel2b"]),
     ("absolute\n+ aug", ["ag_def1", "ag_def2", "ag_def3"], ["ag_hel1b", "ag_hel2b"]),
 ]

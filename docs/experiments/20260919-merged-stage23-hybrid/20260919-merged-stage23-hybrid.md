@@ -249,18 +249,18 @@ comparison isolates the cause: the two checkpoints share `max_train_samples=1000
 
 | stage3_absolute | | n | raw | refined |
 | :--- | :--- | ---: | ---: | ---: |
-| None (plain) | flat | 2 | 38.5 | 72.65 |
-| None (plain) | **Helios** | 2 | 30.4 | **70.16** |
+| None (relative) | flat | 2 | 38.5 | 72.65 |
+| None (relative) | **Helios** | 2 | 30.4 | **70.16** |
 | True (merged) | flat | 3 | 34.9 | 73.37 |
 | True (merged) | **Helios** | 2 | 22.0 | **59.11** |
 
-    appearance gap    plain  -2.49       merged -14.26
-    Helios, plain minus merged   +11.05   SE 0.32   (+34.4 SE)
-    flat,   plain minus merged    -0.72   SE 0.22   ( -3.3 SE)
+    appearance gap    relative  -2.49       merged -14.26
+    Helios, relative minus merged   +11.05   SE 0.32   (+34.4 SE)
+    flat,   relative minus merged    -0.72   SE 0.22   ( -3.3 SE)
 
 **The absolute flow state buys +0.7 on flat synthetic renders and costs 11.1 points on realistic
 appearance.** Both are statistically clear; they are not the same size. Since the project's actual
-target is real imagery, the Helios column is the one that matters, and on it the plain lineage wins
+target is real imagery, the Helios column is the one that matters, and on it the relative lineage wins
 by a margin no other lever measured today comes close to.
 
 This also explains the earlier `merged_abs` results without needing the start-insensitivity story to
