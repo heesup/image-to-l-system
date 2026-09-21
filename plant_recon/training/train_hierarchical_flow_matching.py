@@ -835,9 +835,19 @@ def forward_backward_step(
                     d_gt = gt_phytomer_pos_target[m_bot] - par
                     # internode length: how far a node sits from its parent
                     loss_len = F.smooth_l1_loss(d_hat.norm(dim=-1), d_gt.norm(dim=-1), beta=0.02)
-                    # forward axis: rot6d's x column (rot6d_to_matrix normalises d6[..., 0:3]) should
-                    # point along the branch the node actually sits on
-                    fwd_hat = F.normalize(rot_hat[..., 0:3], dim=-1, eps=1e-6)
+                    # forward axis: the node's organ should point along the branch it sits on.
+                    #
+                    # That axis is rot6d[..., 3:6], NOT [..., 0:3]. The convention is COLUMNS:
+                    # roll_to_matrix returns stack([x, forward, z]) and matrix_to_rot6d keeps the first
+                    # two COLUMNS, so a rot6d is [x | forward]. Component 0:3 is the x column, which is
+                    # PERPENDICULAR to the branch.
+                    #
+                    # Measured on ground truth (2026-09-20, 167 internodes): the angle between the
+                    # parent->node direction and rot6d[0:3] is 90.2 deg mean / 90.0 median, against
+                    # 1.1 / 0.3 for rot6d[3:6]. Until this fix the term drove the absolute layout's
+                    # rotations a full 90 degrees AWAY from correct -- the loss meant to restore the
+                    # botany the relative layout carries structurally was fighting it instead.
+                    fwd_hat = F.normalize(rot_hat[..., 3:6], dim=-1, eps=1e-6)
                     fwd_tgt = F.normalize(d_hat.detach(), dim=-1, eps=1e-6)
                     loss_axis = (1.0 - (fwd_hat * fwd_tgt).sum(-1)).mean()
                     loss_botany = loss_len + loss_axis
